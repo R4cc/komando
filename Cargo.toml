@@ -23,6 +23,7 @@ toml = "0.8"
 dirs = "5"
 uuid = { version = "1", features = ["v4", "serde"] }
 anyhow = "1"
+regex = "1"
 futures = "0.3"
 log = "0.4"
 chrono = "0.4"
