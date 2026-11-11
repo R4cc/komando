@@ -6,6 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-11
+
+### Added
+
+- README download link that always points to the installer of the latest release. Releases
+  now also attach the installer as `Komando-x64.msi` for that link.
+
 ## [0.1.2] - 2026-11-11
 
 ### Changed
@@ -52,7 +59,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/R4cc/komando/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/R4cc/komando/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/R4cc/komando/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/R4cc/komando/releases/tag/v0.1.0

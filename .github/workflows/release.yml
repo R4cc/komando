@@ -1,7 +1,8 @@
 name: Release
 
 # Publishing a GitHub release (tag like v0.2.0) builds Komando for Windows and attaches
-# the MSI installer and the plain .exe to that release.
+# the MSI installer (versioned and as Komando-x64.msi for the README's "latest" link)
+# and the plain .exe to that release.
 on:
   release:
     types: [published]
@@ -48,6 +49,9 @@ jobs:
           $v = "${{ steps.version.outputs.version }}"
           wix build packaging/komando.wxs -arch x64 -d Version=$v -d BinDir=target\release -o "Komando-$v-x64.msi"
           Copy-Item target\release\komando.exe "Komando-$v-x64.exe"
+          # Same installer under a fixed name, so the README can link to
+          # releases/latest/download/Komando-x64.msi.
+          Copy-Item "Komando-$v-x64.msi" "Komando-x64.msi"
 
       - name: Attach to release
         shell: pwsh
@@ -55,4 +59,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $v = "${{ steps.version.outputs.version }}"
-          gh release upload $env:TAG "Komando-$v-x64.msi" "Komando-$v-x64.exe" --clobber
+          gh release upload $env:TAG "Komando-$v-x64.msi" "Komando-x64.msi" "Komando-$v-x64.exe" --clobber

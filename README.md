@@ -67,7 +67,9 @@ Open **Settings** from the bottom of the sidebar or with Ctrl+,. It's a full pag
 
 ## Install
 
-Download `Komando-<version>-x64.msi` from [Releases](../../releases). Komando runs on Windows 11 only ([why](docs/adr/0001-windows-11-only.md)).
+**[⬇ Download the latest Komando for Windows (.msi)](https://github.com/R4cc/komando/releases/latest/download/Komando-x64.msi)**
+
+The link always points to the newest release. Older versions and the plain `.exe` are on the [Releases](https://github.com/R4cc/komando/releases) page. Komando runs on Windows 11 only ([why](docs/adr/0001-windows-11-only.md)).
 
 Data lives in `%APPDATA%\Komando`:
 
@@ -92,7 +94,7 @@ cargo test --lib
 
 The version is in `Cargo.toml` and every change is listed in [CHANGELOG.md](CHANGELOG.md). Patch versions (0.1.x) go up with each change; minor and major versions are bumped by the maintainer.
 
-Publish a GitHub release with a tag that matches `Cargo.toml`, like `v0.2.0`. The [release workflow](.github/workflows/release.yml) builds Komando on Windows and attaches `Komando-0.2.0-x64.msi` and the plain `.exe` to the release. To rebuild an existing release, run the workflow manually with its tag.
+Publish a GitHub release with a tag that matches `Cargo.toml`, like `v0.2.0`. The [release workflow](.github/workflows/release.yml) builds Komando on Windows and attaches `Komando-0.2.0-x64.msi`, the same installer as `Komando-x64.msi` (which the download link above points to), and the plain `.exe`. To rebuild an existing release, run the workflow manually with its tag.
 
 ### Developing on Linux
 
