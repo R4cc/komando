@@ -6,6 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-11-11
+
+### Changed
+
+- README screenshots retaken to match the current look: the slim session strip and the
+  sidebar of hosts.
+
 ## [0.1.6] - 2026-11-11
 
 ### Added

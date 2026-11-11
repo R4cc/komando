@@ -8,7 +8,7 @@
 
 <img src="assets/screenshot-dark.png" alt="Komando SSH terminal: servers grouped into projects in a sidebar, an SSH session showing systemctl status and a highlighted application log">
 
-<sub>Screenshot of the real app: live SSH sessions to a test server, one still connecting, idle hosts dimmed.</sub>
+<sub>Screenshots of the real app: live SSH sessions to a test server, one host still connecting, idle hosts dimmed.</sub>
 
 ## Why Komando
 
@@ -36,6 +36,8 @@
 - **Server fingerprint checks.** New servers ask for your trust on first connect, and a changed key blocks the connection. Hosts you already trust in your OpenSSH `known_hosts` are recognised.
 
 ### Read logs faster
+
+<img src="assets/screenshot-highlights.png" alt="Komando settings: a rule set of 69 highlight rules, each shown in its own colour with regex and case badges and an on/off switch" width="720">
 
 - **Syntax highlighting for terminal output.** ERROR in red, WARN in orange, `Active: active` in green. 69 ready-made rules for Linux and service logs are included.
 - **Your own rules.** Import and export rule sets as JSON, compatible with Tabby's highlight format. See [Highlights](docs/highlights.md).
