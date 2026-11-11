@@ -1,0 +1,4 @@
+# Link the Visual C++ runtime into komando.exe, so the portable .exe runs on any
+# Windows 11 PC without installing the VC++ Redistributable first.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

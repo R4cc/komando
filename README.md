@@ -64,9 +64,19 @@ All app shortcuts use Ctrl+Shift, so plain Ctrl keys (Ctrl+W, Ctrl+R, …) still
 
 ## Install
 
-1. **[Download the latest Komando-x64.msi](https://github.com/R4cc/komando/releases/latest/download/Komando-x64.msi)** and run it. A portable `.exe` is on the [Releases](https://github.com/R4cc/komando/releases) page.
+1. **[Download the latest Komando-x64.msi](https://github.com/R4cc/komando/releases/latest/download/Komando-x64.msi)** and run it.
 2. Start Komando and set a master password for the vault.
 3. Add your first project and host, and click to connect.
+
+### Without installing (portable)
+
+No installer and no admin rights needed. Komando is a single `.exe` with everything built in.
+
+1. **[Download the latest Komando-x64.exe](https://github.com/R4cc/komando/releases/latest/download/Komando-x64.exe)** and put it anywhere, for example `%LOCALAPPDATA%\Programs\Komando`.
+2. Right-click it → **Properties** → tick **Unblock** → **OK**. Or in PowerShell: `Unblock-File .\Komando-x64.exe`.
+3. Double-click to start. Pin it to the taskbar if you like.
+
+Unblocking removes the "downloaded from the internet" mark that makes Windows SmartScreen warn about apps without a code-signing certificate. Komando isn't signed yet. If your company blocks unknown programs entirely (AppLocker), this won't help. You can also [build it yourself](docs/development.md#build-it-yourself-on-windows); a build from source never gets a SmartScreen warning.
 
 Komando runs on Windows 11 only ([why](docs/adr/0001-windows-11-only.md)). Your data stays on your machine in `%APPDATA%\Komando`. There is no recovery for a forgotten master password, but your projects and hosts are stored separately and survive.
 

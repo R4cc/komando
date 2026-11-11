@@ -6,6 +6,19 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-11
+
+### Added
+
+- Portable use without the installer: README steps for the `.exe` (download, unblock, run), a
+  "latest" download link for it (releases now also attach `Komando-x64.exe`), and step-by-step
+  instructions for building Komando yourself on Windows.
+
+### Changed
+
+- `komando.exe` now includes the Visual C++ runtime, so it runs on PCs without the VC++
+  Redistributable installed.
+
 ## [0.1.5] - 2026-11-11
 
 ### Changed
@@ -76,7 +89,10 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/R4cc/komando/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/R4cc/komando/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/R4cc/komando/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/R4cc/komando/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/R4cc/komando/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/R4cc/komando/compare/v0.1.0...v0.1.1

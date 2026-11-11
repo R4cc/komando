@@ -1,11 +1,42 @@
 # Development
 
-## Build from source
+## Build it yourself on Windows
 
-```powershell
-cargo build --release      # target\release\komando.exe
-cargo test --lib
-```
+A build from source never carries the internet download mark, so Windows SmartScreen doesn't
+warn. You need about 10 GB of free disk space; the first build takes 15 to 30 minutes, later
+builds a minute or two.
+
+1. Install the tools (PowerShell, once):
+
+   ```powershell
+   winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+   winget install Rustlang.Rustup
+   winget install Git.Git
+   ```
+
+   The Build Tools bring the Microsoft C++ compiler and the Windows SDK, which Rust needs.
+   Open a **new** PowerShell window afterwards so the tools are on the PATH.
+
+2. Get the code. The repository is private, so Git asks you to sign in to GitHub the first
+   time:
+
+   ```powershell
+   git clone https://github.com/R4cc/komando.git
+   cd komando
+   ```
+
+3. Build:
+
+   ```powershell
+   cargo build --release
+   ```
+
+   The result is `target\release\komando.exe`, a single file with the C++ runtime, fonts and
+   icons built in. Copy it wherever you like, for example `%LOCALAPPDATA%\Programs\Komando`.
+
+4. To update later: `git pull`, then `cargo build --release` again.
+
+Run the tests with `cargo test --lib`.
 
 ## Versions and releases
 
@@ -15,8 +46,8 @@ maintainer.
 
 Publish a GitHub release with a tag that matches `Cargo.toml`, like `v0.2.0`. The
 [release workflow](../.github/workflows/release.yml) builds Komando on Windows and attaches
-`Komando-0.2.0-x64.msi`, the same installer as `Komando-x64.msi` (which the README download
-link points to), and the plain `.exe`. To rebuild an existing release, run the workflow
+`Komando-0.2.0-x64.msi` and `Komando-0.2.0-x64.exe`, plus the same two files as
+`Komando-x64.msi` and `Komando-x64.exe`, which the README's "latest" download links point to. To rebuild an existing release, run the workflow
 manually with its tag.
 
 ## Developing on Linux

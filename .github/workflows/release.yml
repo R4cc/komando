@@ -49,9 +49,10 @@ jobs:
           $v = "${{ steps.version.outputs.version }}"
           wix build packaging/komando.wxs -arch x64 -d Version=$v -d BinDir=target\release -o "Komando-$v-x64.msi"
           Copy-Item target\release\komando.exe "Komando-$v-x64.exe"
-          # Same installer under a fixed name, so the README can link to
-          # releases/latest/download/Komando-x64.msi.
+          # Same files under fixed names, so the README can link to
+          # releases/latest/download/Komando-x64.msi and Komando-x64.exe.
           Copy-Item "Komando-$v-x64.msi" "Komando-x64.msi"
+          Copy-Item "Komando-$v-x64.exe" "Komando-x64.exe"
 
       - name: Attach to release
         shell: pwsh
@@ -59,4 +60,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $v = "${{ steps.version.outputs.version }}"
-          gh release upload $env:TAG "Komando-$v-x64.msi" "Komando-x64.msi" "Komando-$v-x64.exe" --clobber
+          gh release upload $env:TAG "Komando-$v-x64.msi" "Komando-x64.msi" "Komando-$v-x64.exe" "Komando-x64.exe" --clobber
