@@ -161,6 +161,16 @@ impl TerminalView {
         }
     }
 
+    /// Set the status from outside (connect, close) and tell the workspace, which keeps its
+    /// own copy for the sidebar.
+    pub fn set_status(&mut self, status: Status, cx: &mut Context<Self>) {
+        if self.status != status {
+            self.status = status;
+            cx.emit(TerminalEvent::Changed);
+        }
+        cx.notify();
+    }
+
     pub fn is_disconnected(&self) -> bool {
         matches!(self.status, Status::Disconnected(_))
     }
@@ -173,6 +183,7 @@ impl TerminalView {
     fn on_session_event(&mut self, event: SessionEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             SessionEvent::Wakeup => {
+                crate::perf::count("session wakeup");
                 self.proxy.clear_dirty();
                 if self.marks.is_pending() {
                     self.marks.output(&mut *self.term.lock());
@@ -789,6 +800,7 @@ struct Frame {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf::count("terminal render");
         let appearance = cx.global::<Appearance>();
         let palette = appearance.term.clone();
         let family = appearance.font_family.clone();
@@ -802,7 +814,7 @@ impl Render for TerminalView {
         let origin_cell = self.origin.clone();
         let cell_cell = self.cell.clone();
         let highlighter = cx.try_global::<ActiveHighlights>().map(|h| h.0.clone()).unwrap_or_default();
-        let (rail, flash_row) = self.render_rail(cx);
+        let (rail, flash_row) = crate::perf::time("command rail", || self.render_rail(cx));
         let minimap = self.minimap.then(|| {
             crate::ui::minimap::minimap(
                 self.term.clone(),
@@ -816,7 +828,7 @@ impl Render for TerminalView {
         let flash_color = Hsla { a: palette.selection.a * 0.7, ..palette.selection };
 
         let surface = canvas(
-            move |bounds, window, _cx| {
+            move |bounds, window, _cx| crate::perf::time("terminal grid prepaint", || {
                 let text_system = window.text_system().clone();
                 let mut regular = gpui::font(family.clone());
                 regular.features = gpui::FontFeatures::disable_ligatures();
@@ -963,8 +975,8 @@ impl Render for TerminalView {
                 }
                 emit(current_row, &mut cells, &mut frame);
                 frame
-            },
-            move |_bounds, frame, window, cx| {
+            }),
+            move |_bounds, frame, window, cx| crate::perf::time("terminal grid paint", || {
                 for (bounds, color) in &frame.rects {
                     window.paint_quad(fill(*bounds, *color));
                 }
@@ -974,7 +986,7 @@ impl Render for TerminalView {
                 if let Some((bounds, color)) = frame.cursor_outline {
                     window.paint_quad(outline(bounds, color, gpui::BorderStyle::Solid));
                 }
-            },
+            }),
         )
         .size_full();
 

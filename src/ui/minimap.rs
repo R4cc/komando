@@ -245,7 +245,8 @@ pub fn minimap(
         move |bounds, _window, _cx| {
             let term = paint_term.lock();
             let mut cache = paint_state.cache.borrow_mut();
-            let (geometry, rects, viewport) = layout(&term, &mut cache, &palette, &highlighter, bounds);
+            let (geometry, rects, viewport) =
+                crate::perf::time("minimap layout", || layout(&term, &mut cache, &palette, &highlighter, bounds));
             paint_state.geometry.set(geometry);
             (rects, viewport)
         },

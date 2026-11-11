@@ -30,6 +30,7 @@ fn main() {
     let key_id = vault
         .add(Credential { label: "Atlas deploy key".into(), secret: Secret::PrivateKey { key, passphrase: None } })
         .unwrap();
+    let key_id_for_stress = key_id.clone();
 
     let host = |name: &str, address: &str, port: u16, icon: &str| Host {
         id: new_id(),
@@ -79,18 +80,64 @@ fn main() {
     fs::write(dir.join("known_hosts"), line).unwrap();
 
     let local_shell = komando::model::default_shells().remove(0).name;
+    let mut open = vec![
+        ("Atlas Production".into(), "web01".into()),
+        ("Atlas Production".into(), "db01".into()),
+        ("Atlas Staging".into(), "web-stg01".into()),
+        (String::new(), local_shell),
+    ];
+
+    let mut stress_active = None;
+    // Stress mode for profiling: KOMANDO_DEMO_STRESS="projects,hosts per project,open sessions".
+    // Every host points at the local test server; with its log generator on, each open session
+    // streams logs.
+    if let Ok(spec) = env::var("KOMANDO_DEMO_STRESS") {
+        // A fourth value "idle" shows a quiet local shell, so only background sessions stream.
+        let idle = spec.ends_with(",idle");
+        let spec = spec.trim_end_matches(",idle");
+        let n: Vec<usize> = spec.split(',').map(|v| v.trim().parse().unwrap()).collect();
+        let (projects, per_project, sessions) = (n[0], n[1], n[2]);
+        let colors = ["red", "amber", "blue", "green", "violet", "cyan", "pink", "orange"];
+        let icons = ["server", "database", "globe", "cpu", "network", "cloud", "router", "hard-drive"];
+        let mut library = Library::load(&dir).unwrap();
+        library.projects.clear();
+        library.hosts.clear();
+        open.clear();
+        for pi in 0..projects {
+            let mut hosts = vec![];
+            for hi in 0..per_project {
+                let h = host(&format!("p{pi:02}-node{hi:02}"), "127.0.0.1", port, icons[hi % icons.len()]);
+                hosts.push(h.id.clone());
+                if open.len() < sessions && hi < sessions.div_ceil(projects).max(1) {
+                    open.push((format!("Project {pi:02}"), h.name.clone()));
+                }
+                library.hosts.push(h);
+            }
+            library.projects.push(Project {
+                id: new_id(),
+                name: format!("Project {pi:02}"),
+                color: colors[pi % colors.len()].into(),
+                icon: icons[pi % icons.len()].into(),
+                default_user: Some(user.clone()),
+                credential: Some(key_id_for_stress.clone()),
+                hosts,
+                shells: vec![],
+            });
+        }
+        library.save(&dir).unwrap();
+        if idle {
+            open.push((String::new(), komando::model::default_shells().remove(0).name));
+            stress_active = Some(open.len() - 1);
+        }
+    }
+
     komando::run(komando::Options {
         data_dir: dir,
         skip_unlock: true,
         startup: Startup {
             master_password: Some(MASTER.into()),
-            open: vec![
-                ("Atlas Production".into(), "web01".into()),
-                ("Atlas Production".into(), "db01".into()),
-                ("Atlas Staging".into(), "web-stg01".into()),
-                (String::new(), local_shell),
-            ],
-            active: Some(0),
+            open,
+            active: stress_active.or(Some(0)),
             settings: env::var("KOMANDO_DEMO_SETTINGS").ok().and_then(|s| {
                 SettingsSection::ALL.into_iter().find(|section| format!("{section:?}").eq_ignore_ascii_case(&s))
             }),

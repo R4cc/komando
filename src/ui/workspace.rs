@@ -1,14 +1,14 @@
 //! The main window: unlock screen, Project sidebar with its Sessions, the active terminal,
 //! quick connect, and the small forms for adding Projects and Hosts.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, KeyDownEvent,
-    SharedString, Subscription, Window, WindowAppearance, actions, div, prelude::*, px, WindowControlArea, MouseButton,
+    SharedString, Subscription, Window, WindowAppearance, actions, div, prelude::*, px, WindowControlArea, MouseButton, ListState, ListAlignment, list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
@@ -62,6 +62,18 @@ enum ItemKey {
     Shell { project: Option<String>, name: String },
 }
 
+/// A row of the sidebar list: what it shows, by position in the Library. `sessions` is part of
+/// it because a host with several Sessions is taller (one nested row each).
+#[derive(Clone, PartialEq)]
+enum SidebarRow {
+    Shell { index: usize, sessions: usize },
+    ProjectsHeader,
+    NoProjects,
+    Project { index: usize },
+    FirstHost { project: usize },
+    Item { project: usize, index: usize, sessions: usize },
+}
+
 /// A row in the sidebar.
 #[derive(Clone)]
 enum SidebarItem {
@@ -103,7 +115,17 @@ struct SessionEntry {
     /// "web01" or "web01 (2)" when the same Host is open twice.
     label: SharedString,
     view: Entity<TerminalView>,
+    /// The terminal's status, copied here when it changes. The sidebar reads this rather than
+    /// the terminal: reading a terminal while rendering makes gpui redraw the whole window on
+    /// every bit of output it gets, even when it isn't on screen.
+    status: Status,
     _subscription: Subscription,
+}
+
+impl SessionEntry {
+    fn is_live(&self) -> bool {
+        !matches!(self.status, Status::Disconnected(_))
+    }
 }
 
 enum Overlay {
@@ -177,6 +199,9 @@ pub struct Workspace {
     highlight_skipped: Vec<(String, String)>,
     page: Page,
     highlights_expanded: Option<String>,
+    /// The sidebar list (virtual: only rows in view are built) and the rows it was built for.
+    sidebar_list: ListState,
+    sidebar_rows: Vec<SidebarRow>,
     /// The highlight set whose delete button was clicked once and now asks for a second click.
     confirm_delete_set: Option<(String, Instant)>,
     blur_slider: Option<Entity<SliderState>>,
@@ -231,6 +256,8 @@ impl Workspace {
             page: Page::Sessions,
             highlights_expanded: None,
             confirm_delete_set: None,
+            sidebar_list: ListState::new(0, ListAlignment::Top, px(240.)),
+            sidebar_rows: vec![],
             blur_slider: None,
             font_slider: None,
             font_input: None,
@@ -598,10 +625,6 @@ impl Workspace {
         self.sessions.iter().filter(move |s| s.item == key)
     }
 
-    fn is_live(&self, entry: &SessionEntry, cx: &App) -> bool {
-        !matches!(entry.view.read(cx).status, Status::Disconnected(_))
-    }
-
     /// Clicking a sidebar item: show its Session (reconnecting it in place if it dropped,
     /// so the earlier output stays above), or connect if it has none. `another` opens an
     /// additional Session for the same item.
@@ -616,7 +639,7 @@ impl Workspace {
                 .or_else(|| self.sessions_of(&key).next().map(|s| s.id));
             if let Some(id) = existing {
                 self.activate(id, window, cx);
-                let dropped = self.sessions.iter().find(|s| s.id == id).is_some_and(|s| !self.is_live(s, cx));
+                let dropped = self.sessions.iter().find(|s| s.id == id).is_some_and(|s| !s.is_live());
                 if dropped {
                     self.reconnect(id, window, cx);
                 }
@@ -656,8 +679,14 @@ impl Workspace {
         });
         let id = self.next_id;
         self.next_id += 1;
-        let sub = cx.subscribe_in(&view, window, move |this, _, event: &TerminalEvent, window, cx| match event {
-            TerminalEvent::Changed => cx.notify(),
+        let sub = cx.subscribe_in(&view, window, move |this, view, event: &TerminalEvent, window, cx| match event {
+            TerminalEvent::Changed => {
+                let status = view.read(cx).status.clone();
+                if let Some(entry) = this.sessions.iter_mut().find(|s| s.id == id) {
+                    entry.status = status;
+                }
+                cx.notify();
+            }
             TerminalEvent::SavePassword { password, as_project } => {
                 if this.vault.is_some() {
                     this.save_password(id, password.clone(), *as_project, cx);
@@ -671,7 +700,16 @@ impl Workspace {
         if let Some(project_id) = &project_id {
             self.collapsed.remove(project_id);
         }
-        self.sessions.push(SessionEntry { id, item, project_id, kind, label, view: view.clone(), _subscription: sub });
+        self.sessions.push(SessionEntry {
+            id,
+            item,
+            project_id,
+            kind,
+            label,
+            view: view.clone(),
+            status: Status::Connecting,
+            _subscription: sub,
+        });
         self.activate(id, window, cx);
         view
     }
@@ -752,8 +790,7 @@ impl Workspace {
             if let Some(sink) = sink {
                 v.attach(sink);
             }
-            v.status = Status::Connecting;
-            cx.notify();
+            v.set_status(Status::Connecting, cx);
         });
     }
 
@@ -804,11 +841,10 @@ impl Workspace {
     /// click reconnects). × on a Session that is already disconnected discards it.
     fn close_session(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.sessions.iter().position(|s| s.id == id) else { return };
-        if self.is_live(&self.sessions[index], cx) {
+        if self.sessions[index].is_live() {
             self.sessions[index].view.update(cx, |v, cx| {
                 v.close();
-                v.status = Status::Disconnected("Session closed.".into());
-                cx.notify();
+                v.set_status(Status::Disconnected("Session closed.".into()), cx);
             });
         } else {
             let entry = self.sessions.remove(index);
@@ -1361,14 +1397,56 @@ impl Workspace {
         }
     }
 
-    fn render_sidebar(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = div().id("projects").flex().flex_col().gap(px(2.)).px(px(8.)).flex_1().overflow_y_scroll();
-        // Standalone Local Shells: no header, at the top.
-        for item in self.library.standalone_shells().into_iter().map(|shell| SidebarItem::Shell { project: None, shell }) {
-            list = list.children(self.render_item(&item, p.brand, 8., p, cx));
+    /// The sidebar's rows, in order. Kept small (indices, counts) so working it out on every
+    /// frame is cheap; only the rows in view are built into elements.
+    fn sidebar_rows(&self) -> Vec<SidebarRow> {
+        let mut counts: HashMap<&ItemKey, usize> = HashMap::new();
+        for s in &self.sessions {
+            *counts.entry(&s.item).or_default() += 1;
         }
-        list = list.child(
-            div()
+        let mut rows = vec![];
+        for (index, shell) in self.library.standalone_shells().iter().enumerate() {
+            let key = ItemKey::Shell { project: None, name: shell.name.clone() };
+            rows.push(SidebarRow::Shell { index, sessions: counts.get(&key).copied().unwrap_or(0) });
+        }
+        rows.push(SidebarRow::ProjectsHeader);
+        if self.library.projects.is_empty() {
+            rows.push(SidebarRow::NoProjects);
+        }
+        for (pi, project) in self.library.projects.iter().enumerate() {
+            rows.push(SidebarRow::Project { index: pi });
+            if self.collapsed.contains(&project.id) {
+                continue;
+            }
+            let hosts = self.library.hosts_of(project).map(|h| ItemKey::Host { project: project.id.clone(), host: h.id.clone() });
+            let shells = project.shells.iter().map(|sh| ItemKey::Shell { project: Some(project.id.clone()), name: sh.name.clone() });
+            let keys: Vec<ItemKey> = hosts.chain(shells).collect();
+            if keys.is_empty() {
+                rows.push(SidebarRow::FirstHost { project: pi });
+            }
+            for (index, key) in keys.iter().enumerate() {
+                rows.push(SidebarRow::Item { project: pi, index, sessions: counts.get(key).copied().unwrap_or(0) });
+            }
+        }
+        rows
+    }
+
+    /// One row of the sidebar list, built only when it's in view.
+    fn render_sidebar_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let p = cx.global::<Appearance>().app;
+        let Some(row) = self.sidebar_rows.get(ix).cloned() else { return div().into_any_element() };
+        let element = match row {
+            SidebarRow::Shell { index, .. } => match self.library.standalone_shells().get(index).cloned() {
+                Some(shell) => div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .children(self.render_item(&SidebarItem::Shell { project: None, shell }, p.brand, 8., p, cx))
+                    .into_any_element(),
+                None => div().into_any_element(),
+            },
+            SidebarRow::ProjectsHeader => {
+        div()
                 .px(px(8.))
                 .pt(px(12.))
                 .pb(px(2.))
@@ -1380,27 +1458,66 @@ impl Workspace {
                     icon_button("new-project", "folder-plus", p)
                         .size(px(24.))
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_new_project(window, cx))),
-                ),
-        );
-        if self.library.projects.is_empty() {
-            list = list.child(
-                div()
+                )
+            .into_any_element()
+            }
+            SidebarRow::NoProjects => {
+            div()
                     .px(px(8.))
                     .py(px(6.))
                     .text_size(px(12.5))
                     .line_height(px(18.))
                     .text_color(p.text_faint)
-                    .child("Group your servers into projects, each with its own colour."),
-            );
-        }
-        for project in &self.library.projects {
+                    .child("Group your servers into projects, each with its own colour.")
+                .into_any_element()
+            }
+            SidebarRow::Project { index } => self.render_project_row(index, p, cx),
+            SidebarRow::FirstHost { project } => {
+                let Some(project) = self.library.projects.get(project) else { return div().into_any_element() };
+                let pid_add = project.id.clone();
+                div()
+                        .id(SharedString::from(format!("first-host-{}", project.id)))
+                        .h(px(32.))
+                        .pl(px(20.))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .rounded(px(8.))
+                        .cursor_pointer()
+                        .text_size(px(12.5))
+                        .text_color(p.text_faint)
+                        .hover(|s| s.bg(p.hover).text_color(p.text_muted))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_new_host(pid_add.clone(), window, cx)))
+                        .child(icon_el("plus", 14., p.text_faint))
+                        .child("Add a host")
+                    .into_any_element()
+            }
+            SidebarRow::Item { project, index, .. } => {
+                let Some(project) = self.library.projects.get(project).cloned() else { return div().into_any_element() };
+                let color = project_color(&project.color);
+                match self.project_items(&project).get(index) {
+                    Some(item) => div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .children(self.render_item(item, color, 20., p, cx))
+                        .into_any_element(),
+                    None => div().into_any_element(),
+                }
+            }
+        };
+        div().px(px(8.)).pb(px(2.)).child(element).into_any_element()
+    }
+
+    fn render_project_row(&self, index: usize, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let Some(project) = self.library.projects.get(index) else { return div().into_any_element() };
             let color = project_color(&project.color);
             let collapsed = self.collapsed.contains(&project.id);
             let items = self.project_items(project);
             let live = items
                 .iter()
                 .flat_map(|item| self.sessions_of(&item.key()).collect::<Vec<_>>())
-                .filter(|s| self.is_live(s, cx))
+                .filter(|s| s.is_live())
                 .count();
             let pid = project.id.clone();
             let pid_host = project.id.clone();
@@ -1420,8 +1537,7 @@ impl Workspace {
                     .separator()
                     .item(menu_item("Delete project…", "trash", &ws, move |this, _, cx| this.confirm_delete_project(d.clone(), cx)))
             };
-            list = list.child(
-                div()
+            div()
                     .id(SharedString::from(format!("project-{}", project.id)))
                     .group("project-row")
                     .text_size(px(13.))
@@ -1475,35 +1591,21 @@ impl Workspace {
                             ),
                     )
                     .child(icon_el(if collapsed { "chevron-right" } else { "chevron-down" }, 14., p.text_faint))
-                    .context_menu(project_menu),
-            );
-            if collapsed {
-                continue;
-            }
-            if items.is_empty() {
-                let pid_add = project.id.clone();
-                list = list.child(
-                    div()
-                        .id(SharedString::from(format!("first-host-{}", project.id)))
-                        .h(px(32.))
-                        .pl(px(20.))
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .rounded(px(8.))
-                        .cursor_pointer()
-                        .text_size(px(12.5))
-                        .text_color(p.text_faint)
-                        .hover(|s| s.bg(p.hover).text_color(p.text_muted))
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_new_host(pid_add.clone(), window, cx)))
-                        .child(icon_el("plus", 14., p.text_faint))
-                        .child("Add a host"),
-                );
-            }
-            for item in &items {
-                list = list.children(self.render_item(item, color, 20., p, cx));
-            }
+                    .context_menu(project_menu)
+                .into_any_element()
+    }
+
+    fn render_sidebar(&mut self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        // Only the rows in view are built (hundreds of hosts would otherwise cost milliseconds
+        // on every frame). Row heights are measured once and kept until the rows change.
+        let rows = self.sidebar_rows();
+        if rows != self.sidebar_rows {
+            self.sidebar_list.reset(rows.len());
+            self.sidebar_rows = rows;
         }
+        let list = list(self.sidebar_list.clone(), cx.processor(|this, ix, _window, cx| this.render_sidebar_row(ix, cx)))
+            .flex_1()
+            .min_h_0();
 
         let footer_row = |id: &'static str, icon: &str, label: String| {
             div()
@@ -1598,7 +1700,7 @@ impl Workspace {
                    nested: bool,
                    item: SidebarItem,
                    cx: &mut Context<Self>| {
-            let status = session.map(|s| s.view.read(cx).status.clone());
+            let status = session.map(|s| s.status.clone());
             let active = session.is_some_and(|s| Some(s.id) == self.active);
             let live = matches!(status, Some(Status::Connected | Status::Connecting));
             let session_id = session.map(|s| s.id);
@@ -1683,7 +1785,7 @@ impl Workspace {
                     // Nested rows are specific Sessions.
                     Some(id) if nested => {
                         this.activate(id, window, cx);
-                        let dropped = this.sessions.iter().find(|s| s.id == id).is_some_and(|s| !this.is_live(s, cx));
+                        let dropped = this.sessions.iter().find(|s| s.id == id).is_some_and(|s| !s.is_live());
                         if dropped {
                             this.reconnect(id, window, cx);
                         }
@@ -1766,7 +1868,6 @@ impl Workspace {
     /// bar, above the terminal.
     fn render_session_strip(&self, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = self.active_entry()?;
-        let view = entry.view.read(cx);
         // Where you are typing: state, the session's name, then user@address and port. The
         // name is repeated from the sidebar, which may be scrolled away from the active host.
         let name = entry.label.clone();
@@ -1782,7 +1883,7 @@ impl Workspace {
                 .unwrap_or_default(),
             SessionKind::Local { shell } => format!("Local · {}", shell.program),
         };
-        let (status_text, status_color) = match &view.status {
+        let (status_text, status_color) = match &entry.status {
             Status::Connecting => ("Connecting", p.warning),
             Status::Connected => ("Connected", p.success),
             Status::Disconnected(_) => ("Disconnected", p.text_faint),
@@ -2629,6 +2730,7 @@ fn kbd(keys: &str, p: AppPalette) -> impl IntoElement {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf::count("workspace render (frame)");
         let p = cx.global::<Appearance>().app;
         let root = div()
             .id("workspace")
@@ -2702,7 +2804,7 @@ impl Render for Workspace {
         let title_bar = self.render_title_bar(false, p, window, cx);
         let page = match self.page {
             Page::Settings(section) => self.render_settings(section, p, cx),
-            Page::Sessions => div()
+            Page::Sessions => crate::perf::time("sidebar + main", || div()
                 .flex_1()
                 .min_h_0()
                 .w_full()
@@ -2714,7 +2816,7 @@ impl Render for Workspace {
                 .bg(p.canvas)
                 .child(self.render_sidebar(p, cx))
                 .child(self.render_main(p, cx))
-                .into_any_element(),
+                .into_any_element()),
         };
         root.bg(p.canvas)
             .child(title_bar)

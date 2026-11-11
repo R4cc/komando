@@ -6,6 +6,18 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-11-11
+
+### Fixed
+
+- Sessions you aren't looking at no longer make the window redraw. Any output in a background
+  session redrew the whole window, sidebar included, so with many busy hosts Komando kept the
+  CPU and GPU busy even when the visible terminal was quiet. In a test with 24 hosts each
+  streaming 400 log lines a second and the visible session idle, CPU use dropped from more
+  than three cores to under a tenth of one.
+- The sidebar builds only the rows in view, so hundreds of hosts no longer slow every redraw.
+  It took about 5 ms per frame with 300 hosts and now takes about 0.3 ms.
+
 ## [0.1.10] - 2026-11-11
 
 ### Added

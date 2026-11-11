@@ -57,6 +57,19 @@ screenshots. You need the X11 libraries (`libxcb`, `libxkbcommon`, `libxkbcommon
 `RUST_FONTCONFIG_DLOPEN=on` if fontconfig has no pkg-config file. `examples/demo.rs` seeds a
 throwaway data folder and opens a few sessions; it's what produced the README screenshot.
 
+### Profiling
+
+Set `KOMANDO_PERF=1` and Komando prints, every 5 seconds, how often the hot paths ran and how
+long they took (window renders, terminal grid, minimap, command rail, output wake-ups). Off by
+default; each probe is then a single atomic load.
+
+For load tests the demo has a stress mode: `KOMANDO_DEMO_STRESS=30,10,24` creates 30 projects of
+10 hosts and opens 24 sessions, all against the demo's test SSH server. Point the server's
+`ForceCommand` at a script that streams logs (a `while` loop of `printf`s will do) to make every
+session busy. Add `,idle` (`30,10,24,idle`) to show a quiet local shell while the rest stream in
+the background; nothing should be redrawn then. Measure a `--release` build: debug builds are
+several times slower in different places.
+
 ## Design notes
 
 - [GLOSSARY.md](../GLOSSARY.md): the terms used in code and docs (Project, Host, Session,

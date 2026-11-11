@@ -6,6 +6,7 @@ pub mod highlight;
 pub mod keys;
 pub mod marks;
 pub mod model;
+pub mod perf;
 pub mod platform;
 pub mod session;
 pub mod theme;
@@ -67,6 +68,7 @@ pub fn run(options: Options) {
     gpui_platform::application()
         .with_assets(gpui_kit_assets::AllAssets)
         .run(move |cx: &mut App| {
+            perf::init();
             init(cx);
             let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
             cx.open_window(
