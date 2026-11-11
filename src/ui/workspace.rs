@@ -590,10 +590,14 @@ impl Workspace {
         let scrollback = self.settings.scrollback_lines;
         let confirm_paste = self.settings.confirm_multiline_paste;
         let putty = self.settings.putty_clipboard;
+        let command_rail = self.settings.command_rail;
+        let minimap = self.settings.minimap;
         let view = cx.new(|cx| {
             let mut view = TerminalView::new(label.clone(), scrollback, window, cx);
             view.confirm_multiline_paste = confirm_paste;
             view.putty_clipboard = putty;
+            view.command_rail = command_rail;
+            view.minimap = minimap;
             view
         });
         let id = self.next_id;
@@ -1239,13 +1243,6 @@ impl Workspace {
                 .child(icon_el(icon, 15., p.text_faint))
                 .child(label)
         };
-        let vault_row = if self.vault.is_some() {
-            footer_row("vault", "lock-open", "Vault unlocked".into())
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.lock_vault(cx)))
-        } else {
-            footer_row("vault", "lock", "Vault locked · Unlock".into())
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.show_unlock(false, window, cx)))
-        };
 
         let nav = island(p)
             .flex_1()
@@ -1303,8 +1300,6 @@ impl Workspace {
                     .p(px(8.))
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
-                    .child(vault_row)
                     .child(
                         footer_row("settings", "settings", "Settings".into())
                             .child(div().flex_1())

@@ -36,6 +36,10 @@ A Session of a Local Shell, running on the Windows machine itself.
 All output a Session has received and still holds, from its first line to its current screen.
 _Avoid_: History, buffer, log
 
+**Command Mark**:
+A line the user entered in a Session (prompt and command), remembered so the command rail can list it and jump back to it. It lasts as long as the line is in the Scrollback.
+_Avoid_: Bookmark, history entry
+
 ## Secrets
 
 **Vault**:

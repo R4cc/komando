@@ -2,8 +2,9 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
 
-use alacritty_terminal::grid::Scroll;
+use alacritty_terminal::grid::{Dimensions as _, Scroll};
 use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::TermMode;
@@ -22,6 +23,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 
 use crate::highlight::{self, ActiveHighlights};
 use crate::keys::{self, Mods};
+use crate::marks::Marks;
 use crate::session::{
     EventProxy, GridSize, InputSink, Prompt, SessionEvent, SharedTerm, Status, new_term, scrollback_text,
 };
@@ -33,6 +35,10 @@ actions!(terminal, [Copy, Paste, ScrollPageUp, ScrollPageDown]);
 pub const CONTEXT: &str = "Terminal";
 const PADDING_X: f32 = 12.0;
 const PADDING_Y: f32 = 8.0;
+/// Height each command takes on the rail: its line plus the gap below.
+const RAIL_STEP: f32 = 8.0;
+/// How long a row stays lit after jumping to it.
+const FLASH: Duration = Duration::from_millis(1400);
 
 /// What a terminal tells the workspace about.
 pub enum TerminalEvent {
@@ -67,6 +73,15 @@ pub struct TerminalView {
     pub confirm_multiline_paste: bool,
     /// PuTTY-style: selecting copies, right-click pastes.
     pub putty_clipboard: bool,
+    /// Show the command rail and record entered lines for it.
+    pub command_rail: bool,
+    /// Show the minimap on the right edge.
+    pub minimap: bool,
+    minimap_state: Rc<crate::ui::minimap::MinimapState>,
+    marks: Marks,
+    hovered_mark: Option<u64>,
+    /// The mark jumped to last, lit until the timer with the same number runs out.
+    flash: Option<(u64, u64)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -101,6 +116,12 @@ impl TerminalView {
             has_project: true,
             confirm_multiline_paste: true,
             putty_clipboard: false,
+            command_rail: true,
+            minimap: true,
+            minimap_state: Rc::new(Default::default()),
+            marks: Marks::default(),
+            hovered_mark: None,
+            flash: None,
             _subscriptions: vec![],
         }
     }
@@ -153,6 +174,9 @@ impl TerminalView {
         match event {
             SessionEvent::Wakeup => {
                 self.proxy.clear_dirty();
+                if self.marks.is_pending() {
+                    self.marks.output(&mut *self.term.lock());
+                }
                 cx.notify();
             }
             SessionEvent::Title(title) => {
@@ -261,13 +285,18 @@ impl TerminalView {
             }
             return;
         }
-        let app_cursor = self.term.lock().mode().contains(TermMode::APP_CURSOR);
+        let mode = *self.term.lock().mode();
+        let app_cursor = mode.contains(TermMode::APP_CURSOR);
         let mods = Mods { ctrl: m.control, alt: m.alt, shift: m.shift };
         if let Some(bytes) = keys::to_bytes(&ks.key, ks.key_char.as_deref(), mods, app_cursor) {
             self.scroll_to_bottom();
             {
                 let mut term = self.term.lock();
                 term.selection = None;
+                // Full-screen programs (vim, htop) take Enter for themselves: nothing to mark.
+                if ks.key == "enter" && !m.control && !m.alt && self.command_rail && !mode.contains(TermMode::ALT_SCREEN) {
+                    self.marks.entered(&mut term);
+                }
             }
             self.write(bytes);
             cx.stop_propagation();
@@ -380,6 +409,182 @@ impl TerminalView {
             }
             cx.notify();
         }
+    }
+
+    /// Scroll so the entered line sits near the top of the view, and light it up briefly.
+    fn jump_to_mark(&mut self, id: u64, cx: &mut Context<Self>) {
+        {
+            let mut term = self.term.lock();
+            if term.mode().contains(TermMode::ALT_SCREEN) {
+                return;
+            }
+            let Some(line) = self.marks.rows(&term).into_iter().find_map(|(m, line)| (m == id).then_some(line)) else {
+                return;
+            };
+            let history = term.grid().history_size() as i32;
+            let target = (2 - line.0).clamp(0, history);
+            let current = term.grid().display_offset() as i32;
+            term.scroll_display(Scroll::Delta(target - current));
+        }
+        let epoch = self.flash.map_or(0, |(_, e)| e) + 1;
+        self.flash = Some((id, epoch));
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FLASH).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.flash.is_some_and(|(_, e)| e == epoch) {
+                    this.flash = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The command rail: one short line per entered command along the left edge, inside the
+    /// terminal's padding so it takes no columns. Returns the view row to light up, if any.
+    fn render_rail(&mut self, cx: &mut Context<Self>) -> (Option<gpui::AnyElement>, Option<i32>) {
+        if !self.command_rail || self.marks.list().is_empty() {
+            return (None, None);
+        }
+        let (rows, offset, screen_rows) = {
+            let term = self.term.lock();
+            if term.mode().contains(TermMode::ALT_SCREEN) {
+                return (None, None);
+            }
+            let grid = term.grid();
+            (self.marks.rows(&term), grid.display_offset() as i32, grid.screen_lines() as i32)
+        };
+        if rows.is_empty() {
+            return (None, None);
+        }
+        let flash_row = self
+            .flash
+            .and_then(|(id, _)| rows.iter().find(|(m, _)| *m == id))
+            .map(|(_, line)| line.0 + offset)
+            .filter(|row| (0..screen_rows).contains(row));
+
+        // The command being read: the newest one at the bottom, otherwise the last one that
+        // starts in the top part of the view.
+        let top = -offset;
+        let current = if offset == 0 {
+            rows.len() - 1
+        } else {
+            rows.iter().rposition(|(_, line)| line.0 <= top + (screen_rows / 4).max(2)).unwrap_or(0)
+        };
+        // Show as many as fit, keeping the current one in the window.
+        let (_, cell_h) = self.cell.get();
+        let fit = (((screen_rows as f32 * cell_h) * 0.85 / RAIL_STEP) as usize).max(3);
+        let start = if rows.len() <= fit { 0 } else { current.saturating_sub(fit / 2).min(rows.len() - fit) };
+        let end = (start + fit).min(rows.len());
+
+        let appearance = cx.global::<Appearance>();
+        let p = appearance.app;
+        let mono = appearance.font_family.clone();
+        let fg = rgb_to_hsla(appearance.term.foreground);
+        let with_alpha = |a: f32| Hsla { a, ..fg };
+        let hovered = self.hovered_mark;
+
+        let ticks = rows[start..end].iter().enumerate().map(|(i, (id, _))| {
+            let id = *id;
+            let is_current = start + i == current;
+            let is_hovered = hovered == Some(id);
+            let card = is_hovered.then(|| self.marks.get(id)).flatten().map(|mark| {
+                let (prompt, command) = mark.parts();
+                let meta = if prompt.is_empty() {
+                    mark.at.format("%H:%M").to_string()
+                } else {
+                    format!("{prompt} · {}", mark.at.format("%H:%M"))
+                };
+                div()
+                    .absolute()
+                    .left(px(PADDING_X + 4.))
+                    .top(px(RAIL_STEP / 2. - 26.))
+                    .min_w(px(200.))
+                    .max_w(px(520.))
+                    .px(px(14.))
+                    .py(px(10.))
+                    .rounded(px(12.))
+                    .bg(p.surface)
+                    .border_1()
+                    .border_color(p.border)
+                    .shadow(crate::ui::widgets::elevation(p.dark))
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .font_family(mono.clone())
+                            .text_size(px(13.))
+                            .text_color(p.text)
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(command.to_string()),
+                    )
+                    .child(
+                        div()
+                            .font_family(UI_FONT)
+                            .text_size(px(12.))
+                            .text_color(p.text_muted)
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(meta),
+                    )
+            });
+            div()
+                .id(SharedString::from(format!("mark-{id}")))
+                .relative()
+                .w(px(PADDING_X))
+                .h(px(RAIL_STEP))
+                .flex()
+                .items_center()
+                .cursor_pointer()
+                .on_hover(cx.listener(move |this, over: &bool, _, cx| {
+                    if *over {
+                        this.hovered_mark = Some(id);
+                    } else if this.hovered_mark == Some(id) {
+                        this.hovered_mark = None;
+                    }
+                    cx.notify();
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        window.focus(&this.focus, cx);
+                        this.jump_to_mark(id, cx);
+                    }),
+                )
+                .child(
+                    div()
+                        .ml(px(2.))
+                        .h(px(2.))
+                        .rounded(px(1.))
+                        .w(px(if is_current || is_hovered { 9. } else { 6. }))
+                        .bg(with_alpha(if is_hovered {
+                            1.0
+                        } else if is_current {
+                            0.8
+                        } else {
+                            0.3
+                        })),
+                )
+                .children(card)
+        });
+        let rail = div()
+            .absolute()
+            .left_0()
+            .top_0()
+            .bottom_0()
+            .w(px(PADDING_X))
+            .flex()
+            .flex_col()
+            .justify_center()
+            .children(ticks)
+            .into_any_element();
+        (Some(rail), flash_row)
     }
 
     fn render_prompt(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
@@ -597,6 +802,18 @@ impl Render for TerminalView {
         let origin_cell = self.origin.clone();
         let cell_cell = self.cell.clone();
         let highlighter = cx.try_global::<ActiveHighlights>().map(|h| h.0.clone()).unwrap_or_default();
+        let (rail, flash_row) = self.render_rail(cx);
+        let minimap = self.minimap.then(|| {
+            crate::ui::minimap::minimap(
+                self.term.clone(),
+                self.minimap_state.clone(),
+                palette.clone(),
+                cx.global::<Appearance>().app,
+                highlighter.clone(),
+                cx,
+            )
+        });
+        let flash_color = Hsla { a: palette.selection.a * 0.7, ..palette.selection };
 
         let surface = canvas(
             move |bounds, window, _cx| {
@@ -637,6 +854,10 @@ impl Render for TerminalView {
                 // Highlight rules colour plain output; full-screen programs (vim, htop) are left alone.
                 let highlight = !content.mode.contains(TermMode::ALT_SCREEN) && highlighter.rule_count() > 0;
                 let mut frame = Frame { rects: vec![], lines: vec![], cursor_outline: None, line_height: line_h };
+                if let Some(row) = flash_row {
+                    let y = bounds.origin.y + line_h * row as f32;
+                    frame.rects.push((Bounds::new(point(bounds.origin.x, y), size(bounds.size.width, line_h)), flash_color));
+                }
                 let mut cells: Vec<RowCell> = Vec::with_capacity(cols as usize);
                 let mut current_row: i32 = i32::MIN;
 
@@ -776,7 +997,14 @@ impl Render for TerminalView {
             .rounded(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
             .bg(term_bg)
             .cursor_text()
-            .child(div().size_full().px(px(PADDING_X)).py(px(PADDING_Y)).child(surface))
+            .child(
+                div()
+                    .size_full()
+                    .flex()
+                    .child(div().flex_1().min_w_0().h_full().px(px(PADDING_X)).py(px(PADDING_Y)).child(surface))
+                    .children(minimap),
+            )
+            .children(rail)
             .children(self.render_disconnected(cx))
             .children(self.render_prompt(cx))
     }

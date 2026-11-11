@@ -4,6 +4,7 @@
 pub mod export;
 pub mod highlight;
 pub mod keys;
+pub mod marks;
 pub mod model;
 pub mod platform;
 pub mod session;

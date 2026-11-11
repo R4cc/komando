@@ -6,6 +6,23 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-11
+
+### Added
+
+- Minimap: the whole output in miniature on the terminal's right edge, like in VS Code, coloured
+  like the text so errors and warnings stand out. A box marks what's on screen; click or drag to
+  scroll there. Turn it off in **Settings → Terminal**.
+- Command rail: a short line at the left edge of the terminal for each command you entered.
+  Hover one to see the command and when you ran it; click it to scroll back to that line,
+  which lights up briefly. It sits in the terminal's margin, so the terminal keeps all its
+  columns. Turn it off in **Settings → Terminal**.
+
+### Removed
+
+- The vault status row at the bottom of the sidebar; only Settings is there now. Lock and
+  unlock the vault in Settings, or lock it with Ctrl+Shift+L.
+
 ## [0.1.7] - 2026-11-11
 
 ### Changed
@@ -96,7 +113,9 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/R4cc/komando/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/R4cc/komando/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/R4cc/komando/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/R4cc/komando/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/R4cc/komando/compare/v0.1.3...v0.1.4

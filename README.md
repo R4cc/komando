@@ -41,6 +41,8 @@
 
 - **Syntax highlighting for terminal output.** ERROR in red, WARN in orange, `Active: active` in green. 69 ready-made rules for Linux and service logs are included.
 - **Your own rules.** Import and export rule sets as JSON, compatible with Tabby's highlight format. See [Highlights](docs/highlights.md).
+- **Minimap.** The whole output in miniature on the right edge, like in VS Code, with errors and warnings in colour. Click or drag to jump.
+- **Command rail.** A small mark at the left edge for every command you ran. Hover to see it, click to scroll back to it.
 - **Copy the whole output.** Copy a session's full scrollback as text, or as a `.txt` file you can paste straight into Explorer, Outlook or Teams.
 
 ### Looks good

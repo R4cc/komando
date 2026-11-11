@@ -132,10 +132,15 @@ impl Workspace {
     /// Push terminal behaviour settings into every open session.
     fn apply_terminal_settings(&mut self, cx: &mut Context<Self>) {
         let (paste, putty) = (self.settings.confirm_multiline_paste, self.settings.putty_clipboard);
+        let rail = self.settings.command_rail;
+        let minimap = self.settings.minimap;
         for entry in &self.sessions {
-            entry.view.update(cx, |v, _| {
+            entry.view.update(cx, |v, cx| {
                 v.confirm_multiline_paste = paste;
                 v.putty_clipboard = putty;
+                v.command_rail = rail;
+                v.minimap = minimap;
+                cx.notify();
             });
         }
         let _ = self.settings.save(&self.data_dir);
@@ -320,6 +325,8 @@ impl Workspace {
         let scrollback = self.settings.scrollback_lines;
         let paste = self.settings.confirm_multiline_paste;
         let putty = self.settings.putty_clipboard;
+        let rail = self.settings.command_rail;
+        let minimap = self.settings.minimap;
         let font_slider = self.font_slider.clone().map(|s| Slider::new(&s).into_any_element());
         let font_input = self.font_input.clone().map(|i| Input::new(&i).into_any_element());
         let scrollback_choice = segmented(
@@ -379,6 +386,28 @@ impl Workspace {
                     switch("putty".into(), putty, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.putty_clipboard = !putty;
+                            this.apply_terminal_settings(cx);
+                        }))
+                        .into_any_element(),
+                ),
+                setting_row(
+                    p,
+                    "Command rail",
+                    "A short line at the left edge for each command you entered. Hover one to see the command, click to jump back to it.",
+                    switch("command-rail".into(), rail, p)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.settings.command_rail = !rail;
+                            this.apply_terminal_settings(cx);
+                        }))
+                        .into_any_element(),
+                ),
+                setting_row(
+                    p,
+                    "Minimap",
+                    "The whole output in miniature on the right edge, coloured like the text. Click or drag it to scroll.",
+                    switch("minimap".into(), minimap, p)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.settings.minimap = !minimap;
                             this.apply_terminal_settings(cx);
                         }))
                         .into_any_element(),

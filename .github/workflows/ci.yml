@@ -1,8 +1,18 @@
 name: CI
 
+# Commits that only touch docs or README screenshots can't break the build, so they skip CI.
+# None of these files are compiled into the app.
 on:
   push:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "assets/screenshot-*.png"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "assets/screenshot-*.png"
 
 # A new push supersedes the run for the previous one.
 concurrency:
@@ -17,9 +27,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # One profile for both steps: the tests reuse the release build's dependencies
-      # instead of compiling the whole tree a second time.
+        with:
+          # Part of the cache key. Change it when the cached profile changes: an exact key hit
+          # never saves a new cache, so a stale one would be rebuilt from scratch every run.
+          prefix-key: v1-dev
+      # The dev profile (see Cargo.toml) skips the release profile's thin LTO, which re-optimises
+      # all of gpui on every link and made CI builds take minutes. The Release workflow still
+      # builds the shipping profile. Build and test share the same dependencies.
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --locked
       - name: Test
-        run: cargo test --release --lib --locked
+        run: cargo test --lib --locked

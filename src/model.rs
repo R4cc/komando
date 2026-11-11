@@ -227,6 +227,10 @@ pub struct Settings {
     pub putty_clipboard: bool,
     /// Ask before pasting more than one line.
     pub confirm_multiline_paste: bool,
+    /// Show the command rail: a mark at the terminal's left edge for each line entered.
+    pub command_rail: bool,
+    /// Show the minimap: the Scrollback in miniature on the terminal's right edge.
+    pub minimap: bool,
     /// Highlight sets (by id) that are switched off.
     pub disabled_highlight_sets: Vec<String>,
     /// Windows 11 Mica: the blurred desktop shows through Komando's background.
@@ -246,6 +250,8 @@ impl Default for Settings {
             auto_lock_minutes: 30,
             putty_clipboard: false,
             confirm_multiline_paste: true,
+            command_rail: true,
+            minimap: true,
             disabled_highlight_sets: vec![],
             background_blur: true,
             background_blur_intensity: 60,
