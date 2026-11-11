@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use komando::model::{AppThemeSetting, Host, Library, Project, Settings, new_id};
-use komando::ui::workspace::Startup;
+use komando::ui::workspace::{SettingsSection, Startup};
 use komando::vault::{Credential, Secret, Vault};
 
 const MASTER: &str = "demo-master-password";
@@ -91,8 +91,9 @@ fn main() {
                 ("Local".into(), local_shell),
             ],
             active: Some(0),
-            show_highlights: env::var("KOMANDO_DEMO_HIGHLIGHTS").is_ok(),
-            show_appearance: env::var("KOMANDO_DEMO_APPEARANCE").is_ok(),
+            settings: env::var("KOMANDO_DEMO_SETTINGS").ok().and_then(|s| {
+                SettingsSection::ALL.into_iter().find(|section| format!("{section:?}").eq_ignore_ascii_case(&s))
+            }),
         },
     });
 }

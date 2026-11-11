@@ -26,10 +26,20 @@ use crate::ui::widgets::{
 };
 use crate::vault::{Credential, Secret, Vault};
 
+mod settings;
+pub use settings::SettingsSection;
+
 actions!(
     komando,
-    [QuickConnect, NewSession, CloseSession, NextSession, PrevSession, CopyOutputText, CopyOutputFile, LockVault]
+    [QuickConnect, NewSession, CloseSession, NextSession, PrevSession, CopyOutputText, CopyOutputFile, LockVault, OpenSettings]
 );
+
+/// What fills the window: the sessions, or the full-window Settings page.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Sessions,
+    Settings(SettingsSection),
+}
 
 const SIDEBAR_WIDTH: f32 = 264.;
 const HOST_ICONS: [&str; 10] =
@@ -55,8 +65,6 @@ enum Overlay {
     Picker { query: Entity<InputState>, project_id: Option<String> },
     NewHost { project_id: String, fields: Vec<Entity<InputState>>, icon: String, error: Option<String> },
     NewProject { name: Entity<InputState>, color: String, icon: String, error: Option<String> },
-    Highlights { expanded: Option<String> },
-    Appearance { intensity: Entity<SliderState> },
 }
 
 enum Pending {
@@ -72,10 +80,8 @@ pub struct Startup {
     /// (Project name, Host or local shell name) pairs to open, in order.
     pub open: Vec<(String, String)>,
     pub active: Option<usize>,
-    /// Open the Highlights panel (used for screenshots).
-    pub show_highlights: bool,
-    /// Open the Appearance panel (used for screenshots).
-    pub show_appearance: bool,
+    /// Open the Settings page at this section (used for screenshots).
+    pub settings: Option<SettingsSection>,
 }
 
 pub struct Workspace {
@@ -85,6 +91,11 @@ pub struct Workspace {
     highlights: Vec<HighlightSet>,
     /// Rules that could not be compiled, with the reason.
     highlight_skipped: Vec<(String, String)>,
+    page: Page,
+    highlights_expanded: Option<String>,
+    blur_slider: Option<Entity<SliderState>>,
+    font_slider: Option<Entity<SliderState>>,
+    font_input: Option<Entity<InputState>>,
     vault: Option<Vault>,
     /// Shown full-window at launch; as a dialog when a locked Vault is needed later.
     unlock: Option<UnlockState>,
@@ -136,6 +147,11 @@ impl Workspace {
             settings,
             highlights,
             highlight_skipped: vec![],
+            page: Page::Sessions,
+            highlights_expanded: None,
+            blur_slider: None,
+            font_slider: None,
+            font_input: None,
             vault: None,
             unlock: None,
             pending: None,
@@ -188,12 +204,9 @@ impl Workspace {
         {
             self.activate(id, window, cx);
         }
-        if startup.show_appearance {
-            self.open_appearance(window, cx);
-        }
-        if startup.show_highlights {
-            let first = self.highlights.first().map(|s| s.id.clone());
-            self.overlay = Some(Overlay::Highlights { expanded: first });
+        if let Some(section) = startup.settings {
+            self.highlights_expanded = self.highlights.first().map(|s| s.id.clone());
+            self.open_settings(section, window, cx);
         }
     }
 
@@ -255,46 +268,6 @@ impl Workspace {
 
     fn set_background_blur(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.background_blur = on;
-        let _ = self.settings.save(&self.data_dir);
-        self.apply_appearance(window, cx);
-    }
-
-    fn open_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let value = self.settings.background_blur_intensity as f32;
-        let intensity = cx.new(|_| SliderState::new().min(0.).max(100.).step(5.).default_value(value));
-        let sub = cx.subscribe_in(&intensity, window, |this, _, event: &SliderEvent, window, cx| match event {
-            // Live preview while dragging; written to disk on release.
-            SliderEvent::Change(value) => {
-                this.settings.background_blur_intensity = value.end().round().clamp(0., 100.) as u8;
-                this.apply_appearance(window, cx);
-            }
-            SliderEvent::Release(_) => {
-                let _ = this.settings.save(&this.data_dir);
-            }
-        });
-        self._subscriptions.push(sub);
-        self.overlay = Some(Overlay::Appearance { intensity });
-        cx.notify();
-    }
-
-    #[allow(dead_code)]
-    fn cycle_app_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings.app_theme = match self.settings.app_theme {
-            AppThemeSetting::System => AppThemeSetting::Light,
-            AppThemeSetting::Light => AppThemeSetting::Dark,
-            AppThemeSetting::Dark => AppThemeSetting::System,
-        };
-        let _ = self.settings.save(&self.data_dir);
-        self.apply_appearance(window, cx);
-    }
-
-    #[allow(dead_code)]
-    fn cycle_terminal_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings.terminal_theme = match self.settings.terminal_theme {
-            TerminalThemeSetting::Follow => TerminalThemeSetting::Light,
-            TerminalThemeSetting::Light => TerminalThemeSetting::Dark,
-            TerminalThemeSetting::Dark => TerminalThemeSetting::Follow,
-        };
         let _ = self.settings.save(&self.data_dir);
         self.apply_appearance(window, cx);
     }
@@ -517,9 +490,11 @@ impl Workspace {
         let label = self.label_for(base_label);
         let scrollback = self.settings.scrollback_lines;
         let confirm_paste = self.settings.confirm_multiline_paste;
+        let putty = self.settings.putty_clipboard;
         let view = cx.new(|cx| {
             let mut view = TerminalView::new(label.clone(), scrollback, window, cx);
             view.confirm_multiline_paste = confirm_paste;
+            view.putty_clipboard = putty;
             view
         });
         let id = self.next_id;
@@ -1162,11 +1137,6 @@ impl Workspace {
             );
         }
 
-        let app_theme = match self.settings.app_theme {
-            AppThemeSetting::System => ("monitor", "System"),
-            AppThemeSetting::Light => ("sun", "Light"),
-            AppThemeSetting::Dark => ("moon", "Dark"),
-        };
 
         let footer_row = |id: &'static str, icon: &str, label: String| {
             div()
@@ -1266,15 +1236,12 @@ impl Workspace {
                     .gap(px(2.))
                     .child(vault_row)
                     .child(
-                        footer_row("highlights", "highlighter", format!("Highlights · {} rules", self.active_rule_count()))
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.overlay = Some(Overlay::Highlights { expanded: None });
-                                cx.notify();
+                        footer_row("settings", "settings", "Settings".into())
+                            .child(div().flex_1())
+                            .child(kbd("Ctrl ,", p))
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.open_settings(SettingsSection::Appearance, window, cx)
                             })),
-                    )
-                    .child(
-                        footer_row("appearance", app_theme.0, format!("Appearance · {}", app_theme.1))
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_appearance(window, cx))),
                     ),
             )
             .into_any_element()
@@ -1532,8 +1499,6 @@ impl Workspace {
                     ],
                 )
             }
-            Overlay::Highlights { expanded } => self.render_highlights(expanded.clone(), p, cx),
-            Overlay::Appearance { intensity } => self.render_appearance(intensity.clone(), p, cx),
             Overlay::NewProject { name, color, icon, error } => {
                 let current = color.clone();
                 let selected_icon = icon.clone();
@@ -1613,292 +1578,6 @@ impl Workspace {
                 )
                 .into_any_element(),
         )
-    }
-}
-
-impl Workspace {
-    fn render_highlights(&self, expanded: Option<String>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let term = cx.global::<Appearance>().term.clone();
-        let term_bg = crate::theme::rgb_to_hsla(term.background);
-        let mut list = div().id("highlight-sets").flex().flex_col().gap(px(4.)).p(px(8.)).max_h(px(470.)).overflow_y_scroll();
-        if self.highlights.is_empty() {
-            list = list.child(
-                div().p(px(16.)).text_size(px(13.)).text_color(p.text_faint).child("No highlight sets. Import a .json file exported from Komando or Tabby."),
-            );
-        }
-        for set in &self.highlights {
-            let on = !self.settings.disabled_highlight_sets.contains(&set.id);
-            let open = expanded.as_deref() == Some(set.id.as_str());
-            let enabled_rules = set.keywords.iter().filter(|k| k.enabled).count();
-            let (id_toggle, id_export, id_delete, id_open) = (set.id.clone(), set.id.clone(), set.id.clone(), set.id.clone());
-            list = list.child(
-                div()
-                    .id(SharedString::from(format!("hl-set-{}", set.id)))
-                    .h(px(44.))
-                    .px(px(10.))
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .rounded(px(8.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(p.hover))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        if let Some(Overlay::Highlights { expanded }) = this.overlay.as_mut() {
-                            *expanded = if expanded.as_deref() == Some(id_open.as_str()) { None } else { Some(id_open.clone()) };
-                        }
-                        cx.notify();
-                    }))
-                    .child(icon_el(if open { "chevron-down" } else { "chevron-right" }, 14., p.text_faint))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).truncate().child(set.name.clone()))
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(p.text_faint)
-                                    .child(format!("{enabled_rules} of {} rules on", set.keywords.len())),
-                            ),
-                    )
-                    .child(
-                        icon_button(SharedString::from(format!("hl-export-{}", set.id)), "download", p)
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                cx.stop_propagation();
-                                this.export_highlight_set(&id_export, window, cx);
-                            })),
-                    )
-                    .child(
-                        icon_button(SharedString::from(format!("hl-delete-{}", set.id)), "trash", p)
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                                this.delete_highlight_set(&id_delete, cx);
-                            })),
-                    )
-                    .child(
-                        switch(SharedString::from(format!("hl-toggle-{}", set.id)), on, p).on_click(cx.listener(
-                            move |this, _: &ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                                this.toggle_highlight_set(&id_toggle, cx);
-                            },
-                        )),
-                    ),
-            );
-            if !open {
-                continue;
-            }
-            for (index, rule) in set.keywords.iter().enumerate() {
-                let set_id = set.id.clone();
-                let fg = rule
-                    .fg()
-                    .map(|c| highlight::readable_on(c, term.dark))
-                    .map(|c| crate::theme::hex(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32))
-                    .unwrap_or(p.text);
-                let bg = rule
-                    .bg()
-                    .map(|c| crate::theme::hex(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32))
-                    .unwrap_or(term_bg);
-                let mut flags = vec![];
-                if rule.is_regex() {
-                    flags.push("regex");
-                }
-                if rule.case_sensitive() {
-                    flags.push("Aa");
-                }
-                list = list.child(
-                    div()
-                        .id(SharedString::from(format!("hl-rule-{}-{index}", set.id)))
-                        .h(px(34.))
-                        .pl(px(34.))
-                        .pr(px(10.))
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .rounded(px(6.))
-                        .hover(|s| s.bg(p.hover))
-                        .when(!rule.enabled, |el| el.opacity(0.45))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(
-                                    div()
-                                        .px(px(8.))
-                                        .py(px(3.))
-                                        .rounded(px(5.))
-                                        .bg(bg)
-                                        .font_family("Cascadia Mono")
-                                        .text_size(px(12.))
-                                        .text_color(fg)
-                                        .when(rule.bold.unwrap_or(false), |el| el.font_weight(FontWeight::BOLD))
-                                        .truncate()
-                                        .child(rule.text.clone()),
-                                ),
-                        )
-                        .child(div().w(px(84.)).flex().justify_end().gap(px(6.)).children(flags.into_iter().map(|f| {
-                            div()
-                                .px(px(6.))
-                                .h(px(18.))
-                                .flex()
-                                .items_center()
-                                .rounded(px(4.))
-                                .border_1()
-                                .border_color(p.border)
-                                .text_size(px(10.5))
-                                .text_color(p.text_faint)
-                                .child(f)
-                        })))
-                        .child(
-                            switch(SharedString::from(format!("hl-rule-toggle-{}-{index}", set.id)), rule.enabled, p)
-                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                    this.toggle_highlight_rule(&set_id, index, cx);
-                                })),
-                        ),
-                );
-            }
-        }
-        let skipped = (!self.highlight_skipped.is_empty()).then(|| {
-            div()
-                .px(px(16.))
-                .py(px(10.))
-                .border_t_1()
-                .border_color(p.border)
-                .flex()
-                .flex_col()
-                .gap(px(4.))
-                .text_size(px(12.))
-                .text_color(p.warning)
-                .child(format!("{} rule(s) can't be used:", self.highlight_skipped.len()))
-                .children(self.highlight_skipped.iter().take(5).map(|(text, why)| {
-                    div().text_color(p.text_muted).truncate().child(format!("{text}: {why}"))
-                }))
-        });
-        div()
-            .w(px(600.))
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .p(px(16.))
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .border_b_1()
-                    .border_color(p.border)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Highlights"))
-                                        .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_faint).child(
-                                "Colours matching text in terminal output. Rules apply top to bottom; the first match wins.",
-                            )),
-                    )
-                    .child(
-                        button("hl-import", "Import…", ButtonKind::Secondary, p)
-                            .flex_shrink_0()
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.import_highlights(window, cx))),
-                    ),
-            )
-            .child(list)
-            .children(skipped)
-            .into_any_element()
-    }
-}
-
-impl Workspace {
-    fn render_appearance(&self, intensity: Entity<SliderState>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let app = self.settings.app_theme;
-        let term = self.settings.terminal_theme;
-        let blur = self.settings.background_blur;
-        let supported = crate::platform::SUPPORTS_BACKDROP;
-        let row = |label: &str, hint: &str, control: AnyElement| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(16.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()))
-                        .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_faint).child(hint.to_string())),
-                )
-                .child(control)
-        };
-        let app_choice = segmented(
-            "app-theme",
-            &[("Dark", app == AppThemeSetting::Dark), ("Light", app == AppThemeSetting::Light), ("System", app == AppThemeSetting::System)],
-            p,
-            cx,
-            |this, i, window, cx| {
-                let theme = [AppThemeSetting::Dark, AppThemeSetting::Light, AppThemeSetting::System][i];
-                this.set_app_theme(theme, window, cx);
-            },
-        );
-        let term_choice = segmented(
-            "term-theme",
-            &[
-                ("Follow app", term == TerminalThemeSetting::Follow),
-                ("Dark", term == TerminalThemeSetting::Dark),
-                ("Light", term == TerminalThemeSetting::Light),
-            ],
-            p,
-            cx,
-            |this, i, window, cx| {
-                let theme = [TerminalThemeSetting::Follow, TerminalThemeSetting::Dark, TerminalThemeSetting::Light][i];
-                this.set_terminal_theme(theme, window, cx);
-            },
-        );
-        let blur_hint = if supported {
-            "Windows 11 Mica: your desktop, blurred, shows through the window, even with other windows behind it."
-        } else {
-            "Windows 11 only. This build runs elsewhere, so the setting is saved but has no effect."
-        };
-        div()
-            .w(px(520.))
-            .p(px(22.))
-            .flex()
-            .flex_col()
-            .gap(px(20.))
-            .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Appearance"))
-            .child(row("App theme", "Sidebar, panels and dialogs.", app_choice))
-            .child(row("Terminal theme", "Terminal colours, independent of the app theme.", term_choice))
-            .child(div().h(px(1.)).bg(p.border))
-            .child(row(
-                "Background blur",
-                blur_hint,
-                switch("blur-toggle".into(), blur, p)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_background_blur(!blur, window, cx)))
-                    .into_any_element(),
-            ))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(14.))
-                    .when(!blur, |el| el.opacity(0.4))
-                    .child(div().w(px(70.)).text_size(px(13.)).text_color(p.text_muted).child("Intensity"))
-                    .child(div().flex_1().child(Slider::new(&intensity).disabled(!blur)))
-                    .child(
-                        div()
-                            .w(px(44.))
-                            .text_right()
-                            .font_family("Cascadia Mono")
-                            .text_size(px(12.))
-                            .text_color(p.text_muted)
-                            .child(format!("{}%", self.settings.background_blur_intensity)),
-                    ),
-            )
-            .into_any_element()
     }
 }
 
@@ -2073,6 +1752,9 @@ impl Render for Workspace {
                 if event.keystroke.key == "escape" && this.overlay.is_some() {
                     this.close_overlay(window, cx);
                     cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && matches!(this.page, Page::Settings(_)) && this.unlock.is_none() {
+                    this.close_settings(window, cx);
+                    cx.stop_propagation();
                 }
             }))
             .on_action(cx.listener(|this, _: &QuickConnect, window, cx| this.open_picker(None, window, cx)))
@@ -2089,7 +1771,14 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &PrevSession, window, cx| this.cycle(false, window, cx)))
             .on_action(cx.listener(|this, _: &CopyOutputText, _, cx| this.copy_output_text(cx)))
             .on_action(cx.listener(|this, _: &CopyOutputFile, _, cx| this.copy_output_file(cx)))
-            .on_action(cx.listener(|this, _: &LockVault, _, cx| this.lock_vault(cx)));
+            .on_action(cx.listener(|this, _: &LockVault, _, cx| this.lock_vault(cx)))
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                if matches!(this.page, Page::Settings(_)) {
+                    this.close_settings(window, cx);
+                } else {
+                    this.open_settings(SettingsSection::Appearance, window, cx);
+                }
+            }));
 
         if let Some(state) = self.unlock.as_ref().filter(|s| s.full_screen) {
             return root.child(self.render_unlock(state, p, cx)).into_any_element();
@@ -2112,16 +1801,19 @@ impl Render for Workspace {
                 .child(msg.clone())
         });
         let _ = window;
-        root.child(
-            div()
+        let page = match self.page {
+            Page::Settings(section) => self.render_settings(section, p, cx),
+            Page::Sessions => div()
                 .size_full()
                 .flex()
                 .gap(px(ISLAND_GAP))
                 .p(px(ISLAND_GAP))
                 .bg(p.canvas)
                 .child(self.render_sidebar(p, cx))
-                .child(self.render_main(p, cx)),
-        )
+                .child(self.render_main(p, cx))
+                .into_any_element(),
+        };
+        root.child(page)
             .children(self.render_overlay(p, cx))
             .children(self.unlock.as_ref().map(|s| self.render_unlock(s, p, cx)))
             .children(toast)

@@ -17,14 +17,14 @@ A fast terminal for system engineers who work on Linux servers from Windows 11. 
 - **Local shells.** PowerShell 7, Windows PowerShell and Command Prompt tabs, organised under projects like SSH sessions.
 - **Highlighting.** Rules colour matching text in the output: ERROR in red, WARN in orange, `Active: active` in green, and so on. Import and export rule sets as JSON in Tabby's highlight format (see [Highlights](#highlights)).
 - **Copy the whole output.** Copy a session's entire scrollback as text, or as a `.txt` file you can paste straight into Explorer, Outlook or Teams.
-- **Dark by default, light if you want.** The app and the terminal each have their own dark/light setting (sidebar → **Appearance**).
-- **Background blur.** On Windows 11 the window uses Mica: your desktop wallpaper, blurred, shows through, even when other windows are behind Komando. Switch it on or off and set the intensity in **Appearance**. The terminal keeps more of its background than the panels, so text stays readable.
+- **Dark by default, light if you want.** The app and the terminal each have their own dark/light setting (**Settings → Appearance**).
+- **Background blur.** On Windows 11 the window uses Mica: your desktop wallpaper, blurred, shows through, even when other windows are behind Komando. Switch it on or off and set the intensity in **Settings → Appearance**. The terminal keeps more of its background than the panels, so text stays readable.
 
 ## Highlights
 
-<img src="assets/screenshot-highlights.png" alt="The Highlights panel: a rule set with its rules, each shown in its colour with regex and case-sensitivity badges and an on/off switch">
+<img src="assets/screenshot-highlights.png" alt="Settings, Highlights section: a rule set with its rules, each shown in its colour with regex and case-sensitivity badges and an on/off switch">
 
-Open the panel from **Highlights** at the bottom of the sidebar. A set of 69 rules for typical Linux and service logs is included.
+Manage rule sets in **Settings → Highlights**. A set of 69 rules for typical Linux and service logs is included.
 
 - **Order matters.** Rules apply top to bottom and the first match wins, so put specific rules (`WARNING`, `Active: inactive`) above general ones (`WARN`, `Active`).
 - **Format.** Same as Tabby's highlight plugin, so sets move between the two apps:
@@ -55,9 +55,14 @@ All app shortcuts use Ctrl+Shift, so plain Ctrl keys (Ctrl+W, Ctrl+K, Ctrl+R, �
 | Copy whole output as text | Ctrl+Shift+A |
 | Copy whole output as .txt file | Ctrl+Shift+S |
 | Lock vault | Ctrl+Shift+L |
+| Settings | Ctrl+, (Esc to go back) |
 | Scroll a page | Shift+PageUp / Shift+PageDown |
 
 Pasting more than one line asks for confirmation first.
+
+## Settings
+
+Open **Settings** from the bottom of the sidebar or with Ctrl+,. It's a full page with sections for Appearance (themes, background blur), Terminal (font, size, scrollback, paste confirmation, PuTTY-style clipboard), Highlights, Security (vault, auto-lock, trusted server keys) and About (version, data folder). Your sessions keep running while it's open.
 
 ## Install
 
@@ -82,9 +87,11 @@ cargo build --release      # target\release\komando.exe
 cargo test --lib
 ```
 
-### Making a release
+### Versions and releases
 
-Publish a GitHub release with a tag like `v0.2.0`. The [release workflow](.github/workflows/release.yml) builds Komando on Windows and attaches `Komando-0.2.0-x64.msi` and the plain `.exe` to the release. To rebuild an existing release, run the workflow manually with its tag.
+The version is in `Cargo.toml` and every change is listed in [CHANGELOG.md](CHANGELOG.md). Patch versions (0.1.x) go up with each change; minor and major versions are bumped by the maintainer.
+
+Publish a GitHub release with a tag that matches `Cargo.toml`, like `v0.2.0`. The [release workflow](.github/workflows/release.yml) builds Komando on Windows and attaches `Komando-0.2.0-x64.msi` and the plain `.exe` to the release. To rebuild an existing release, run the workflow manually with its tag.
 
 ### Developing on Linux
 
@@ -92,9 +99,10 @@ Komando ships for Windows only, but it also builds on Linux, which is handy for 
 
 ## Not in this version yet
 
-Search in output (Ctrl+F), editing and deleting hosts and projects in the app (for now edit `library.toml`), a settings screen, jump hosts, split view, Windows Hello unlock, locking the vault when Windows locks, and an icon for the `.exe`.
+Search in output (Ctrl+F), editing and deleting hosts and projects in the app (for now edit `library.toml`), jump hosts, split view, Windows Hello unlock, locking the vault when Windows locks, and changing the master password.
 
 ## Design notes
 
 - [GLOSSARY.md](GLOSSARY.md): the terms used in code and docs (Project, Host, Session, Vault, …).
 - [docs/adr](docs/adr): decisions and why: Windows only, embedded SSH client, native GPU UI, master-password vault.
+- [CHANGELOG.md](CHANGELOG.md): what changed in each version.

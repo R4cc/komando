@@ -32,6 +32,8 @@ jobs:
         run: |
           $version = $env:TAG.TrimStart('v')
           if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Tag '$env:TAG' is not vMAJOR.MINOR.PATCH" }
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($cargo -ne $version) { throw "Tag '$env:TAG' does not match the version in Cargo.toml ($cargo). Bump Cargo.toml or fix the tag." }
           "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Build

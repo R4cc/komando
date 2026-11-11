@@ -18,7 +18,7 @@ use gpui::{App, AppContext as _, Bounds, KeyBinding, WindowBounds, WindowOptions
 
 use crate::ui::terminal_view::{self, Copy, Paste, ScrollPageDown, ScrollPageUp};
 use crate::ui::workspace::{
-    CloseSession, CopyOutputFile, CopyOutputText, LockVault, NewSession, NextSession, PrevSession, QuickConnect,
+    CloseSession, CopyOutputFile, CopyOutputText, LockVault, NewSession, NextSession, OpenSettings, PrevSession, QuickConnect,
     Workspace,
 };
 
@@ -51,6 +51,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-shift-a", CopyOutputText, None),
         KeyBinding::new("ctrl-shift-s", CopyOutputFile, None),
         KeyBinding::new("ctrl-shift-l", LockVault, None),
+        KeyBinding::new("ctrl-,", OpenSettings, None),
     ]);
 }
 

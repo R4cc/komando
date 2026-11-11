@@ -65,6 +65,8 @@ pub struct TerminalView {
     /// Whether this session can offer "save as project password".
     pub has_project: bool,
     pub confirm_multiline_paste: bool,
+    /// PuTTY-style: selecting copies, right-click pastes.
+    pub putty_clipboard: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -98,6 +100,7 @@ impl TerminalView {
             selecting: false,
             has_project: true,
             confirm_multiline_paste: true,
+            putty_clipboard: false,
             _subscriptions: vec![],
         }
     }
@@ -344,7 +347,19 @@ impl TerminalView {
         if term.selection.as_ref().is_some_and(|s| s.is_empty()) {
             term.selection = None;
         }
+        if self.putty_clipboard
+            && let Some(text) = term.selection_to_string().filter(|t| !t.is_empty())
+        {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
         cx.notify();
+    }
+
+    fn right_click(&mut self, _: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.putty_clipboard {
+            window.focus(&self.focus, cx);
+            self.paste(&Paste, window, cx);
+        }
     }
 
     fn scroll_wheel(&mut self, event: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -753,6 +768,7 @@ impl Render for TerminalView {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::right_click))
             .on_scroll(cx.listener(Self::scroll_wheel))
             .relative()
             .size_full()
