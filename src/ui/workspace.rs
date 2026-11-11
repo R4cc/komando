@@ -8,9 +8,11 @@ use std::time::{Duration, Instant};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, KeyDownEvent,
-    SharedString, Subscription, Window, WindowAppearance, actions, div, prelude::*, px,
+    SharedString, Subscription, Window, WindowAppearance, actions, div, prelude::*, px, WindowControlArea, MouseButton,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
+use gpui_component::Icon;
 use gpui_component::slider::{Slider, SliderEvent, SliderState};
 use gpui_component::tooltip::Tooltip;
 
@@ -43,8 +45,8 @@ enum Page {
 }
 
 const SIDEBAR_WIDTH: f32 = 264.;
-const HOST_ICONS: [&str; 10] =
-    ["server", "database", "globe", "shield", "hard-drive", "cpu", "network", "cloud", "container", "router"];
+/// Height of Komando's own title bar (and of its window buttons).
+const TITLE_BAR_HEIGHT: f32 = 36.;
 
 #[derive(Clone)]
 enum SessionKind {
@@ -106,8 +108,47 @@ struct SessionEntry {
 
 enum Overlay {
     Picker { query: Entity<InputState> },
-    NewHost { project_id: String, fields: Vec<Entity<InputState>>, icon: String, error: Option<String> },
-    NewProject { name: Entity<InputState>, color: String, icon: String, error: Option<String> },
+    /// Add a Host to a Project, or edit one (`editing` is its id).
+    NewHost {
+        project_id: String,
+        editing: Option<String>,
+        fields: Vec<Entity<InputState>>,
+        icon: String,
+        /// The icon picker's search.
+        icon_query: Entity<InputState>,
+        auth: HostAuth,
+        error: Option<String>,
+    },
+    /// Create a Project, or edit one (`editing` is its id).
+    NewProject {
+        editing: Option<String>,
+        name: Entity<InputState>,
+        color: String,
+        icon: String,
+        /// The icon picker's search.
+        icon_query: Entity<InputState>,
+        error: Option<String>,
+    },
+    /// Ask before something that can't be undone.
+    Confirm { title: String, body: String, action: ConfirmAction },
+}
+
+/// How a Host signs in, as chosen in the host form.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HostAuth {
+    /// No credential of its own: the Project's saved credential if it has one, else a
+    /// password typed on connect (which Komando offers to save).
+    Inherit,
+    /// Keep the Host's own saved credential (editing only).
+    Saved,
+    /// Import a private key file into the vault.
+    KeyFile,
+}
+
+#[derive(Clone)]
+enum ConfirmAction {
+    DeleteHost(String),
+    DeleteProject(String),
 }
 
 enum Pending {
@@ -289,8 +330,15 @@ impl Workspace {
             Some(window),
             cx,
         );
-        let brand = cx.global::<Appearance>().app.brand;
+        let app = cx.global::<Appearance>().app;
+        let brand = app.brand;
         gpui_component::Theme::update(cx, |theme| {
+            // Menus (right-click on hosts and projects) use the app's own surfaces.
+            theme.colors.popover = app.surface.opacity(1.);
+            theme.colors.popover_foreground = app.text;
+            theme.colors.accent = app.active;
+            theme.colors.accent_foreground = app.text;
+            theme.colors.muted_foreground = app.text_muted;
             theme.colors.primary = brand;
             theme.colors.ring = brand;
             theme.colors.caret = brand;
@@ -919,93 +967,210 @@ impl Workspace {
     }
 
     fn open_new_host(&mut self, project_id: String, window: &mut Window, cx: &mut Context<Self>) {
-        let placeholders = ["Name, e.g. web01", "Address, e.g. 10.0.4.21", "User (optional, else project default)", "Port (22)", "Private key file (optional)"];
+        self.open_host_form(project_id, None, window, cx);
+    }
+
+    fn open_edit_host(&mut self, project_id: String, host_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_host_form(project_id, Some(host_id), window, cx);
+    }
+
+    /// The host form's text fields, in order: name, address, user, port, key file.
+    fn open_host_form(&mut self, project_id: String, editing: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let host = editing.as_deref().and_then(|id| self.library.host(id)).cloned();
+        let default_user = self.library.project(&project_id).and_then(|p| p.default_user.clone());
+        let user_hint = match &default_user {
+            Some(u) => format!("{u} (project default)"),
+            None => "root".to_string(),
+        };
+        let placeholders: [String; 5] = [
+            "e.g. web01".into(),
+            "e.g. 10.0.4.21 or web01.example.com".into(),
+            user_hint,
+            "22".into(),
+            r"C:\Users\you\.ssh\id_ed25519".into(),
+        ];
+        let values = match &host {
+            Some(h) => [
+                h.name.clone(),
+                h.address.clone(),
+                h.user.clone().unwrap_or_default(),
+                if h.port == 22 { String::new() } else { h.port.to_string() },
+                String::new(),
+            ],
+            None => Default::default(),
+        };
         let fields: Vec<_> = placeholders
-            .iter()
-            .map(|ph| cx.new(|cx| InputState::new(window, cx).placeholder(*ph)))
+            .into_iter()
+            .zip(values)
+            .map(|(ph, value)| cx.new(|cx| InputState::new(window, cx).placeholder(ph).default_value(value)))
             .collect();
+        // Enter in any field submits the form.
+        for field in &fields {
+            let sub = cx.subscribe_in(field, window, |this, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    this.submit_new_host(window, cx);
+                }
+            });
+            self._subscriptions.push(sub);
+        }
         fields[0].update(cx, |f, cx| f.focus(window, cx));
-        self.overlay = Some(Overlay::NewHost { project_id, fields, icon: "server".into(), error: None });
+        let auth = if host.as_ref().is_some_and(|h| h.credential.is_some()) { HostAuth::Saved } else { HostAuth::Inherit };
+        let icon = host.and_then(|h| h.icon).unwrap_or_else(|| "server".into());
+        let icon_query = self.new_icon_query(window, cx);
+        self.overlay = Some(Overlay::NewHost { project_id, editing, fields, icon, icon_query, auth, error: None });
         cx.notify();
     }
 
-    fn submit_new_host(&mut self, cx: &mut Context<Self>) {
-        let Some(Overlay::NewHost { project_id, fields, icon, error }) = self.overlay.as_mut() else { return };
+    /// The search box of a form's icon picker.
+    fn new_icon_query(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search icons, e.g. database, cloud, git"));
+        let sub = cx.subscribe_in(&query, window, |_, _, event: &InputEvent, _, cx| {
+            if let InputEvent::Change = event {
+                cx.notify();
+            }
+        });
+        self._subscriptions.push(sub);
+        query
+    }
+
+    /// Pick a private key file for the host form's key field.
+    fn browse_key_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Use key".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let _ = this.update_in(cx, |this, window, cx| {
+                if let Some(Overlay::NewHost { fields, auth, error, .. }) = this.overlay.as_mut() {
+                    *auth = HostAuth::KeyFile;
+                    *error = None;
+                    fields[4].update(cx, |f, cx| f.set_value(path.display().to_string(), window, cx));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn submit_new_host(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Overlay::NewHost { project_id, editing, fields, icon, auth, error, .. }) = self.overlay.as_mut() else { return };
         let value = |i: usize| fields[i].read(cx).value().trim().to_string();
         let (name, address, user, port, key_path) = (value(0), value(1), value(2), value(3), value(4));
-        if name.is_empty() || address.is_empty() {
-            *error = Some("Name and address are required.".into());
+        let fail = |error: &mut Option<String>, message: String, cx: &mut Context<Self>| {
+            *error = Some(message);
             cx.notify();
-            return;
+        };
+        if name.is_empty() || address.is_empty() {
+            return fail(error, "Give the host a name and an address.".into(), cx);
         }
-        let port = if port.is_empty() { 22 } else {
-            match port.parse() {
-                Ok(p) => p,
-                Err(_) => {
-                    *error = Some("The port must be a number.".into());
-                    cx.notify();
-                    return;
-                }
+        let port = if port.is_empty() {
+            22
+        } else {
+            match port.parse::<u16>() {
+                Ok(p) if p > 0 => p,
+                _ => return fail(error, "The port is a number from 1 to 65535.".into(), cx),
             }
         };
-        let mut credential = None;
-        if !key_path.is_empty() {
+        // What the host's own credential becomes: `Some(new)` replaces it, `None` keeps it.
+        let mut credential: Option<Option<String>> = match auth {
+            HostAuth::Inherit => Some(None),
+            HostAuth::Saved => None,
+            HostAuth::KeyFile => None,
+        };
+        if *auth == HostAuth::KeyFile {
+            if key_path.is_empty() {
+                return fail(error, "Choose a private key file, or pick another sign-in.".into(), cx);
+            }
             let Some(vault) = self.vault.as_mut() else {
-                *error = Some("Unlock the vault to import a key.".into());
-                cx.notify();
-                return;
+                return fail(error, "Unlock the vault to import a key.".into(), cx);
             };
-            match std::fs::read_to_string(&key_path) {
-                Ok(key) => match vault.add(Credential {
-                    label: format!("{name} key"),
-                    secret: Secret::PrivateKey { key, passphrase: None },
-                }) {
-                    Ok(id) => credential = Some(id),
-                    Err(err) => {
-                        *error = Some(format!("Could not store the key: {err}"));
-                        cx.notify();
-                        return;
-                    }
-                },
-                Err(err) => {
-                    *error = Some(format!("Could not read {key_path}: {err}"));
-                    cx.notify();
-                    return;
-                }
+            let key = match std::fs::read_to_string(&key_path) {
+                Ok(key) => key,
+                Err(err) => return fail(error, format!("Could not read {key_path}: {err}"), cx),
+            };
+            match vault.add(Credential { label: format!("{name} key"), secret: Secret::PrivateKey { key, passphrase: None } }) {
+                Ok(id) => credential = Some(Some(id)),
+                Err(err) => return fail(error, format!("Could not store the key: {err}"), cx),
             }
         }
-        let host = Host {
-            id: model::new_id(),
-            name,
-            address,
-            port,
-            user: (!user.is_empty()).then_some(user),
-            credential,
-            color: None,
-            icon: Some(icon.clone()),
-        };
-        let project_id = project_id.clone();
-        if let Some(project) = self.library.projects.iter_mut().find(|p| p.id == project_id) {
-            project.hosts.push(host.id.clone());
+        let user = (!user.is_empty()).then_some(user);
+        let icon = icon.clone();
+        if let Some(id) = editing.clone() {
+            if let Some(host) = self.library.hosts.iter_mut().find(|h| h.id == id) {
+                host.name = name;
+                host.address = address;
+                host.port = port;
+                host.user = user;
+                host.icon = Some(icon);
+                if let Some(credential) = credential {
+                    host.credential = credential;
+                }
+            }
+        } else {
+            let host = Host {
+                id: model::new_id(),
+                name,
+                address,
+                port,
+                user,
+                credential: credential.flatten(),
+                color: None,
+                icon: Some(icon),
+            };
+            let project_id = project_id.clone();
+            if let Some(project) = self.library.projects.iter_mut().find(|p| p.id == project_id) {
+                project.hosts.push(host.id.clone());
+            }
+            self.library.hosts.push(host);
         }
-        self.library.hosts.push(host);
         let _ = self.library.save(&self.data_dir);
         self.overlay = None;
         cx.notify();
     }
 
     fn open_new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let name = cx.new(|cx| InputState::new(window, cx).placeholder("Project name, e.g. Atlas Production"));
+        self.open_project_form(None, window, cx);
+    }
+
+    fn open_edit_project(&mut self, project_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_project_form(Some(project_id), window, cx);
+    }
+
+    fn open_project_form(&mut self, editing: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let project = editing.as_deref().and_then(|id| self.library.project(id)).cloned();
+        let value = project.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+        let name = cx.new(|cx| InputState::new(window, cx).placeholder("Project name, e.g. Atlas Production").default_value(value));
         name.update(cx, |f, cx| f.focus(window, cx));
-        self.overlay = Some(Overlay::NewProject { name, color: "blue".into(), icon: "folder".into(), error: None });
+        let (color, icon) = match &project {
+            Some(p) => (p.color.clone(), p.icon.clone()),
+            None => ("blue".into(), "folder".into()),
+        };
+        let icon_query = self.new_icon_query(window, cx);
+        self.overlay = Some(Overlay::NewProject { editing, name, color, icon, icon_query, error: None });
         cx.notify();
     }
 
     fn submit_new_project(&mut self, cx: &mut Context<Self>) {
-        let Some(Overlay::NewProject { name, color, icon, error }) = self.overlay.as_mut() else { return };
+        let Some(Overlay::NewProject { editing, name, color, icon, error, .. }) = self.overlay.as_mut() else { return };
         let name = name.read(cx).value().trim().to_string();
         if name.is_empty() {
             *error = Some("Give the project a name.".into());
+            cx.notify();
+            return;
+        }
+        if let Some(id) = editing.clone() {
+            let (color, icon) = (color.clone(), icon.clone());
+            if let Some(project) = self.library.projects.iter_mut().find(|p| p.id == id) {
+                project.name = name;
+                project.color = color;
+                project.icon = icon;
+            }
+            let _ = self.library.save(&self.data_dir);
+            self.overlay = None;
             cx.notify();
             return;
         }
@@ -1022,6 +1187,84 @@ impl Workspace {
         let _ = self.library.save(&self.data_dir);
         self.overlay = None;
         cx.notify();
+    }
+
+    fn confirm_delete_host(&mut self, host_id: String, cx: &mut Context<Self>) {
+        let Some(host) = self.library.host(&host_id) else { return };
+        let projects = self.library.projects.iter().filter(|p| p.hosts.contains(&host_id)).count();
+        let mut body = format!("{} ({}) is removed from Komando.", host.name, host.address);
+        if projects > 1 {
+            body.push_str(&format!(" It is in {projects} projects and leaves all of them."));
+        }
+        body.push_str(" Its open sessions are closed. A saved key or password stays in the vault.");
+        self.overlay = Some(Overlay::Confirm {
+            title: format!("Delete {}?", host.name),
+            body,
+            action: ConfirmAction::DeleteHost(host_id),
+        });
+        cx.notify();
+    }
+
+    fn confirm_delete_project(&mut self, project_id: String, cx: &mut Context<Self>) {
+        let Some(project) = self.library.project(&project_id) else { return };
+        let only_here = project
+            .hosts
+            .iter()
+            .filter(|h| !self.library.projects.iter().any(|p| p.id != project_id && p.hosts.contains(h)))
+            .count();
+        let body = match only_here {
+            0 => "Its hosts are also in other projects and stay there. Open sessions in this project are closed.".to_string(),
+            1 => "Its 1 host is deleted too. Open sessions in this project are closed.".to_string(),
+            n => format!("Its {n} hosts are deleted too. Open sessions in this project are closed."),
+        };
+        self.overlay = Some(Overlay::Confirm { title: format!("Delete {}?", project.name), body, action: ConfirmAction::DeleteProject(project_id) });
+        cx.notify();
+    }
+
+    fn run_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Overlay::Confirm { action, .. }) = self.overlay.take() else { return };
+        match action {
+            ConfirmAction::DeleteHost(id) => {
+                self.discard_sessions(|s| matches!(&s.kind, SessionKind::Ssh { host_id } if *host_id == id), cx);
+                for project in &mut self.library.projects {
+                    project.hosts.retain(|h| *h != id);
+                }
+                self.library.hosts.retain(|h| h.id != id);
+            }
+            ConfirmAction::DeleteProject(id) => {
+                self.discard_sessions(|s| s.project_id.as_deref() == Some(id.as_str()), cx);
+                let hosts = self.library.project(&id).map(|p| p.hosts.clone()).unwrap_or_default();
+                self.library.projects.retain(|p| p.id != id);
+                let still_used = |h: &String| self.library.projects.iter().any(|p| p.hosts.contains(h));
+                let orphans: Vec<String> = hosts.into_iter().filter(|h| !still_used(h)).collect();
+                self.library.hosts.retain(|h| !orphans.contains(&h.id));
+                self.collapsed.remove(&id);
+            }
+        }
+        let _ = self.library.save(&self.data_dir);
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    /// Close and drop every Session that matches, e.g. those of a deleted Host.
+    fn discard_sessions(&mut self, matches: impl Fn(&SessionEntry) -> bool, cx: &mut Context<Self>) {
+        let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.sessions).into_iter().partition(|s| matches(s));
+        self.sessions = kept;
+        for entry in gone {
+            entry.view.update(cx, |v, _| v.close());
+            self.last_active.retain(|_, v| *v != entry.id);
+            if self.active == Some(entry.id) {
+                self.active = None;
+            }
+        }
+    }
+
+    fn copy_host_address(&mut self, project_id: &str, host_id: &str, cx: &mut Context<Self>) {
+        let Some(r) = self.library.resolve(project_id, host_id) else { return };
+        let user = r.user.map(|u| format!("{u}@")).unwrap_or_default();
+        let text = if r.port == 22 { format!("{user}{}", r.address) } else { format!("{user}{}:{}", r.address, r.port) };
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+        self.show_toast(format!("Copied {text}"), cx);
     }
 
     fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1161,10 +1404,27 @@ impl Workspace {
                 .count();
             let pid = project.id.clone();
             let pid_host = project.id.clone();
+            let ws = cx.entity().downgrade();
+            let menu_pid = project.id.clone();
+            let project_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+                let id = menu_pid.clone();
+                let (a, b, c, d) = (id.clone(), id.clone(), id.clone(), id);
+                menu.item(menu_item("Add host…", "plus", &ws, move |this, window, cx| this.open_new_host(a.clone(), window, cx)))
+                    .item(menu_item("Edit project…", "pencil", &ws, move |this, window, cx| this.open_edit_project(b.clone(), window, cx)))
+                    .item(menu_item(if collapsed { "Expand" } else { "Collapse" }, if collapsed { "chevron-down" } else { "chevron-right" }, &ws, move |this, _, cx| {
+                        if !this.collapsed.remove(&c) {
+                            this.collapsed.insert(c.clone());
+                        }
+                        cx.notify();
+                    }))
+                    .separator()
+                    .item(menu_item("Delete project…", "trash", &ws, move |this, _, cx| this.confirm_delete_project(d.clone(), cx)))
+            };
             list = list.child(
                 div()
                     .id(SharedString::from(format!("project-{}", project.id)))
                     .group("project-row")
+                    .text_size(px(13.))
                     .relative()
                     .h(px(36.))
                     .px(px(8.))
@@ -1214,7 +1474,8 @@ impl Workspace {
                                 ),
                             ),
                     )
-                    .child(icon_el(if collapsed { "chevron-right" } else { "chevron-down" }, 14., p.text_faint)),
+                    .child(icon_el(if collapsed { "chevron-right" } else { "chevron-down" }, 14., p.text_faint))
+                    .context_menu(project_menu),
             );
             if collapsed {
                 continue;
@@ -1269,16 +1530,8 @@ impl Workspace {
             .overflow_hidden()
             .child(
                 div()
-                    .h(px(60.))
-                    .px(px(18.))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(wordmark(21., p.text)),
-            )
-            .child(
-                div()
                     .px(px(8.))
+                    .pt(px(8.))
                     .pb(px(10.))
                     .child(
                         div()
@@ -1350,6 +1603,54 @@ impl Workspace {
             let live = matches!(status, Some(Status::Connected | Status::Connecting));
             let session_id = session.map(|s| s.id);
             let item_for_new = item.clone();
+            let ws = cx.entity().downgrade();
+            let menu_item_src = item.clone();
+            let dropped = matches!(status, Some(Status::Disconnected(_)));
+            let item_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+                let item = menu_item_src.clone();
+                let mut menu = menu;
+                if nested {
+                    // A specific Session of the item.
+                    if let Some(id) = session_id {
+                        if dropped {
+                            menu = menu
+                                .item(menu_item("Reconnect", "refresh-cw", &ws, move |this, window, cx| {
+                                    this.activate(id, window, cx);
+                                    this.reconnect(id, window, cx);
+                                }))
+                                .item(menu_item("Close", "x", &ws, move |this, window, cx| this.close_session(id, window, cx)));
+                        } else {
+                            menu = menu.item(menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.close_session(id, window, cx)));
+                        }
+                    }
+                    return menu;
+                }
+                let (open, another) = (item.clone(), item.clone());
+                menu = menu
+                    .item(menu_item(if live { "Show session" } else { "Connect" }, "plug", &ws, move |this, window, cx| {
+                        this.activate_item(open.clone(), false, window, cx)
+                    }))
+                    .item(menu_item("New session", "plus", &ws, move |this, window, cx| this.activate_item(another.clone(), true, window, cx)));
+                if let Some(id) = session_id {
+                    if live {
+                        menu = menu.item(menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.close_session(id, window, cx)));
+                    } else {
+                        menu = menu.item(menu_item("Close session", "x", &ws, move |this, window, cx| this.close_session(id, window, cx)));
+                    }
+                }
+                if let SidebarItem::Host { project, host } = &item {
+                    let (pa, ha) = (project.id.clone(), host.id.clone());
+                    let (pb, hb) = (project.id.clone(), host.id.clone());
+                    let hc = host.id.clone();
+                    menu = menu
+                        .separator()
+                        .item(menu_item("Edit host…", "pencil", &ws, move |this, window, cx| this.open_edit_host(pa.clone(), ha.clone(), window, cx)))
+                        .item(menu_item("Copy address", "copy", &ws, move |this, _, cx| this.copy_host_address(&pb, &hb, cx)))
+                        .separator()
+                        .item(menu_item("Delete host…", "trash", &ws, move |this, _, cx| this.confirm_delete_host(hc.clone(), cx)));
+                }
+                menu
+            };
             let indicator = match &status {
                 Some(Status::Connected) => status_dot(p.success).into_any_element(),
                 Some(Status::Connecting) => status_dot(p.warning).into_any_element(),
@@ -1365,6 +1666,8 @@ impl Workspace {
             div()
                 .id(id)
                 .group("item-row")
+                // Also the size of its right-click menu, which inherits it.
+                .text_size(px(13.))
                 .relative()
                 .h(px(if nested { 30. } else { 34. }))
                 .pl(px(if nested { indent + 18. } else { indent }))
@@ -1430,6 +1733,7 @@ impl Workspace {
                             ))
                         }),
                 )
+                .context_menu(item_menu)
                 .into_any_element()
         };
         let main = shown.and_then(|id| sessions.iter().find(|s| s.id == id).copied()).or(sessions.first().copied());
@@ -1458,12 +1762,10 @@ impl Workspace {
         rows
     }
 
-    fn render_main(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let Some(entry) = self.active_entry() else {
-            return self.render_empty(p, cx);
-        };
-        let project = entry.project_id.as_deref().and_then(|id| self.library.project(id));
-        let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.text_faint);
+    /// The active Session's state, name and address with its actions. Lives in the title
+    /// bar, above the terminal.
+    fn render_session_strip(&self, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let entry = self.active_entry()?;
         let view = entry.view.read(cx);
         // Where you are typing: state, the session's name, then user@address and port. The
         // name is repeated from the sidebar, which may be scrolled away from the active host.
@@ -1477,7 +1779,7 @@ impl Workspace {
                     let user = r.user.clone().map(|u| format!("{u}@")).unwrap_or_default();
                     format!("{user}{}:{}", r.address, r.port)
                 })
-                .unwrap_or_else(|| entry.label.clone().to_string()),
+                .unwrap_or_default(),
             SessionKind::Local { shell } => format!("Local · {}", shell.program),
         };
         let (status_text, status_color) = match &view.status {
@@ -1486,79 +1788,123 @@ impl Workspace {
             Status::Disconnected(_) => ("Disconnected", p.text_faint),
         };
         let id = entry.id;
-        let term_bg = cx.global::<Appearance>().term.background_hsla();
+        Some(
+            div()
+                .id("session-strip")
+                .min_w_0()
+                .flex_1()
+                .h_full()
+                .pl(px(6.))
+                .flex()
+                .items_center()
+                .gap(px(7.))
+                .child(status_dot(status_color))
+                .child(
+                    div()
+                        .id("session-target")
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .text_size(px(12.))
+                        .tooltip(move |window, cx| Tooltip::new(status_text).build(window, cx))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .max_w(px(240.))
+                                .truncate()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(p.text)
+                                .child(name),
+                        )
+                        .child(div().min_w_0().text_color(p.text_muted).truncate().child(target)),
+                )
+                // The empty middle stays draggable: only the controls above catch the mouse.
+                .child(div().flex_1())
+                .child(
+                    strip_action("copy-text", "copy", "Copy output", false, p)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_text(cx))),
+                )
+                .child(
+                    strip_action("copy-file", "file-text", "Copy as .txt", false, p)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_file(cx))),
+                )
+                // Set apart from the harmless copy actions: this one disconnects.
+                .child(div().w(px(1.)).h(px(14.)).mx(px(4.)).bg(p.border))
+                // An unplug, not an ✕: the window's own ✕ is in the same bar.
+                .child(
+                    strip_action("close-active", "unplug", "Close session", true, p)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.close_session(id, window, cx))),
+                )
+                // Room between the session's actions and the window buttons.
+                .child(div().w(px(16.)).h(px(16.)).mr(px(8.)).border_r_1().border_color(p.border))
+                .into_any_element(),
+        )
+    }
+
+    /// The window's title bar, drawn by Komando so it matches the app: the wordmark over the
+    /// sidebar, the active Session's strip over the terminal, and the window buttons. Its
+    /// background is the canvas, so on Windows Mica shows through it like everywhere else.
+    /// `minimal` (the unlock screen) shows only the window buttons.
+    fn render_title_bar(&self, minimal: bool, p: AppPalette, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let strip = match (&self.page, minimal) {
+            (Page::Sessions, false) => self.render_session_strip(p, cx),
+            _ => None,
+        };
         div()
+            .id("title-bar")
+            .h(px(TITLE_BAR_HEIGHT))
+            .w_full()
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .bg(p.canvas)
+            // Windows: the bar is the window's caption, so dragging, double-click to maximise
+            // and snapping work as with any window. Buttons inside take their clicks.
+            .window_control_area(WindowControlArea::Drag)
+            .when(cfg!(not(windows)), |el| {
+                el.on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
+            })
+            .child(
+                div()
+                    .w(px(SIDEBAR_WIDTH + ISLAND_GAP * 2.))
+                    .flex_shrink_0()
+                    .h_full()
+                    .pl(px(ISLAND_GAP + 18.))
+                    .flex()
+                    .items_center()
+                    .when(!minimal, |el| el.child(wordmark(15., p.text))),
+            )
+            .child(div().flex_1().min_w_0().h_full().flex().items_center().children(strip))
+            .child(window_controls(p, window))
+            .into_any_element()
+    }
+
+    fn render_main(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let Some(entry) = self.active_entry() else {
+            return self.render_empty(p, cx);
+        };
+        let project = entry.project_id.as_deref().and_then(|id| self.library.project(id));
+        let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.text_faint);
+        let term_bg = cx.global::<Appearance>().term.background_hsla();
+        island(p)
+            .relative()
             .flex_1()
             .min_w_0()
             .h_full()
-            .flex()
-            .flex_col()
-            .gap(px(4.))
+            .bg(term_bg)
+            .overflow_hidden()
+            .child(entry.view.clone())
+            // Project colour accent: you always see which Project you are typing into. It is
+            // the top edge of the island itself, so it follows the rounded corners and tapers
+            // off down their curve.
             .child(
                 div()
-                    .id("session-strip")
-                    .h(px(22.))
-                    .flex_shrink_0()
-                    .pl(px(6.))
-                    .flex()
-                    .items_center()
-                    .gap(px(7.))
-                    .child(status_dot(status_color))
-                    .child(
-                        div()
-                            .id("session-target")
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .text_size(px(12.))
-                            .tooltip(move |window, cx| Tooltip::new(status_text).build(window, cx))
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .max_w(px(240.))
-                                    .truncate()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(p.text)
-                                    .child(name),
-                            )
-                            .child(div().min_w_0().text_color(p.text_muted).truncate().child(target)),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        strip_action("copy-text", "copy", "Copy output", false, p)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_text(cx))),
-                    )
-                    .child(
-                        strip_action("copy-file", "file-text", "Copy as .txt", false, p)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_file(cx))),
-                    )
-                    // Set apart from the harmless copy actions: this one disconnects.
-                    .child(div().w(px(1.)).h(px(14.)).mx(px(4.)).bg(p.border))
-                    .child(
-                        strip_action("close-active", "x", "Close session", true, p)
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.close_session(id, window, cx))),
-                    ),
-            )
-            .child(
-                island(p)
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .bg(term_bg)
-                    .overflow_hidden()
-                    .child(entry.view.clone())
-                    // Project colour accent: you always see which Project you are typing into.
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left(px(ISLAND_RADIUS))
-                            .right(px(ISLAND_RADIUS))
-                            .h(px(2.))
-                            .rounded_b(px(2.))
-                            .bg(color),
-                    ),
+                    .absolute()
+                    .inset_0()
+                    .rounded(px(ISLAND_RADIUS))
+                    .border_t_2()
+                    .border_color(color),
             )
             .into_any_element()
     }
@@ -1662,40 +2008,176 @@ impl Workspace {
                     .child(list)
                     .into_any_element()
             }
-            Overlay::NewHost { project_id, fields, icon, error } => {
-                let project_name = self.library.project(project_id).map(|pr| pr.name.clone()).unwrap_or_default();
-                let color = self.library.project(project_id).map(|pr| project_color(&pr.color)).unwrap_or(p.brand);
-                let selected = icon.clone();
-                form_card(
-                    p,
-                    &format!("Add host to {project_name}"),
+            Overlay::NewHost { project_id, editing, fields, icon, icon_query, auth, error } => {
+                let project = self.library.project(project_id);
+                let project_name = project.map(|pr| pr.name.clone()).unwrap_or_default();
+                let project_icon = project.map(|pr| pr.icon.clone()).unwrap_or_else(|| "folder".into());
+                let project_has_credential = project.is_some_and(|pr| pr.credential.is_some());
+                let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.brand);
+                let host = editing.as_deref().and_then(|id| self.library.host(id));
+                let has_saved = host.is_some_and(|h| h.credential.is_some());
+                let title = match host {
+                    Some(h) => format!("Edit {}", h.name),
+                    None => "Add host".to_string(),
+                };
+                let ok_label = if editing.is_some() { "Save" } else { "Add host" };
+                let auth = *auth;
+
+                // Sign-in: what the host uses to log in. The labels follow what "no credential
+                // of its own" means for this Project.
+                let inherit_label = if project_has_credential { "Project credential" } else { "Password" };
+                let mut choices: Vec<(&'static str, HostAuth)> = vec![];
+                if has_saved {
+                    choices.push(("Saved key", HostAuth::Saved));
+                }
+                choices.push((inherit_label, HostAuth::Inherit));
+                choices.push(("Key file", HostAuth::KeyFile));
+                let options: Vec<(&'static str, bool)> = choices.iter().map(|(l, a)| (*l, *a == auth)).collect();
+                let picks: Vec<HostAuth> = choices.iter().map(|(_, a)| *a).collect();
+                let auth_choice = segmented("host-auth", &options, p, cx, move |this, i, _, cx| {
+                    if let Some(Overlay::NewHost { auth, error, .. }) = this.overlay.as_mut() {
+                        *auth = picks[i];
+                        *error = None;
+                    }
+                    cx.notify();
+                });
+                let auth_hint = match auth {
+                    HostAuth::Saved => "Keeps the key or password already saved in the vault for this host.",
+                    HostAuth::Inherit if project_has_credential => {
+                        "Uses the key or password saved for the project, shared by all its hosts."
+                    }
+                    HostAuth::Inherit => "Asked when you connect. Once it works, Komando offers to save it in the vault.",
+                    HostAuth::KeyFile => "The key is copied into the vault, encrypted. The file itself isn't needed afterwards.",
+                };
+                let key_row = (auth == HostAuth::KeyFile).then(|| {
                     div()
                         .flex()
-                        .flex_col()
-                        .gap(px(10.))
-                        .children(fields.iter().map(Input::new))
-                        .child(section_label("Icon", p))
-                        .child(icon_choices(&selected, color, p, cx, |this, name| {
-                            if let Some(Overlay::NewHost { icon, .. }) = this.overlay.as_mut() {
-                                *icon = name;
-                            }
-                        }))
-                        .child(div().text_size(px(12.)).text_color(p.text_faint).child(
-                            "Password hosts: connect once and choose \"Save\". Keys are imported into the vault.",
-                        ))
-                        .when_some(error.clone(), |el, e| el.child(div().text_size(px(12.)).text_color(p.danger).child(e)))
-                        .into_any_element(),
-                    vec![
-                        button("nh-cancel", "Cancel", ButtonKind::Ghost, p)
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx)))
-                            .into_any_element(),
-                        button("nh-ok", "Add host", ButtonKind::Primary, p)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.submit_new_host(cx)))
-                            .into_any_element(),
-                    ],
-                )
+                        .gap(px(8.))
+                        .child(div().flex_1().min_w_0().child(Input::new(&fields[4])))
+                        .child(
+                            button("nh-browse", "Browse…", ButtonKind::Secondary, p)
+                                .h(px(32.))
+                                .flex_shrink_0()
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.browse_key_file(window, cx))),
+                        )
+                });
+
+                let selected = icon.clone();
+                let body = div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(20.))
+                    .child(
+                        form_section("Connection", p)
+                            .child(form_field("Name", None, Input::new(&fields[0]).into_any_element(), p))
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap(px(10.))
+                                    .child(div().flex_1().min_w_0().child(form_field(
+                                        "Address",
+                                        None,
+                                        Input::new(&fields[1]).into_any_element(),
+                                        p,
+                                    )))
+                                    .child(div().w(px(92.)).flex_shrink_0().child(form_field(
+                                        "Port",
+                                        None,
+                                        Input::new(&fields[3]).into_any_element(),
+                                        p,
+                                    ))),
+                            )
+                            .child(form_field(
+                                "User",
+                                Some("Leave empty to use the project's default user."),
+                                Input::new(&fields[2]).into_any_element(),
+                                p,
+                            )),
+                    )
+                    .child(
+                        form_section("Sign-in", p)
+                            .child(div().flex().child(auth_choice))
+                            .children(key_row)
+                            .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(auth_hint)),
+                    )
+                    .child(form_section("Icon", p).child(icon_picker(icon_query, &selected, color, p, cx, |this, name| {
+                        if let Some(Overlay::NewHost { icon, .. }) = this.overlay.as_mut() {
+                            *icon = name;
+                        }
+                    })))
+                    .when_some(error.clone(), |el, e| {
+                        el.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .px(px(12.))
+                                .py(px(9.))
+                                .rounded(px(8.))
+                                .bg(p.danger.opacity(0.1))
+                                .text_size(px(12.5))
+                                .text_color(p.danger)
+                                .child(icon_el("circle-alert", 14., p.danger))
+                                .child(e),
+                        )
+                    });
+
+                div()
+                    .w(px(520.))
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    // Header: which project the host belongs to.
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .pt(px(22.))
+                            .pb(px(18.))
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(badge(&project_icon, color, 34.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.5))
+                                            .text_color(p.text_muted)
+                                            .child(format!("SSH host in {project_name}")),
+                                    ),
+                            ),
+                    )
+                    // Only the middle scrolls; header and footer (with the buttons) stay put.
+                    .child(div().id("host-form-body").flex_1().min_h_0().overflow_y_scroll().px(px(24.)).pb(px(22.)).child(body))
+                    // Footer.
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .py(px(14.))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .border_t_1()
+                            .border_color(p.border)
+                            .child(div().flex_1().text_size(px(11.5)).text_color(p.text_faint).child("Enter to save · Esc to cancel"))
+                            .child(
+                                button("nh-cancel", "Cancel", ButtonKind::Ghost, p)
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx))),
+                            )
+                            .child(
+                                button("nh-ok", ok_label, ButtonKind::Primary, p)
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.submit_new_host(window, cx))),
+                            ),
+                    )
+                    .into_any_element()
             }
-            Overlay::NewProject { name, color, icon, error } => {
+            Overlay::NewProject { editing, name, color, icon, icon_query, error } => {
+                let (title, ok_label) = if editing.is_some() { ("Edit project", "Save") } else { ("New project", "Create project") };
                 let current = color.clone();
                 let selected_icon = icon.clone();
                 let swatches = div().flex().flex_wrap().gap(px(8.)).children(PROJECT_COLORS.iter().map(|(cname, _)| {
@@ -1720,7 +2202,7 @@ impl Workspace {
                 }));
                 form_card(
                     p,
-                    "New project",
+                    title,
                     div()
                         .flex()
                         .flex_col()
@@ -1729,7 +2211,7 @@ impl Workspace {
                         .child(section_label("Color", p))
                         .child(swatches)
                         .child(section_label("Icon", p))
-                        .child(icon_choices(&selected_icon, project_color(&current), p, cx, |this, name| {
+                        .child(icon_picker(icon_query, &selected_icon, project_color(&current), p, cx, |this, name| {
                             if let Some(Overlay::NewProject { icon, .. }) = this.overlay.as_mut() {
                                 *icon = name;
                             }
@@ -1740,35 +2222,58 @@ impl Workspace {
                         button("np-cancel", "Cancel", ButtonKind::Ghost, p)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx)))
                             .into_any_element(),
-                        button("np-ok", "Create project", ButtonKind::Primary, p)
+                        button("np-ok", ok_label, ButtonKind::Primary, p)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.submit_new_project(cx)))
                             .into_any_element(),
                     ],
                 )
             }
+            Overlay::Confirm { title, body, .. } => form_card(
+                p,
+                title,
+                div().text_size(px(13.)).line_height(px(20.)).text_color(p.text_muted).child(body.clone()).into_any_element(),
+                vec![
+                    button("confirm-cancel", "Cancel", ButtonKind::Ghost, p)
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx)))
+                        .into_any_element(),
+                    button("confirm-ok", "Delete", ButtonKind::Danger, p)
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.run_confirm(window, cx)))
+                        .into_any_element(),
+                ],
+            ),
         };
         Some(
             div()
                 .id("overlay-backdrop")
                 .absolute()
-                .inset_0()
+                // Clicks stop here: without this the terminal underneath also gets them and
+                // takes the keyboard focus away from the dialog's fields.
+                .occlude()
+                // Below the title bar, so the window can still be moved and closed.
+                .top(px(TITLE_BAR_HEIGHT))
+                .left_0()
+                .right_0()
+                .bottom_0()
                 .flex()
                 .items_start()
                 .justify_center()
-                .pt(px(96.))
+                .pt(px(56.))
+                .pb(px(24.))
                 .bg(alpha(0x000000, if p.dark { 0.5 } else { 0.2 }))
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx)))
                 .child(
                     div()
                         .id("overlay-card")
                         .h_auto()
-                        .max_h(px(560.))
+                        // As tall as the window allows; a taller form scrolls its own middle.
+                        .max_h_full()
+                        .flex()
+                        .flex_col()
                         .rounded(px(14.))
                         .bg(p.surface)
                         .border_1()
                         .border_color(p.border)
                         .shadow(elevation(p.dark))
-                        .overflow_hidden()
                         .on_click(|_, _, cx| cx.stop_propagation())
                         .child(body),
                 )
@@ -1847,21 +2352,102 @@ fn switch_with(id: SharedString, on: bool, small: bool, p: AppPalette) -> gpui::
         .child(div().size(px(knob)).rounded_full().bg(gpui::white()).shadow(elevation(false)))
 }
 
-fn icon_choices(
+/// Every icon name in the bundled Lucide set ("server", "database-backup", …), sorted.
+fn all_icons() -> &'static [String] {
+    static ICONS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    ICONS.get_or_init(|| {
+        use gpui::AssetSource as _;
+        let mut names: Vec<String> = gpui_kit_assets::AllAssets
+            .list("icons/")
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|path| path.strip_prefix("icons/")?.strip_suffix(".svg").map(str::to_string))
+            // Only plain Lucide icons: no sub-folders, no window chrome.
+            .filter(|name| !name.contains('/') && !name.starts_with("window-"))
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    })
+}
+
+/// Shown before anything is typed: icons for servers and the things that run on them.
+const SUGGESTED_ICONS: &[&str] = &[
+    "folder", "server", "database", "globe", "shield", "hard-drive", "cpu", "network", "cloud", "box", "router",
+    "container", "monitor", "laptop", "terminal", "code", "git-branch", "key-round", "lock", "mail", "cloud-cog",
+    "server-cog", "database-backup", "rocket", "flame", "activity", "bug", "building-2", "factory", "house",
+    "flask-conical", "wrench", "zap", "radio-tower", "satellite", "warehouse",
+];
+
+/// Most results shown at once; a more specific search narrows them down.
+const ICON_RESULTS: usize = 60;
+
+/// Icons matching `query`: exact name first, then names starting with it, then names with a
+/// word starting with it ("backup" finds "database-backup"), then any other match.
+fn search_icons(query: &str) -> (Vec<&'static str>, usize) {
+    let q = query.trim().to_lowercase().replace(' ', "-");
+    if q.is_empty() {
+        let all = all_icons();
+        let shown = SUGGESTED_ICONS.iter().filter_map(|s| all.iter().find(|n| n.as_str() == *s)).map(|n| n.as_str()).collect();
+        return (shown, 0);
+    }
+    let rank = |name: &str| {
+        if name == q {
+            Some(0)
+        } else if name.starts_with(&q) {
+            Some(1)
+        } else if name.split('-').any(|word| word.starts_with(&q)) {
+            Some(2)
+        } else if name.contains(&q) {
+            Some(3)
+        } else {
+            None
+        }
+    };
+    let mut hits: Vec<(u8, &'static str)> =
+        all_icons().iter().filter_map(|n| rank(n).map(|r| (r, n.as_str()))).collect();
+    hits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.len().cmp(&b.1.len())).then(a.1.cmp(b.1)));
+    let total = hits.len();
+    (hits.into_iter().take(ICON_RESULTS).map(|(_, n)| n).collect(), total)
+}
+
+/// The icon picker: a search over the whole icon set and a grid of results. The selected icon
+/// is always in the grid, first if the search doesn't include it.
+fn icon_picker(
+    query: &Entity<InputState>,
     selected: &str,
     color: Hsla,
     p: AppPalette,
     cx: &mut Context<Workspace>,
     set: impl Fn(&mut Workspace, String) + Clone + 'static,
 ) -> impl IntoElement {
-    let icons: Vec<&str> = std::iter::once("folder").chain(HOST_ICONS).collect();
-    div().flex().flex_wrap().gap(px(6.)).children(icons.into_iter().map(|name| {
+    let text = query.read(cx).value().to_string();
+    let (mut icons, total) = search_icons(&text);
+    let searching = !text.trim().is_empty();
+    if !selected.is_empty() && !icons.contains(&selected) && !(searching && total == 0) {
+        if let Some(name) = all_icons().iter().find(|n| n.as_str() == selected) {
+            icons.insert(0, name.as_str());
+        }
+    }
+    let status = if !searching {
+        format!("Suggested · {} icons in total, search to find more", all_icons().len())
+    } else if total == 0 {
+        format!("No icon matches \"{}\".", text.trim())
+    } else if total > icons.len() {
+        format!("{} matches, showing the first {}. Keep typing to narrow it down.", total, icons.len())
+    } else if total == 1 {
+        "1 match".to_string()
+    } else {
+        format!("{total} matches")
+    };
+    let grid = div().flex().flex_wrap().gap(px(6.)).children(icons.into_iter().map(|name| {
         let is_selected = name == selected;
         let set = set.clone();
         let owned = name.to_string();
+        let tip: SharedString = name.into();
         div()
             .id(SharedString::from(format!("icon-{name}")))
-            .size(px(34.))
+            .size(px(36.))
             .flex()
             .items_center()
             .justify_center()
@@ -1871,12 +2457,21 @@ fn icon_choices(
             .border_color(if is_selected { color } else { p.border })
             .bg(if is_selected { color.opacity(0.14) } else { gpui::transparent_black() })
             .hover(|s| s.bg(p.hover))
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 set(this, owned.clone());
                 cx.notify();
             }))
             .child(icon_el(name, 16., if is_selected { color } else { p.text_muted }))
-    }))
+    }));
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .child(Input::new(query).prefix(icon_el("search", 14., p.text_faint)).cleanable(true))
+        // Three rows; more results scroll.
+        .child(div().id("icon-grid").max_h(px(126.)).overflow_y_scroll().child(grid))
+        .child(div().text_size(px(11.5)).text_color(p.text_faint).child(status))
 }
 
 fn form_card(p: AppPalette, title: &str, body: AnyElement, actions: Vec<AnyElement>) -> AnyElement {
@@ -1892,10 +2487,33 @@ fn form_card(p: AppPalette, title: &str, body: AnyElement, actions: Vec<AnyEleme
         .into_any_element()
 }
 
+/// A titled group of fields in a form.
+fn form_section(title: &str, p: AppPalette) -> gpui::Div {
+    div().flex().flex_col().gap(px(10.)).child(section_label(title, p))
+}
+
+/// A form field: label above the control, an optional hint below.
+fn form_field(label: &str, hint: Option<&str>, control: AnyElement, p: AppPalette) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .child(div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()))
+        .child(control)
+        .when_some(hint, |el, hint| el.child(div().text_size(px(12.)).text_color(p.text_muted).child(hint.to_string())))
+        .into_any_element()
+}
+
 fn modal(p: AppPalette, body: AnyElement) -> AnyElement {
     div()
         .absolute()
-        .inset_0()
+        // Clicks must not reach the terminal underneath (it would take the focus).
+        .occlude()
+        // Below the title bar, so the window can still be moved and closed.
+        .top(px(TITLE_BAR_HEIGHT))
+        .left_0()
+        .right_0()
+        .bottom_0()
         .flex()
         .items_center()
         .justify_center()
@@ -1910,6 +2528,64 @@ fn modal(p: AppPalette, body: AnyElement) -> AnyElement {
                 .child(body),
         )
         .into_any_element()
+}
+
+/// Minimise, maximise/restore and close, in the size and order Windows uses. On Windows the
+/// buttons are hit-tested by the system (snap layouts on maximise work); elsewhere (Linux dev
+/// builds) they act on click.
+fn window_controls(p: AppPalette, window: &Window) -> impl IntoElement {
+    let maximized = window.is_maximized();
+    let button = |id: &'static str, icon: &'static str, area: WindowControlArea, close: bool| {
+        let (hover_bg, hover_fg) = if close { (crate::theme::hex(0xc42b1c), gpui::white()) } else { (p.hover, p.text) };
+        div()
+            .id(id)
+            .group(id)
+            .w(px(46.))
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .hover(move |s| s.bg(hover_bg))
+            .window_control_area(area)
+            .when(cfg!(not(windows)), |el| {
+                el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).on_click(move |_, window, _| match area {
+                    WindowControlArea::Min => window.minimize_window(),
+                    WindowControlArea::Max => window.zoom_window(),
+                    _ => window.remove_window(),
+                })
+            })
+            .child(
+                gpui::svg()
+                    .path(SharedString::from(format!("icons/{icon}.svg")))
+                    .size(px(14.))
+                    .text_color(p.text_muted)
+                    .group_hover(id, move |s| s.text_color(hover_fg)),
+            )
+    };
+    div()
+        .flex()
+        .h_full()
+        .flex_shrink_0()
+        .child(button("window-minimize", "window-minimize", WindowControlArea::Min, false))
+        .child(if maximized {
+            button("window-restore", "window-restore", WindowControlArea::Max, false)
+        } else {
+            button("window-maximize", "window-maximize", WindowControlArea::Max, false)
+        })
+        .child(button("window-close", "window-close", WindowControlArea::Close, true))
+}
+
+/// A context-menu entry that runs `run` on the Workspace.
+fn menu_item(
+    label: &str,
+    icon: &str,
+    ws: &gpui::WeakEntity<Workspace>,
+    run: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+) -> PopupMenuItem {
+    let ws = ws.clone();
+    PopupMenuItem::new(label.to_string()).icon(Icon::empty().path(format!("icons/{icon}.svg"))).on_click(move |_, window, cx| {
+        let _ = ws.update(cx, |this, cx| run(this, window, cx));
+    })
 }
 
 /// A small icon-only action for the session strip above the terminal.
@@ -1961,6 +2637,7 @@ impl Render for Workspace {
             .size_full()
             .relative()
             .flex()
+            .flex_col()
             .font_family(UI_FONT)
             .bg(p.background)
             .text_color(p.text)
@@ -1999,7 +2676,11 @@ impl Render for Workspace {
             }));
 
         if let Some(state) = self.unlock.as_ref().filter(|s| s.full_screen) {
-            return root.child(self.render_unlock(state, p, cx)).into_any_element();
+            return root
+                .bg(p.canvas)
+                .child(self.render_title_bar(true, p, window, cx))
+                .child(div().flex_1().min_h_0().child(self.render_unlock(state, p, cx)))
+                .into_any_element();
         }
 
         let toast = self.toast.as_ref().map(|(msg, _)| {
@@ -2018,23 +2699,59 @@ impl Render for Workspace {
                 .text_color(p.text)
                 .child(msg.clone())
         });
-        let _ = window;
+        let title_bar = self.render_title_bar(false, p, window, cx);
         let page = match self.page {
             Page::Settings(section) => self.render_settings(section, p, cx),
             Page::Sessions => div()
-                .size_full()
+                .flex_1()
+                .min_h_0()
+                .w_full()
                 .flex()
                 .gap(px(ISLAND_GAP))
-                .p(px(ISLAND_GAP))
+                // The title bar above is the top margin.
+                .px(px(ISLAND_GAP))
+                .pb(px(ISLAND_GAP))
                 .bg(p.canvas)
                 .child(self.render_sidebar(p, cx))
                 .child(self.render_main(p, cx))
                 .into_any_element(),
         };
-        root.child(page)
+        root.bg(p.canvas)
+            .child(title_bar)
+            .child(page)
             .children(self.render_overlay(p, cx))
             .children(self.unlock.as_ref().map(|s| self.render_unlock(s, p, cx)))
             .children(toast)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod icon_search_tests {
+    use super::*;
+
+    #[test]
+    fn the_full_icon_set_is_searchable() {
+        assert!(all_icons().len() > 1000, "{}", all_icons().len());
+        assert!(all_icons().iter().all(|n| !n.starts_with("window-")));
+        // Every suggested icon exists.
+        let (suggested, _) = search_icons("");
+        assert_eq!(suggested.len(), SUGGESTED_ICONS.len());
+    }
+
+    #[test]
+    fn exact_and_prefix_matches_come_first() {
+        let (hits, total) = search_icons("database");
+        assert_eq!(hits[0], "database");
+        assert!(total >= hits.len());
+        assert!(hits.iter().take(5).all(|n| n.starts_with("database")));
+        // A word inside a name matches too.
+        let (hits, _) = search_icons("backup");
+        assert!(hits.contains(&"database-backup"));
+        // Spaces act like the dashes in icon names.
+        let (hits, _) = search_icons("hard drive");
+        assert_eq!(hits[0], "hard-drive");
+        let (hits, total) = search_icons("zzzz-no-such-icon");
+        assert!(hits.is_empty() && total == 0);
     }
 }

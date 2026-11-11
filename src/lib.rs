@@ -73,7 +73,12 @@ pub fn run(options: Options) {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(720.), px(420.))),
-                    titlebar: Some(gpui::TitlebarOptions { title: Some("Komando".into()), ..Default::default() }),
+                    // Komando draws its own title bar (see `Workspace::render_title_bar`).
+                    titlebar: Some(gpui::TitlebarOptions {
+                        title: Some("Komando".into()),
+                        appears_transparent: true,
+                        ..Default::default()
+                    }),
                     app_id: Some("komando".into()),
                     ..Default::default()
                 },

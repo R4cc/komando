@@ -5,8 +5,11 @@ use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 use gpui::{Hsla, Rgba, rgb, rgba};
 
-/// KOMANDO brand purple. Only for Komando's own chrome, never for Project colors.
-pub const BRAND: u32 = 0x7c3aed;
+/// KOMANDO brand orange (orange-600, for the light theme). Only for Komando's own chrome,
+/// never for Project colors.
+pub const BRAND: u32 = 0xea580c;
+/// The brand orange on dark surfaces (orange-500).
+pub const BRAND_DARK: u32 = 0xf97316;
 
 #[derive(Clone, Copy)]
 pub struct AppPalette {
@@ -33,18 +36,20 @@ impl AppPalette {
     pub fn dark() -> Self {
         Self {
             dark: true,
-            canvas: hex(0x050506),
-            background: hex(0x0c0c0e),
-            sidebar: hex(0x111114),
-            surface: hex(0x18181b),
+            // Soft dark: deep grey rather than near-black, which strains the eyes over long
+            // sessions. The canvas between the islands stays the darkest layer.
+            canvas: hex(0x121215),
+            background: hex(0x18181c),
+            sidebar: hex(0x1c1c20),
+            surface: hex(0x232328),
             hover: alpha(0xffffff, 0.05),
             active: alpha(0xffffff, 0.08),
             border: alpha(0xffffff, 0.07),
             text: hex(0xececef),
             text_muted: hex(0xa1a1aa),
-            text_faint: hex(0x7a7a84),
-            brand: hex(0x8b5cf6),
-            brand_soft: alpha(0x8b5cf6, 0.16),
+            text_faint: hex(0x85858f),
+            brand: hex(BRAND_DARK),
+            brand_soft: alpha(BRAND_DARK, 0.16),
             danger: hex(0xf87171),
             success: hex(0x4ade80),
             warning: hex(0xfbbf24),
@@ -100,15 +105,17 @@ impl TerminalPalette {
     pub fn dark() -> Self {
         Self {
             dark: true,
-            background: rgb8(0x0b0b0d),
+            // Deep grey instead of near-black; easier on the eyes for long sessions.
+            background: rgb8(0x1a1a1e),
             background_alpha: 1.,
             foreground: rgb8(0xd4d4d8),
             cursor: rgb8(0xe4e4e7),
-            selection: alpha(0x8b5cf6, 0.35),
+            selection: alpha(BRAND_DARK, 0.30),
             ansi: [
-                rgb8(0x27272a), rgb8(0xf87171), rgb8(0x4ade80), rgb8(0xfacc15),
+                // Black and bright black are lifted so they stay visible on the grey background.
+                rgb8(0x3f3f46), rgb8(0xf87171), rgb8(0x4ade80), rgb8(0xfacc15),
                 rgb8(0x60a5fa), rgb8(0xc084fc), rgb8(0x22d3ee), rgb8(0xd4d4d8),
-                rgb8(0x52525b), rgb8(0xfca5a5), rgb8(0x86efac), rgb8(0xfde047),
+                rgb8(0x6b6b74), rgb8(0xfca5a5), rgb8(0x86efac), rgb8(0xfde047),
                 rgb8(0x93c5fd), rgb8(0xd8b4fe), rgb8(0x67e8f9), rgb8(0xfafafa),
             ],
         }
@@ -121,7 +128,7 @@ impl TerminalPalette {
             background_alpha: 1.,
             foreground: rgb8(0x27272a),
             cursor: rgb8(0x27272a),
-            selection: alpha(0x7c3aed, 0.20),
+            selection: alpha(BRAND, 0.20),
             ansi: [
                 rgb8(0x27272a), rgb8(0xdc2626), rgb8(0x15803d), rgb8(0xa16207),
                 rgb8(0x1d4ed8), rgb8(0x7e22ce), rgb8(0x0e7490), rgb8(0xa1a1aa),

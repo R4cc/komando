@@ -323,8 +323,8 @@ pub fn readable_on(color: Rgb8, dark_background: bool) -> Rgb8 {
     let mut c = color;
     for _ in 0..16 {
         if dark_background {
-            // Against near-black (L ≈ 0.004): (L + 0.05) / 0.054 >= 4.5  =>  L >= 0.19
-            if luminance(c) >= 0.19 {
+            // Against the dark terminal (#1a1a1e, L ≈ 0.011): (L + 0.05) / 0.061 >= 4.5  =>  L >= 0.23
+            if luminance(c) >= 0.23 {
                 break;
             }
             let lift = |v: u8| (v as f32 + (255.0 - v as f32) * 0.15).round() as u8;

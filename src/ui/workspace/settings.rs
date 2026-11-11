@@ -249,10 +249,14 @@ impl Workspace {
             );
 
         div()
-            .size_full()
+            .flex_1()
+            .min_h_0()
+            .w_full()
             .flex()
             .gap(px(ISLAND_GAP))
-            .p(px(ISLAND_GAP))
+            // The title bar above is the top margin.
+            .px(px(ISLAND_GAP))
+            .pb(px(ISLAND_GAP))
             .bg(p.canvas)
             .child(nav)
             .child(content)

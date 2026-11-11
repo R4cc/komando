@@ -6,6 +6,68 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-11-11
+
+### Added
+
+- Right-click menus in the sidebar. On a host: connect or show its session, open another
+  session, disconnect, **Edit host…**, **Copy address** and **Delete host…**. On a project:
+  **Add host…**, **Edit project…**, collapse or expand, and **Delete project…**. On a nested
+  session: reconnect, disconnect or close it.
+- Hosts and projects can be edited (name, address, user, port, key, colour, icon) and deleted.
+  Deleting asks first; it closes their open sessions, and saved keys and passwords stay in the
+  vault. Deleting a project also deletes the hosts that belong to no other project.
+
+- Komando draws its own title bar, so the top of the window matches the app instead of the
+  standard Windows bar. The KOMANDO wordmark sits over the sidebar, the active session's name,
+  address and actions sit over the terminal, and minimise, maximise and close are at the right.
+  Dragging, double-click to maximise, snap layouts and resizing from the top edge work as
+  before.
+
+- Icon picker with search for hosts and projects. You can choose any of the roughly 1,800
+  bundled Lucide icons instead of eleven. Without a search it suggests icons for servers and
+  infrastructure. A search matches names and words in names, so "backup" finds
+  "database-backup". Hover an icon to see its name.
+
+### Fixed
+
+- Long logs no longer slow the terminal down:
+  - The minimap remembers how it drew each line and only works out lines that changed, so
+    repainting it while you scroll or while output streams is about 10× cheaper.
+  - With a full scrollback, the command rail no longer rescans every scrollback line each
+    time a new line arrives; it follows the lines as they move up (about 100× cheaper with
+    100,000 lines of scrollback).
+- Clicking a field in a dialog (Add host, New project, Quick connect) while a session was open
+  moved the keyboard focus to the terminal behind the dialog, so typing went into the session.
+  Clicks now stay in the dialog.
+
+### Changed
+
+- Komando's accent colour is orange instead of purple: buttons, switches, selections,
+  sliders, the active settings page and the terminal's text selection. Primary buttons have
+  dark text, which reads better on orange.
+- The Add host and Edit host form is laid out properly:
+  - the project's badge in the header;
+  - labelled fields, with address and port side by side, and the project's default user shown
+    in the empty User field;
+  - a **Sign-in** choice (password or the project's credential, a key file with **Browse…**,
+    or the host's saved key) that explains what each option does;
+  - the icon picker and a clear error banner.
+
+  Enter saves from any field.
+- Dialogs use the window's height, so taller forms fit. In small windows the host form's
+  fields scroll, and its buttons stay in view.
+- The sidebar starts with Quick connect; the wordmark moved up into the title bar.
+- The project-coloured line on top of the terminal follows the terminal's rounded corners and
+  tapers off down their curve, instead of a straight bar that stopped short of them.
+- The session's close button shows an unplug icon, so it can't be mistaken for the window's
+  close button in the same bar.
+- Dialogs leave the title bar uncovered, so the window can be moved or closed while one is
+  open.
+- The dark theme is a soft deep grey instead of near-black, which is easier on the eyes in
+  long sessions. This includes the terminal background (#1a1a1e). The terminal's black and
+  bright-black colours are lighter so dimmed output stays visible on it.
+
 ## [0.1.9] - 2026-11-11
 
 ### Changed

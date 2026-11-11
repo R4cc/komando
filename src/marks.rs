@@ -129,14 +129,58 @@ impl Marks {
         let history = grid.history_size() as i64;
         let (top, bottom) = (grid.topmost_line(), grid.bottommost_line());
         let at = |abs: i64| Line((abs - history) as i32);
-        let still_there = self.marks.iter().all(|m| {
-            let line = at(m.abs);
-            line >= top && line <= bottom && tag_id(&grid[line][Column(0)]) == Some(m.id)
-        });
-        if !still_there {
+        let all_there = |marks: &[Mark]| {
+            marks.iter().all(|m| {
+                let line = at(m.abs);
+                line >= top && line <= bottom && tag_id(&grid[line][Column(0)]) == Some(m.id)
+            })
+        };
+        if !all_there(&self.marks) && !self.follow_shift(term) {
             self.rescan(term);
         }
         self.marks.iter().map(|m| (m.id, at(m.abs))).collect()
+    }
+
+    /// The usual reason marks are not where they were: the Scrollback is full, so each new line
+    /// drops the oldest and moves every row up by one. Then all marks moved by the same amount.
+    /// Finds it from the newest mark, searching up only as far as the rows moved, so a busy
+    /// log with a long Scrollback doesn't cost a scan of the whole Scrollback per frame.
+    /// Returns false if the marks can't be found this way (a full rescan is needed).
+    fn follow_shift<T>(&mut self, term: &Term<T>) -> bool {
+        let grid = term.grid();
+        let history = grid.history_size() as i64;
+        let (top, bottom) = (grid.topmost_line(), grid.bottommost_line());
+        let Some(newest) = self.marks.last() else { return true };
+        let expected = Line((newest.abs - history) as i32).min(bottom);
+        let mut line = expected;
+        let found = loop {
+            if line < top {
+                break None;
+            }
+            if tag_id(&grid[line][Column(0)]) == Some(newest.id) {
+                break Some(line);
+            }
+            line -= 1;
+        };
+        let Some(found) = found else { return false };
+        let shift = (found.0 - expected.0) as i64 + (expected.0 as i64 - (newest.abs - history));
+        let moved: Vec<i64> = self.marks.iter().map(|m| m.abs + shift).collect();
+        // Marks that moved above the top of the Scrollback dropped off with their lines.
+        let keep: Vec<bool> = moved.iter().map(|abs| Line((abs - history) as i32) >= top).collect();
+        let fits = self.marks.iter().zip(&moved).zip(&keep).all(|((m, abs), keep)| {
+            !keep || tag_id(&grid[Line((abs - history) as i32)][Column(0)]) == Some(m.id)
+        });
+        if !fits {
+            return false;
+        }
+        let mut i = 0;
+        self.marks.retain_mut(|m| {
+            let kept = keep[i];
+            m.abs = moved[i];
+            i += 1;
+            kept
+        });
+        true
     }
 
     fn rescan<T>(&mut self, term: &Term<T>) {
@@ -363,5 +407,56 @@ mod tests {
         shell.run("echo abcdefghijkl", &[]);
         shell.print("$ ");
         assert_eq!(shell.commands(), vec![("echo abcdefghijkl".into(), 0)]);
+    }
+
+    #[test]
+    fn marks_follow_their_rows_while_full_scrollback_rotates() {
+        let mut sh = Shell::new(40, 10, 200);
+        sh.run("first", &["a"]);
+        for i in 0..150 {
+            sh.print(&format!("filler {i}\r\n"));
+        }
+        sh.run("second", &["b"]);
+        // Scrollback is full from here on: every line drops the oldest one.
+        for i in 0..120 {
+            sh.print(&format!("more {i}\r\n"));
+            let rows = sh.commands();
+            let term = sh.term.lock();
+            for (command, line) in &rows {
+                let text = term.bounds_to_string(
+                    Point::new(Line(*line), Column(0)),
+                    Point::new(Line(*line), term.grid().last_column()),
+                );
+                assert!(text.contains(command.as_str()), "{command:?} not at {line}: {text:?}");
+            }
+        }
+        // "first" scrolled off the top together with its row; "second" is still there.
+        let names: Vec<String> = sh.commands().into_iter().map(|(c, _)| c).collect();
+        assert_eq!(names, vec!["second".to_string()]);
+    }
+
+    /// A busy log with a full 100k-line Scrollback and a few marks: the cost of finding the
+    /// marks once per frame. `cargo test --release --lib marks -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn finding_marks_in_a_full_long_scrollback() {
+        let mut sh = Shell::new(120, 40, 100_000);
+        for n in 0..5 {
+            sh.run(&format!("tail {n}"), &[]);
+            let block: String = (0..30_000).map(|i| format!("log line {i}\r\n")).collect();
+            sh.print(&block);
+        }
+        // 150k lines went through a 100k Scrollback: the first two marks dropped off.
+        let t = std::time::Instant::now();
+        for i in 0..200 {
+            sh.print(&format!("new {i}\r\n"));
+            assert_eq!(sh.commands().len(), 3);
+        }
+        let now = t.elapsed() / 200;
+        let t = std::time::Instant::now();
+        for _ in 0..200 {
+            sh.marks.rescan(&*sh.term.lock());
+        }
+        println!("per frame with new output: {now:?} (a full rescan, as before: {:?})", t.elapsed() / 200);
     }
 }
