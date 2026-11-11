@@ -6,6 +6,14 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-11
+
+### Changed
+
+- README rewritten for people who want to know what Komando is: a headline, why-Komando
+  summary, feature overview, install steps and FAQ. The detailed highlight rule format and
+  the build and release notes moved to `docs/highlights.md` and `docs/development.md`.
+
 ## [0.1.4] - 2026-11-11
 
 ### Changed

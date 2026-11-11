@@ -1,111 +1,97 @@
-<img src="assets/icon.svg" width="64" height="64" alt="">
+<img src="assets/icon.svg" width="64" height="64" alt="Komando logo">
 
-# KOMANDO
+# KOMANDO: a fast, Rust-built SSH terminal with project-based server organisation
 
-A fast terminal for system engineers who work on Linux servers from Windows 11. SSH hosts are organised into projects with their own colours and icons, and passwords and keys live in an encrypted vault.
+**Komando is a fast SSH terminal for Windows 11, written in Rust.** It keeps all your Linux servers organised in colour-coded projects, one click away, with passwords and keys in an encrypted vault. Built for sysadmins, DevOps and system engineers who spend their day in SSH sessions.
 
-<img src="assets/screenshot-dark.png" alt="Komando: projects with their open sessions in a sidebar, and an SSH session showing systemctl status and a highlighted application log">
+**[⬇ Download Komando for Windows (.msi)](https://github.com/R4cc/komando/releases/latest/download/Komando-x64.msi)** · [All releases](https://github.com/R4cc/komando/releases) · [Changelog](CHANGELOG.md)
 
-<sub>Screenshot of the real app. web01 and db01 are live SSH sessions to a local test server (authenticated with a key from the vault), which prints a scripted demo prompt. web-stg01 is still connecting; the dimmed hosts are idle until clicked.</sub>
+<img src="assets/screenshot-dark.png" alt="Komando SSH terminal: servers grouped into projects in a sidebar, an SSH session showing systemctl status and a highlighted application log">
 
-## What it does
+<sub>Screenshot of the real app: live SSH sessions to a test server, one still connecting, idle hosts dimmed.</sub>
 
-- **Fast output.** Terminal output is parsed on a background thread and drawn on the GPU at most once per frame, so a log flood doesn't block the window. SSH runs inside Komando, so remote output never passes through the Windows console layer (ConPTY).
-- **Every server one click away.** The sidebar always lists your saved hosts and local shells, not open tabs. Click a host to connect, or to jump back to it if it's already connected. Live hosts are bright with a status dot and idle ones are dimmed. When a connection drops, the host goes idle but keeps its output, and a click reconnects in the same terminal below it. Ctrl+click (or +) opens a second session on the same host.
-- **Projects and hosts.** Group hosts into projects, each with a colour and an icon. A thin strip in the project's colour runs above the terminal, so you always see which project you're typing into. A host can belong to several projects and takes the project's colour, default user and password unless it sets its own.
-- **Saved passwords.** When a password you typed works, Komando offers to save it for this host or as the project password. Saved passwords and imported keys (OpenSSH and PuTTY `.ppk`) are kept in a vault encrypted with your master password (Argon2id + XChaCha20-Poly1305). The vault locks after 30 minutes idle; open sessions stay connected.
-- **Server checks.** On first connect Komando shows the server's fingerprint and asks whether to trust it. If the key later changes, the connection is blocked. Keys you already trusted in `%USERPROFILE%\.ssh\known_hosts` are recognised.
-- **Local shells.** PowerShell 7, Windows PowerShell and Command Prompt are detected and listed at the top of the sidebar. You can also put shells inside a project.
-- **Highlighting.** Rules colour matching text in the output: ERROR in red, WARN in orange, `Active: active` in green, and so on. Import and export rule sets as JSON in Tabby's highlight format (see [Highlights](#highlights)).
-- **Copy the whole output.** Copy a session's entire scrollback as text, or as a `.txt` file you can paste straight into Explorer, Outlook or Teams.
-- **Dark by default, light if you want.** The app and the terminal each have their own dark/light setting (**Settings → Appearance**).
-- **Background blur.** On Windows 11 the window uses Mica: your desktop wallpaper, blurred, shows through, even when other windows are behind Komando. Switch it on or off and set the intensity in **Settings → Appearance**. The terminal keeps more of its background than the panels, so text stays readable.
+## Why Komando
 
-## Highlights
+- **Fast.** Written in Rust, drawn on the GPU. Even a flood of log output stays smooth and the window never freezes.
+- **Organised.** Group servers into projects with their own colour and icon. You always know which environment you're typing into.
+- **Secure.** Passwords and SSH keys live in a vault encrypted with your master password. Unknown server keys are checked before you connect.
+- **Made for Windows 11.** A native Windows app with its own built-in SSH client. No WSL, no PuTTY, no extra tools.
 
-<img src="assets/screenshot-highlights.png" alt="Settings, Highlights section: a rule set with its rules, each shown in its colour with regex and case-sensitivity badges and an on/off switch">
+## Features
 
-Manage rule sets in **Settings → Highlights**. A set of 69 rules for typical Linux and service logs is included.
+### Manage all your servers
 
-- **Order matters.** Rules apply top to bottom and the first match wins, so put specific rules (`WARNING`, `Active: inactive`) above general ones (`WARN`, `Active`).
-- **Format.** Same as Tabby's highlight plugin, so sets move between the two apps:
+- **Every server one click away.** The sidebar always lists your saved SSH hosts and local shells. Click to connect, or to jump back to a server you're already on.
+- **Projects with colours and icons.** A coloured strip above the terminal shows the active project at a glance, so you don't run a command on production by accident.
+- **Shared settings per project.** Set a default user and password once for a project and every host inherits it. A host can belong to several projects.
+- **Reconnect in place.** If a connection drops, you keep the output and one click reconnects in the same window.
+- **Multiple sessions per host.** Ctrl+click a host to open a second session on the same server.
+- **Local shells too.** PowerShell 7, Windows PowerShell and Command Prompt are detected automatically and can live inside your projects.
 
-  ```json
-  { "id": "…", "name": "Ops", "keywords": [
-      { "text": "ERROR", "enabled": true, "foreground": true, "foregroundColor": "#FF0000", "isCaseSensitive": true },
-      { "text": "health:\\s*(starting)", "isRegExp": true, "isMatchGroup": true, "matchGroup": "1", "foreground": true, "foregroundColor": "#FFA500" }
-  ] }
-  ```
+### Secure by default
 
-  Plain `text` matches anywhere in a line. `isRegExp` rules use Rust regex syntax, which covers the usual JavaScript syntax except look-around and back-references; rules that can't be used are listed in the panel. With `isMatchGroup`, only the capture group named in `matchGroup` is coloured. `background`/`backgroundColor` and `bold` work too.
-- **Import / export.** Import accepts one set or a list of sets. A set with the same `id` replaces the existing one. Export writes one set. Fields Komando doesn't use are kept, so an exported file matches what was imported.
-- **Where they apply.** Highlights are skipped in full-screen programs (vim, less, htop), and each screen row is matched on its own. On a light terminal, very bright colours are darkened so they stay readable.
-- **Storage.** Sets are kept in `%APPDATA%\Komando\highlights.json`. Adding and editing individual rules inside the app is not available yet: edit the JSON and re-import.
+- **Encrypted password and key vault.** Argon2id and XChaCha20-Poly1305, locked by a master password. Auto-locks after 30 minutes idle while your sessions stay connected.
+- **Saves passwords for you.** When a password you typed works, Komando offers to remember it for that host or for the whole project.
+- **Import SSH keys.** OpenSSH and PuTTY `.ppk` keys are supported.
+- **Server fingerprint checks.** New servers ask for your trust on first connect, and a changed key blocks the connection. Hosts you already trust in your OpenSSH `known_hosts` are recognised.
 
-## Shortcuts
+### Read logs faster
 
-All app shortcuts use Ctrl+Shift, so plain Ctrl keys (Ctrl+W, Ctrl+K, Ctrl+R, …) still reach the shell.
+- **Syntax highlighting for terminal output.** ERROR in red, WARN in orange, `Active: active` in green. 69 ready-made rules for Linux and service logs are included.
+- **Your own rules.** Import and export rule sets as JSON, compatible with Tabby's highlight format. See [Highlights](docs/highlights.md).
+- **Copy the whole output.** Copy a session's full scrollback as text, or as a `.txt` file you can paste straight into Explorer, Outlook or Teams.
+
+### Looks good
+
+- **Dark or light.** The app and the terminal each have their own theme.
+- **Windows 11 Mica blur.** Your blurred wallpaper shows through the window, with the terminal kept readable. Adjustable or off in Settings.
+- **Slim, distraction-free layout.** Just your sidebar, the terminal, and a thin status line.
+
+## Keyboard shortcuts
+
+All app shortcuts use Ctrl+Shift, so plain Ctrl keys (Ctrl+W, Ctrl+R, …) still reach the shell on your server.
 
 | Action | Keys |
 |---|---|
 | Quick connect | Ctrl+Shift+K |
-| Another session on the current host | Ctrl+Shift+T (or Ctrl+click in the sidebar) |
+| Another session on the current host | Ctrl+Shift+T |
 | Disconnect (keeps the output); again to discard it | Ctrl+Shift+W |
 | Next / previous session | Ctrl+Tab / Ctrl+Shift+Tab |
 | Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
-| Copy whole output as text | Ctrl+Shift+A |
-| Copy whole output as .txt file | Ctrl+Shift+S |
+| Copy whole output as text / as .txt file | Ctrl+Shift+A / Ctrl+Shift+S |
 | Lock vault | Ctrl+Shift+L |
-| Settings | Ctrl+, (Esc to go back) |
-| Scroll a page | Shift+PageUp / Shift+PageDown |
-
-Pasting more than one line asks for confirmation first.
-
-## Settings
-
-Open **Settings** from the bottom of the sidebar or with Ctrl+,. It's a full page with sections for Appearance (themes, background blur), Terminal (font, size, scrollback, paste confirmation, PuTTY-style clipboard), Highlights, Security (vault, auto-lock, trusted server keys) and About (version, data folder). Your sessions keep running while it's open.
+| Settings | Ctrl+, |
 
 ## Install
 
-**[⬇ Download the latest Komando for Windows (.msi)](https://github.com/R4cc/komando/releases/latest/download/Komando-x64.msi)**
+1. **[Download the latest Komando-x64.msi](https://github.com/R4cc/komando/releases/latest/download/Komando-x64.msi)** and run it. A portable `.exe` is on the [Releases](https://github.com/R4cc/komando/releases) page.
+2. Start Komando and set a master password for the vault.
+3. Add your first project and host, and click to connect.
 
-The link always points to the newest release. Older versions and the plain `.exe` are on the [Releases](https://github.com/R4cc/komando/releases) page. Komando runs on Windows 11 only ([why](docs/adr/0001-windows-11-only.md)).
+Komando runs on Windows 11 only ([why](docs/adr/0001-windows-11-only.md)). Your data stays on your machine in `%APPDATA%\Komando`. There is no recovery for a forgotten master password, but your projects and hosts are stored separately and survive.
 
-Data lives in `%APPDATA%\Komando`:
+## FAQ
 
-| File | Contents |
-|---|---|
-| `library.toml` | Projects and hosts (no secrets) |
-| `settings.toml` | Themes, background blur, font, scrollback size, auto-lock |
-| `vault.json` | Encrypted passwords and keys |
-| `known_hosts` | Trusted server keys |
-| `highlights.json` | Highlight rule sets |
+**What is Komando?**
+A Rust-based SSH client and terminal emulator for Windows 11 that organises servers into projects.
 
-There is no recovery for a forgotten master password. The vault can't be opened without it, but projects and hosts are stored separately and survive.
+**Is it an alternative to PuTTY, Windows Terminal, Tabby or MobaXterm?**
+Yes, if you mostly work on Linux servers over SSH. Komando combines a fast GPU-rendered terminal, a built-in SSH client and a server manager, and it reads PuTTY keys and Tabby highlight rules.
 
-## Build from source
+**Does it need WSL or OpenSSH?**
+No. SSH runs inside Komando, so remote output never passes through the Windows console layer (ConPTY).
 
-```powershell
-cargo build --release      # target\release\komando.exe
-cargo test --lib
-```
+**Where are my passwords stored?**
+In an encrypted vault on your computer, protected by your master password. Nothing is sent anywhere.
 
-### Versions and releases
+## Coming soon
 
-The version is in `Cargo.toml` and every change is listed in [CHANGELOG.md](CHANGELOG.md). Patch versions (0.1.x) go up with each change; minor and major versions are bumped by the maintainer.
+Search in output (Ctrl+F), editing hosts and projects inside the app (for now edit `library.toml`), jump hosts, split view, Windows Hello unlock and changing the master password.
 
-Publish a GitHub release with a tag that matches `Cargo.toml`, like `v0.2.0`. The [release workflow](.github/workflows/release.yml) builds Komando on Windows and attaches `Komando-0.2.0-x64.msi`, the same installer as `Komando-x64.msi` (which the download link above points to), and the plain `.exe`. To rebuild an existing release, run the workflow manually with its tag.
+## For developers
 
-### Developing on Linux
+Build instructions, release process and design notes are in [docs/development.md](docs/development.md). Terms used in the code are in [GLOSSARY.md](GLOSSARY.md).
 
-Komando ships for Windows only, but it also builds on Linux, which is handy for tests and screenshots. You need the X11 libraries (`libxcb`, `libxkbcommon`, `libxkbcommon-x11`). Set `RUST_FONTCONFIG_DLOPEN=on` if fontconfig has no pkg-config file. `examples/demo.rs` seeds a throwaway data folder and opens a few sessions; it's what produced the screenshot above.
+---
 
-## Not in this version yet
-
-Search in output (Ctrl+F), editing and deleting hosts and projects in the app (for now edit `library.toml`), jump hosts, split view, Windows Hello unlock, locking the vault when Windows locks, and changing the master password.
-
-## Design notes
-
-- [GLOSSARY.md](GLOSSARY.md): the terms used in code and docs (Project, Host, Session, Vault, …).
-- [docs/adr](docs/adr): decisions and why: Windows only, embedded SSH client, native GPU UI, master-password vault, a sidebar of hosts instead of tabs.
-- [CHANGELOG.md](CHANGELOG.md): what changed in each version.
+<sub>Keywords: SSH terminal for Windows, SSH client, SSH manager, terminal emulator, Rust terminal, GPU terminal, server management, sysadmin tools, DevOps, Linux server access, PuTTY alternative, Tabby alternative.</sub>
