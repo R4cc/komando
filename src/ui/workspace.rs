@@ -12,6 +12,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::slider::{Slider, SliderEvent, SliderState};
+use gpui_component::tooltip::Tooltip;
 
 use crate::highlight::{self, ActiveHighlights, HighlightSet, Highlighter};
 use crate::model::{
@@ -1452,27 +1453,25 @@ impl Workspace {
         let project = entry.project_id.as_deref().and_then(|id| self.library.project(id));
         let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.text_faint);
         let view = entry.view.read(cx);
-        let (subtitle, icon) = match &entry.kind {
-            SessionKind::Ssh { host_id } => {
-                let r = entry.project_id.as_deref().and_then(|id| self.library.resolve(id, host_id));
-                let sub = r
-                    .as_ref()
-                    .map(|r| {
-                        let user = r.user.clone().map(|u| format!("{u}@")).unwrap_or_default();
-                        let port = if r.port == 22 { String::new() } else { format!(":{}", r.port) };
-                        format!("{user}{}{port}", r.address)
-                    })
-                    .unwrap_or_default();
-                (sub, r.map(|r| r.icon).unwrap_or_else(|| "server".into()))
-            }
-            SessionKind::Local { shell } => (format!("Local · {}", shell.program), "square-terminal".to_string()),
+        // Just enough to know where you are typing: state, user@address and port.
+        // The Host name, icon and Project are already in the sidebar.
+        let target = match &entry.kind {
+            SessionKind::Ssh { host_id } => entry
+                .project_id
+                .as_deref()
+                .and_then(|id| self.library.resolve(id, host_id))
+                .map(|r| {
+                    let user = r.user.clone().map(|u| format!("{u}@")).unwrap_or_default();
+                    format!("{user}{}:{}", r.address, r.port)
+                })
+                .unwrap_or_else(|| entry.label.clone().to_string()),
+            SessionKind::Local { shell } => format!("Local · {}", shell.program),
         };
         let (status_text, status_color) = match &view.status {
             Status::Connecting => ("Connecting", p.warning),
             Status::Connected => ("Connected", p.success),
             Status::Disconnected(_) => ("Disconnected", p.text_faint),
         };
-        let project_name = project.map(|pr| pr.name.clone()).unwrap_or_default();
         let id = entry.id;
         let term_bg = cx.global::<Appearance>().term.background_hsla();
         div()
@@ -1481,63 +1480,38 @@ impl Workspace {
             .h_full()
             .flex()
             .flex_col()
-            .gap(px(ISLAND_GAP))
+            .gap(px(4.))
             .child(
-                island(p)
-                    .h(px(56.))
+                div()
+                    .id("session-strip")
+                    .h(px(22.))
                     .flex_shrink_0()
-                    .pl(px(12.))
-                    .pr(px(10.))
+                    .pl(px(6.))
                     .flex()
                     .items_center()
-                    .gap(px(12.))
-                    .child(badge(&icon, color, 30.))
+                    .gap(px(7.))
+                    .child(status_dot(status_color))
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
+                            .id("session-target")
                             .min_w_0()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .child(div().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).truncate().child(entry.label.clone()))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(6.))
-                                            .px(px(8.))
-                                            .h(px(20.))
-                                            .rounded_full()
-                                            .bg(status_color.opacity(0.12))
-                                            .text_size(px(11.))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(status_color)
-                                            .child(status_dot(status_color))
-                                            .child(status_text),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(p.text_faint)
-                                    .truncate()
-                                    .child(format!("{project_name} · {subtitle}")),
-                            ),
+                            .text_size(px(12.))
+                            .text_color(p.text_faint)
+                            .truncate()
+                            .tooltip(move |window, cx| Tooltip::new(status_text).build(window, cx))
+                            .child(target),
                     )
                     .child(div().flex_1())
                     .child(
-                        header_action("copy-text", "copy", "Copy output", p)
+                        strip_action("copy-text", "copy", "Copy output", p)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_text(cx))),
                     )
                     .child(
-                        header_action("copy-file", "file-text", "Copy as .txt", p)
+                        strip_action("copy-file", "file-text", "Copy as .txt", p)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_file(cx))),
                     )
                     .child(
-                        icon_button("close-active", "x", p)
+                        strip_action("close-active", "x", "Close session", p)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.close_session(id, window, cx))),
                     ),
             )
@@ -1899,22 +1873,19 @@ fn modal(p: AppPalette, body: AnyElement) -> AnyElement {
         .into_any_element()
 }
 
-fn header_action(id: &'static str, icon: &str, label: &'static str, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+/// A small icon-only action for the session strip above the terminal.
+fn strip_action(id: &'static str, icon: &str, label: &'static str, p: AppPalette) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
-        .h(px(30.))
-        .px(px(10.))
+        .size(px(22.))
         .flex()
         .items_center()
-        .gap(px(7.))
-        .rounded(px(7.))
+        .justify_center()
+        .rounded(px(6.))
         .cursor_pointer()
-        .text_size(px(12.5))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(p.text_muted)
-        .hover(|s| s.bg(p.hover).text_color(p.text))
-        .child(icon_el(icon, 14., p.text_muted))
-        .child(label)
+        .hover(|s| s.bg(p.hover))
+        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+        .child(icon_el(icon, 13., p.text_faint))
 }
 
 fn kbd(keys: &str, p: AppPalette) -> impl IntoElement {

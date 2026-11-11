@@ -73,7 +73,7 @@ pub fn icon_el(name: &str, size: f32, color: Hsla) -> AnyElement {
         .into_any_element()
 }
 
-/// Islands are the rounded panels the window is made of (sidebar, header, terminal).
+/// Islands are the rounded panels the window is made of (sidebar, terminal).
 /// Rows inside them have an 8px radius and sit 8px from the edge: 8 + 8 = 16.
 pub const ISLAND_RADIUS: f32 = 16.;
 pub const ISLAND_GAP: f32 = 8.;

@@ -6,6 +6,15 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-11
+
+### Changed
+
+- The bar above the terminal is gone, leaving more room for output. In its place, a slim
+  line at the top left shows the connection state as a coloured dot and `user@address:port`
+  (hover the line for the state in words). Copy output, Copy as .txt and close are now small
+  icons at the right of that line, with tooltips.
+
 ## [0.1.3] - 2026-11-11
 
 ### Added
