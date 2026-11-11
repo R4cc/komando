@@ -8,7 +8,9 @@ pub fn set_window_dark_mode(window: &gpui::Window, dark: bool) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 
-    let Ok(handle) = window.window_handle() else { return };
+    // gpui's Window has its own `window_handle()` (returning AnyWindowHandle); call the
+    // raw-window-handle trait method explicitly.
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
     if let RawWindowHandle::Win32(win32) = handle.as_raw() {
         let hwnd = HWND(win32.hwnd.get() as *mut core::ffi::c_void);
         let value: i32 = dark as i32; // Win32 BOOL

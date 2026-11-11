@@ -6,6 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-11
+
+### Fixed
+
+- Windows build: 0.1.0 did not compile on Windows because of the code that matches the Mica
+  tint to the app theme.
+
 ## [0.1.0] - 2026-11-11
 
 First version.
@@ -31,5 +38,6 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/R4cc/komando/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/R4cc/komando/releases/tag/v0.1.0
