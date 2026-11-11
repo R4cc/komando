@@ -17,7 +17,8 @@ A fast terminal for system engineers who work on Linux servers from Windows 11. 
 - **Local shells.** PowerShell 7, Windows PowerShell and Command Prompt tabs, organised under projects like SSH sessions.
 - **Highlighting.** Rules colour matching text in the output: ERROR in red, WARN in orange, `Active: active` in green, and so on. Import and export rule sets as JSON in Tabby's highlight format (see [Highlights](#highlights)).
 - **Copy the whole output.** Copy a session's entire scrollback as text, or as a `.txt` file you can paste straight into Explorer, Outlook or Teams.
-- **Dark by default, light if you want.** The app and the terminal each have their own dark/light setting.
+- **Dark by default, light if you want.** The app and the terminal each have their own dark/light setting (sidebar → **Appearance**).
+- **Background blur.** On Windows 11 the window uses Mica: your desktop wallpaper, blurred, shows through, even when other windows are behind Komando. Switch it on or off and set the intensity in **Appearance**. The terminal keeps more of its background than the panels, so text stays readable.
 
 ## Highlights
 
@@ -67,7 +68,7 @@ Data lives in `%APPDATA%\Komando`:
 | File | Contents |
 |---|---|
 | `library.toml` | Projects and hosts (no secrets) |
-| `settings.toml` | Theme, font, scrollback size, auto-lock |
+| `settings.toml` | Themes, background blur, font, scrollback size, auto-lock |
 | `vault.json` | Encrypted passwords and keys |
 | `known_hosts` | Trusted server keys |
 | `highlights.json` | Highlight rule sets |

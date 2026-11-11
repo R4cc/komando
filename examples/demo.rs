@@ -92,6 +92,7 @@ fn main() {
             ],
             active: Some(0),
             show_highlights: env::var("KOMANDO_DEMO_HIGHLIGHTS").is_ok(),
+            show_appearance: env::var("KOMANDO_DEMO_APPEARANCE").is_ok(),
         },
     });
 }

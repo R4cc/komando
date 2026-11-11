@@ -220,6 +220,10 @@ pub struct Settings {
     pub confirm_multiline_paste: bool,
     /// Highlight sets (by id) that are switched off.
     pub disabled_highlight_sets: Vec<String>,
+    /// Windows 11 Mica: the blurred desktop shows through Komando's background.
+    pub background_blur: bool,
+    /// 0–100: how much of the blurred backdrop shows through.
+    pub background_blur_intensity: u8,
 }
 
 impl Default for Settings {
@@ -234,6 +238,8 @@ impl Default for Settings {
             putty_clipboard: false,
             confirm_multiline_paste: true,
             disabled_highlight_sets: vec![],
+            background_blur: true,
+            background_blur_intensity: 60,
         }
     }
 }

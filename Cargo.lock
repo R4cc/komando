@@ -3826,6 +3826,7 @@ dependencies = [
  "gpui-pre-platform",
  "log",
  "rand 0.8.8",
+ "raw-window-handle",
  "regex",
  "russh",
  "serde",
@@ -3834,6 +3835,7 @@ dependencies = [
  "tokio",
  "toml 0.8.23",
  "uuid",
+ "windows 0.62.2",
  "winresource",
  "zeroize",
 ]

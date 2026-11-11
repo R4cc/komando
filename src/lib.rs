@@ -5,6 +5,7 @@ pub mod export;
 pub mod highlight;
 pub mod keys;
 pub mod model;
+pub mod platform;
 pub mod session;
 pub mod theme;
 pub mod ui;

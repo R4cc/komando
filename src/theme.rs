@@ -51,6 +51,16 @@ impl AppPalette {
         }
     }
 
+    /// Let the window backdrop (Mica) show through. `t` is 0 (opaque) to 1. The canvas
+    /// becomes almost clear, islands half-clear; dialogs (`surface`) stay opaque.
+    pub fn translucent(mut self, t: f32) -> Self {
+        let t = t.clamp(0., 1.);
+        self.canvas.a *= 1. - 0.92 * t;
+        self.sidebar.a *= 1. - 0.55 * t;
+        self.background.a *= 1. - 0.55 * t;
+        self
+    }
+
     pub fn light() -> Self {
         Self {
             dark: false,
@@ -77,6 +87,8 @@ impl AppPalette {
 pub struct TerminalPalette {
     pub dark: bool,
     pub background: Rgb,
+    /// Opacity of the terminal's own background (below 1 when the backdrop shows through).
+    pub background_alpha: f32,
     pub foreground: Rgb,
     pub cursor: Rgb,
     pub selection: Hsla,
@@ -88,6 +100,7 @@ impl TerminalPalette {
         Self {
             dark: true,
             background: rgb8(0x0b0b0d),
+            background_alpha: 1.,
             foreground: rgb8(0xd4d4d8),
             cursor: rgb8(0xe4e4e7),
             selection: alpha(0x8b5cf6, 0.35),
@@ -104,6 +117,7 @@ impl TerminalPalette {
         Self {
             dark: false,
             background: rgb8(0xfcfcfb),
+            background_alpha: 1.,
             foreground: rgb8(0x27272a),
             cursor: rgb8(0x27272a),
             selection: alpha(0x7c3aed, 0.20),
@@ -114,6 +128,18 @@ impl TerminalPalette {
                 rgb8(0x2563eb), rgb8(0x9333ea), rgb8(0x0891b2), rgb8(0x71717a),
             ],
         }
+    }
+
+    /// The terminal keeps more of its background than the islands so text stays readable.
+    pub fn translucent(mut self, t: f32) -> Self {
+        self.background_alpha = 1. - 0.45 * t.clamp(0., 1.);
+        self
+    }
+
+    pub fn background_hsla(&self) -> Hsla {
+        let mut c = rgb_to_hsla(self.background);
+        c.a = self.background_alpha;
+        c
     }
 
     /// Resolve a cell colour, honouring palette changes the program made (OSC 4/10/11).

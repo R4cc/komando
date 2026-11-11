@@ -11,6 +11,7 @@ use gpui::{
     SharedString, Subscription, Window, WindowAppearance, actions, div, prelude::*, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::slider::{Slider, SliderEvent, SliderState};
 
 use crate::highlight::{self, ActiveHighlights, HighlightSet, Highlighter};
 use crate::model::{
@@ -55,6 +56,7 @@ enum Overlay {
     NewHost { project_id: String, fields: Vec<Entity<InputState>>, icon: String, error: Option<String> },
     NewProject { name: Entity<InputState>, color: String, icon: String, error: Option<String> },
     Highlights { expanded: Option<String> },
+    Appearance { intensity: Entity<SliderState> },
 }
 
 enum Pending {
@@ -72,6 +74,8 @@ pub struct Startup {
     pub active: Option<usize>,
     /// Open the Highlights panel (used for screenshots).
     pub show_highlights: bool,
+    /// Open the Appearance panel (used for screenshots).
+    pub show_appearance: bool,
 }
 
 pub struct Workspace {
@@ -184,6 +188,9 @@ impl Workspace {
         {
             self.activate(id, window, cx);
         }
+        if startup.show_appearance {
+            self.open_appearance(window, cx);
+        }
         if startup.show_highlights {
             let first = self.highlights.first().map(|s| s.id.clone());
             self.overlay = Some(Overlay::Highlights { expanded: first });
@@ -204,9 +211,19 @@ impl Workspace {
             TerminalThemeSetting::Light => false,
             TerminalThemeSetting::Dark => true,
         };
+        // Mica: Windows blurs the desktop behind the window; our surfaces become partly
+        // transparent so it shows through. The slider sets how much.
+        let blur = crate::platform::SUPPORTS_BACKDROP && self.settings.background_blur;
+        let t = if blur { self.settings.background_blur_intensity as f32 / 100. } else { 0. };
+        window.set_background_appearance(if blur {
+            gpui::WindowBackgroundAppearance::MicaBackdrop
+        } else {
+            gpui::WindowBackgroundAppearance::Opaque
+        });
+        crate::platform::set_window_dark_mode(window, app_dark);
         cx.set_global(Appearance {
-            app: if app_dark { AppPalette::dark() } else { AppPalette::light() },
-            term: if term_dark { TerminalPalette::dark() } else { TerminalPalette::light() },
+            app: (if app_dark { AppPalette::dark() } else { AppPalette::light() }).translucent(t),
+            term: (if term_dark { TerminalPalette::dark() } else { TerminalPalette::light() }).translucent(t),
             font_family: self.settings.font_family.clone().into(),
             font_size: self.settings.font_size,
         });
@@ -224,6 +241,43 @@ impl Workspace {
         cx.refresh_windows();
     }
 
+    fn set_app_theme(&mut self, theme: AppThemeSetting, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings.app_theme = theme;
+        let _ = self.settings.save(&self.data_dir);
+        self.apply_appearance(window, cx);
+    }
+
+    fn set_terminal_theme(&mut self, theme: TerminalThemeSetting, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings.terminal_theme = theme;
+        let _ = self.settings.save(&self.data_dir);
+        self.apply_appearance(window, cx);
+    }
+
+    fn set_background_blur(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings.background_blur = on;
+        let _ = self.settings.save(&self.data_dir);
+        self.apply_appearance(window, cx);
+    }
+
+    fn open_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let value = self.settings.background_blur_intensity as f32;
+        let intensity = cx.new(|_| SliderState::new().min(0.).max(100.).step(5.).default_value(value));
+        let sub = cx.subscribe_in(&intensity, window, |this, _, event: &SliderEvent, window, cx| match event {
+            // Live preview while dragging; written to disk on release.
+            SliderEvent::Change(value) => {
+                this.settings.background_blur_intensity = value.end().round().clamp(0., 100.) as u8;
+                this.apply_appearance(window, cx);
+            }
+            SliderEvent::Release(_) => {
+                let _ = this.settings.save(&this.data_dir);
+            }
+        });
+        self._subscriptions.push(sub);
+        self.overlay = Some(Overlay::Appearance { intensity });
+        cx.notify();
+    }
+
+    #[allow(dead_code)]
     fn cycle_app_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.app_theme = match self.settings.app_theme {
             AppThemeSetting::System => AppThemeSetting::Light,
@@ -234,6 +288,7 @@ impl Workspace {
         self.apply_appearance(window, cx);
     }
 
+    #[allow(dead_code)]
     fn cycle_terminal_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.terminal_theme = match self.settings.terminal_theme {
             TerminalThemeSetting::Follow => TerminalThemeSetting::Light,
@@ -1108,15 +1163,11 @@ impl Workspace {
         }
 
         let app_theme = match self.settings.app_theme {
-            AppThemeSetting::System => ("monitor", "App: system"),
-            AppThemeSetting::Light => ("sun", "App: light"),
-            AppThemeSetting::Dark => ("moon", "App: dark"),
+            AppThemeSetting::System => ("monitor", "System"),
+            AppThemeSetting::Light => ("sun", "Light"),
+            AppThemeSetting::Dark => ("moon", "Dark"),
         };
-        let term_theme = match self.settings.terminal_theme {
-            TerminalThemeSetting::Follow => ("square-terminal", "Terminal: follow app"),
-            TerminalThemeSetting::Light => ("sun", "Terminal: light"),
-            TerminalThemeSetting::Dark => ("moon", "Terminal: dark"),
-        };
+
         let footer_row = |id: &'static str, icon: &str, label: String| {
             div()
                 .id(id)
@@ -1222,12 +1273,8 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        footer_row("app-theme", app_theme.0, app_theme.1.into())
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.cycle_app_theme(window, cx))),
-                    )
-                    .child(
-                        footer_row("term-theme", term_theme.0, term_theme.1.into())
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.cycle_terminal_theme(window, cx))),
+                        footer_row("appearance", app_theme.0, format!("Appearance · {}", app_theme.1))
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_appearance(window, cx))),
                     ),
             )
             .into_any_element()
@@ -1262,7 +1309,7 @@ impl Workspace {
         };
         let project_name = project.map(|pr| pr.name.clone()).unwrap_or_default();
         let id = entry.id;
-        let term_bg = crate::theme::rgb_to_hsla(cx.global::<Appearance>().term.background);
+        let term_bg = cx.global::<Appearance>().term.background_hsla();
         div()
             .flex_1()
             .min_w_0()
@@ -1486,6 +1533,7 @@ impl Workspace {
                 )
             }
             Overlay::Highlights { expanded } => self.render_highlights(expanded.clone(), p, cx),
+            Overlay::Appearance { intensity } => self.render_appearance(intensity.clone(), p, cx),
             Overlay::NewProject { name, color, icon, error } => {
                 let current = color.clone();
                 let selected_icon = icon.clone();
@@ -1544,6 +1592,7 @@ impl Workspace {
                 .absolute()
                 .inset_0()
                 .flex()
+                .items_start()
                 .justify_center()
                 .pt(px(96.))
                 .bg(alpha(0x000000, if p.dark { 0.5 } else { 0.2 }))
@@ -1760,6 +1809,137 @@ impl Workspace {
             .children(skipped)
             .into_any_element()
     }
+}
+
+impl Workspace {
+    fn render_appearance(&self, intensity: Entity<SliderState>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let app = self.settings.app_theme;
+        let term = self.settings.terminal_theme;
+        let blur = self.settings.background_blur;
+        let supported = crate::platform::SUPPORTS_BACKDROP;
+        let row = |label: &str, hint: &str, control: AnyElement| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(16.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()))
+                        .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_faint).child(hint.to_string())),
+                )
+                .child(control)
+        };
+        let app_choice = segmented(
+            "app-theme",
+            &[("Dark", app == AppThemeSetting::Dark), ("Light", app == AppThemeSetting::Light), ("System", app == AppThemeSetting::System)],
+            p,
+            cx,
+            |this, i, window, cx| {
+                let theme = [AppThemeSetting::Dark, AppThemeSetting::Light, AppThemeSetting::System][i];
+                this.set_app_theme(theme, window, cx);
+            },
+        );
+        let term_choice = segmented(
+            "term-theme",
+            &[
+                ("Follow app", term == TerminalThemeSetting::Follow),
+                ("Dark", term == TerminalThemeSetting::Dark),
+                ("Light", term == TerminalThemeSetting::Light),
+            ],
+            p,
+            cx,
+            |this, i, window, cx| {
+                let theme = [TerminalThemeSetting::Follow, TerminalThemeSetting::Dark, TerminalThemeSetting::Light][i];
+                this.set_terminal_theme(theme, window, cx);
+            },
+        );
+        let blur_hint = if supported {
+            "Windows 11 Mica: your desktop, blurred, shows through the window, even with other windows behind it."
+        } else {
+            "Windows 11 only. This build runs elsewhere, so the setting is saved but has no effect."
+        };
+        div()
+            .w(px(520.))
+            .p(px(22.))
+            .flex()
+            .flex_col()
+            .gap(px(20.))
+            .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Appearance"))
+            .child(row("App theme", "Sidebar, panels and dialogs.", app_choice))
+            .child(row("Terminal theme", "Terminal colours, independent of the app theme.", term_choice))
+            .child(div().h(px(1.)).bg(p.border))
+            .child(row(
+                "Background blur",
+                blur_hint,
+                switch("blur-toggle".into(), blur, p)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_background_blur(!blur, window, cx)))
+                    .into_any_element(),
+            ))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(14.))
+                    .when(!blur, |el| el.opacity(0.4))
+                    .child(div().w(px(70.)).text_size(px(13.)).text_color(p.text_muted).child("Intensity"))
+                    .child(div().flex_1().child(Slider::new(&intensity).disabled(!blur)))
+                    .child(
+                        div()
+                            .w(px(44.))
+                            .text_right()
+                            .font_family("Cascadia Mono")
+                            .text_size(px(12.))
+                            .text_color(p.text_muted)
+                            .child(format!("{}%", self.settings.background_blur_intensity)),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+/// A segmented control: one choice of several.
+fn segmented(
+    id: &'static str,
+    options: &[(&'static str, bool)],
+    p: AppPalette,
+    cx: &mut Context<Workspace>,
+    pick: impl Fn(&mut Workspace, usize, &mut Window, &mut Context<Workspace>) + Clone + 'static,
+) -> AnyElement {
+    let items: Vec<_> = options.iter().enumerate().map(|(i, (label, selected))| {
+            let pick = pick.clone();
+            div()
+                .id((id, i))
+                .h(px(26.))
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .rounded(px(6.))
+                .cursor_pointer()
+                .text_size(px(12.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if *selected { p.text } else { p.text_muted })
+                .when(*selected, |el| el.bg(p.brand_soft).text_color(p.brand))
+                .when(!*selected, |el| el.hover(|s| s.text_color(p.text)))
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| pick(this, i, window, cx)))
+                .child(*label)
+        })
+        .collect();
+    div()
+        .flex()
+        .flex_shrink_0()
+        .p(px(3.))
+        .gap(px(2.))
+        .rounded(px(9.))
+        .bg(p.hover)
+        .border_1()
+        .border_color(p.border)
+        .children(items)
+        .into_any_element()
 }
 
 /// An on/off switch, 32×18.

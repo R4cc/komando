@@ -573,7 +573,7 @@ impl Render for TerminalView {
         let palette = appearance.term.clone();
         let family = appearance.font_family.clone();
         let font_size = px(appearance.font_size);
-        let term_bg = rgb_to_hsla(palette.background);
+        let term_bg = palette.background_hsla();
         let focused = self.focus.is_focused(window) && self.prompt.is_none();
 
         let term = self.term.clone();

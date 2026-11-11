@@ -32,6 +32,8 @@ sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5"
+raw-window-handle = "0.6"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dwm"] }
 
 [profile.dev]
 debug = 0
