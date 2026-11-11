@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+# A new push supersedes the run for the previous one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   windows:
     name: Build and test (Windows)
@@ -12,7 +17,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Test
-        run: cargo test --lib --locked
-      - name: Build release
+      # One profile for both steps: the tests reuse the release build's dependencies
+      # instead of compiling the whole tree a second time.
+      - name: Build
         run: cargo build --release --locked
+      - name: Test
+        run: cargo test --release --lib --locked
