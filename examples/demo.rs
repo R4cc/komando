@@ -91,6 +91,7 @@ fn main() {
                 ("Local".into(), local_shell),
             ],
             active: Some(0),
+            show_highlights: env::var("KOMANDO_DEMO_HIGHLIGHTS").is_ok(),
         },
     });
 }

@@ -18,8 +18,30 @@ A fast terminal for system engineers who work on Linux servers from Windows 11. 
 - **Saved passwords.** When a password you typed works, Komando offers to save it for this host or as the project password. Saved passwords and imported keys (OpenSSH and PuTTY `.ppk`) are kept in a vault encrypted with your master password (Argon2id + XChaCha20-Poly1305). The vault locks after 30 minutes idle; open sessions stay connected.
 - **Server checks.** On first connect Komando shows the server's fingerprint and asks whether to trust it. If the key later changes, the connection is blocked. Keys you already trusted in `%USERPROFILE%\.ssh\known_hosts` are recognised.
 - **Local shells.** PowerShell 7, Windows PowerShell and Command Prompt tabs, organised under projects like SSH sessions.
+- **Highlighting.** Rules colour matching text in the output: ERROR in red, WARN in orange, `Active: active` in green, and so on. Import and export rule sets as JSON in Tabby's highlight format (see [Highlights](#highlights)).
 - **Copy the whole output.** Copy a session's entire scrollback as text, or as a `.txt` file you can paste straight into Explorer, Outlook or Teams.
 - **Light and dark.** The app and the terminal each have their own light/dark setting.
+
+## Highlights
+
+<img src="assets/screenshot-highlights.png" alt="The Highlights panel: a rule set with its rules, each shown in its colour with regex and case-sensitivity badges and an on/off switch">
+
+Open the panel from **Highlights** at the bottom of the sidebar. A set of 69 rules for typical Linux and service logs is included.
+
+- **Order matters.** Rules apply top to bottom and the first match wins, so put specific rules (`WARNING`, `Active: inactive`) above general ones (`WARN`, `Active`).
+- **Format.** Same as Tabby's highlight plugin, so sets move between the two apps:
+
+  ```json
+  { "id": "…", "name": "Ops", "keywords": [
+      { "text": "ERROR", "enabled": true, "foreground": true, "foregroundColor": "#FF0000", "isCaseSensitive": true },
+      { "text": "health:\\s*(starting)", "isRegExp": true, "isMatchGroup": true, "matchGroup": "1", "foreground": true, "foregroundColor": "#FFA500" }
+  ] }
+  ```
+
+  Plain `text` matches anywhere in a line. `isRegExp` rules use Rust regex syntax, which covers the usual JavaScript syntax except look-around and back-references; rules that can't be used are listed in the panel. With `isMatchGroup`, only the capture group named in `matchGroup` is coloured. `background`/`backgroundColor` and `bold` work too.
+- **Import / export.** Import accepts one set or a list of sets. A set with the same `id` replaces the existing one. Export writes one set. Fields Komando doesn't use are kept, so an exported file matches what was imported.
+- **Where they apply.** Highlights are skipped in full-screen programs (vim, less, htop), and each screen row is matched on its own. On a light terminal, very bright colours are darkened so they stay readable.
+- **Storage.** Sets are kept in `%APPDATA%\Komando\highlights.json`. Adding and editing individual rules inside the app is not available yet: edit the JSON and re-import.
 
 ## Shortcuts
 
@@ -51,6 +73,7 @@ Data lives in `%APPDATA%\Komando`:
 | `settings.toml` | Theme, font, scrollback size, auto-lock |
 | `vault.json` | Encrypted passwords and keys |
 | `known_hosts` | Trusted server keys |
+| `highlights.json` | Highlight rule sets |
 
 There is no recovery for a forgotten master password. The vault can't be opened without it, but projects and hosts are stored separately and survive.
 

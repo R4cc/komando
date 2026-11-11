@@ -143,6 +143,12 @@ struct Rule {
     style: Style,
 }
 
+/// The highlighter every terminal uses; replaced when rules change.
+#[derive(Default)]
+pub struct ActiveHighlights(pub std::sync::Arc<Highlighter>);
+
+impl gpui::Global for ActiveHighlights {}
+
 /// Compiled form of all enabled rules, shared by every terminal.
 #[derive(Default)]
 pub struct Highlighter {

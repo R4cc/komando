@@ -62,3 +62,13 @@ Light or dark mode for Komando's chrome: sidebar, dialogs and settings.
 **Terminal Theme**:
 Light or dark color scheme for terminal content, set independently of the App Theme.
 _Avoid_: Color scheme (ambiguous)
+
+## Highlighting
+
+**Highlight Rule**:
+A pattern (plain text or regex) and the colours or bold style given to output that matches it.
+_Avoid_: Keyword (the file format's field name), trigger, filter
+
+**Highlight Set**:
+A named, ordered list of Highlight Rules that is imported, exported and switched on or off as a whole. Earlier rules take precedence.
+_Avoid_: Profile, theme

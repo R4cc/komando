@@ -12,6 +12,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
+use crate::highlight::{self, ActiveHighlights, HighlightSet, Highlighter};
 use crate::model::{
     self, AppThemeSetting, CredentialSource, Host, Library, LocalShell, Project, Settings, TerminalThemeSetting,
 };
@@ -50,6 +51,7 @@ enum Overlay {
     Picker { query: Entity<InputState>, project_id: Option<String> },
     NewHost { project_id: String, fields: Vec<Entity<InputState>>, icon: String, error: Option<String> },
     NewProject { name: Entity<InputState>, color: String, icon: String, error: Option<String> },
+    Highlights { expanded: Option<String> },
 }
 
 enum Pending {
@@ -65,12 +67,17 @@ pub struct Startup {
     /// (Project name, Host or local shell name) pairs to open, in order.
     pub open: Vec<(String, String)>,
     pub active: Option<usize>,
+    /// Open the Highlights panel (used for screenshots).
+    pub show_highlights: bool,
 }
 
 pub struct Workspace {
     data_dir: PathBuf,
     library: Library,
     settings: Settings,
+    highlights: Vec<HighlightSet>,
+    /// Rules that could not be compiled, with the reason.
+    highlight_skipped: Vec<(String, String)>,
     vault: Option<Vault>,
     /// Shown full-window at launch; as a dialog when a locked Vault is needed later.
     unlock: Option<UnlockState>,
@@ -115,10 +122,13 @@ impl Workspace {
                 model::starter_library()
             }
         };
+        let highlights = highlight::load(&data_dir);
         let mut this = Self {
             data_dir,
             library,
             settings,
+            highlights,
+            highlight_skipped: vec![],
             vault: None,
             unlock: None,
             pending: None,
@@ -133,6 +143,7 @@ impl Workspace {
             _subscriptions: vec![],
         };
         this.apply_appearance(window, cx);
+        this.apply_highlights(cx);
         let sub = cx.observe_window_appearance(window, |this, window, cx| this.apply_appearance(window, cx));
         this._subscriptions.push(sub);
         if let Some(password) = &startup.master_password {
@@ -169,6 +180,10 @@ impl Workspace {
             && let Some(id) = self.sessions.get(index).map(|s| s.id)
         {
             self.activate(id, window, cx);
+        }
+        if startup.show_highlights {
+            let first = self.highlights.first().map(|s| s.id.clone());
+            self.overlay = Some(Overlay::Highlights { expanded: first });
         }
     }
 
@@ -224,6 +239,111 @@ impl Workspace {
         };
         let _ = self.settings.save(&self.data_dir);
         self.apply_appearance(window, cx);
+    }
+
+    // ---- highlights -------------------------------------------------------------------
+
+    fn apply_highlights(&mut self, cx: &mut Context<Self>) {
+        let compiled = Highlighter::from_sets(&self.highlights, &self.settings.disabled_highlight_sets);
+        self.highlight_skipped = compiled.skipped.clone();
+        cx.set_global(ActiveHighlights(std::sync::Arc::new(compiled)));
+        cx.refresh_windows();
+    }
+
+    fn save_highlights(&mut self, cx: &mut Context<Self>) {
+        if let Err(err) = highlight::save(&self.data_dir, &self.highlights) {
+            self.show_toast(format!("Could not save highlights: {err:#}"), cx);
+        }
+        self.apply_highlights(cx);
+    }
+
+    fn active_rule_count(&self) -> usize {
+        self.highlights
+            .iter()
+            .filter(|s| !self.settings.disabled_highlight_sets.contains(&s.id))
+            .flat_map(|s| s.keywords.iter())
+            .filter(|k| k.enabled)
+            .count()
+    }
+
+    fn toggle_highlight_set(&mut self, id: &str, cx: &mut Context<Self>) {
+        let disabled = &mut self.settings.disabled_highlight_sets;
+        if let Some(pos) = disabled.iter().position(|d| d == id) {
+            disabled.remove(pos);
+        } else {
+            disabled.push(id.to_string());
+        }
+        let _ = self.settings.save(&self.data_dir);
+        self.apply_highlights(cx);
+        cx.notify();
+    }
+
+    fn toggle_highlight_rule(&mut self, set_id: &str, index: usize, cx: &mut Context<Self>) {
+        if let Some(rule) = self.highlights.iter_mut().find(|s| s.id == set_id).and_then(|s| s.keywords.get_mut(index)) {
+            rule.enabled = !rule.enabled;
+        }
+        self.save_highlights(cx);
+        cx.notify();
+    }
+
+    fn delete_highlight_set(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.highlights.retain(|s| s.id != id);
+        self.settings.disabled_highlight_sets.retain(|d| d != id);
+        let _ = self.settings.save(&self.data_dir);
+        self.save_highlights(cx);
+        cx.notify();
+    }
+
+    fn import_highlights(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Import".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let _ = this.update(cx, |this, cx| {
+                let mut imported = vec![];
+                for path in &paths {
+                    match std::fs::read_to_string(path).map_err(anyhow::Error::from).and_then(|t| highlight::parse(&t)) {
+                        Ok(sets) => imported.extend(sets),
+                        Err(err) => {
+                            this.show_toast(format!("{}: {err:#}", path.display()), cx);
+                            return;
+                        }
+                    }
+                }
+                let rules: usize = imported.iter().map(|s| s.keywords.len()).sum();
+                let (added, replaced) = highlight::merge(&mut this.highlights, imported);
+                this.save_highlights(cx);
+                let mut message = format!("Imported {} set(s), {rules} rules", added + replaced);
+                if replaced > 0 {
+                    message.push_str(&format!(" ({replaced} replaced)"));
+                }
+                if !this.highlight_skipped.is_empty() {
+                    message.push_str(&format!(". {} rule(s) can't be used", this.highlight_skipped.len()));
+                }
+                this.show_toast(message, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn export_highlight_set(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(set) = self.highlights.iter().find(|s| s.id == id).cloned() else { return };
+        let dir = dirs::document_dir().or_else(dirs::home_dir).unwrap_or_else(std::env::temp_dir);
+        let name = format!("{}.json", sanitize(&set.name));
+        let picked = cx.prompt_for_new_path(&dir, Some(&name));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = picked.await else { return };
+            let result = highlight::export(&set).and_then(|json| Ok(std::fs::write(&path, json)?));
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(()) => this.show_toast(format!("Exported {} to {}", set.name, path.display()), cx),
+                Err(err) => this.show_toast(format!("Could not export: {err:#}"), cx),
+            });
+        })
+        .detach();
     }
 
     // ---- vault ------------------------------------------------------------------------
@@ -1089,6 +1209,13 @@ impl Workspace {
                     .gap(px(2.))
                     .child(vault_row)
                     .child(
+                        footer_row("highlights", "highlighter", format!("Highlights · {} rules", self.active_rule_count()))
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.overlay = Some(Overlay::Highlights { expanded: None });
+                                cx.notify();
+                            })),
+                    )
+                    .child(
                         footer_row("app-theme", app_theme.0, app_theme.1.into())
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.cycle_app_theme(window, cx))),
                     )
@@ -1335,6 +1462,7 @@ impl Workspace {
                     ],
                 )
             }
+            Overlay::Highlights { expanded } => self.render_highlights(expanded.clone(), p, cx),
             Overlay::NewProject { name, color, icon, error } => {
                 let current = color.clone();
                 let selected_icon = icon.clone();
@@ -1414,6 +1542,217 @@ impl Workspace {
                 .into_any_element(),
         )
     }
+}
+
+impl Workspace {
+    fn render_highlights(&self, expanded: Option<String>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let term = cx.global::<Appearance>().term.clone();
+        let term_bg = crate::theme::rgb_to_hsla(term.background);
+        let mut list = div().id("highlight-sets").flex().flex_col().gap(px(4.)).p(px(8.)).max_h(px(470.)).overflow_y_scroll();
+        if self.highlights.is_empty() {
+            list = list.child(
+                div().p(px(16.)).text_size(px(13.)).text_color(p.text_faint).child("No highlight sets. Import a .json file exported from Komando or Tabby."),
+            );
+        }
+        for set in &self.highlights {
+            let on = !self.settings.disabled_highlight_sets.contains(&set.id);
+            let open = expanded.as_deref() == Some(set.id.as_str());
+            let enabled_rules = set.keywords.iter().filter(|k| k.enabled).count();
+            let (id_toggle, id_export, id_delete, id_open) = (set.id.clone(), set.id.clone(), set.id.clone(), set.id.clone());
+            list = list.child(
+                div()
+                    .id(SharedString::from(format!("hl-set-{}", set.id)))
+                    .h(px(44.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(p.hover))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        if let Some(Overlay::Highlights { expanded }) = this.overlay.as_mut() {
+                            *expanded = if expanded.as_deref() == Some(id_open.as_str()) { None } else { Some(id_open.clone()) };
+                        }
+                        cx.notify();
+                    }))
+                    .child(icon_el(if open { "chevron-down" } else { "chevron-right" }, 14., p.text_faint))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).truncate().child(set.name.clone()))
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(p.text_faint)
+                                    .child(format!("{enabled_rules} of {} rules on", set.keywords.len())),
+                            ),
+                    )
+                    .child(
+                        icon_button(SharedString::from(format!("hl-export-{}", set.id)), "download", p)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.export_highlight_set(&id_export, window, cx);
+                            })),
+                    )
+                    .child(
+                        icon_button(SharedString::from(format!("hl-delete-{}", set.id)), "trash", p)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.delete_highlight_set(&id_delete, cx);
+                            })),
+                    )
+                    .child(
+                        switch(SharedString::from(format!("hl-toggle-{}", set.id)), on, p).on_click(cx.listener(
+                            move |this, _: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.toggle_highlight_set(&id_toggle, cx);
+                            },
+                        )),
+                    ),
+            );
+            if !open {
+                continue;
+            }
+            for (index, rule) in set.keywords.iter().enumerate() {
+                let set_id = set.id.clone();
+                let fg = rule
+                    .fg()
+                    .map(|c| highlight::readable_on(c, term.dark))
+                    .map(|c| crate::theme::hex(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32))
+                    .unwrap_or(p.text);
+                let bg = rule
+                    .bg()
+                    .map(|c| crate::theme::hex(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32))
+                    .unwrap_or(term_bg);
+                let mut flags = vec![];
+                if rule.is_regex() {
+                    flags.push("regex");
+                }
+                if rule.case_sensitive() {
+                    flags.push("Aa");
+                }
+                list = list.child(
+                    div()
+                        .id(SharedString::from(format!("hl-rule-{}-{index}", set.id)))
+                        .h(px(34.))
+                        .pl(px(34.))
+                        .pr(px(10.))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .rounded(px(6.))
+                        .hover(|s| s.bg(p.hover))
+                        .when(!rule.enabled, |el| el.opacity(0.45))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .px(px(8.))
+                                        .py(px(3.))
+                                        .rounded(px(5.))
+                                        .bg(bg)
+                                        .font_family("Cascadia Mono")
+                                        .text_size(px(12.))
+                                        .text_color(fg)
+                                        .when(rule.bold.unwrap_or(false), |el| el.font_weight(FontWeight::BOLD))
+                                        .truncate()
+                                        .child(rule.text.clone()),
+                                ),
+                        )
+                        .child(div().w(px(84.)).flex().justify_end().gap(px(6.)).children(flags.into_iter().map(|f| {
+                            div()
+                                .px(px(6.))
+                                .h(px(18.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(4.))
+                                .border_1()
+                                .border_color(p.border)
+                                .text_size(px(10.5))
+                                .text_color(p.text_faint)
+                                .child(f)
+                        })))
+                        .child(
+                            switch(SharedString::from(format!("hl-rule-toggle-{}-{index}", set.id)), rule.enabled, p)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    this.toggle_highlight_rule(&set_id, index, cx);
+                                })),
+                        ),
+                );
+            }
+        }
+        let skipped = (!self.highlight_skipped.is_empty()).then(|| {
+            div()
+                .px(px(16.))
+                .py(px(10.))
+                .border_t_1()
+                .border_color(p.border)
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .text_size(px(12.))
+                .text_color(p.warning)
+                .child(format!("{} rule(s) can't be used:", self.highlight_skipped.len()))
+                .children(self.highlight_skipped.iter().take(5).map(|(text, why)| {
+                    div().text_color(p.text_muted).truncate().child(format!("{text}: {why}"))
+                }))
+        });
+        div()
+            .w(px(600.))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .p(px(16.))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .border_b_1()
+                    .border_color(p.border)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Highlights"))
+                                        .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_faint).child(
+                                "Colours matching text in terminal output. Rules apply top to bottom; the first match wins.",
+                            )),
+                    )
+                    .child(
+                        button("hl-import", "Import…", ButtonKind::Secondary, p)
+                            .flex_shrink_0()
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.import_highlights(window, cx))),
+                    ),
+            )
+            .child(list)
+            .children(skipped)
+            .into_any_element()
+    }
+}
+
+/// An on/off switch, 32×18.
+fn switch(id: SharedString, on: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .w(px(32.))
+        .h(px(18.))
+        .flex_shrink_0()
+        .p(px(2.))
+        .rounded_full()
+        .cursor_pointer()
+        .bg(if on { p.brand } else { p.active })
+        .flex()
+        .when(on, |el| el.justify_end())
+        .child(div().size(px(14.)).rounded_full().bg(gpui::white()).shadow(elevation(false)))
 }
 
 fn icon_choices(

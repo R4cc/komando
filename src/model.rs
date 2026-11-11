@@ -218,6 +218,8 @@ pub struct Settings {
     pub putty_clipboard: bool,
     /// Ask before pasting more than one line.
     pub confirm_multiline_paste: bool,
+    /// Highlight sets (by id) that are switched off.
+    pub disabled_highlight_sets: Vec<String>,
 }
 
 impl Default for Settings {
@@ -231,6 +233,7 @@ impl Default for Settings {
             auto_lock_minutes: 30,
             putty_clipboard: false,
             confirm_multiline_paste: true,
+            disabled_highlight_sets: vec![],
         }
     }
 }

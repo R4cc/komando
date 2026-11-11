@@ -2,6 +2,7 @@
 //! Windows 11 only (see docs/adr/0001-windows-11-only.md).
 
 pub mod export;
+pub mod highlight;
 pub mod keys;
 pub mod model;
 pub mod session;

@@ -3826,6 +3826,7 @@ dependencies = [
  "gpui-pre-platform",
  "log",
  "rand 0.8.8",
+ "regex",
  "russh",
  "serde",
  "serde_json",

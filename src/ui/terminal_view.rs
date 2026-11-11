@@ -8,6 +8,7 @@ use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::vte::ansi::Rgb;
 use futures::StreamExt as _;
 use futures::channel::{mpsc, oneshot};
 use gpui::prelude::FluentBuilder as _;
@@ -19,6 +20,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
+use crate::highlight::{self, ActiveHighlights};
 use crate::keys::{self, Mods};
 use crate::session::{
     EventProxy, GridSize, InputSink, Prompt, SessionEvent, SharedTerm, Status, new_term, scrollback_text,
@@ -549,6 +551,14 @@ impl TerminalView {
     }
 }
 
+struct RowCell {
+    point: GridPoint,
+    ch: char,
+    fg: Rgb,
+    bg: Rgb,
+    flags: Flags,
+}
+
 struct Frame {
     rects: Vec<(Bounds<Pixels>, Hsla)>,
     lines: Vec<(gpui::Point<Pixels>, ShapedLine)>,
@@ -570,6 +580,7 @@ impl Render for TerminalView {
         let grid = self.grid.clone();
         let origin_cell = self.origin.clone();
         let cell_cell = self.cell.clone();
+        let highlighter = cx.try_global::<ActiveHighlights>().map(|h| h.0.clone()).unwrap_or_default();
 
         let surface = canvas(
             move |bounds, window, _cx| {
@@ -607,27 +618,97 @@ impl Render for TerminalView {
                 let cursor = content.cursor.point;
                 let default_bg = palette.background;
 
+                // Highlight rules colour plain output; full-screen programs (vim, htop) are left alone.
+                let highlight = !content.mode.contains(TermMode::ALT_SCREEN) && highlighter.rule_count() > 0;
                 let mut frame = Frame { rects: vec![], lines: vec![], cursor_outline: None, line_height: line_h };
-                let mut row_text = String::with_capacity(cols as usize);
-                let mut runs: Vec<TextRun> = Vec::new();
-                let mut current_row: i32 = -1;
+                let mut cells: Vec<RowCell> = Vec::with_capacity(cols as usize);
+                let mut current_row: i32 = i32::MIN;
 
-                let flush = |row: i32, text: &mut String, runs: &mut Vec<TextRun>, frame: &mut Frame| {
-                    if row < 0 || text.is_empty() {
-                        text.clear();
-                        runs.clear();
+                let emit = |row: i32, cells: &mut Vec<RowCell>, frame: &mut Frame| {
+                    if cells.is_empty() {
                         return;
                     }
-                    let shaped = text_system.shape_line(SharedString::from(std::mem::take(text)), font_size, runs, None);
-                    runs.clear();
-                    let origin = point(bounds.origin.x, bounds.origin.y + line_h * row as f32);
-                    frame.lines.push((origin, shaped));
+                    let text: String = cells.iter().map(|c| c.ch).collect();
+                    let styles = if highlight { highlighter.styles(&text) } else { None };
+                    let mut runs: Vec<TextRun> = Vec::new();
+                    let mut byte = 0;
+                    for cell in cells.iter() {
+                        let len = cell.ch.len_utf8();
+                        let rule = styles.as_ref().and_then(|s| s[byte]);
+                        byte += len;
+                        let (mut fg, mut bg) = (cell.fg, cell.bg);
+                        let mut bold = cell.flags.contains(Flags::BOLD);
+                        if let Some(rule) = rule {
+                            if let Some(c) = rule.fg {
+                                let c = highlight::readable_on(c, palette.dark);
+                                fg = Rgb { r: c.r, g: c.g, b: c.b };
+                            }
+                            if let Some(c) = rule.bg {
+                                bg = Rgb { r: c.r, g: c.g, b: c.b };
+                            }
+                            bold |= rule.bold;
+                        }
+                        let is_cursor = show_cursor && cell.point == cursor;
+                        if is_cursor && focused {
+                            fg = palette.background;
+                            bg = palette.cursor;
+                        }
+                        let col = cell.point.column.0 as f32;
+                        let cell_bounds = Bounds::new(
+                            point(bounds.origin.x + cell_w * col, bounds.origin.y + line_h * row as f32),
+                            size(cell_w * if cell.flags.contains(Flags::WIDE_CHAR) { 2.0 } else { 1.0 }, line_h),
+                        );
+                        if is_cursor && !focused {
+                            frame.cursor_outline = Some((cell_bounds, rgb_to_hsla(palette.cursor)));
+                        }
+                        if bg != default_bg || (is_cursor && focused) {
+                            frame.rects.push((cell_bounds, rgb_to_hsla(bg)));
+                        }
+                        if selection.is_some_and(|s| s.contains(cell.point)) {
+                            frame.rects.push((cell_bounds, palette.selection));
+                        }
+
+                        let mut color = rgb_to_hsla(fg);
+                        if cell.flags.contains(Flags::DIM) {
+                            color.a *= 0.66;
+                        }
+                        let mut font = regular.clone();
+                        if bold {
+                            font.weight = FontWeight::BOLD;
+                        }
+                        if cell.flags.contains(Flags::ITALIC) {
+                            font.style = FontStyle::Italic;
+                        }
+                        let underline = cell.flags.intersects(Flags::ALL_UNDERLINES).then(|| UnderlineStyle {
+                            thickness: px(1.),
+                            color: Some(color),
+                            wavy: cell.flags.contains(Flags::UNDERCURL),
+                        });
+                        match runs.last_mut() {
+                            Some(last) if last.color == color && last.font == font && last.underline == underline => {
+                                last.len += len
+                            }
+                            _ => runs.push(TextRun {
+                                len,
+                                font,
+                                color,
+                                background_color: None,
+                                underline,
+                                strikethrough: None,
+                            }),
+                        }
+                    }
+                    cells.clear();
+                    if row >= 0 {
+                        let shaped = text_system.shape_line(SharedString::from(text), font_size, &runs, None);
+                        frame.lines.push((point(bounds.origin.x, bounds.origin.y + line_h * row as f32), shaped));
+                    }
                 };
 
                 for indexed in content.display_iter {
                     let row = indexed.point.line.0 + offset;
                     if row != current_row {
-                        flush(current_row, &mut row_text, &mut runs, &mut frame);
+                        emit(current_row, &mut cells, &mut frame);
                         current_row = row;
                     }
                     let cell = indexed.cell;
@@ -639,57 +720,10 @@ impl Render for TerminalView {
                     if cell.flags.contains(Flags::INVERSE) {
                         std::mem::swap(&mut fg, &mut bg);
                     }
-                    let is_cursor = show_cursor && indexed.point == cursor;
-                    if is_cursor && focused {
-                        fg = palette.background;
-                        bg = palette.cursor;
-                    }
-                    let col = indexed.point.column.0 as f32;
-                    let cell_bounds = Bounds::new(
-                        point(bounds.origin.x + cell_w * col, bounds.origin.y + line_h * row as f32),
-                        size(cell_w * if cell.flags.contains(Flags::WIDE_CHAR) { 2.0 } else { 1.0 }, line_h),
-                    );
-                    if is_cursor && !focused {
-                        frame.cursor_outline = Some((cell_bounds, rgb_to_hsla(palette.cursor)));
-                    }
-                    if bg != default_bg || (is_cursor && focused) {
-                        frame.rects.push((cell_bounds, rgb_to_hsla(bg)));
-                    }
-                    if selection.is_some_and(|s| s.contains(indexed.point)) {
-                        frame.rects.push((cell_bounds, palette.selection));
-                    }
-
                     let ch = if cell.flags.contains(Flags::HIDDEN) || cell.c == '\t' { ' ' } else { cell.c };
-                    let mut color = rgb_to_hsla(fg);
-                    if cell.flags.contains(Flags::DIM) {
-                        color.a *= 0.66;
-                    }
-                    let mut font = regular.clone();
-                    if cell.flags.contains(Flags::BOLD) {
-                        font.weight = FontWeight::BOLD;
-                    }
-                    if cell.flags.contains(Flags::ITALIC) {
-                        font.style = FontStyle::Italic;
-                    }
-                    let underline = cell
-                        .flags
-                        .intersects(Flags::ALL_UNDERLINES)
-                        .then(|| UnderlineStyle { thickness: px(1.), color: Some(color), wavy: cell.flags.contains(Flags::UNDERCURL) });
-                    let len = ch.len_utf8();
-                    row_text.push(ch);
-                    match runs.last_mut() {
-                        Some(last) if last.color == color && last.font == font && last.underline == underline => last.len += len,
-                        _ => runs.push(TextRun {
-                            len,
-                            font,
-                            color,
-                            background_color: None,
-                            underline,
-                            strikethrough: None,
-                        }),
-                    }
+                    cells.push(RowCell { point: indexed.point, ch, fg, bg, flags: cell.flags });
                 }
-                flush(current_row, &mut row_text, &mut runs, &mut frame);
+                emit(current_row, &mut cells, &mut frame);
                 frame
             },
             move |_bounds, frame, window, cx| {
