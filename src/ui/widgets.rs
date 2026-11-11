@@ -107,9 +107,10 @@ pub fn section_label(text: &str, p: AppPalette) -> impl IntoElement {
     tracked(&text.to_uppercase(), 10.5, FontWeight::SEMIBOLD, 0.6, p.text_faint, UI_FONT)
 }
 
-/// The KOMANDO wordmark. gpui has no letter-spacing, so letters are laid out one by one.
+/// The KOMANDO wordmark, in the serif of the KO logo. gpui has no letter-spacing, so
+/// letters are laid out one by one.
 pub fn wordmark(size: f32, color: Hsla) -> impl IntoElement {
-    tracked("KOMANDO", size, FontWeight::EXTRA_BOLD, size * 0.16, color, DISPLAY_FONT)
+    tracked("KOMANDO", size, FontWeight::NORMAL, size * 0.07, color, DISPLAY_FONT)
 }
 
 fn tracked(text: &str, size: f32, weight: FontWeight, tracking: f32, color: Hsla, family: &'static str) -> gpui::Div {

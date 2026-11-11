@@ -27,7 +27,7 @@ pub const FONTS: [&[u8]; 6] = [
     include_bytes!("../assets/fonts/Inter-Regular.ttf"),
     include_bytes!("../assets/fonts/Inter-Medium.ttf"),
     include_bytes!("../assets/fonts/Inter-SemiBold.ttf"),
-    include_bytes!("../assets/fonts/InterDisplay-ExtraBold.ttf"),
+    include_bytes!("../assets/fonts/YoungSerif-Regular.ttf"),
 ];
 
 /// Fonts, component library and key bindings. Shared by the app and the screenshot tool.

@@ -13,6 +13,8 @@
     <SummaryInformation Description="Komando terminal" />
     <MajorUpgrade DowngradeErrorMessage="A newer version of Komando is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <Icon Id="KomandoIcon" SourceFile="assets\icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="KomandoIcon" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Komando">

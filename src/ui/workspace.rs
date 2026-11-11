@@ -1154,8 +1154,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(wordmark(17., p.text))
-                    .child(div().size(px(8.)).rounded(px(2.)).bg(p.brand)),
+                    .child(wordmark(21., p.text)),
             )
             .child(
                 div()
