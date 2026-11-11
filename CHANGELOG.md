@@ -6,6 +6,39 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-11-11
+
+### Changed
+
+- The strip above the terminal names the session (for example **web01**) before its
+  user@address:port, so you can always see which server you're typing into.
+- Secondary text (hints in Settings, the session address, section labels) has more contrast,
+  most noticeably in the light theme.
+- The minimap dims plain text and keeps coloured text strong, so errors and warnings stand
+  out. The box marking what's on screen now has an outline.
+- Command rail marks are easier to see.
+- Highlights settings: single rules get smaller, neutral switches, so the set's own switch and
+  the rule colours stand out. Hover **regex** or **Aa** to see what they mean.
+- Highlight colours are adjusted to read at 4.5:1 or better on the terminal: very light
+  colours are darkened on a light terminal (previously only to 3:1), and very dark colours are
+  lightened on a dark one. Rules that set their own background keep their colours as they are.
+- Highlights settings show each pattern as a small chip around its text instead of a
+  full-width bar that looked like an input field.
+- Switches that are off show their track clearly, and sliders use the same purple as the
+  other controls.
+- First run: the "there is no recovery" warning stands out, and the skip button reads **Set
+  up later**. Warning text in the light theme is a darker amber, so it reads at 5:1.
+- Red buttons have more contrast in the dark theme.
+- Settings → Security shows "1 saved" instead of a bare number. Settings → About shows the
+  data folder in monospace on one line, and the version only once.
+
+### Fixed
+
+- The close button above the terminal sits apart from the copy buttons and turns red on
+  hover, so closing a live session by accident is less likely.
+- Deleting a highlight set takes a second click on **Delete set**; one click could delete the
+  whole set without warning. A double-click on the trash icon doesn't count as both clicks.
+
 ## [0.1.8] - 2026-11-11
 
 ### Added

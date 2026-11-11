@@ -308,12 +308,11 @@ pub fn merge(existing: &mut Vec<HighlightSet>, imported: Vec<HighlightSet>) -> (
     (added, replaced)
 }
 
-/// Rule colours are usually picked for dark backgrounds; on a light terminal, very light
-/// colours (#00FF00, #FFD700) are darkened until they are readable.
+/// Rule colours are picked for some background, not necessarily ours. Each is adjusted until
+/// it reads at 4.5:1 or better against the terminal: on a light terminal very light colours
+/// (#00FF00, #FFD700) are darkened, on a dark one very dark colours (#0000FF) are lightened.
+/// Colours that already read well are left as they are.
 pub fn readable_on(color: Rgb8, dark_background: bool) -> Rgb8 {
-    if dark_background {
-        return color;
-    }
     let luminance = |c: Rgb8| {
         let lin = |v: u8| {
             let v = v as f32 / 255.0;
@@ -322,12 +321,21 @@ pub fn readable_on(color: Rgb8, dark_background: bool) -> Rgb8 {
         0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
     };
     let mut c = color;
-    // Contrast against near-white: (1.05) / (L + 0.05) >= 3.0  =>  L <= 0.30
-    for _ in 0..12 {
-        if luminance(c) <= 0.30 {
-            break;
+    for _ in 0..16 {
+        if dark_background {
+            // Against near-black (L ≈ 0.004): (L + 0.05) / 0.054 >= 4.5  =>  L >= 0.19
+            if luminance(c) >= 0.19 {
+                break;
+            }
+            let lift = |v: u8| (v as f32 + (255.0 - v as f32) * 0.15).round() as u8;
+            c = Rgb8 { r: lift(c.r), g: lift(c.g), b: lift(c.b) };
+        } else {
+            // Against near-white (L ≈ 0.97): 1.02 / (L + 0.05) >= 4.5  =>  L <= 0.18
+            if luminance(c) <= 0.18 {
+                break;
+            }
+            c = Rgb8 { r: (c.r as f32 * 0.85) as u8, g: (c.g as f32 * 0.85) as u8, b: (c.b as f32 * 0.85) as u8 };
         }
-        c = Rgb8 { r: (c.r as f32 * 0.85) as u8, g: (c.g as f32 * 0.85) as u8, b: (c.b as f32 * 0.85) as u8 };
     }
     c
 }
@@ -443,11 +451,15 @@ mod tests {
     }
 
     #[test]
-    fn light_backgrounds_darken_bright_colours() {
+    fn colours_are_adjusted_to_read_on_the_terminal() {
         let lime = parse_hex("#00FF00").unwrap();
         assert_eq!(readable_on(lime, true), lime);
         let adjusted = readable_on(lime, false);
         assert!(adjusted.g < lime.g);
+        let blue = parse_hex("#0000FF").unwrap();
+        let lifted = readable_on(blue, true);
+        assert!(lifted.r > 0 && lifted.b == 0xff, "{lifted:?}");
+        assert_eq!(readable_on(blue, false), blue);
         assert_eq!(parse_hex("#abc"), Some(Rgb8 { r: 0xaa, g: 0xbb, b: 0xcc }));
         assert_eq!(parse_hex("0"), None);
     }

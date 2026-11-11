@@ -42,7 +42,7 @@ impl AppPalette {
             border: alpha(0xffffff, 0.07),
             text: hex(0xececef),
             text_muted: hex(0xa1a1aa),
-            text_faint: hex(0x63636b),
+            text_faint: hex(0x7a7a84),
             brand: hex(0x8b5cf6),
             brand_soft: alpha(0x8b5cf6, 0.16),
             danger: hex(0xf87171),
@@ -73,12 +73,13 @@ impl AppPalette {
             border: alpha(0x000000, 0.09),
             text: hex(0x18181b),
             text_muted: hex(0x52525b),
-            text_faint: hex(0xa1a1aa),
+            text_faint: hex(0x71717a),
             brand: hex(BRAND),
             brand_soft: alpha(BRAND, 0.10),
             danger: hex(0xdc2626),
             success: hex(0x16a34a),
-            warning: hex(0xd97706),
+            // amber-700: 5:1 on white, so warning text reads (amber-600 was 3.2:1).
+            warning: hex(0xb45309),
         }
     }
 }

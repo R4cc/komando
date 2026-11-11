@@ -562,13 +562,13 @@ impl TerminalView {
                         .ml(px(2.))
                         .h(px(2.))
                         .rounded(px(1.))
-                        .w(px(if is_current || is_hovered { 9. } else { 6. }))
+                        .w(px(if is_current || is_hovered { 9. } else { 7. }))
                         .bg(with_alpha(if is_hovered {
                             1.0
                         } else if is_current {
-                            0.8
+                            0.9
                         } else {
-                            0.3
+                            0.5
                         })),
                 )
                 .children(card)
@@ -877,7 +877,8 @@ impl Render for TerminalView {
                         let mut bold = cell.flags.contains(Flags::BOLD);
                         if let Some(rule) = rule {
                             if let Some(c) = rule.fg {
-                                let c = highlight::readable_on(c, palette.dark);
+                                // A rule with its own background keeps its colours.
+                                let c = if rule.bg.is_some() { c } else { highlight::readable_on(c, palette.dark) };
                                 fg = Rgb { r: c.r, g: c.g, b: c.b };
                             }
                             if let Some(c) = rule.bg {

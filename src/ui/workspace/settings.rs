@@ -66,6 +66,7 @@ impl Workspace {
     pub(super) fn open_settings(&mut self, section: SettingsSection, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_settings_controls(window, cx);
         self.overlay = None;
+        self.confirm_delete_set = None;
         self.page = Page::Settings(section);
         window.focus(&self.focus, cx);
         cx.notify();
@@ -196,14 +197,16 @@ impl Workspace {
                     .child(s.label())
             }))
             .child(div().flex_1())
-            .child(
-                div()
-                    .px(px(8.))
-                    .pb(px(4.))
-                    .text_size(px(12.))
-                    .text_color(p.text_faint)
-                    .child(format!("Komando {VERSION}")),
-            );
+            .when(section != SettingsSection::About, |el| {
+                el.child(
+                    div()
+                        .px(px(8.))
+                        .pb(px(4.))
+                        .text_size(px(12.))
+                        .text_color(p.text_faint)
+                        .child(format!("Komando {VERSION}")),
+                )
+            });
 
         let body = match section {
             SettingsSection::Appearance => self.settings_appearance(p, cx),
@@ -460,7 +463,11 @@ impl Workspace {
                     p,
                     "Saved credentials",
                     "Passwords and keys in the vault. Hosts and projects only refer to them.",
-                    value_label(saved.map(|n| n.to_string()).unwrap_or_else(|| "locked".into()), p),
+                    div()
+                        .text_size(px(13.))
+                        .text_color(p.text_muted)
+                        .child(saved.map(|n| format!("{n} saved")).unwrap_or_else(|| "Locked".into()))
+                        .into_any_element(),
                 ),
                 setting_row(
                     p,
@@ -476,6 +483,7 @@ impl Workspace {
 
     fn settings_about(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let data_dir = self.data_dir.clone();
+        let path: SharedString = self.data_dir.display().to_string().into();
         div()
             .flex()
             .flex_col()
@@ -485,7 +493,16 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(20.))
-                    .child(gpui::img(logo()).size(px(72.)).rounded(px(16.)))
+                    // A hairline ring, so the dark tile doesn't dissolve into a dark panel.
+                    .child(
+                        div()
+                            .size(px(72.))
+                            .rounded(px(16.))
+                            .border_1()
+                            .border_color(p.border)
+                            .overflow_hidden()
+                            .child(gpui::img(logo()).size_full()),
+                    )
                     .child(
                         div()
                             .flex()
@@ -504,14 +521,38 @@ impl Workspace {
             )
             .child(group(
                 p,
-                vec![setting_row(
-                    p,
-                    "Data folder",
-                    &self.data_dir.display().to_string(),
-                    button("open-data", "Open folder", ButtonKind::Secondary, p)
-                        .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_with_system(&data_dir)))
+                vec![
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(24.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.))
+                                .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child("Data folder"))
+                                // A path: monospace, on one line, cut off at the end rather than wrapped.
+                                .child(
+                                    div()
+                                        .id("data-path")
+                                        .font_family("Cascadia Mono")
+                                        .text_size(px(12.))
+                                        .text_color(p.text_muted)
+                                        .truncate()
+                                        .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
+                                        .child(self.data_dir.display().to_string()),
+                                ),
+                        )
+                        .child(
+                            button("open-data", "Open folder", ButtonKind::Secondary, p)
+                                .flex_shrink_0()
+                                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_with_system(&data_dir))),
+                        )
                         .into_any_element(),
-                )],
+                ],
             ))
             .into_any_element()
     }
@@ -534,6 +575,7 @@ impl Workspace {
             let on = !self.settings.disabled_highlight_sets.contains(&set.id);
             let open = expanded.as_deref() == Some(set.id.as_str());
             let enabled_rules = set.keywords.iter().filter(|k| k.enabled).count();
+            let confirming = self.confirm_delete_set.as_ref().is_some_and(|(id, _)| *id == set.id);
             let (id_toggle, id_export, id_delete, id_open) = (set.id.clone(), set.id.clone(), set.id.clone(), set.id.clone());
             list = list.child(
                 div()
@@ -547,6 +589,7 @@ impl Workspace {
                     .cursor_pointer()
                     .hover(|s| s.bg(p.hover))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.confirm_delete_set = None;
                         this.highlights_expanded =
                             if this.highlights_expanded.as_deref() == Some(id_open.as_str()) { None } else { Some(id_open.clone()) };
                         cx.notify();
@@ -570,21 +613,42 @@ impl Workspace {
                         icon_button(SharedString::from(format!("hl-export-{}", set.id)), "download", p).on_click(cx.listener(
                             move |this, _: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
+                                this.confirm_delete_set = None;
                                 this.export_highlight_set(&id_export, window, cx);
                             },
                         )),
                     )
-                    .child(
-                        icon_button(SharedString::from(format!("hl-delete-{}", set.id)), "trash", p).on_click(cx.listener(
-                            move |this, _: &ClickEvent, _, cx| {
+                    // Deleting a whole set can't be undone, so it takes a second click.
+                    .child(if confirming {
+                        button(SharedString::from(format!("hl-delete-{}", set.id)), "Delete set", ButtonKind::Danger, p)
+                            .h(px(28.))
+                            .w(px(96.))
+                            .justify_center()
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 cx.stop_propagation();
+                                // The button appears under the pointer, so the second click of a
+                                // double-click on the trash icon must not count as the confirmation.
+                                if this.confirm_delete_set.as_ref().is_some_and(|(_, at)| at.elapsed() < Duration::from_millis(500)) {
+                                    return;
+                                }
+                                this.confirm_delete_set = None;
                                 this.delete_highlight_set(&id_delete, cx);
-                            },
-                        )),
-                    )
+                            }))
+                            .into_any_element()
+                    } else {
+                        icon_button(SharedString::from(format!("hl-delete-{}", set.id)), "trash", p)
+                            .tooltip(|window, cx| Tooltip::new("Delete set").build(window, cx))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.confirm_delete_set = Some((id_delete.clone(), Instant::now()));
+                                cx.notify();
+                            }))
+                            .into_any_element()
+                    })
                     .child(switch(SharedString::from(format!("hl-toggle-{}", set.id)), on, p).on_click(cx.listener(
                         move |this, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
+                            this.confirm_delete_set = None;
                             this.toggle_highlight_set(&id_toggle, cx);
                         },
                     ))),
@@ -595,14 +659,15 @@ impl Workspace {
             for (index, rule) in set.keywords.iter().enumerate() {
                 let set_id = set.id.clone();
                 let to_hsla = |c: highlight::Rgb8| crate::theme::hex(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32);
-                let fg = rule.fg().map(|c| highlight::readable_on(c, term.dark)).map(to_hsla).unwrap_or(p.text);
+                // A rule with its own background keeps its colours; others are made readable on the terminal.
+                let fg = rule.fg().map(|c| if rule.bg().is_some() { c } else { highlight::readable_on(c, term.dark) }).map(to_hsla).unwrap_or(p.text);
                 let bg = rule.bg().map(to_hsla).unwrap_or(term_bg);
                 let mut flags = vec![];
                 if rule.is_regex() {
-                    flags.push("regex");
+                    flags.push(("regex", "Regular expression"));
                 }
                 if rule.case_sensitive() {
-                    flags.push("Aa");
+                    flags.push(("Aa", "Case-sensitive"));
                 }
                 list = list.child(
                     div()
@@ -614,11 +679,12 @@ impl Workspace {
                         .items_center()
                         .gap(px(10.))
                         .rounded(px(6.))
-                        .hover(|s| s.bg(p.hover))
                         .when(!rule.enabled, |el| el.opacity(0.45))
+                        // The pattern as a chip around its text, shown on the terminal's background.
                         .child(
-                            div().flex_1().min_w_0().child(
+                            div().flex_1().min_w_0().flex().child(
                                 div()
+                                    .min_w_0()
                                     .px(px(8.))
                                     .py(px(3.))
                                     .rounded(px(5.))
@@ -631,8 +697,10 @@ impl Workspace {
                                     .child(rule.text.clone()),
                             ),
                         )
-                        .child(div().w(px(84.)).flex().justify_end().gap(px(6.)).children(flags.into_iter().map(|f| {
+                        .child(div().w(px(84.)).flex().justify_end().gap(px(6.)).children(flags.into_iter().map(|(f, tip)| {
                             div()
+                                .id(SharedString::from(format!("hl-flag-{}-{index}-{f}", set.id)))
+                                .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
                                 .px(px(6.))
                                 .h(px(18.))
                                 .flex()
@@ -645,7 +713,7 @@ impl Workspace {
                                 .child(f)
                         })))
                         .child(
-                            switch(SharedString::from(format!("hl-rule-toggle-{}-{index}", set.id)), rule.enabled, p).on_click(
+                            small_switch(SharedString::from(format!("hl-rule-toggle-{}-{index}", set.id)), rule.enabled, p).on_click(
                                 cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_highlight_rule(&set_id, index, cx)),
                             ),
                         ),
@@ -730,7 +798,7 @@ fn setting_row(p: AppPalette, label: &str, hint: &str, control: AnyElement) -> A
                 .gap(px(3.))
                 .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()))
                 .when(!hint.is_empty(), |el| {
-                    el.child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_faint).child(hint.to_string()))
+                    el.child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(hint.to_string()))
                 }),
         )
         .child(div().flex_shrink_0().child(control))

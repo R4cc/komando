@@ -136,6 +136,8 @@ pub struct Workspace {
     highlight_skipped: Vec<(String, String)>,
     page: Page,
     highlights_expanded: Option<String>,
+    /// The highlight set whose delete button was clicked once and now asks for a second click.
+    confirm_delete_set: Option<(String, Instant)>,
     blur_slider: Option<Entity<SliderState>>,
     font_slider: Option<Entity<SliderState>>,
     font_input: Option<Entity<InputState>>,
@@ -187,6 +189,7 @@ impl Workspace {
             highlight_skipped: vec![],
             page: Page::Sessions,
             highlights_expanded: None,
+            confirm_delete_set: None,
             blur_slider: None,
             font_slider: None,
             font_input: None,
@@ -291,6 +294,9 @@ impl Workspace {
             theme.colors.primary = brand;
             theme.colors.ring = brand;
             theme.colors.caret = brand;
+            // Sliders match the switches and selectors instead of the library's default.
+            theme.colors.slider_bar = brand;
+            theme.colors.slider_thumb = gpui::white();
         });
         cx.refresh_windows();
     }
@@ -1053,15 +1059,24 @@ impl Workspace {
                     .flex()
                     .justify_center()
                     .child(
-                        button("skip", "Continue without unlocking", ButtonKind::Ghost, p)
+                        button("skip", if state.creating { "Set up later" } else { "Continue without unlocking" }, ButtonKind::Ghost, p)
                             .on_click(cx.listener(|this, _, window, cx| this.skip_unlock(window, cx))),
                     ),
             );
         let note = if state.creating {
-            "Your passwords and keys are encrypted with this master password. There is no recovery: if you forget it, saved passwords are lost. Projects and hosts are kept."
+            "This password encrypts your saved passwords and keys."
         } else {
             "Unlock to connect with saved passwords and keys."
         };
+        // The one sentence on this screen that must not be skimmed past.
+        let warning = state.creating.then(|| {
+            div()
+                .text_size(px(13.))
+                .line_height(px(20.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(p.warning)
+                .child("There is no recovery: if you forget it, saved passwords are lost. Projects and hosts are kept.")
+        });
         if state.full_screen {
             div()
                 .size_full()
@@ -1076,11 +1091,12 @@ impl Workspace {
                 .child(
                     div()
                         .w(px(360.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
                         .text_center()
-                        .text_size(px(13.))
-                        .line_height(px(20.))
-                        .text_color(p.text_muted)
-                        .child(note),
+                        .child(div().text_size(px(13.)).line_height(px(20.)).text_color(p.text_muted).child(note))
+                        .children(warning),
                 )
                 .child(form)
                 .into_any_element()
@@ -1095,6 +1111,7 @@ impl Workspace {
                     .gap(px(16.))
                     .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Unlock vault"))
                     .child(div().text_size(px(13.)).text_color(p.text_muted).child(note))
+                    .children(warning)
                     .child(form)
                     .into_any_element(),
             )
@@ -1448,8 +1465,9 @@ impl Workspace {
         let project = entry.project_id.as_deref().and_then(|id| self.library.project(id));
         let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.text_faint);
         let view = entry.view.read(cx);
-        // Just enough to know where you are typing: state, user@address and port.
-        // The Host name, icon and Project are already in the sidebar.
+        // Where you are typing: state, the session's name, then user@address and port. The
+        // name is repeated from the sidebar, which may be scrolled away from the active host.
+        let name = entry.label.clone();
         let target = match &entry.kind {
             SessionKind::Ssh { host_id } => entry
                 .project_id
@@ -1490,23 +1508,35 @@ impl Workspace {
                         div()
                             .id("session-target")
                             .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
                             .text_size(px(12.))
-                            .text_color(p.text_faint)
-                            .truncate()
                             .tooltip(move |window, cx| Tooltip::new(status_text).build(window, cx))
-                            .child(target),
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .max_w(px(240.))
+                                    .truncate()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(p.text)
+                                    .child(name),
+                            )
+                            .child(div().min_w_0().text_color(p.text_muted).truncate().child(target)),
                     )
                     .child(div().flex_1())
                     .child(
-                        strip_action("copy-text", "copy", "Copy output", p)
+                        strip_action("copy-text", "copy", "Copy output", false, p)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_text(cx))),
                     )
                     .child(
-                        strip_action("copy-file", "file-text", "Copy as .txt", p)
+                        strip_action("copy-file", "file-text", "Copy as .txt", false, p)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_file(cx))),
                     )
+                    // Set apart from the harmless copy actions: this one disconnects.
+                    .child(div().w(px(1.)).h(px(14.)).mx(px(4.)).bg(p.border))
                     .child(
-                        strip_action("close-active", "x", "Close session", p)
+                        strip_action("close-active", "x", "Close session", true, p)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.close_session(id, window, cx))),
                     ),
             )
@@ -1789,18 +1819,32 @@ fn segmented(
 
 /// An on/off switch, 32×18.
 fn switch(id: SharedString, on: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+    switch_with(id, on, false, p)
+}
+
+/// A smaller, neutral switch for long lists (single highlight rules), so the brand-coloured
+/// switches of the settings that matter more stand out.
+fn small_switch(id: SharedString, on: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+    switch_with(id, on, true, p)
+}
+
+fn switch_with(id: SharedString, on: bool, small: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+    let (w, h, knob) = if small { (26., 14., 10.) } else { (32., 18., 14.) };
+    // The off track has to be visible on its own, not only through the knob's position.
+    let off = if p.dark { alpha(0xffffff, 0.16) } else { alpha(0x000000, 0.2) };
+    let on_color = if small { p.text_muted.opacity(0.6) } else { p.brand };
     div()
         .id(id)
-        .w(px(32.))
-        .h(px(18.))
+        .w(px(w))
+        .h(px(h))
         .flex_shrink_0()
         .p(px(2.))
         .rounded_full()
         .cursor_pointer()
-        .bg(if on { p.brand } else { p.active })
+        .bg(if on { on_color } else { off })
         .flex()
         .when(on, |el| el.justify_end())
-        .child(div().size(px(14.)).rounded_full().bg(gpui::white()).shadow(elevation(false)))
+        .child(div().size(px(knob)).rounded_full().bg(gpui::white()).shadow(elevation(false)))
 }
 
 fn icon_choices(
@@ -1869,18 +1913,28 @@ fn modal(p: AppPalette, body: AnyElement) -> AnyElement {
 }
 
 /// A small icon-only action for the session strip above the terminal.
-fn strip_action(id: &'static str, icon: &str, label: &'static str, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+/// `danger` marks an action that ends something: it turns red on hover.
+fn strip_action(id: &'static str, icon: &str, label: &'static str, danger: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+    let (hover_bg, hover_fg) = if danger { (p.danger.opacity(0.12), p.danger) } else { (p.hover, p.text) };
     div()
         .id(id)
+        .group(id)
         .size(px(22.))
         .flex()
         .items_center()
         .justify_center()
         .rounded(px(6.))
         .cursor_pointer()
-        .hover(|s| s.bg(p.hover))
+        .hover(move |s| s.bg(hover_bg))
         .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
-        .child(icon_el(icon, 13., p.text_faint))
+        .child(
+            gpui::svg()
+                .path(SharedString::from(format!("icons/{icon}.svg")))
+                .size(px(13.))
+                .flex_shrink_0()
+                .text_color(p.text_faint)
+                .group_hover(id, move |s| s.text_color(hover_fg)),
+        )
 }
 
 fn kbd(keys: &str, p: AppPalette) -> impl IntoElement {

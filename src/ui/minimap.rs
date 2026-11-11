@@ -69,6 +69,7 @@ pub fn minimap(
     cx: &mut Context<TerminalView>,
 ) -> AnyElement {
     let paint_state = state.clone();
+    let paint_box_state = state.clone();
     let paint_term = term.clone();
     let strip = canvas(
         move |bounds, _window, _cx| {
@@ -96,6 +97,7 @@ pub fn minimap(
             let shown_cols = (((f32::from(bounds.size.width) - PAD_X * 2.) / char_w).floor() as usize).min(cols);
             let colors = term.colors();
             let highlight = highlighter.rule_count() > 0;
+            let plain_alpha = if palette.dark { 0.3 } else { 0.25 };
             let mut rects: Vec<(Bounds<Pixels>, Hsla)> = Vec::new();
             let end = total.min(start + capacity);
             let mut text = String::with_capacity(cols);
@@ -124,8 +126,10 @@ pub fn minimap(
                 let mut byte = 0;
                 let flush = |run: &mut Option<(usize, usize, Rgb)>, rects: &mut Vec<(Bounds<Pixels>, Hsla)>| {
                     if let Some((from, to, color)) = run.take() {
+                        // Plain text recedes and coloured text (ANSI colours, Highlight Rules)
+                        // stays strong, so errors and warnings stand out in the strip.
                         let mut c = rgb_to_hsla(color);
-                        c.a *= 0.7;
+                        c.a *= if c.s < 0.2 { plain_alpha } else { 0.95 };
                         let x = f32::from(bounds.origin.x) + PAD_X + from as f32 * char_w;
                         rects.push((
                             Bounds::new(point(px(x), px(y)), size(px((to - from) as f32 * char_w), px(LINE_H - 0.5))),
@@ -169,7 +173,14 @@ pub fn minimap(
             (rects, viewport)
         },
         move |_bounds, (rects, viewport), window, _cx| {
-            window.paint_quad(fill(viewport, app.hover));
+            // The box over the lines on screen: a fill plus a hairline outline, brighter while
+            // it is being dragged.
+            let dragging = paint_box_state.dragging.get();
+            window.paint_quad(
+                fill(viewport, if dragging { app.active.opacity(1.5) } else { app.active })
+                    .border_widths(px(1.))
+                    .border_color(if dragging { app.text_faint } else { app.border.opacity(2.) }),
+            );
             for (bounds, color) in rects {
                 window.paint_quad(fill(bounds, color));
             }

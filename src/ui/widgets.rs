@@ -26,7 +26,11 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Bu
         ButtonKind::Primary => (p.brand, gpui::white(), p.brand.opacity(0.88), None),
         ButtonKind::Secondary => (p.hover, p.text, p.active, Some(p.border)),
         ButtonKind::Ghost => (gpui::transparent_black(), p.text_muted, p.hover, None),
-        ButtonKind::Danger => (p.danger, gpui::white(), p.danger.opacity(0.88), None),
+        // red-600 in both themes: white text on the lighter dark-theme red was 2.8:1.
+        ButtonKind::Danger => {
+            let red = crate::theme::hex(0xdc2626);
+            (red, gpui::white(), red.opacity(0.88), None)
+        }
     };
     div()
         .id(id)
