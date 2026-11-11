@@ -1,0 +1,56 @@
+name: Release
+
+# Publishing a GitHub release (tag like v0.2.0) builds Komando for Windows and attaches
+# the MSI installer and the plain .exe to that release.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and attach to (e.g. v0.1.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  msi:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Read version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Tag '$env:TAG' is not vMAJOR.MINOR.PATCH" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Install WiX
+        run: dotnet tool install --global wix --version 5.0.2
+
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          wix build packaging/komando.wxs -arch x64 -d Version=$v -d BinDir=target\release -o "Komando-$v-x64.msi"
+          Copy-Item target\release\komando.exe "Komando-$v-x64.exe"
+
+      - name: Attach to release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          gh release upload $env:TAG "Komando-$v-x64.msi" "Komando-$v-x64.exe" --clobber

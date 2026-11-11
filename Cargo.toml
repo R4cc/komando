@@ -1,0 +1,49 @@
+[package]
+name = "komando"
+version = "0.1.0"
+edition = "2024"
+description = "A fast terminal for system engineers who SSH into Linux machines."
+publish = false
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+gpui-component = "=0.9.1"
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12" }
+gpui-kit-assets = "=0.9.1"
+alacritty_terminal = "0.26"
+russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+dirs = "5"
+uuid = { version = "1", features = ["v4", "serde"] }
+anyhow = "1"
+futures = "0.3"
+log = "0.4"
+chrono = "0.4"
+base64 = "0.22"
+sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+clipboard-win = "5"
+
+[profile.dev]
+debug = 0
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux is a development host only (screenshots, tests). Komando ships for Windows 11.
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["x11"] }

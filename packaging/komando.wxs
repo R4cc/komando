@@ -1,0 +1,33 @@
+<!--
+  Komando MSI (WiX Toolset v5). Built by .github/workflows/release.yml:
+    wix build packaging/komando.wxs -arch x64 -d Version=1.2.3 -d BinDir=target\release -o Komando.msi
+  The UpgradeCode must never change: it is how Windows recognises newer versions.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Komando"
+      Manufacturer="Komando"
+      Version="$(Version)"
+      UpgradeCode="7a5f00bc-ed5c-4bbb-8efc-507f1daae512"
+      Scope="perMachine">
+    <SummaryInformation Description="Komando terminal" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Komando is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Komando">
+        <Component Id="MainExecutable">
+          <File Id="KomandoExe" Source="$(BinDir)\komando.exe" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="KomandoShortcut" Name="Komando" Description="Terminal for SSH and local shells"
+                  Target="[INSTALLFOLDER]komando.exe" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\Komando" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+  </Package>
+</Wix>
