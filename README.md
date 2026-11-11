@@ -6,15 +6,16 @@ A fast terminal for system engineers who work on Linux servers from Windows 11. 
 
 <img src="assets/screenshot-dark.png" alt="Komando: projects with their open sessions in a sidebar, and an SSH session showing systemctl status and a highlighted application log">
 
-<sub>Screenshot of the real app. web01 and db01 are live SSH sessions to a local test server (authenticated with a key from the vault). The server prints a scripted demo prompt. web-stg01 is still connecting.</sub>
+<sub>Screenshot of the real app. web01 and db01 are live SSH sessions to a local test server (authenticated with a key from the vault), which prints a scripted demo prompt. web-stg01 is still connecting; the dimmed hosts are idle until clicked.</sub>
 
 ## What it does
 
 - **Fast output.** Terminal output is parsed on a background thread and drawn on the GPU at most once per frame, so a log flood doesn't block the window. SSH runs inside Komando, so remote output never passes through the Windows console layer (ConPTY).
+- **Every server one click away.** The sidebar always lists your saved hosts and local shells, not open tabs. Click a host to connect, or to jump back to it if it's already connected. Live hosts are bright with a status dot and idle ones are dimmed. When a connection drops, the host goes idle but keeps its output, and a click reconnects in the same terminal below it. Ctrl+click (or +) opens a second session on the same host.
 - **Projects and hosts.** Group hosts into projects, each with a colour and an icon. A thin strip in the project's colour runs above the terminal, so you always see which project you're typing into. A host can belong to several projects and takes the project's colour, default user and password unless it sets its own.
 - **Saved passwords.** When a password you typed works, Komando offers to save it for this host or as the project password. Saved passwords and imported keys (OpenSSH and PuTTY `.ppk`) are kept in a vault encrypted with your master password (Argon2id + XChaCha20-Poly1305). The vault locks after 30 minutes idle; open sessions stay connected.
 - **Server checks.** On first connect Komando shows the server's fingerprint and asks whether to trust it. If the key later changes, the connection is blocked. Keys you already trusted in `%USERPROFILE%\.ssh\known_hosts` are recognised.
-- **Local shells.** PowerShell 7, Windows PowerShell and Command Prompt tabs, organised under projects like SSH sessions.
+- **Local shells.** PowerShell 7, Windows PowerShell and Command Prompt are detected and listed at the top of the sidebar. You can also put shells inside a project.
 - **Highlighting.** Rules colour matching text in the output: ERROR in red, WARN in orange, `Active: active` in green, and so on. Import and export rule sets as JSON in Tabby's highlight format (see [Highlights](#highlights)).
 - **Copy the whole output.** Copy a session's entire scrollback as text, or as a `.txt` file you can paste straight into Explorer, Outlook or Teams.
 - **Dark by default, light if you want.** The app and the terminal each have their own dark/light setting (**Settings → Appearance**).
@@ -48,8 +49,8 @@ All app shortcuts use Ctrl+Shift, so plain Ctrl keys (Ctrl+W, Ctrl+K, Ctrl+R, �
 | Action | Keys |
 |---|---|
 | Quick connect | Ctrl+Shift+K |
-| New session in current project | Ctrl+Shift+T |
-| Close session | Ctrl+Shift+W |
+| Another session on the current host | Ctrl+Shift+T (or Ctrl+click in the sidebar) |
+| Disconnect (keeps the output); again to discard it | Ctrl+Shift+W |
 | Next / previous session | Ctrl+Tab / Ctrl+Shift+Tab |
 | Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
 | Copy whole output as text | Ctrl+Shift+A |
@@ -104,5 +105,5 @@ Search in output (Ctrl+F), editing and deleting hosts and projects in the app (f
 ## Design notes
 
 - [GLOSSARY.md](GLOSSARY.md): the terms used in code and docs (Project, Host, Session, Vault, …).
-- [docs/adr](docs/adr): decisions and why: Windows only, embedded SSH client, native GPU UI, master-password vault.
+- [docs/adr](docs/adr): decisions and why: Windows only, embedded SSH client, native GPU UI, master-password vault, a sidebar of hosts instead of tabs.
 - [CHANGELOG.md](CHANGELOG.md): what changed in each version.

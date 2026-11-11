@@ -51,9 +51,51 @@ enum SessionKind {
     Local { shell: LocalShell },
 }
 
+/// Identifies a sidebar item: a saved Host in a Project, or a Local Shell (in a Project or
+/// standalone). Sessions belong to items; an item without a Session is just idle.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+enum ItemKey {
+    Host { project: String, host: String },
+    Shell { project: Option<String>, name: String },
+}
+
+/// A row in the sidebar.
+#[derive(Clone)]
+enum SidebarItem {
+    Host { project: Project, host: Host },
+    Shell { project: Option<Project>, shell: LocalShell },
+}
+
+impl SidebarItem {
+    fn key(&self) -> ItemKey {
+        match self {
+            Self::Host { project, host } => ItemKey::Host { project: project.id.clone(), host: host.id.clone() },
+            Self::Shell { project, shell } => {
+                ItemKey::Shell { project: project.as_ref().map(|p| p.id.clone()), name: shell.name.clone() }
+            }
+        }
+    }
+
+    fn label(&self) -> &str {
+        match self {
+            Self::Host { host, .. } => &host.name,
+            Self::Shell { shell, .. } => &shell.name,
+        }
+    }
+
+    fn icon(&self) -> String {
+        match self {
+            Self::Host { host, .. } => host.icon.clone().unwrap_or_else(|| "server".into()),
+            Self::Shell { .. } => "square-terminal".into(),
+        }
+    }
+}
+
 struct SessionEntry {
     id: usize,
-    project_id: String,
+    item: ItemKey,
+    /// `None` for a standalone Local Shell.
+    project_id: Option<String>,
     kind: SessionKind,
     /// "web01" or "web01 (2)" when the same Host is open twice.
     label: SharedString,
@@ -62,7 +104,7 @@ struct SessionEntry {
 }
 
 enum Overlay {
-    Picker { query: Entity<InputState>, project_id: Option<String> },
+    Picker { query: Entity<InputState> },
     NewHost { project_id: String, fields: Vec<Entity<InputState>>, icon: String, error: Option<String> },
     NewProject { name: Entity<InputState>, color: String, icon: String, error: Option<String> },
 }
@@ -102,6 +144,8 @@ pub struct Workspace {
     pending: Option<Pending>,
     sessions: Vec<SessionEntry>,
     active: Option<usize>,
+    /// The Session last shown for each item, so a click returns to it.
+    last_active: std::collections::HashMap<ItemKey, usize>,
     next_id: usize,
     collapsed: HashSet<String>,
     overlay: Option<Overlay>,
@@ -128,18 +172,11 @@ impl Focusable for Workspace {
 impl Workspace {
     pub fn new(data_dir: PathBuf, skip_unlock: bool, startup: Startup, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = Settings::load(&data_dir);
-        let library = match Library::load(&data_dir) {
-            Ok(lib) if !lib.projects.is_empty() => lib,
-            Ok(_) => {
-                let lib = model::starter_library();
-                let _ = lib.save(&data_dir);
-                lib
-            }
-            Err(err) => {
-                log::error!("{err:#}");
-                model::starter_library()
-            }
-        };
+        // A fresh install has no Projects; the detected local shells stand alone.
+        let library = Library::load(&data_dir).unwrap_or_else(|err| {
+            log::error!("{err:#}");
+            Library::default()
+        });
         let highlights = highlight::load(&data_dir);
         let mut this = Self {
             data_dir,
@@ -157,6 +194,7 @@ impl Workspace {
             pending: None,
             sessions: vec![],
             active: None,
+            last_active: Default::default(),
             next_id: 1,
             collapsed: HashSet::new(),
             overlay: None,
@@ -185,18 +223,20 @@ impl Workspace {
     }
 
     fn run_startup(&mut self, startup: &Startup, window: &mut Window, cx: &mut Context<Self>) {
-        for (project_name, item) in &startup.open {
-            let Some(project) = self.library.projects.iter().find(|p| &p.name == project_name).cloned() else {
-                continue;
-            };
-            let host = self.library.hosts_of(&project).find(|h| &h.name == item).cloned();
-            if let Some(host) = host {
-                self.open_host(&project.id, &host.id, window, cx);
-            } else {
-                let shells = if project.shells.is_empty() { model::default_shells() } else { project.shells.clone() };
-                if let Some(shell) = shells.into_iter().find(|s| &s.name == item) {
-                    self.open_local(&project.id, shell, window, cx);
-                }
+        // An empty project name means a standalone Local Shell.
+        for (project_name, name) in &startup.open {
+            let item = self
+                .sidebar_items()
+                .into_iter()
+                .find(|item| {
+                    let project = match item {
+                        SidebarItem::Host { project, .. } => Some(project.name.as_str()),
+                        SidebarItem::Shell { project, .. } => project.as_ref().map(|p| p.name.as_str()),
+                    };
+                    project.unwrap_or("") == project_name && item.label() == name
+                });
+            if let Some(item) = item {
+                self.activate_item(item, false, window, cx);
             }
         }
         if let Some(index) = startup.active
@@ -474,20 +514,78 @@ impl Workspace {
 
     // ---- sessions ---------------------------------------------------------------------
 
-    fn label_for(&self, base: &str) -> SharedString {
-        let same = self.sessions.iter().filter(|s| s.label == base || s.label.starts_with(&format!("{base} ("))).count();
-        if same == 0 { base.to_string().into() } else { format!("{base} ({})", same + 1).into() }
+    /// Items in sidebar order: standalone shells, then each Project's Hosts and shells.
+    fn sidebar_items(&self) -> Vec<SidebarItem> {
+        let mut items: Vec<SidebarItem> = self
+            .library
+            .standalone_shells()
+            .into_iter()
+            .map(|shell| SidebarItem::Shell { project: None, shell })
+            .collect();
+        for project in &self.library.projects {
+            items.extend(self.project_items(project));
+        }
+        items
+    }
+
+    fn project_items(&self, project: &Project) -> Vec<SidebarItem> {
+        let mut items: Vec<SidebarItem> = self
+            .library
+            .hosts_of(project)
+            .map(|host| SidebarItem::Host { project: project.clone(), host: host.clone() })
+            .collect();
+        items.extend(project.shells.iter().map(|shell| SidebarItem::Shell { project: Some(project.clone()), shell: shell.clone() }));
+        items
+    }
+
+    fn sessions_of(&self, key: &ItemKey) -> impl Iterator<Item = &SessionEntry> {
+        let key = key.clone();
+        self.sessions.iter().filter(move |s| s.item == key)
+    }
+
+    fn is_live(&self, entry: &SessionEntry, cx: &App) -> bool {
+        !matches!(entry.view.read(cx).status, Status::Disconnected(_))
+    }
+
+    /// Clicking a sidebar item: show its Session (reconnecting it in place if it dropped,
+    /// so the earlier output stays above), or connect if it has none. `another` opens an
+    /// additional Session for the same item.
+    fn activate_item(&mut self, item: SidebarItem, another: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let key = item.key();
+        if !another {
+            let existing = self
+                .last_active
+                .get(&key)
+                .copied()
+                .filter(|id| self.sessions.iter().any(|s| s.id == *id))
+                .or_else(|| self.sessions_of(&key).next().map(|s| s.id));
+            if let Some(id) = existing {
+                self.activate(id, window, cx);
+                let dropped = self.sessions.iter().find(|s| s.id == id).is_some_and(|s| !self.is_live(s, cx));
+                if dropped {
+                    self.reconnect(id, window, cx);
+                }
+                return;
+            }
+        }
+        match item {
+            SidebarItem::Host { project, host } => self.open_host(&project.id, &host.id, window, cx),
+            SidebarItem::Shell { project, shell } => self.open_local(project.map(|p| p.id), shell, window, cx),
+        }
     }
 
     fn add_session(
         &mut self,
-        project_id: &str,
+        item: ItemKey,
+        project_id: Option<String>,
         kind: SessionKind,
         base_label: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<TerminalView> {
-        let label = self.label_for(base_label);
+        let existing = self.sessions_of(&item).count();
+        let label: SharedString =
+            if existing == 0 { base_label.to_string().into() } else { format!("{base_label} ({})", existing + 1).into() };
         let scrollback = self.settings.scrollback_lines;
         let confirm_paste = self.settings.confirm_multiline_paste;
         let putty = self.settings.putty_clipboard;
@@ -511,22 +609,19 @@ impl Workspace {
             }
             TerminalEvent::Reconnect => this.reconnect(id, window, cx),
         });
-        self.sessions.push(SessionEntry {
-            id,
-            project_id: project_id.to_string(),
-            kind,
-            label,
-            view: view.clone(),
-            _subscription: sub,
-        });
-        self.collapsed.remove(project_id);
+        if let Some(project_id) = &project_id {
+            self.collapsed.remove(project_id);
+        }
+        self.sessions.push(SessionEntry { id, item, project_id, kind, label, view: view.clone(), _subscription: sub });
         self.activate(id, window, cx);
         view
     }
 
-    fn open_local(&mut self, project_id: &str, shell: LocalShell, window: &mut Window, cx: &mut Context<Self>) {
-        let view = self.add_session(project_id, SessionKind::Local { shell: shell.clone() }, &shell.name, window, cx);
-        self.start_backend(&view, &SessionKind::Local { shell }, project_id, None, cx);
+    fn open_local(&mut self, project_id: Option<String>, shell: LocalShell, window: &mut Window, cx: &mut Context<Self>) {
+        let item = ItemKey::Shell { project: project_id.clone(), name: shell.name.clone() };
+        let kind = SessionKind::Local { shell: shell.clone() };
+        let view = self.add_session(item, project_id.clone(), kind.clone(), &shell.name, window, cx);
+        self.start_backend(&view, &kind, project_id.as_deref(), None, cx);
     }
 
     fn open_host(&mut self, project_id: &str, host_id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -553,16 +648,17 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let Some(resolved) = self.library.resolve(project_id, host_id) else { return };
+        let item = ItemKey::Host { project: project_id.to_string(), host: host_id.to_string() };
         let kind = SessionKind::Ssh { host_id: host_id.to_string() };
-        let view = self.add_session(project_id, kind.clone(), &resolved.name, window, cx);
-        self.start_backend(&view, &kind, project_id, secret, cx);
+        let view = self.add_session(item, Some(project_id.to_string()), kind.clone(), &resolved.name, window, cx);
+        self.start_backend(&view, &kind, Some(project_id), secret, cx);
     }
 
     fn start_backend(
         &mut self,
         view: &Entity<TerminalView>,
         kind: &SessionKind,
-        project_id: &str,
+        project_id: Option<&str>,
         secret: Option<Secret>,
         cx: &mut Context<Self>,
     ) {
@@ -582,7 +678,7 @@ impl Workspace {
                 }
             },
             SessionKind::Ssh { host_id } => {
-                let Some(resolved) = self.library.resolve(project_id, host_id) else { return };
+                let Some(resolved) = project_id.and_then(|p| self.library.resolve(p, host_id)) else { return };
                 let target = ssh::Target {
                     address: resolved.address,
                     port: resolved.port,
@@ -602,26 +698,32 @@ impl Workspace {
         });
     }
 
+    /// Start a new connection in the same terminal: the earlier output stays above.
     fn reconnect(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
         let (view, kind, project_id) = (entry.view.clone(), entry.kind.clone(), entry.project_id.clone());
         let secret = match &kind {
-            SessionKind::Ssh { host_id } => {
-                let resolved = self.library.resolve(&project_id, host_id);
-                resolved
-                    .and_then(|r| r.credential)
-                    .and_then(|cred| self.vault.as_ref()?.get(&cred))
-                    .map(|c| c.secret.clone())
-            }
+            SessionKind::Ssh { host_id } => project_id
+                .as_deref()
+                .and_then(|p| self.library.resolve(p, host_id))
+                .and_then(|r| r.credential)
+                .and_then(|cred| self.vault.as_ref()?.get(&cred))
+                .map(|c| c.secret.clone()),
             SessionKind::Local { .. } => None,
         };
         view.update(cx, |v, _| v.close());
-        self.start_backend(&view, &kind, &project_id, secret, cx);
+        self.start_backend(&view, &kind, project_id.as_deref(), secret, cx);
         self.focus_active(window, cx);
     }
 
     fn activate(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.active = Some(id);
+        if let Some(entry) = self.sessions.iter().find(|s| s.id == id) {
+            self.last_active.insert(entry.item.clone(), id);
+        }
+        if matches!(self.page, Page::Settings(_)) {
+            self.page = Page::Sessions;
+        }
         self.focus_active(window, cx);
         cx.notify();
     }
@@ -639,27 +741,34 @@ impl Workspace {
         self.sessions.iter().find(|s| Some(s.id) == self.active)
     }
 
+    /// × on a live Session disconnects it but keeps its output (the item goes idle and a
+    /// click reconnects). × on a Session that is already disconnected discards it.
     fn close_session(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.sessions.iter().position(|s| s.id == id) else { return };
-        let entry = self.sessions.remove(index);
-        entry.view.update(cx, |v, _| v.close());
-        if self.active == Some(id) {
-            self.active = self
-                .sessions
-                .get(index.min(self.sessions.len().saturating_sub(1)))
-                .map(|s| s.id);
+        if self.is_live(&self.sessions[index], cx) {
+            self.sessions[index].view.update(cx, |v, cx| {
+                v.close();
+                v.status = Status::Disconnected("Session closed.".into());
+                cx.notify();
+            });
+        } else {
+            let entry = self.sessions.remove(index);
+            self.last_active.retain(|_, v| *v != id);
+            entry.view.update(cx, |v, _| v.close());
+            if self.active == Some(id) {
+                self.active = None;
+            }
         }
         self.focus_active(window, cx);
         cx.notify();
     }
 
     fn cycle(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        // Follow sidebar order: Projects top to bottom, Sessions within each.
+        // Sessions in sidebar order.
         let order: Vec<usize> = self
-            .library
-            .projects
+            .sidebar_items()
             .iter()
-            .flat_map(|p| self.sessions.iter().filter(move |s| s.project_id == p.id).map(|s| s.id))
+            .flat_map(|item| self.sessions_of(&item.key()).map(|s| s.id).collect::<Vec<_>>())
             .collect();
         if order.is_empty() {
             return;
@@ -669,12 +778,18 @@ impl Workspace {
         self.activate(order[next], window, cx);
     }
 
+    /// The item of the active Session, for "new session on this item".
+    fn active_item(&self) -> Option<SidebarItem> {
+        let key = self.active_entry()?.item.clone();
+        self.sidebar_items().into_iter().find(|item| item.key() == key)
+    }
+
     // ---- passwords & output -----------------------------------------------------------
 
     fn save_password(&mut self, session_id: usize, password: String, as_project: bool, cx: &mut Context<Self>) {
         let Some(entry) = self.sessions.iter().find(|s| s.id == session_id) else { return };
         let SessionKind::Ssh { host_id } = entry.kind.clone() else { return };
-        let project_id = entry.project_id.clone();
+        let Some(project_id) = entry.project_id.clone() else { return };
         let Some(resolved) = self.library.resolve(&project_id, &host_id) else { return };
         let Some(vault) = self.vault.as_mut() else { return };
         let project_name = self.library.project(&project_id).map(|p| p.name.clone()).unwrap_or_default();
@@ -749,7 +864,7 @@ impl Workspace {
 
     // ---- overlays: picker and forms ----------------------------------------------------
 
-    fn open_picker(&mut self, project_id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search hosts and shells…"));
         let sub = cx.subscribe_in(&query, window, |this, _, event: &InputEvent, window, cx| match event {
             InputEvent::Change => cx.notify(),
@@ -762,43 +877,34 @@ impl Workspace {
         });
         self._subscriptions.push(sub);
         query.update(cx, |q, cx| q.focus(window, cx));
-        self.overlay = Some(Overlay::Picker { query, project_id });
+        self.overlay = Some(Overlay::Picker { query });
         cx.notify();
     }
 
-    fn picker_items(&self, cx: &App) -> Vec<PickerItem> {
-        let Some(Overlay::Picker { query, project_id }) = &self.overlay else { return vec![] };
+    /// Quick connect: every sidebar item, filtered by name, address, user or Project.
+    fn picker_items(&self, cx: &App) -> Vec<SidebarItem> {
+        let Some(Overlay::Picker { query }) = &self.overlay else { return vec![] };
         let needle = query.read(cx).value().to_lowercase();
-        let mut items = vec![];
-        for project in &self.library.projects {
-            if project_id.as_ref().is_some_and(|id| id != &project.id) {
-                continue;
-            }
-            for host in self.library.hosts_of(project) {
-                let r = model::resolve(host, project);
-                let hay = format!("{} {} {} {}", host.name, host.address, project.name, r.user.clone().unwrap_or_default())
-                    .to_lowercase();
-                if needle.is_empty() || hay.contains(&needle) {
-                    items.push(PickerItem::Host { project: project.clone(), host: host.clone() });
-                }
-            }
-            let shells = if project.shells.is_empty() { model::default_shells() } else { project.shells.clone() };
-            for shell in shells {
-                let hay = format!("{} {} local", shell.name, project.name).to_lowercase();
-                if needle.is_empty() || hay.contains(&needle) {
-                    items.push(PickerItem::Shell { project: project.clone(), shell });
-                }
-            }
-        }
-        items
+        self.sidebar_items()
+            .into_iter()
+            .filter(|item| {
+                let hay = match item {
+                    SidebarItem::Host { project, host } => {
+                        let r = model::resolve(host, project);
+                        format!("{} {} {} {}", host.name, host.address, project.name, r.user.unwrap_or_default())
+                    }
+                    SidebarItem::Shell { project, shell } => {
+                        format!("{} {} local", shell.name, project.as_ref().map(|p| p.name.as_str()).unwrap_or(""))
+                    }
+                };
+                needle.is_empty() || hay.to_lowercase().contains(&needle)
+            })
+            .collect()
     }
 
-    fn pick(&mut self, item: PickerItem, window: &mut Window, cx: &mut Context<Self>) {
+    fn pick(&mut self, item: SidebarItem, window: &mut Window, cx: &mut Context<Self>) {
         self.overlay = None;
-        match item {
-            PickerItem::Host { project, host } => self.open_host(&project.id, &host.id, window, cx),
-            PickerItem::Shell { project, shell } => self.open_local(&project.id, shell, window, cx),
-        }
+        self.activate_item(item, false, window, cx);
     }
 
     fn open_new_host(&mut self, project_id: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -914,11 +1020,6 @@ impl Workspace {
     }
 }
 
-#[derive(Clone)]
-enum PickerItem {
-    Host { project: Project, host: Host },
-    Shell { project: Project, shell: LocalShell },
-}
 
 fn sanitize(s: &str) -> String {
     s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect()
@@ -997,12 +1098,46 @@ impl Workspace {
 
     fn render_sidebar(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let mut list = div().id("projects").flex().flex_col().gap(px(2.)).px(px(8.)).flex_1().overflow_y_scroll();
+        // Standalone Local Shells: no header, at the top.
+        for item in self.library.standalone_shells().into_iter().map(|shell| SidebarItem::Shell { project: None, shell }) {
+            list = list.children(self.render_item(&item, p.brand, 8., p, cx));
+        }
+        list = list.child(
+            div()
+                .px(px(8.))
+                .pt(px(12.))
+                .pb(px(2.))
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(section_label("Projects", p))
+                .child(
+                    icon_button("new-project", "folder-plus", p)
+                        .size(px(24.))
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_new_project(window, cx))),
+                ),
+        );
+        if self.library.projects.is_empty() {
+            list = list.child(
+                div()
+                    .px(px(8.))
+                    .py(px(6.))
+                    .text_size(px(12.5))
+                    .line_height(px(18.))
+                    .text_color(p.text_faint)
+                    .child("Group your servers into projects, each with its own colour."),
+            );
+        }
         for project in &self.library.projects {
             let color = project_color(&project.color);
             let collapsed = self.collapsed.contains(&project.id);
-            let sessions: Vec<&SessionEntry> = self.sessions.iter().filter(|s| s.project_id == project.id).collect();
+            let items = self.project_items(project);
+            let live = items
+                .iter()
+                .flat_map(|item| self.sessions_of(&item.key()).collect::<Vec<_>>())
+                .filter(|s| self.is_live(s, cx))
+                .count();
             let pid = project.id.clone();
-            let pid_add = project.id.clone();
             let pid_host = project.id.clone();
             list = list.child(
                 div()
@@ -1035,108 +1170,57 @@ impl Workspace {
                             .text_color(p.text)
                             .child(project.name.clone()),
                     )
+                    // When collapsed, show how many Sessions are live inside.
+                    .when(collapsed && live > 0, |el| {
+                        el.child(div().text_size(px(11.5)).text_color(p.text_faint).child(format!("{live} live")))
+                    })
                     .child(
                         div()
                             .absolute()
-                            .right(px(4.))
+                            .right(px(26.))
                             .top(px(3.))
-                            .flex()
-                            .gap(px(2.))
-                            .p(px(0.))
                             .rounded(px(7.))
                             .bg(p.sidebar)
                             .invisible()
                             .group_hover("project-row", |s| s.visible())
-                            .child(icon_button(SharedString::from(format!("add-host-{}", project.id)), "server-cog", p)
-                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    this.open_new_host(pid_host.clone(), window, cx);
-                                })))
-                            .child(icon_button(SharedString::from(format!("new-{}", project.id)), "plus", p)
-                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    this.open_picker(Some(pid_add.clone()), window, cx);
-                                }))),
+                            .child(
+                                icon_button(SharedString::from(format!("add-host-{}", project.id)), "plus", p).on_click(
+                                    cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        this.open_new_host(pid_host.clone(), window, cx);
+                                    }),
+                                ),
+                            ),
                     )
                     .child(icon_el(if collapsed { "chevron-right" } else { "chevron-down" }, 14., p.text_faint)),
             );
             if collapsed {
                 continue;
             }
-            for entry in sessions {
-                let active = self.active == Some(entry.id);
-                let dot = match &entry.view.read(cx).status {
-                    Status::Connected => p.success,
-                    Status::Connecting => p.warning,
-                    Status::Disconnected(_) => p.text_faint,
-                };
-                let kind_icon = match &entry.kind {
-                    SessionKind::Ssh { host_id } => self
-                        .library
-                        .host(host_id)
-                        .and_then(|h| h.icon.clone())
-                        .unwrap_or_else(|| "server".into()),
-                    SessionKind::Local { .. } => "square-terminal".into(),
-                };
-                let id = entry.id;
+            if items.is_empty() {
+                let pid_add = project.id.clone();
                 list = list.child(
                     div()
-                        .id(SharedString::from(format!("session-{}", entry.id)))
-                        .group("session-row")
-                        .h(px(34.))
+                        .id(SharedString::from(format!("first-host-{}", project.id)))
+                        .h(px(32.))
                         .pl(px(20.))
-                        .pr(px(6.))
                         .flex()
                         .items_center()
                         .gap(px(10.))
                         .rounded(px(8.))
                         .cursor_pointer()
-                        .when(active, |el| el.bg(p.active))
-                        .when(!active, |el| el.hover(|s| s.bg(p.hover)))
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.activate(id, window, cx)))
-                        .child(icon_el(&kind_icon, 15., if active { color } else { p.text_faint }))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(13.))
-                                .text_color(if active { p.text } else { p.text_muted })
-                                .child(entry.label.clone()),
-                        )
-                        .child(status_dot(dot))
-                        .child(
-                            icon_button(SharedString::from(format!("close-{id}")), "x", p)
-                                .size(px(24.))
-                                .invisible()
-                                .group_hover("session-row", |s| s.visible())
-                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    this.close_session(id, window, cx);
-                                })),
-                        ),
+                        .text_size(px(12.5))
+                        .text_color(p.text_faint)
+                        .hover(|s| s.bg(p.hover).text_color(p.text_muted))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_new_host(pid_add.clone(), window, cx)))
+                        .child(icon_el("plus", 14., p.text_faint))
+                        .child("Add a host"),
                 );
             }
-            let pid_new = project.id.clone();
-            list = list.child(
-                div()
-                    .id(SharedString::from(format!("new-session-{}", project.id)))
-                    .h(px(32.))
-                    .pl(px(20.))
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .rounded(px(8.))
-                    .cursor_pointer()
-                    .text_size(px(12.5))
-                    .text_color(p.text_faint)
-                    .hover(|s| s.bg(p.hover).text_color(p.text_muted))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_picker(Some(pid_new.clone()), window, cx)))
-                    .child(icon_el("plus", 14., p.text_faint))
-                    .child("New session"),
-            );
+            for item in &items {
+                list = list.children(self.render_item(item, color, 20., p, cx));
+            }
         }
-
 
         let footer_row = |id: &'static str, icon: &str, label: String| {
             div()
@@ -1197,25 +1281,10 @@ impl Workspace {
                             .text_size(px(12.5))
                             .text_color(p.text_faint)
                             .hover(|s| s.bg(p.active))
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_picker(None, window, cx)))
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_picker(window, cx)))
                             .child(icon_el("search", 14., p.text_faint))
                             .child(div().flex_1().child("Quick connect"))
                             .child(kbd("Ctrl Shift K", p)),
-                    ),
-            )
-            .child(
-                div()
-                    .px(px(16.))
-                    .pt(px(6.))
-                    .pb(px(4.))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(section_label("Projects", p))
-                    .child(
-                        icon_button("new-project", "folder-plus", p)
-                            .size(px(24.))
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_new_project(window, cx))),
                     ),
             )
             .child(list.pb(px(8.)));
@@ -1247,16 +1316,145 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// One sidebar item, plus a nested row for each additional Session on it.
+    ///
+    /// Live items are bright with a status dot; idle ones are dimmed; a dropped Session
+    /// that still holds its output shows a hollow ring until it is reconnected or discarded.
+    fn render_item(&self, item: &SidebarItem, color: Hsla, indent: f32, p: AppPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let key = item.key();
+        let sessions: Vec<&SessionEntry> = self.sessions_of(&key).collect();
+        let shown = self.last_active.get(&key).copied().or_else(|| sessions.first().map(|s| s.id));
+        let mut rows = vec![];
+        let row = |id: SharedString,
+                   label: SharedString,
+                   icon: String,
+                   session: Option<&SessionEntry>,
+                   nested: bool,
+                   item: SidebarItem,
+                   cx: &mut Context<Self>| {
+            let status = session.map(|s| s.view.read(cx).status.clone());
+            let active = session.is_some_and(|s| Some(s.id) == self.active);
+            let live = matches!(status, Some(Status::Connected | Status::Connecting));
+            let session_id = session.map(|s| s.id);
+            let item_for_new = item.clone();
+            let indicator = match &status {
+                Some(Status::Connected) => status_dot(p.success).into_any_element(),
+                Some(Status::Connecting) => status_dot(p.warning).into_any_element(),
+                Some(Status::Disconnected(_)) => div()
+                    .size(px(7.))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(p.text_faint)
+                    .into_any_element(),
+                None => div().into_any_element(),
+            };
+            div()
+                .id(id)
+                .group("item-row")
+                .relative()
+                .h(px(if nested { 30. } else { 34. }))
+                .pl(px(if nested { indent + 18. } else { indent }))
+                .pr(px(10.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .rounded(px(8.))
+                .cursor_pointer()
+                .when(active, |el| el.bg(p.active))
+                .when(!active, |el| el.hover(|s| s.bg(p.hover)))
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| match session_id {
+                    // Nested rows are specific Sessions.
+                    Some(id) if nested => {
+                        this.activate(id, window, cx);
+                        let dropped = this.sessions.iter().find(|s| s.id == id).is_some_and(|s| !this.is_live(s, cx));
+                        if dropped {
+                            this.reconnect(id, window, cx);
+                        }
+                    }
+                    _ => this.activate_item(item.clone(), event.modifiers().control, window, cx),
+                }))
+                .when(!nested, |el| {
+                    el.child(icon_el(&icon, 15., if active || live { color } else { p.text_faint }))
+                })
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(if nested { 12.5 } else { 13. }))
+                        .text_color(if active || live { p.text } else { p.text_muted })
+                        .child(label),
+                )
+                .child(indicator)
+                .child(
+                    div()
+                        .absolute()
+                        .right(px(4.))
+                        .top(px(if nested { 3. } else { 5. }))
+                        .flex()
+                        .gap(px(2.))
+                        .rounded(px(7.))
+                        .bg(if active { p.sidebar } else { p.sidebar })
+                        .invisible()
+                        .group_hover("item-row", |s| s.visible())
+                        .when(!nested, |el| {
+                            el.child(
+                                icon_button(SharedString::from(format!("another-{key:?}")), "plus", p).size(px(24.)).on_click(
+                                    cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        this.activate_item(item_for_new.clone(), true, window, cx);
+                                    }),
+                                ),
+                            )
+                        })
+                        .when_some(session_id, |el, id| {
+                            el.child(icon_button(SharedString::from(format!("close-{id}")), "x", p).size(px(24.)).on_click(
+                                cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_session(id, window, cx);
+                                }),
+                            ))
+                        }),
+                )
+                .into_any_element()
+        };
+        let main = shown.and_then(|id| sessions.iter().find(|s| s.id == id).copied()).or(sessions.first().copied());
+        rows.push(row(
+            SharedString::from(format!("item-{key:?}")),
+            item.label().to_string().into(),
+            item.icon(),
+            main,
+            false,
+            item.clone(),
+            cx,
+        ));
+        if sessions.len() > 1 {
+            for session in &sessions {
+                rows.push(row(
+                    SharedString::from(format!("session-{}", session.id)),
+                    session.label.clone(),
+                    item.icon(),
+                    Some(session),
+                    true,
+                    item.clone(),
+                    cx,
+                ));
+            }
+        }
+        rows
+    }
+
     fn render_main(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let Some(entry) = self.active_entry() else {
             return self.render_empty(p, cx);
         };
-        let project = self.library.project(&entry.project_id);
+        let project = entry.project_id.as_deref().and_then(|id| self.library.project(id));
         let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.text_faint);
         let view = entry.view.read(cx);
         let (subtitle, icon) = match &entry.kind {
             SessionKind::Ssh { host_id } => {
-                let r = self.library.resolve(&entry.project_id, host_id);
+                let r = entry.project_id.as_deref().and_then(|id| self.library.resolve(id, host_id));
                 let sub = r
                     .as_ref()
                     .map(|r| {
@@ -1384,7 +1582,7 @@ impl Workspace {
                     .gap(px(8.))
                     .child(
                         button("empty-connect", "Quick connect", ButtonKind::Primary, p)
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_picker(None, window, cx))),
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_picker(window, cx))),
                     )
                     .child(
                         button("empty-project", "New project", ButtonKind::Secondary, p)
@@ -1397,31 +1595,30 @@ impl Workspace {
     fn render_overlay(&self, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let overlay = self.overlay.as_ref()?;
         let body = match overlay {
-            Overlay::Picker { query, project_id } => {
+            Overlay::Picker { query } => {
                 let items = self.picker_items(cx);
-                let title = project_id
-                    .as_ref()
-                    .and_then(|id| self.library.project(id))
-                    .map(|pr| format!("New session in {}", pr.name))
-                    .unwrap_or_else(|| "Quick connect".into());
+                let title = "Quick connect".to_string();
                 let mut list = div().id("picker-list").flex().flex_col().gap(px(2.)).max_h(px(380.)).overflow_y_scroll().p(px(6.));
                 if items.is_empty() {
                     list = list.child(
-                        div().p(px(16.)).text_size(px(13.)).text_color(p.text_faint).child("Nothing matches. Add hosts with the server icon next to a project."),
+                        div().p(px(16.)).text_size(px(13.)).text_color(p.text_faint).child("Nothing matches. Add hosts with the + next to a project."),
                     );
                 }
                 for (i, item) in items.into_iter().enumerate() {
                     let (icon, color, name, detail) = match &item {
-                        PickerItem::Host { project, host } => {
+                        SidebarItem::Host { project, host } => {
                             let r = model::resolve(host, project);
                             let user = r.user.clone().map(|u| format!("{u}@")).unwrap_or_default();
                             (r.icon.clone(), project_color(&r.color), host.name.clone(), format!("{user}{} · {}", host.address, project.name))
                         }
-                        PickerItem::Shell { project, shell } => (
+                        SidebarItem::Shell { project, shell } => (
                             "square-terminal".to_string(),
-                            project_color(&project.color),
+                            project.as_ref().map(|p| project_color(&p.color)).unwrap_or(p.brand),
                             shell.name.clone(),
-                            format!("Local shell · {}", project.name),
+                            match project {
+                                Some(project) => format!("Local shell · {}", project.name),
+                                None => "Local shell".to_string(),
+                            },
                         ),
                     };
                     list = list.child(
@@ -1757,10 +1954,11 @@ impl Render for Workspace {
                     cx.stop_propagation();
                 }
             }))
-            .on_action(cx.listener(|this, _: &QuickConnect, window, cx| this.open_picker(None, window, cx)))
-            .on_action(cx.listener(|this, _: &NewSession, window, cx| {
-                let project = this.active_entry().map(|e| e.project_id.clone());
-                this.open_picker(project, window, cx)
+            .on_action(cx.listener(|this, _: &QuickConnect, window, cx| this.open_picker(window, cx)))
+            // Another Session on the item you're in; without one, quick connect.
+            .on_action(cx.listener(|this, _: &NewSession, window, cx| match this.active_item() {
+                Some(item) => this.activate_item(item, true, window, cx),
+                None => this.open_picker(window, cx),
             }))
             .on_action(cx.listener(|this, _: &CloseSession, window, cx| {
                 if let Some(id) = this.active {

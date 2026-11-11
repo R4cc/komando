@@ -60,11 +60,11 @@ fn main() {
         shells: vec![],
     };
     let library = Library {
+        shells: None,
         projects: vec![
             project("Atlas Production", "red", "shield", &[&web01, &web02, &db01, &lb01], Some(key_id)),
             project("Atlas Staging", "amber", "box", &[&stg], None),
             project("Nova", "blue", "globe", &[&mon, &backup], None),
-            project("Local", "slate", "square-terminal", &[], None),
         ],
         hosts: vec![web01, web02, db01, lb01, stg, mon, backup],
     };
@@ -88,7 +88,7 @@ fn main() {
                 ("Atlas Production".into(), "web01".into()),
                 ("Atlas Production".into(), "db01".into()),
                 ("Atlas Staging".into(), "web-stg01".into()),
-                ("Local".into(), local_shell),
+                (String::new(), local_shell),
             ],
             active: Some(0),
             settings: env::var("KOMANDO_DEMO_SETTINGS").ok().and_then(|s| {

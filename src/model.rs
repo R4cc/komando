@@ -46,7 +46,7 @@ pub struct Project {
     /// Hosts in this Project, in sidebar order. A Host may appear in several Projects.
     #[serde(default)]
     pub hosts: Vec<HostId>,
-    /// Local shells offered in this Project. Empty means "the detected defaults".
+    /// Local Shells that belong to this Project (shown in its group, in its colour).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shells: Vec<LocalShell>,
 }
@@ -132,6 +132,10 @@ pub fn resolve(host: &Host, project: &Project) -> ResolvedHost {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Library {
+    /// Local Shells that belong to no Project; shown at the top of the sidebar.
+    /// `None` (not set in the file) means the shells detected on this PC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shells: Option<Vec<LocalShell>>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]
@@ -153,6 +157,11 @@ impl Library {
     pub fn save(&self, dir: &Path) -> Result<()> {
         fs::create_dir_all(dir)?;
         write_atomic(&dir.join(Self::FILE), toml::to_string_pretty(self)?.as_bytes())
+    }
+
+    /// Local Shells outside any Project.
+    pub fn standalone_shells(&self) -> Vec<LocalShell> {
+        self.shells.clone().unwrap_or_else(default_shells)
     }
 
     pub fn project(&self, id: &str) -> Option<&Project> {
@@ -298,21 +307,6 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// A small example library so a fresh install is not an empty window.
-pub fn starter_library() -> Library {
-    let local = Project {
-        id: new_id(),
-        name: "Local".into(),
-        color: "slate".into(),
-        icon: "terminal".into(),
-        default_user: None,
-        credential: None,
-        hosts: vec![],
-        shells: vec![],
-    };
-    Library { projects: vec![local], hosts: vec![] }
-}
-
 pub type CredentialNames = BTreeMap<CredentialId, String>;
 
 #[cfg(test)]
@@ -384,9 +378,21 @@ mod tests {
     }
 
     #[test]
+    fn standalone_shells_default_to_detected_ones() {
+        let lib = Library::default();
+        assert_eq!(lib.standalone_shells(), default_shells());
+        let custom = vec![LocalShell { name: "WSL".into(), program: "wsl.exe".into(), args: vec![] }];
+        let lib = Library { shells: Some(custom.clone()), ..Library::default() };
+        assert_eq!(lib.standalone_shells(), custom);
+        // An explicit empty list means "no standalone shells", not "the defaults".
+        let lib = Library { shells: Some(vec![]), ..Library::default() };
+        assert!(lib.standalone_shells().is_empty());
+    }
+
+    #[test]
     fn library_roundtrips_through_toml() {
         let dir = std::env::temp_dir().join(format!("komando-test-{}", new_id()));
-        let lib = Library { projects: vec![project(Some("c"), None)], hosts: vec![host(None, Some("u"), None)] };
+        let lib = Library { shells: None, projects: vec![project(Some("c"), None)], hosts: vec![host(None, Some("u"), None)] };
         lib.save(&dir).unwrap();
         assert_eq!(Library::load(&dir).unwrap(), lib);
         assert_eq!(lib.credential_users("c"), 1);

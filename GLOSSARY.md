@@ -18,24 +18,23 @@ _Avoid_: Fingerprint (that is only its display form), known host
 
 ## Running terminals
 
+**Local Shell**:
+A saved local shell, such as PowerShell or cmd, that Komando can start. It belongs to a Project or stands alone.
+_Avoid_: Local profile
+
 **Session**:
-One live terminal, either an SSH Session or a Local Session. Opening the same Host twice creates two Sessions.
-_Avoid_: Connection, shell, instance
+A terminal running for a Host or Local Shell. A Host or Local Shell can have several Sessions. When a Session ends (closed or dropped), its Scrollback stays until it is discarded or Komando closes, and activating it again reconnects in the same terminal.
+_Avoid_: Connection, shell, instance, tab
 
 **SSH Session**:
 A Session connected to a Host. The shell runs on the remote machine; no local shell is involved.
 
 **Local Session**:
-A Session running a shell on the Windows machine itself, such as PowerShell or cmd. Like every Session, it belongs to a Project.
-_Avoid_: Local tab, local profile
+A Session of a Local Shell, running on the Windows machine itself.
 
 **Scrollback**:
 All output a Session has received and still holds, from its first line to its current screen.
 _Avoid_: History, buffer, log
-
-**Tab**:
-An entry in the vertical tab sidebar that shows one Session.
-_Avoid_: Pane, window
 
 ## Secrets
 

@@ -6,6 +6,20 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-11
+
+### Changed
+
+- The sidebar lists every saved host and local shell instead of open sessions. Clicking one
+  connects, or returns to its session if it's already connected. Live items are bright with a
+  status dot; idle ones are dimmed.
+- When a connection drops or you disconnect (×, Ctrl+Shift+W), the host goes idle but keeps
+  its output; clicking it again reconnects in the same terminal. A second × discards the output.
+- Ctrl+click (or the + on a row) opens another session on the same host, shown as a nested
+  row. Ctrl+Shift+T now does the same for the current host.
+- Local shells are listed at the top of the sidebar on their own and can also belong to a
+  project. New installs no longer get a "Local" project.
+
 ## [0.1.1] - 2026-11-11
 
 ### Fixed
@@ -38,6 +52,7 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/R4cc/komando/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/R4cc/komando/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/R4cc/komando/releases/tag/v0.1.0
