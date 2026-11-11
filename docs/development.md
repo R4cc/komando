@@ -57,6 +57,14 @@ screenshots. You need the X11 libraries (`libxcb`, `libxkbcommon`, `libxkbcommon
 `RUST_FONTCONFIG_DLOPEN=on` if fontconfig has no pkg-config file. `examples/demo.rs` seeds a
 throwaway data folder and opens a few sessions; it's what produced the README screenshot.
 
+### Updates
+
+Settings → About checks the latest GitHub release (`/repos/R4cc/komando/releases/latest`) and
+installs it: a portable `komando.exe` in a writable folder is swapped in place (the old file is
+kept as `komando.exe.old` until the next start), an MSI install under Program Files runs the new
+installer. Downloads are checked against the size and SHA-256 digest GitHub lists. To try the
+flow against the current release, start Komando with `KOMANDO_PRETEND_VERSION=0.0.1`.
+
 ### Profiling
 
 Set `KOMANDO_PERF=1` and Komando prints, every 5 seconds, how often the hot paths ran and how

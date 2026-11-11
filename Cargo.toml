@@ -1,6 +1,6 @@
 [package]
 name = "komando"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2024"
 description = "A fast terminal for system engineers who SSH into Linux machines."
 publish = false
@@ -29,6 +29,7 @@ log = "0.4"
 chrono = "0.4"
 base64 = "0.22"
 sha2 = "0.10"
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5"

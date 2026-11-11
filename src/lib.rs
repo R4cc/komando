@@ -11,6 +11,7 @@ pub mod platform;
 pub mod session;
 pub mod theme;
 pub mod ui;
+pub mod update;
 pub mod vault;
 
 use std::borrow::Cow;
@@ -69,6 +70,7 @@ pub fn run(options: Options) {
         .with_assets(gpui_kit_assets::AllAssets)
         .run(move |cx: &mut App| {
             perf::init();
+            update::clean_up();
             init(cx);
             let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
             cx.open_window(

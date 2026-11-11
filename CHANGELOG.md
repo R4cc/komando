@@ -6,6 +6,21 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-11-11
+
+### Added
+
+- Updates from inside Komando: **Settings → About** checks GitHub for a newer release and installs
+  it with one click.
+  - A portable `komando.exe` is swapped in place, and **Restart now** finishes the update.
+  - An installed Komando downloads and starts the new installer, which asks for administrator
+    rights and replaces the old version.
+  - Downloads are checked against the size and SHA-256 checksum GitHub lists before anything is
+    replaced.
+  - Komando looks for a new version when it starts; turn that off with **Check automatically**.
+    Nothing is downloaded without asking. When a new version is found, the sidebar's Settings
+    button shows **Update**.
+
 ## [0.1.11] - 2026-11-11
 
 ### Fixed

@@ -558,6 +558,7 @@ impl Workspace {
                         .into_any_element(),
                 ],
             ))
+            .child(self.render_updates(p, cx))
             .into_any_element()
     }
 

@@ -237,6 +237,8 @@ pub struct Settings {
     pub background_blur: bool,
     /// 0–100: how much of the blurred backdrop shows through.
     pub background_blur_intensity: u8,
+    /// Look for a newer release on GitHub when Komando starts.
+    pub check_for_updates: bool,
 }
 
 impl Default for Settings {
@@ -255,6 +257,7 @@ impl Default for Settings {
             disabled_highlight_sets: vec![],
             background_blur: true,
             background_blur_intensity: 60,
+            check_for_updates: true,
         }
     }
 }

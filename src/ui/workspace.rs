@@ -30,7 +30,9 @@ use crate::ui::widgets::{
 use crate::vault::{Credential, Secret, Vault};
 
 mod settings;
+mod updates;
 pub use settings::SettingsSection;
+use updates::UpdateState;
 
 actions!(
     komando,
@@ -199,6 +201,8 @@ pub struct Workspace {
     highlight_skipped: Vec<(String, String)>,
     page: Page,
     highlights_expanded: Option<String>,
+    /// Updates from GitHub (Settings → About).
+    update: UpdateState,
     /// The sidebar list (virtual: only rows in view are built) and the rows it was built for.
     sidebar_list: ListState,
     sidebar_rows: Vec<SidebarRow>,
@@ -273,6 +277,7 @@ impl Workspace {
             toast: None,
             last_activity: Instant::now(),
             focus: cx.focus_handle(),
+            update: UpdateState::Idle,
             _subscriptions: vec![],
         };
         this.apply_appearance(window, cx);
@@ -288,6 +293,14 @@ impl Workspace {
             this.show_unlock(true, window, cx);
         }
         this.start_auto_lock(window, cx);
+        // Look for a new version shortly after start, without getting in the way of it.
+        if this.settings.check_for_updates {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(Duration::from_secs(3)).await;
+                let _ = this.update(cx, |this, cx| this.check_for_updates(true, cx));
+            })
+            .detach();
+        }
         if !startup.open.is_empty() {
             cx.defer_in(window, move |this, window, cx| this.run_startup(&startup, window, cx));
         }
@@ -1607,6 +1620,7 @@ impl Workspace {
             .flex_1()
             .min_h_0();
 
+        let update_ready = self.update_available();
         let footer_row = |id: &'static str, icon: &str, label: String| {
             div()
                 .id(id)
@@ -1675,9 +1689,26 @@ impl Workspace {
                     .child(
                         footer_row("settings", "settings", "Settings".into())
                             .child(div().flex_1())
-                            .child(kbd("Ctrl ,", p))
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                                this.open_settings(SettingsSection::Appearance, window, cx)
+                            // A new version: say so here, and open the page that installs it.
+                            .when(update_ready, |el| {
+                                el.child(
+                                    div()
+                                        .px(px(7.))
+                                        .h(px(18.))
+                                        .flex()
+                                        .items_center()
+                                        .rounded_full()
+                                        .bg(p.brand_soft)
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(p.brand)
+                                        .child("Update"),
+                                )
+                            })
+                            .when(!update_ready, |el| el.child(kbd("Ctrl ,", p)))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                let section = if update_ready { SettingsSection::About } else { SettingsSection::Appearance };
+                                this.open_settings(section, window, cx)
                             })),
                     ),
             )
