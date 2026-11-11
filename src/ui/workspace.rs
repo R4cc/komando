@@ -1835,18 +1835,26 @@ impl Workspace {
                         .text_color(if active || live { p.text } else { p.text_muted })
                         .child(label),
                 )
-                .child(indicator)
+                // The status dot gives way to the row's buttons while hovered, so the two
+                // never sit on top of each other.
+                .child(div().flex_shrink_0().group_hover("item-row", |s| s.invisible()).child(indicator))
                 .child(
+                    // Opaque sidebar colour under the row's translucent hover colour, so the
+                    // buttons' backdrop matches the row and covers the end of a long label.
                     div()
                         .absolute()
                         .right(px(4.))
                         .top(px(if nested { 3. } else { 5. }))
+                        .rounded(px(7.))
+                        .bg(p.sidebar)
+                        .invisible()
+                        .group_hover("item-row", |s| s.visible())
+                        .child(
+                    div()
                         .flex()
                         .gap(px(2.))
                         .rounded(px(7.))
-                        .bg(if active { p.sidebar } else { p.sidebar })
-                        .invisible()
-                        .group_hover("item-row", |s| s.visible())
+                        .bg(if active { p.active } else { p.hover })
                         .when(!nested, |el| {
                             el.child(
                                 icon_button(SharedString::from(format!("another-{key:?}")), "plus", p).size(px(24.)).on_click(
@@ -1865,6 +1873,7 @@ impl Workspace {
                                 }),
                             ))
                         }),
+                        ),
                 )
                 .context_menu(item_menu)
                 .into_any_element()

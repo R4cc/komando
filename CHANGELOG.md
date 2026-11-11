@@ -6,6 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-11-11
+
+### Fixed
+
+- In the sidebar, hovering a host showed the + and × buttons on top of its status dot. The dot
+  now hides while the buttons are shown, and the buttons' backdrop matches the row.
+
 ## [0.1.12] - 2026-11-11
 
 ### Added
