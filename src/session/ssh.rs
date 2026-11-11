@@ -13,7 +13,7 @@ use anyhow::{Result, anyhow};
 use futures::channel::oneshot;
 use russh::client::{self, AuthResult, Handle};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
-use russh::{ChannelMsg, Disconnect};
+use russh::{ChannelMsg, Disconnect, Pty};
 use tokio::sync::mpsc;
 
 use super::{EventProxy, GridSize, InputSink, Prompt, SessionEvent, SharedTerm, Status};
@@ -169,25 +169,36 @@ async fn run(
 
     let mut channel = handle.channel_open_session().await?;
     channel
-        .request_pty(false, "xterm-256color", size.cols as u32, size.rows as u32, 0, 0, &[])
+        .request_pty(
+            false,
+            "xterm-256color",
+            size.cols as u32,
+            size.rows as u32,
+            size.pixel_width(),
+            size.pixel_height(),
+            TERMINAL_MODES,
+        )
         .await?;
+    // Most servers only accept LANG and LC_* (sshd's AcceptEnv); the rest are dropped
+    // silently, so asking costs nothing.
+    channel.set_env(false, "COLORTERM", "truecolor").await?;
     channel.request_shell(true).await?;
     proxy.send(SessionEvent::Status(Status::Connected));
 
-    let mut parser: Processor = Processor::new();
+    let mut output = Output::default();
     let mut exit_status = None;
     let reason = loop {
+        let sync_deadline = output.sync_deadline();
         tokio::select! {
             msg = channel.wait() => match msg {
                 Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                    {
-                        let mut term = term.lock();
-                        parser.advance(&mut *term, &data);
-                    }
-                    proxy.send_event(Event::Wakeup);
+                    output.feed(&term, &proxy, &data);
                 }
                 Some(ChannelMsg::ExitStatus { exit_status: code }) => exit_status = Some(code),
-                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
+                // The exit status may still follow the end of output; wait for Close.
+                Some(ChannelMsg::Eof) => {}
+                Some(ChannelMsg::Close) | None => {
+                    output.flush(&term, &proxy);
                     break match exit_status {
                         Some(0) | None => "Connection closed.".to_string(),
                         Some(code) => format!("Remote shell exited with code {code}."),
@@ -200,7 +211,9 @@ async fn run(
                 Some(Command::Resize(new_size)) => {
                     if new_size != size {
                         size = new_size;
-                        channel.window_change(size.cols as u32, size.rows as u32, 0, 0).await?;
+                        channel
+                            .window_change(size.cols as u32, size.rows as u32, size.pixel_width(), size.pixel_height())
+                            .await?;
                     }
                 }
                 Some(Command::Close) | None => {
@@ -208,9 +221,79 @@ async fn run(
                     break "Session closed.".to_string();
                 }
             },
+            // A program began a synchronized update (DECSET 2026) and did not finish it in
+            // time: show what it drew so far rather than freezing the screen.
+            _ = sleep_until(sync_deadline), if sync_deadline.is_some() => output.flush(&term, &proxy),
         }
     };
     Ok(reason)
+}
+
+/// POSIX terminal modes for the remote PTY, as OpenSSH sends them from a local terminal.
+/// Without them the server falls back to kernel defaults, which on Linux leave out IUTF8:
+/// then backspace in cooked mode (`read`, `cat`, password prompts) deletes one byte of a
+/// multi-byte character instead of the whole character.
+const TERMINAL_MODES: &[(Pty, u32)] = &[
+    (Pty::VINTR, 0x03),
+    (Pty::VQUIT, 0x1c),
+    (Pty::VERASE, 0x7f),
+    (Pty::VKILL, 0x15),
+    (Pty::VEOF, 0x04),
+    (Pty::VSUSP, 0x1a),
+    (Pty::VWERASE, 0x17),
+    (Pty::VLNEXT, 0x16),
+    (Pty::ICRNL, 1),
+    (Pty::IUTF8, 1),
+    (Pty::ISIG, 1),
+    (Pty::ICANON, 1),
+    (Pty::IEXTEN, 1),
+    (Pty::ECHO, 1),
+    (Pty::ECHOE, 1),
+    (Pty::ECHOK, 1),
+    (Pty::ECHOCTL, 1),
+    (Pty::ECHOKE, 1),
+    (Pty::OPOST, 1),
+    (Pty::ONLCR, 1),
+    (Pty::CS8, 1),
+    (Pty::TTY_OP_ISPEED, 38400),
+    (Pty::TTY_OP_OSPEED, 38400),
+];
+
+async fn sleep_until(deadline: Option<std::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Parses program output into the grid the way alacritty's PTY loop does for Local
+/// Sessions, including synchronized updates: while a program draws inside one, the grid is
+/// left alone and the UI is not woken, so it never shows a half-drawn screen.
+#[derive(Default)]
+pub(crate) struct Output {
+    parser: Processor,
+}
+
+impl Output {
+    pub(crate) fn feed(&mut self, term: &SharedTerm, proxy: &EventProxy, bytes: &[u8]) {
+        self.parser.advance(&mut *term.lock(), bytes);
+        if self.parser.sync_bytes_count() < bytes.len() {
+            proxy.send_event(Event::Wakeup);
+        }
+    }
+
+    /// When a pending synchronized update must be shown even if it never ends.
+    pub(crate) fn sync_deadline(&self) -> Option<std::time::Instant> {
+        self.parser.sync_timeout().sync_timeout()
+    }
+
+    /// Apply a pending synchronized update now.
+    pub(crate) fn flush(&mut self, term: &SharedTerm, proxy: &EventProxy) {
+        if self.parser.sync_bytes_count() > 0 {
+            self.parser.stop_sync(&mut *term.lock());
+            proxy.send_event(Event::Wakeup);
+        }
+    }
 }
 
 async fn authenticate(handle: &mut Handle<Client>, user: &str, secret: Option<&Secret>, proxy: &EventProxy) -> Result<()> {

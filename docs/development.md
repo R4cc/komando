@@ -57,6 +57,21 @@ screenshots. You need the X11 libraries (`libxcb`, `libxkbcommon`, `libxkbcommon
 `RUST_FONTCONFIG_DLOPEN=on` if fontconfig has no pkg-config file. `examples/demo.rs` seeds a
 throwaway data folder and opens a few sessions; it's what produced the README screenshot.
 
+### Terminal compatibility tests
+
+`src/compat_tests.rs` runs real programs (vim, htop, tmux, less, bash, and an SSH session against
+a throwaway local `sshd`) in a real pseudo-terminal with Komando's terminal settings, and drives
+them with Komando's own key, mouse and wheel encoding. They need those programs installed, so
+they are ignored by default:
+
+```sh
+cargo test --lib compat -- --ignored --test-threads=1
+```
+
+A missing program is skipped with a note. Put programs unpacked elsewhere on
+`KOMANDO_COMPAT_PATH` (for example a `.deb` extracted with `dpkg-deb -x`, along with
+`LD_LIBRARY_PATH` for its libraries).
+
 ### Updates
 
 Settings → About checks the latest GitHub release (`/repos/R4cc/komando/releases/latest`) and

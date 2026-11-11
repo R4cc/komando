@@ -9,7 +9,7 @@ pub mod local;
 pub mod ssh;
 
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use alacritty_terminal::Term;
@@ -18,9 +18,11 @@ use alacritty_terminal::event_loop::{EventLoopSender, Msg};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::sync::FairMutex;
-use alacritty_terminal::term::Config as TermConfig;
+use alacritty_terminal::term::{Config as TermConfig, Osc52};
 use alacritty_terminal::term::test::TermSize;
 use futures::channel::{mpsc, oneshot};
+
+use crate::theme::TerminalPalette;
 
 pub type SharedTerm = Arc<FairMutex<Term<EventProxy>>>;
 
@@ -114,6 +116,15 @@ impl GridSize {
         }
     }
 
+    /// The text area in pixels, for programs that size images or layouts by it.
+    pub fn pixel_width(self) -> u32 {
+        self.cols as u32 * self.cell_width as u32
+    }
+
+    pub fn pixel_height(self) -> u32 {
+        self.rows as u32 * self.cell_height as u32
+    }
+
     pub fn term_size(self) -> TermSize {
         TermSize::new(self.cols as usize, self.rows as usize)
     }
@@ -126,15 +137,45 @@ pub struct EventProxy {
     dirty: Arc<AtomicBool>,
     /// Replies the terminal must send back to the program (e.g. cursor position reports).
     responder: Arc<parking_lot_lite::Slot<InputSink>>,
+    /// What programs may ask about (colours, window size), kept current by the view.
+    ///
+    /// Queries are answered here, on the parser's thread and in order with the other
+    /// replies: programs such as neovim send a colour query followed by a device-attributes
+    /// query, and take the second answer arriving first as "not supported".
+    reports: Arc<Mutex<Reports>>,
+}
+
+#[derive(Default)]
+struct Reports {
+    palette: Option<TerminalPalette>,
+    size: Option<GridSize>,
 }
 
 impl EventProxy {
     pub fn new(tx: mpsc::UnboundedSender<SessionEvent>) -> Self {
-        Self { tx, dirty: Arc::new(AtomicBool::new(false)), responder: Arc::new(Default::default()) }
+        Self {
+            tx,
+            dirty: Arc::new(AtomicBool::new(false)),
+            responder: Arc::new(Default::default()),
+            reports: Arc::new(Mutex::new(Reports::default())),
+        }
     }
 
     pub fn set_responder(&self, sink: InputSink) {
         self.responder.set(sink);
+    }
+
+    /// The colours OSC 4/10/11/12 queries are answered with.
+    pub fn set_palette(&self, palette: &TerminalPalette) {
+        let mut reports = self.reports.lock().unwrap();
+        if reports.palette.as_ref() != Some(palette) {
+            reports.palette = Some(palette.clone());
+        }
+    }
+
+    /// The size window-size queries (CSI 14 t) are answered with.
+    pub fn set_size(&self, size: GridSize) {
+        self.reports.lock().unwrap().size = Some(size);
     }
 
     /// Called by the UI once it has picked up a Wakeup, re-arming the next one.
@@ -144,6 +185,12 @@ impl EventProxy {
 
     pub fn send(&self, event: SessionEvent) {
         let _ = self.tx.unbounded_send(event);
+    }
+
+    fn reply(&self, text: String) {
+        if let Some(sink) = self.responder.get() {
+            sink.write(text.into_bytes());
+        }
     }
 }
 
@@ -157,9 +204,17 @@ impl EventListener for EventProxy {
             }
             Event::Title(title) => self.send(SessionEvent::Title(title)),
             Event::ResetTitle => self.send(SessionEvent::Title(String::new())),
-            Event::PtyWrite(text) => {
-                if let Some(sink) = self.responder.get() {
-                    sink.write(text.into_bytes());
+            Event::PtyWrite(text) => self.reply(text),
+            Event::ColorRequest(index, format) => {
+                let color = self.reports.lock().unwrap().palette.as_ref().map(|p| p.color_at(index));
+                if let Some(color) = color {
+                    self.reply(format(color));
+                }
+            }
+            Event::TextAreaSizeRequest(format) => {
+                let size = self.reports.lock().unwrap().size;
+                if let Some(size) = size {
+                    self.reply(format(size.window_size()));
                 }
             }
             Event::ClipboardStore(_, text) => self.send(SessionEvent::ClipboardStore(text)),
@@ -171,6 +226,9 @@ impl EventListener for EventProxy {
                 self.send(SessionEvent::Status(Status::Disconnected(reason)));
             }
             Event::Exit => self.send(SessionEvent::Status(Status::Disconnected("The shell exited.".into()))),
+            // Reading the clipboard (OSC 52 query) is never allowed: any program, including
+            // one on a remote host, could read what was copied. The terminal is configured
+            // not to ask (see `new_term`).
             _ => {}
         }
     }
@@ -200,7 +258,12 @@ mod parking_lot_lite {
 }
 
 pub fn new_term(size: GridSize, scrollback_lines: usize, proxy: EventProxy) -> SharedTerm {
-    let config = TermConfig { scrolling_history: scrollback_lines, ..TermConfig::default() };
+    let config = TermConfig {
+        scrolling_history: scrollback_lines,
+        // Programs may copy to the clipboard (OSC 52) but never read it.
+        osc52: Osc52::OnlyCopy,
+        ..TermConfig::default()
+    };
     Arc::new(FairMutex::new(Term::new(config, &size.term_size(), proxy)))
 }
 
@@ -248,6 +311,65 @@ mod tests {
         }
         let text = scrollback_text(&*t);
         assert_eq!(text, "line 1\r\nline 2\r\nline 3\r\nline 4\r\nline 5\r\nline 6\r\n");
+    }
+
+    /// A terminal whose replies to the program land in the returned channel.
+    fn replying_term() -> (SharedTerm, EventProxy, tokio::sync::mpsc::UnboundedReceiver<ssh::Command>) {
+        let (tx, _rx) = mpsc::unbounded();
+        let proxy = EventProxy::new(tx);
+        let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
+        proxy.set_responder(InputSink::Ssh(input_tx));
+        let size = GridSize { cols: 80, rows: 24, cell_width: 9, cell_height: 18 };
+        proxy.set_size(size);
+        proxy.set_palette(&crate::theme::TerminalPalette::dark());
+        (new_term(size, 100, proxy.clone()), proxy, input_rx)
+    }
+
+    fn replies(rx: &mut tokio::sync::mpsc::UnboundedReceiver<ssh::Command>) -> String {
+        let mut out = Vec::new();
+        while let Ok(command) = rx.try_recv() {
+            if let ssh::Command::Input(bytes) = command {
+                out.extend(bytes);
+            }
+        }
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn color_and_size_queries_are_answered_in_order() {
+        let (term, _proxy, mut rx) = replying_term();
+        let mut parser: Processor = Processor::new();
+        // What neovim sends at startup: background colour, then primary device attributes.
+        parser.advance(&mut *term.lock(), b"\x1b]11;?\x1b\\\x1b[c");
+        let bg = crate::theme::TerminalPalette::dark().background;
+        let want_bg = format!("\x1b]11;rgb:{0:02x}{0:02x}/{1:02x}{1:02x}/{2:02x}{2:02x}\x1b\\", bg.r, bg.g, bg.b);
+        assert_eq!(replies(&mut rx), format!("{want_bg}\x1b[?6c"));
+
+        // Text area in pixels (CSI 14 t) and in cells (CSI 18 t).
+        parser.advance(&mut *term.lock(), b"\x1b[14t\x1b[18t");
+        assert_eq!(replies(&mut rx), "\x1b[4;432;720t\x1b[8;24;80t");
+
+        // Palette entry (OSC 4) and cursor position (DSR 6).
+        parser.advance(&mut *term.lock(), b"\x1b]4;196;?\x07\x1b[3;5H\x1b[6n");
+        assert_eq!(replies(&mut rx), "\x1b]4;196;rgb:ffff/0000/0000\x07\x1b[3;5R");
+    }
+
+    #[test]
+    fn unfinished_synchronized_updates_are_shown_after_the_timeout() {
+        let (term, proxy, _rx) = replying_term();
+        let mut output = ssh::Output::default();
+        output.feed(&term, &proxy, b"before\x1b[?2026hinside");
+        assert!(output.sync_deadline().is_some());
+        let text = || scrollback_text(&*term.lock());
+        assert_eq!(text(), "before\r\n");
+        output.flush(&term, &proxy);
+        assert_eq!(text(), "beforeinside\r\n");
+        assert!(output.sync_deadline().is_none());
+
+        // A finished update is applied as soon as it ends.
+        output.feed(&term, &proxy, b"\x1b[?2026h\r\nnext");
+        output.feed(&term, &proxy, b"\x1b[?2026l");
+        assert_eq!(text(), "beforeinside\r\nnext\r\n");
     }
 
     #[test]

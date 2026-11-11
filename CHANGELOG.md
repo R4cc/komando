@@ -6,6 +6,47 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-11-11
+
+### Added
+
+- Mouse support in terminal programs. vim, htop, tmux, mc and others that ask for the mouse
+  now get clicks, drags and the wheel, so you can click to place the cursor in vim, pick a pane
+  in tmux or press htop's buttons. Hold Shift to select text as before.
+- Programs are told when Komando gains or loses focus, if they ask (vim and tmux use it, for
+  example to reload files changed elsewhere).
+- Programs can ask for the terminal's colours and size. vim and neovim now pick their dark or
+  light colours to match your theme.
+- The cursor takes the shape programs ask for: a bar in vim's insert mode, an underline in
+  replace mode.
+- Strikethrough text, and underlines in their own colour (as spell checkers and language
+  servers draw them).
+
+### Changed
+
+- Box-drawing lines, block characters and Powerline separators are drawn by Komando instead of
+  the font. Borders in tmux, vim splits, htop, mc and prompt themes join up without gaps
+  between rows.
+- The terminal draws much faster under heavy output: each character is laid out once and
+  reused, instead of every line being laid out again on every frame.
+
+### Fixed
+
+- Wide characters (Chinese, Japanese, Korean), emoji and icon fonts no longer push the rest of
+  the line out of its columns.
+- Accents typed as separate characters (combining marks) are shown instead of dropped.
+- The mouse wheel in less, man and other full-screen programs scrolls by line in the mode the
+  program set, and stops when the program turns that off. Small touchpad scrolls add up
+  instead of being lost.
+- Ctrl+Alt+letter, Ctrl+/ and Alt with Enter, Tab, Backspace or Escape send what terminal
+  programs expect.
+- The tab title goes back to the host's name when a program such as vim resets it on exit.
+- SSH sessions: backspace over accented and other non-ASCII characters at a shell prompt
+  deletes the whole character, and the remote side knows the terminal's size in pixels.
+- SSH sessions no longer stall when a program starts a synchronized screen update and never
+  finishes it, and the remote shell's exit code is kept when a server ends the output before
+  sending it.
+
 ## [0.1.14] - 2026-11-11
 
 ### Added

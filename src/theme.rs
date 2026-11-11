@@ -161,7 +161,7 @@ pub fn contrast(a: u32, b: u32) -> f32 {
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct TerminalPalette {
     pub dark: bool,
     pub background: Rgb,
@@ -214,6 +214,17 @@ impl TerminalPalette {
             Color::Spec(rgb) => rgb,
             Color::Indexed(index) => overrides[index as usize].unwrap_or_else(|| self.indexed(index)),
             Color::Named(named) => overrides[named].unwrap_or_else(|| self.named(named)),
+        }
+    }
+
+    /// The colour a program asks about with OSC 4 (0–255), 10 (256, text), 11 (257,
+    /// background) or 12 (258, cursor), using alacritty's numbering.
+    pub fn color_at(&self, index: usize) -> Rgb {
+        match index {
+            0..=255 => self.indexed(index as u8),
+            i if i == NamedColor::Background as usize => self.background,
+            i if i == NamedColor::Cursor as usize => self.cursor,
+            _ => self.foreground,
         }
     }
 
@@ -371,6 +382,16 @@ mod tests {
         assert_eq!(p.indexed(196), Rgb { r: 255, g: 0, b: 0 });
         assert_eq!(p.indexed(232), Rgb { r: 8, g: 8, b: 8 });
         assert_eq!(p.indexed(255), Rgb { r: 238, g: 238, b: 238 });
+    }
+
+    #[test]
+    fn color_queries_use_xterm_numbering() {
+        let p = TerminalPalette::dark();
+        assert_eq!(p.color_at(1), p.ansi[1]);
+        assert_eq!(p.color_at(196), Rgb { r: 255, g: 0, b: 0 });
+        assert_eq!(p.color_at(NamedColor::Foreground as usize), p.foreground);
+        assert_eq!(p.color_at(NamedColor::Background as usize), p.background);
+        assert_eq!(p.color_at(NamedColor::Cursor as usize), p.cursor);
     }
 }
 

@@ -1,6 +1,8 @@
 //! KOMANDO: a fast terminal for system engineers who work on Linux machines over SSH.
 //! Windows 11 only (see docs/adr/0001-windows-11-only.md).
 
+#[cfg(all(test, unix))]
+mod compat_tests;
 pub mod export;
 pub mod highlight;
 pub mod keys;
