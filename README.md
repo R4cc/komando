@@ -47,7 +47,7 @@
 
 ### Looks good
 
-- **Dark or light.** The app and the terminal each have their own theme.
+- **Themes for dark and light.** Pick a theme for each mode (Ember, Midnight, Forest, Paper, …); the terminal can follow the app or keep its own mode.
 - **Windows 11 Mica blur.** Your blurred wallpaper shows through the window, with the terminal kept readable. Adjustable or off in Settings.
 - **Slim, distraction-free layout.** Just your sidebar, the terminal, and a thin status line.
 

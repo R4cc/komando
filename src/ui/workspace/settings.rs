@@ -40,7 +40,7 @@ impl SettingsSection {
 
     fn description(self) -> &'static str {
         match self {
-            Self::Appearance => "Themes for the app and the terminal, and the background blur.",
+            Self::Appearance => "Dark and light mode, a theme for each, and the background blur.",
             Self::Terminal => "Font, scrollback and clipboard behaviour for every session.",
             Self::Highlights => "Colour matching text in terminal output. Rules apply top to bottom; the first match wins.",
             Self::Security => "The vault that holds your passwords and keys.",
@@ -267,7 +267,7 @@ impl Workspace {
         let app = self.settings.app_theme;
         let term = self.settings.terminal_theme;
         let blur = self.settings.background_blur;
-        let app_choice = segmented(
+        let mode_choice = segmented(
             "app-theme",
             &[("Dark", app == AppThemeSetting::Dark), ("Light", app == AppThemeSetting::Light), ("System", app == AppThemeSetting::System)],
             p,
@@ -297,35 +297,156 @@ impl Workspace {
             "Windows 11 only. This build runs elsewhere, so the setting is saved but has no effect."
         };
         let slider = self.blur_slider.clone().map(|s| Slider::new(&s).disabled(!blur).into_any_element());
-        group(
-            p,
-            vec![
-                setting_row(p, "App theme", "Sidebar, panels and dialogs.", app_choice),
-                setting_row(p, "Terminal theme", "Terminal colours, independent of the app theme.", term_choice),
-                setting_row(
-                    p,
-                    "Background blur",
-                    blur_hint,
-                    switch("blur-toggle".into(), blur, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_background_blur(!blur, window, cx)))
-                        .into_any_element(),
-                ),
-                setting_row(
-                    p,
-                    "Intensity",
-                    "How much of the blurred backdrop shows through. The terminal always keeps more of its background.",
+        let mode_hint = match app {
+            AppThemeSetting::System => "Follows Windows: dark or light, each with its own theme below.",
+            _ => "Each mode has its own theme below, so switching keeps the colours you picked for it.",
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(20.))
+            .child(group(p, vec![setting_row(p, "Mode", mode_hint, mode_choice)]))
+            .child(group(p, vec![self.theme_picker(true, p, cx), self.theme_picker(false, p, cx)]))
+            .child(group(
+                p,
+                vec![
+                    setting_row(
+                        p,
+                        "Terminal",
+                        "The terminal can follow the app or keep the dark or light theme's colours on its own.",
+                        term_choice,
+                    ),
+                    setting_row(
+                        p,
+                        "Background blur",
+                        blur_hint,
+                        switch("blur-toggle".into(), blur, p)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_background_blur(!blur, window, cx)))
+                            .into_any_element(),
+                    ),
+                    setting_row(
+                        p,
+                        "Intensity",
+                        "How much of the blurred backdrop shows through. The terminal always keeps more of its background.",
+                        div()
+                            .w(px(260.))
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .when(!blur, |el| el.opacity(0.4))
+                            .child(div().flex_1().children(slider))
+                            .child(value_label(format!("{}%", self.settings.background_blur_intensity), p))
+                            .into_any_element(),
+                    ),
+                ],
+            ))
+            .into_any_element()
+    }
+
+    /// The dark or light themes as bubbles: each shows the theme's background, its text and
+    /// its accent. The mode in use is marked, and picking one of its themes applies at once.
+    fn theme_picker(&self, dark: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let themes = if dark { crate::theme::DARK_THEMES } else { crate::theme::LIGHT_THEMES };
+        let current = self.theme_for(dark).id;
+        let in_use = p.dark == dark;
+        let bubbles = themes.iter().map(|t| {
+            let selected = t.id == current;
+            let id = t.id;
+            let hex = crate::theme::hex;
+            let bubble = div()
+                .size(px(46.))
+                .rounded_full()
+                .bg(hex(t.background))
+                .border_1()
+                .border_color(if t.dark { gpui::white().opacity(0.12) } else { gpui::black().opacity(0.12) })
+                .relative()
+                // A line of text and a tag: how the theme's text and accent sit on its background.
+                .child(div().absolute().left(px(10.)).top(px(11.)).w(px(14.)).h(px(4.)).rounded_full().bg(hex(t.text_muted)))
+                .child(div().absolute().left(px(10.)).top(px(18.)).w(px(8.)).h(px(4.)).rounded_full().bg(hex(t.text_faint)))
+                .child(
                     div()
-                        .w(px(260.))
+                        .absolute()
+                        .right(px(6.))
+                        .bottom(px(6.))
+                        .size(px(19.))
+                        .rounded_full()
+                        .bg(hex(t.accent))
                         .flex()
                         .items_center()
-                        .gap(px(12.))
-                        .when(!blur, |el| el.opacity(0.4))
-                        .child(div().flex_1().children(slider))
-                        .child(value_label(format!("{}%", self.settings.background_blur_intensity), p))
-                        .into_any_element(),
-                ),
-            ],
-        )
+                        .justify_center()
+                        .when(selected, |el| {
+                            el.child(icon_el("check", 12., crate::theme::AppPalette::from_theme(t).on_brand))
+                        }),
+                );
+            div()
+                .id(SharedString::from(format!("theme-{}-{id}", if dark { "dark" } else { "light" })))
+                .w(px(72.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(7.))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_theme(dark, id, window, cx)))
+                .child(
+                    div()
+                        .p(px(3.))
+                        .rounded_full()
+                        .border_2()
+                        .border_color(if selected { p.brand } else { gpui::transparent_black() })
+                        .when(!selected, |el| el.hover(|s| s.border_color(p.border)))
+                        .child(bubble),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(if selected { FontWeight::MEDIUM } else { FontWeight::NORMAL })
+                        .text_color(if selected { p.text } else { p.text_muted })
+                        .child(t.name),
+                )
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(px(13.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(p.text)
+                                    .child(if dark { "Dark theme" } else { "Light theme" }),
+                            )
+                            .when(in_use, |el| {
+                                el.child(
+                                    div()
+                                        .px(px(7.))
+                                        .py(px(1.))
+                                        .rounded_full()
+                                        .bg(p.brand_soft)
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(p.brand)
+                                        .child("In use"),
+                                )
+                            }),
+                    )
+                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(if dark {
+                        "Colours of the app and the terminal in dark mode."
+                    } else {
+                        "Colours of the app and the terminal in light mode."
+                    })),
+            )
+            .child(div().flex().flex_wrap().gap(px(6.)).children(bubbles))
+            .into_any_element()
     }
 
     fn settings_terminal(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {

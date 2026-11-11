@@ -24,7 +24,7 @@ pub enum ButtonKind {
 pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: ButtonKind, p: AppPalette) -> Stateful<gpui::Div> {
     let (bg, fg, hover, border) = match kind {
         // Near-black on orange: white would read at only about 3:1.
-        ButtonKind::Primary => (p.brand, crate::theme::hex(0x1c1917), p.brand.opacity(0.88), None),
+        ButtonKind::Primary => (p.brand, p.on_brand, p.brand.opacity(0.88), None),
         ButtonKind::Secondary => (p.hover, p.text, p.active, Some(p.border)),
         ButtonKind::Ghost => (gpui::transparent_black(), p.text_muted, p.hover, None),
         // red-600 in both themes: white text on the lighter dark-theme red was 2.8:1.

@@ -6,6 +6,23 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-11-11
+
+### Added
+
+- Themes. **Settings → Appearance** offers seven dark themes (Ember, Midnight, Forest, Dusk,
+  Rosé, Glacier, Graphite) and seven light ones (Ember, Sky, Sage, Lavender, Blossom, Paper,
+  Graphite). Each colours the app and the terminal together: the accent, greys tinted to
+  match, text and the terminal background. You pick a dark and a light theme separately, so
+  each mode keeps its own colours when you switch or when Windows switches for you.
+- Themes are shown as bubbles with the theme's background, text and accent; click one to use
+  it. The mode in use is marked **In use**.
+
+### Changed
+
+- **App theme** is now called **Mode** (Dark, Light, System).
+- Primary buttons pick dark or white text, whichever reads better on the theme's accent.
+
 ## [0.1.13] - 2026-11-11
 
 ### Fixed

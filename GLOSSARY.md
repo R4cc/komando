@@ -60,10 +60,17 @@ _Avoid_: Project password, default login
 ## Appearance
 
 **App Theme**:
-Light or dark mode for Komando's chrome: sidebar, dialogs and settings.
+Light or dark mode for Komando's chrome: sidebar, dialogs and settings. (Setting name
+`app_theme`; the UI calls it **Mode**.)
+
+**Theme**:
+A named set of colours for one mode, covering the chrome and the terminal: accent, tinted
+greys, text and terminal background (Ember, Midnight, Paper, …). Dark and light Themes are
+separate lists; the user picks one of each, and the mode decides which one shows.
 
 **Terminal Theme**:
-Light or dark color scheme for terminal content, set independently of the App Theme.
+Whether the terminal follows the App Theme or always uses the dark or light Theme's terminal
+colours.
 _Avoid_: Color scheme (ambiguous)
 
 ## Highlighting

@@ -215,8 +215,13 @@ pub enum TerminalThemeSetting {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
+    /// Dark, light, or follow Windows.
     pub app_theme: AppThemeSetting,
     pub terminal_theme: TerminalThemeSetting,
+    /// The Theme (by id, see `theme::DARK_THEMES`) used in dark mode.
+    pub dark_theme: String,
+    /// The Theme (by id, see `theme::LIGHT_THEMES`) used in light mode.
+    pub light_theme: String,
     pub font_family: String,
     pub font_size: f32,
     /// Lines of Scrollback each Session keeps.
@@ -246,6 +251,8 @@ impl Default for Settings {
         Self {
             app_theme: AppThemeSetting::Dark,
             terminal_theme: TerminalThemeSetting::Follow,
+            dark_theme: "ember".into(),
+            light_theme: "ember".into(),
             font_family: "Cascadia Mono".into(),
             font_size: 14.0,
             scrollback_lines: 100_000,

@@ -360,8 +360,8 @@ impl Workspace {
         });
         crate::platform::set_window_dark_mode(window, app_dark);
         cx.set_global(Appearance {
-            app: (if app_dark { AppPalette::dark() } else { AppPalette::light() }).translucent(t),
-            term: (if term_dark { TerminalPalette::dark() } else { TerminalPalette::light() }).translucent(t),
+            app: AppPalette::from_theme(self.theme_for(app_dark)).translucent(t),
+            term: TerminalPalette::from_theme(self.theme_for(term_dark)).translucent(t),
             font_family: self.settings.font_family.clone().into(),
             font_size: self.settings.font_size,
         });
@@ -387,6 +387,21 @@ impl Workspace {
             theme.colors.slider_thumb = gpui::white();
         });
         cx.refresh_windows();
+    }
+
+    /// The Theme picked for dark or light mode.
+    fn theme_for(&self, dark: bool) -> &'static crate::theme::ThemeSpec {
+        crate::theme::theme(dark, if dark { &self.settings.dark_theme } else { &self.settings.light_theme })
+    }
+
+    fn set_theme(&mut self, dark: bool, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        if dark {
+            self.settings.dark_theme = id.into();
+        } else {
+            self.settings.light_theme = id.into();
+        }
+        let _ = self.settings.save(&self.data_dir);
+        self.apply_appearance(window, cx);
     }
 
     fn set_app_theme(&mut self, theme: AppThemeSetting, window: &mut Window, cx: &mut Context<Self>) {
@@ -2490,7 +2505,15 @@ fn switch_with(id: SharedString, on: bool, small: bool, p: AppPalette) -> gpui::
         .bg(if on { on_color } else { off })
         .flex()
         .when(on, |el| el.justify_end())
-        .child(div().size(px(knob)).rounded_full().bg(gpui::white()).shadow(elevation(false)))
+        // A white knob disappears on a very light accent (Graphite's), so it takes the
+        // accent's own text colour there.
+        .child(
+            div()
+                .size(px(knob))
+                .rounded_full()
+                .bg(if on && !small && p.brand.l > 0.82 { p.on_brand } else { gpui::white() })
+                .shadow(elevation(false)),
+        )
 }
 
 /// Every icon name in the bundled Lucide set ("server", "database-backup", …), sorted.
