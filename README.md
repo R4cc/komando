@@ -4,10 +4,7 @@
 
 A fast terminal for system engineers who work on Linux servers from Windows 11. SSH hosts are organised into projects with their own colours and icons, and passwords and keys live in an encrypted vault.
 
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="assets/screenshot-light.png">
-  <img src="assets/screenshot-dark.png" alt="Komando: a sidebar with projects and their open sessions, and an SSH session showing systemctl status and an application log">
-</picture>
+<img src="assets/screenshot-dark.png" alt="Komando: projects with their open sessions in a sidebar, and an SSH session showing systemctl status and a highlighted application log">
 
 <sub>Screenshot of the real app. web01 and db01 are live SSH sessions to a local test server (authenticated with a key from the vault). The server prints a scripted demo prompt. web-stg01 is still connecting.</sub>
 
@@ -20,7 +17,7 @@ A fast terminal for system engineers who work on Linux servers from Windows 11. 
 - **Local shells.** PowerShell 7, Windows PowerShell and Command Prompt tabs, organised under projects like SSH sessions.
 - **Highlighting.** Rules colour matching text in the output: ERROR in red, WARN in orange, `Active: active` in green, and so on. Import and export rule sets as JSON in Tabby's highlight format (see [Highlights](#highlights)).
 - **Copy the whole output.** Copy a session's entire scrollback as text, or as a `.txt` file you can paste straight into Explorer, Outlook or Teams.
-- **Light and dark.** The app and the terminal each have their own light/dark setting.
+- **Dark by default, light if you want.** The app and the terminal each have their own dark/light setting.
 
 ## Highlights
 

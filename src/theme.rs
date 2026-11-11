@@ -11,6 +11,8 @@ pub const BRAND: u32 = 0x7c3aed;
 #[derive(Clone, Copy)]
 pub struct AppPalette {
     pub dark: bool,
+    /// The window background the islands float on.
+    pub canvas: Hsla,
     pub background: Hsla,
     pub sidebar: Hsla,
     pub surface: Hsla,
@@ -31,12 +33,13 @@ impl AppPalette {
     pub fn dark() -> Self {
         Self {
             dark: true,
+            canvas: hex(0x050506),
             background: hex(0x0c0c0e),
-            sidebar: hex(0x111113),
+            sidebar: hex(0x111114),
             surface: hex(0x18181b),
             hover: alpha(0xffffff, 0.05),
             active: alpha(0xffffff, 0.08),
-            border: alpha(0xffffff, 0.08),
+            border: alpha(0xffffff, 0.07),
             text: hex(0xececef),
             text_muted: hex(0xa1a1aa),
             text_faint: hex(0x63636b),
@@ -51,8 +54,9 @@ impl AppPalette {
     pub fn light() -> Self {
         Self {
             dark: false,
+            canvas: hex(0xe8e8eb),
             background: hex(0xffffff),
-            sidebar: hex(0xf7f7f8),
+            sidebar: hex(0xfafafa),
             surface: hex(0xffffff),
             hover: alpha(0x000000, 0.04),
             active: alpha(0x000000, 0.07),
@@ -83,7 +87,7 @@ impl TerminalPalette {
     pub fn dark() -> Self {
         Self {
             dark: true,
-            background: rgb8(0x0c0c0e),
+            background: rgb8(0x0b0b0d),
             foreground: rgb8(0xd4d4d8),
             cursor: rgb8(0xe4e4e7),
             selection: alpha(0x8b5cf6, 0.35),

@@ -5,7 +5,7 @@ A Windows 11 terminal for system engineers who work on remote Linux machines ove
 ## Organisation
 
 **Project**:
-A named group of Hosts that belong together, such as one customer or one environment. It sets defaults that its Hosts inherit.
+A named group of Hosts that belong together, such as one application or one environment ("Atlas Production"). It sets defaults that its Hosts inherit.
 _Avoid_: Workspace, folder, group
 
 **Host**:

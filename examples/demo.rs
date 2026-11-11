@@ -28,7 +28,7 @@ fn main() {
 
     let mut vault = Vault::create(&dir, MASTER).unwrap();
     let key_id = vault
-        .add(Credential { label: "Customer A deploy key".into(), secret: Secret::PrivateKey { key, passphrase: None } })
+        .add(Credential { label: "Atlas deploy key".into(), secret: Secret::PrivateKey { key, passphrase: None } })
         .unwrap();
 
     let host = |name: &str, address: &str, port: u16, icon: &str| Host {
@@ -61,9 +61,9 @@ fn main() {
     };
     let library = Library {
         projects: vec![
-            project("Customer A – Prod", "red", "shield", &[&web01, &web02, &db01, &lb01], Some(key_id)),
-            project("Customer A – Staging", "amber", "box", &[&stg], None),
-            project("Internal", "blue", "globe", &[&mon, &backup], None),
+            project("Atlas Production", "red", "shield", &[&web01, &web02, &db01, &lb01], Some(key_id)),
+            project("Atlas Staging", "amber", "box", &[&stg], None),
+            project("Nova", "blue", "globe", &[&mon, &backup], None),
             project("Local", "slate", "square-terminal", &[], None),
         ],
         hosts: vec![web01, web02, db01, lb01, stg, mon, backup],
@@ -85,9 +85,9 @@ fn main() {
         startup: Startup {
             master_password: Some(MASTER.into()),
             open: vec![
-                ("Customer A – Prod".into(), "web01".into()),
-                ("Customer A – Prod".into(), "db01".into()),
-                ("Customer A – Staging".into(), "web-stg01".into()),
+                ("Atlas Production".into(), "web01".into()),
+                ("Atlas Production".into(), "db01".into()),
+                ("Atlas Staging".into(), "web-stg01".into()),
                 ("Local".into(), local_shell),
             ],
             active: Some(0),

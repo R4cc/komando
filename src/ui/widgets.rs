@@ -73,6 +73,26 @@ pub fn icon_el(name: &str, size: f32, color: Hsla) -> AnyElement {
         .into_any_element()
 }
 
+/// Islands are the rounded panels the window is made of (sidebar, header, terminal).
+/// Rows inside them have an 8px radius and sit 8px from the edge: 8 + 8 = 16.
+pub const ISLAND_RADIUS: f32 = 16.;
+pub const ISLAND_GAP: f32 = 8.;
+
+pub fn island(p: AppPalette) -> gpui::Div {
+    div()
+        .rounded(px(ISLAND_RADIUS))
+        .bg(p.sidebar)
+        .border_1()
+        .border_color(p.border)
+        .shadow(vec![BoxShadow {
+            color: alpha(0x000000, if p.dark { 0.35 } else { 0.06 }),
+            offset: point(px(0.), px(1.)),
+            blur_radius: px(3.),
+            spread_radius: px(0.),
+            inset: false,
+        }])
+}
+
 /// Layered, low-opacity shadows for floating surfaces (dialogs, popovers).
 pub fn elevation(dark: bool) -> Vec<BoxShadow> {
     let a = if dark { 0.5 } else { 0.10 };

@@ -188,9 +188,9 @@ impl Library {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AppThemeSetting {
-    #[default]
     System,
     Light,
+    #[default]
     Dark,
 }
 
@@ -225,7 +225,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            app_theme: AppThemeSetting::System,
+            app_theme: AppThemeSetting::Dark,
             terminal_theme: TerminalThemeSetting::Follow,
             font_family: "Cascadia Mono".into(),
             font_size: 14.0,
@@ -316,7 +316,7 @@ mod tests {
     fn project(credential: Option<&str>, user: Option<&str>) -> Project {
         Project {
             id: "p1".into(),
-            name: "Customer A".into(),
+            name: "Atlas".into(),
             color: "red".into(),
             icon: "folder".into(),
             default_user: user.map(Into::into),

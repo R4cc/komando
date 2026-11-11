@@ -501,6 +501,7 @@ impl TerminalView {
             div()
                 .absolute()
                 .inset_0()
+                .rounded(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -755,6 +756,8 @@ impl Render for TerminalView {
             .on_scroll(cx.listener(Self::scroll_wheel))
             .relative()
             .size_full()
+            // Inside a rounded island: round our own background too, 1px in for the border.
+            .rounded(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
             .bg(term_bg)
             .cursor_text()
             .child(div().size_full().px(px(PADDING_X)).py(px(PADDING_Y)).child(surface))

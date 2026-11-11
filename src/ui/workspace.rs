@@ -19,7 +19,10 @@ use crate::model::{
 use crate::session::{self, Status, ssh};
 use crate::theme::{AppPalette, Appearance, PROJECT_COLORS, TerminalPalette, UI_FONT, alpha, project_color};
 use crate::ui::terminal_view::{TerminalEvent, TerminalView};
-use crate::ui::widgets::{ButtonKind, badge, button, elevation, icon_button, icon_el, section_label, status_dot, wordmark};
+use crate::ui::widgets::{
+    ButtonKind, ISLAND_GAP, ISLAND_RADIUS, badge, button, elevation, icon_button, icon_el, island, section_label, status_dot,
+    wordmark,
+};
 use crate::vault::{Credential, Secret, Vault};
 
 actions!(
@@ -845,7 +848,7 @@ impl Workspace {
     }
 
     fn open_new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let name = cx.new(|cx| InputState::new(window, cx).placeholder("Project name, e.g. Customer A – Prod"));
+        let name = cx.new(|cx| InputState::new(window, cx).placeholder("Project name, e.g. Atlas Production"));
         name.update(cx, |f, cx| f.focus(window, cx));
         self.overlay = Some(Overlay::NewProject { name, color: "blue".into(), icon: "folder".into(), error: None });
         cx.notify();
@@ -1138,18 +1141,15 @@ impl Workspace {
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.show_unlock(false, window, cx)))
         };
 
-        div()
-            .w(px(SIDEBAR_WIDTH))
-            .h_full()
+        let nav = island(p)
+            .flex_1()
+            .min_h_0()
             .flex()
             .flex_col()
-            .flex_shrink_0()
-            .bg(p.sidebar)
-            .border_r_1()
-            .border_color(p.border)
+            .overflow_hidden()
             .child(
                 div()
-                    .h(px(64.))
+                    .h(px(60.))
                     .px(px(18.))
                     .flex()
                     .items_center()
@@ -1198,12 +1198,19 @@ impl Workspace {
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_new_project(window, cx))),
                     ),
             )
-            .child(list)
+            .child(list.pb(px(8.)));
+
+        div()
+            .w(px(SIDEBAR_WIDTH))
+            .h_full()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap(px(ISLAND_GAP))
+            .child(nav)
             .child(
-                div()
+                island(p)
                     .p(px(8.))
-                    .border_t_1()
-                    .border_color(p.border)
                     .flex()
                     .flex_col()
                     .gap(px(2.))
@@ -1256,24 +1263,24 @@ impl Workspace {
         };
         let project_name = project.map(|pr| pr.name.clone()).unwrap_or_default();
         let id = entry.id;
+        let term_bg = crate::theme::rgb_to_hsla(cx.global::<Appearance>().term.background);
         div()
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
             .flex_col()
+            .gap(px(ISLAND_GAP))
             .child(
-                div()
-                    .h(px(52.))
+                island(p)
+                    .h(px(56.))
                     .flex_shrink_0()
-                    .px(px(16.))
+                    .pl(px(12.))
+                    .pr(px(10.))
                     .flex()
                     .items_center()
                     .gap(px(12.))
-                    .bg(p.background)
-                    .border_b_1()
-                    .border_color(p.border)
-                    .child(badge(&icon, color, 28.))
+                    .child(badge(&icon, color, 30.))
                     .child(
                         div()
                             .flex()
@@ -1323,14 +1330,31 @@ impl Workspace {
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.close_session(id, window, cx))),
                     ),
             )
-            // Project color strip: you always see which Project you are typing into.
-            .child(div().h(px(2.)).flex_shrink_0().bg(color))
-            .child(div().flex_1().min_h_0().child(entry.view.clone()))
+            .child(
+                island(p)
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .bg(term_bg)
+                    .overflow_hidden()
+                    .child(entry.view.clone())
+                    // Project colour accent: you always see which Project you are typing into.
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left(px(ISLAND_RADIUS))
+                            .right(px(ISLAND_RADIUS))
+                            .h(px(2.))
+                            .rounded_b(px(2.))
+                            .bg(color),
+                    ),
+            )
             .into_any_element()
     }
 
     fn render_empty(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        div()
+        island(p)
             .flex_1()
             .h_full()
             .flex()
@@ -1909,8 +1933,16 @@ impl Render for Workspace {
                 .child(msg.clone())
         });
         let _ = window;
-        root.child(self.render_sidebar(p, cx))
-            .child(self.render_main(p, cx))
+        root.child(
+            div()
+                .size_full()
+                .flex()
+                .gap(px(ISLAND_GAP))
+                .p(px(ISLAND_GAP))
+                .bg(p.canvas)
+                .child(self.render_sidebar(p, cx))
+                .child(self.render_main(p, cx)),
+        )
             .children(self.render_overlay(p, cx))
             .children(self.unlock.as_ref().map(|s| self.render_unlock(s, p, cx)))
             .children(toast)
