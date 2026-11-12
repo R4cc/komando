@@ -17,6 +17,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- The SFTP button above a session looks unavailable (faded, no pointer) while the session is
+  connecting or disconnected, and says why when you hover it, instead of looking clickable.
+  An open file browser can still be closed with it.
 - The minimap no longer shows a box you can drag when there is nothing to scroll, such as a new
   session with just its prompt. It appears once output has scrolled off the screen, and stays
   out of the way of full-screen programs such as vim and htop.

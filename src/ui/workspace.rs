@@ -369,6 +369,7 @@ impl Workspace {
         } else {
             gpui::WindowBackgroundAppearance::Opaque
         });
+        crate::platform::extend_backdrop(window, blur);
         crate::platform::set_window_dark_mode(window, app_dark);
         cx.set_global(Appearance {
             app: AppPalette::from_theme(self.theme_for(app_dark)).translucent(t),
@@ -384,6 +385,10 @@ impl Workspace {
         let app = cx.global::<Appearance>().app;
         let brand = app.brand;
         gpui_component::Theme::update(cx, |theme| {
+            // gpui-component's Root paints this under the whole window. Komando paints its
+            // own canvas (translucent with the background blur on); an opaque colour here
+            // would hide the blurred backdrop behind it.
+            theme.colors.background = gpui::transparent_black();
             // Menus (right-click on hosts and projects) use the app's own surfaces.
             theme.colors.popover = app.surface.opacity(1.);
             theme.colors.popover_foreground = app.text;
@@ -895,6 +900,10 @@ impl Workspace {
             self.sessions[index].sftp_open = false;
             self.focus_active(window, cx);
             cx.notify();
+            return;
+        }
+        // Not connected (yet): nothing to browse. The title bar's button says so.
+        if !matches!(self.sessions[index].status, Status::Connected) {
             return;
         }
         if self.sessions[index].browser.is_none() {
@@ -1901,7 +1910,23 @@ impl Workspace {
         let id = entry.id;
         let is_ssh = matches!(entry.kind, SessionKind::Ssh { .. });
         let sftp_open = entry.sftp_open;
-        let sftp_color = if sftp_open { p.brand } else { p.text_muted };
+        // SFTP runs over the session's connection: until it is connected the button only looks
+        // like one. An open browser can still be closed.
+        let sftp_ready = matches!(entry.status, Status::Connected);
+        let sftp_enabled = sftp_ready || sftp_open;
+        let sftp_color = if sftp_open {
+            p.brand
+        } else if sftp_ready {
+            p.text_muted
+        } else {
+            p.text_faint.opacity(0.55)
+        };
+        let sftp_tip = match (&entry.status, sftp_open) {
+            (_, true) => "Close file browser (Ctrl+Shift+E)",
+            (Status::Connected, false) => "Browse files over SFTP (Ctrl+Shift+E)",
+            (Status::Connecting, false) => "File browser: available once the session is connected",
+            (Status::Disconnected(_), false) => "File browser: reconnect the session to browse its files",
+        };
         Some(
             div()
                 .id("session-strip")
@@ -1947,18 +1972,24 @@ impl Workspace {
                             .gap(px(6.))
                             .rounded(px(7.))
                             .border_1()
-                            .border_color(if sftp_open { p.brand.opacity(0.7) } else { p.border })
+                            .border_color(if sftp_open {
+                                p.brand.opacity(0.7)
+                            } else if sftp_enabled {
+                                p.border
+                            } else {
+                                p.border.opacity(0.5)
+                            })
                             .when(sftp_open, |el| el.bg(p.brand_soft))
                             .text_size(px(12.))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(sftp_color)
-                            .cursor_pointer()
-                            .hover(|s| s.bg(p.hover))
-                            .tooltip(move |window, cx| {
-                                Tooltip::new(if sftp_open { "Close file browser (Ctrl+Shift+E)" } else { "Browse files over SFTP (Ctrl+Shift+E)" })
-                                    .build(window, cx)
+                            .tooltip(move |window, cx| Tooltip::new(sftp_tip).build(window, cx))
+                            .when(sftp_enabled, |el| {
+                                el.cursor_pointer()
+                                    .hover(|s| s.bg(p.hover))
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.toggle_sftp(id, window, cx)))
                             })
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.toggle_sftp(id, window, cx)))
+                            .when(!sftp_enabled, |el| el.cursor_default())
                             .child(icon_el("folder-open", 13., sftp_color))
                             .child("SFTP"),
                     )
