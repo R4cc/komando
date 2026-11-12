@@ -31,6 +31,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- Selecting text keeps following the mouse when you drag past the terminal, onto the sidebar
+  or out of the window. Dragging above or below the terminal scrolls the output along, faster
+  the further you go, so you can select more than fits on screen.
 - Hovering a folded project no longer puts its add button on top of the "1 live" count; the
   count makes way while the pointer is over the row.
 - A new terminal no longer lets you scroll up into a few empty lines above the first output,

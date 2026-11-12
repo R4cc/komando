@@ -43,6 +43,10 @@ const PADDING_Y: f32 = 8.0;
 const RAIL_STEP: f32 = 8.0;
 /// How long a row stays lit after jumping to it.
 const FLASH: Duration = Duration::from_millis(1400);
+/// How often the Scrollback moves while a selection is held above or below the terminal.
+const AUTOSCROLL_TICK: Duration = Duration::from_millis(40);
+/// Most lines it moves per tick, when the pointer is far from the terminal.
+const AUTOSCROLL_MAX_LINES: f32 = 8.;
 /// How long the shell must stay quiet before the next Startup Command is typed.
 const STARTUP_QUIET: Duration = Duration::from_millis(150);
 /// How long to wait for the shell's first output before typing anyway.
@@ -113,6 +117,10 @@ pub struct TerminalView {
     cell: Rc<Cell<(f32, f32)>>,
     prompt: Option<ActivePrompt>,
     selecting: bool,
+    /// Where the pointer is while selecting, even outside the terminal.
+    drag_at: Option<gpui::Point<Pixels>>,
+    /// The Scrollback is scrolling because a selection was dragged above or below the grid.
+    autoscrolling: bool,
     /// A button press the program was told about; its release goes to the program too.
     mouse_pressed: Option<keys::MouseButton>,
     /// The cell the mouse was last reported in (motion is reported once per cell).
@@ -182,6 +190,8 @@ impl TerminalView {
             cell: Rc::new(Cell::new((8.0, 18.0))),
             prompt: None,
             selecting: false,
+            drag_at: None,
+            autoscrolling: false,
             mouse_pressed: None,
             mouse_cell: None,
             scroll_remainder: 0.,
@@ -573,8 +583,18 @@ impl TerminalView {
         let origin = self.origin.get();
         let (cw, _) = self.cell.get();
         let (col, row) = self.cell_at(position);
-        let x = (f32::from(position.x - origin.x) / cw).max(0.0);
-        let side = if x.fract() < 0.5 { Side::Left } else { Side::Right };
+        let x = f32::from(position.x - origin.x) / cw;
+        // Past the left edge the selection starts at the line's start, past the right edge it
+        // takes the last column in.
+        let side = if x <= 0.0 {
+            Side::Left
+        } else if x >= self.grid_size().cols as f32 {
+            Side::Right
+        } else if x.fract() < 0.5 {
+            Side::Left
+        } else {
+            Side::Right
+        };
         let offset = self.term.lock().grid().display_offset() as i32;
         (GridPoint::new(Line(row as i32 - offset), Column(col)), side)
     }
@@ -633,6 +653,7 @@ impl TerminalView {
                 };
                 self.term.lock().selection = Some(Selection::new(kind, pt, side));
                 self.selecting = true;
+                self.drag_at = Some(event.position);
                 cx.notify();
             }
             MouseButton::Right if self.putty_clipboard => self.paste(&Paste, window, cx),
@@ -640,10 +661,13 @@ impl TerminalView {
         }
     }
 
-    fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selecting
-            && let Some(mode) = self.mouse_mode(event.modifiers.shift)
-        {
+    /// Pointer motion over the terminal, for programs that asked for it. A selection follows
+    /// the pointer through `drag_selection` instead, which hears it anywhere.
+    fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, _: &mut Context<Self>) {
+        if self.selecting {
+            return;
+        }
+        if let Some(mode) = self.mouse_mode(event.modifiers.shift) {
             let button = match event.pressed_button {
                 Some(button) if self.mouse_pressed.is_some() => report_button(button),
                 _ => keys::MouseButton::None,
@@ -651,16 +675,83 @@ impl TerminalView {
             if mode.wants(button, MouseAction::Motion) {
                 self.report_mouse(mode, button, MouseAction::Motion, event.position, &event.modifiers);
             }
+        }
+    }
+
+    /// The pointer moved while a selection is being dragged, wherever it is: over the
+    /// terminal, the sidebar, or outside the window (the window keeps the mouse while a button
+    /// is held). Past the top or bottom of the grid the Scrollback scrolls along.
+    fn drag_selection(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if !self.selecting {
             return;
         }
-        if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
+        if event.pressed_button != Some(MouseButton::Left) {
+            // The release was missed (it happened somewhere nothing reported it): stop here.
+            self.selecting = false;
+            self.drag_at = None;
             return;
         }
-        let (pt, side) = self.grid_point(event.position);
+        self.drag_at = Some(event.position);
+        self.extend_selection(event.position);
+        if self.autoscroll_lines(event.position) != 0 && !self.autoscrolling {
+            self.autoscrolling = true;
+            cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(AUTOSCROLL_TICK).await;
+                    let go_on = this.update(cx, |this, cx| this.autoscroll_step(cx)).unwrap_or(false);
+                    if !go_on {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    fn extend_selection(&mut self, position: gpui::Point<Pixels>) {
+        let (pt, side) = self.grid_point(position);
         if let Some(selection) = self.term.lock().selection.as_mut() {
             selection.update(pt, side);
         }
+    }
+
+    /// Lines to scroll for a selection dragged to `position`: up (positive) above the grid,
+    /// down below it, faster the further away; 0 over it.
+    fn autoscroll_lines(&self, position: gpui::Point<Pixels>) -> i32 {
+        let top = f32::from(self.origin.get().y);
+        let (_, ch) = self.cell.get();
+        let bottom = top + self.grid_size().rows as f32 * ch;
+        let y = f32::from(position.y);
+        let lines = |distance: f32| (1. + distance / ch).min(AUTOSCROLL_MAX_LINES) as i32;
+        if y < top {
+            lines(top - y)
+        } else if y >= bottom {
+            -lines(y - bottom)
+        } else {
+            0
+        }
+    }
+
+    /// One tick of scrolling while a selection is held above or below the grid. Returns
+    /// whether to keep going.
+    fn autoscroll_step(&mut self, cx: &mut Context<Self>) -> bool {
+        let position = match self.drag_at {
+            Some(position) if self.selecting => position,
+            _ => {
+                self.autoscrolling = false;
+                return false;
+            }
+        };
+        let lines = self.autoscroll_lines(position);
+        if lines == 0 {
+            self.autoscrolling = false;
+            return false;
+        }
+        self.term.lock().scroll_display(Scroll::Delta(lines));
+        self.extend_selection(position);
         cx.notify();
+        true
     }
 
     fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -676,6 +767,7 @@ impl TerminalView {
             return;
         }
         self.selecting = false;
+        self.drag_at = None;
         let mut term = self.term.lock();
         if term.selection.as_ref().is_some_and(|s| s.is_empty()) {
             term.selection = None;
@@ -1538,6 +1630,7 @@ impl Render for TerminalView {
         let proxy = self.proxy.clone();
         let grid = self.grid.clone();
         let this = cx.entity().downgrade();
+        let this_drag = this.clone();
         let origin_cell = self.origin.clone();
         let cell_cell = self.cell.clone();
         let glyph_cache = self.glyph_cache.clone();
@@ -1701,6 +1794,12 @@ impl Render for TerminalView {
                 frame
             }),
             move |bounds, frame, window, _cx| crate::perf::time("terminal grid paint", || {
+                // A selection keeps following the pointer once it leaves the terminal.
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
+                    if phase == gpui::DispatchPhase::Bubble {
+                        let _ = this_drag.update(cx, |this, cx| this.drag_selection(event, cx));
+                    }
+                });
                 // One layer for the whole grid: everything in it shares one draw order and
                 // is drawn by kind (backgrounds, line art, underlines, then text), instead of
                 // each of thousands of glyphs being placed in the scene on its own.
