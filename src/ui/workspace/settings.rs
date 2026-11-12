@@ -577,7 +577,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "PuTTY-style clipboard",
-                    "Selecting text copies it, right-click pastes.",
+                    "Selecting text copies it, right-click pastes. Ctrl+right-click opens the menu.",
                     switch("putty".into(), "PuTTY-style clipboard", putty, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.putty_clipboard = !putty;

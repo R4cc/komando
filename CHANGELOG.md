@@ -18,6 +18,11 @@ All notable changes to Komando are listed here. The format follows
   sidebar" for the ones you don't use (Command Prompt, say), remove them, or add your own with a
   name, program and arguments, such as WSL or Git Bash. Hidden shells are still found by quick
   connect. "Restore detected shells" brings back the ones found on this PC.
+- Right-click in the terminal for a menu: Copy, Paste, Paste selection (types the selected
+  text at the prompt), Select all, and Copy output or Copy as .txt for the whole output. With
+  the PuTTY-style clipboard on, right-click still pastes and Ctrl+right-click opens the menu.
+  When a program such as vim or htop uses the mouse, right-click goes to it and
+  Shift+right-click opens the menu.
 
 ### Changed
 

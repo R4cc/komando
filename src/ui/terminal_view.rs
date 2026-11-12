@@ -21,6 +21,8 @@ use gpui::{
     actions, canvas, div, fill, outline, point, prelude::*, px, size,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
+use gpui_component::Icon;
 
 use crate::highlight::{self, ActiveHighlights};
 use crate::keys::{self, MouseAction, MouseMode, Mods};
@@ -549,6 +551,11 @@ impl TerminalView {
 
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else { return };
+        self.paste_or_confirm(text, cx);
+    }
+
+    /// Paste `text`, asking first when it has several lines and that setting is on.
+    fn paste_or_confirm(&mut self, text: String, cx: &mut Context<Self>) {
         let lines = text.trim_end_matches(['\r', '\n']).lines().count();
         if self.confirm_multiline_paste && lines > 1 {
             self.prompt = Some(ActivePrompt::ConfirmPaste { text, lines });
@@ -632,12 +639,22 @@ impl TerminalView {
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // A question is open: a click anywhere (its field included, since the card sits inside
         // the terminal) keeps the keyboard on the question and selects nothing behind it.
+        // A right-click that reaches the terminal's wrapper opens its menu (see `context_menu`);
+        // one that means something else stops here.
         if self.prompt.is_some() {
+            if event.button == MouseButton::Right {
+                cx.stop_propagation();
+            }
             self.focus_prompt(window, cx);
             return;
         }
         window.focus(&self.focus, cx);
         if let Some(mode) = self.mouse_mode(event.modifiers.shift) {
+            // The program asked for the mouse, right button included; shift+right-click is
+            // still the menu.
+            if event.button == MouseButton::Right {
+                cx.stop_propagation();
+            }
             let button = report_button(event.button);
             self.mouse_pressed = Some(button);
             self.report_mouse(mode, button, MouseAction::Press, event.position, &event.modifiers);
@@ -656,9 +673,68 @@ impl TerminalView {
                 self.drag_at = Some(event.position);
                 cx.notify();
             }
-            MouseButton::Right if self.putty_clipboard => self.paste(&Paste, window, cx),
+            // PuTTY-style: right-click pastes; with Ctrl or Shift it opens the menu, as in PuTTY.
+            MouseButton::Right if self.putty_clipboard && !event.modifiers.control && !event.modifiers.shift => {
+                cx.stop_propagation();
+                self.paste(&Paste, window, cx);
+            }
             _ => {}
         }
+    }
+
+    /// The terminal's right-click menu: copy and paste, typing the selection into the shell,
+    /// selecting everything, and copying the whole output.
+    fn context_menu(view: gpui::WeakEntity<Self>, focus: FocusHandle, menu: PopupMenu, cx: &mut App) -> PopupMenu {
+        let Some(this) = view.upgrade() else { return menu };
+        let (selected, can_type) = {
+            let this = this.read(cx);
+            let selected = this.term.lock().selection_to_string().is_some_and(|t| !t.is_empty());
+            (selected, this.sink.is_some() && !this.is_disconnected())
+        };
+        let icon = |name: &str| Icon::empty().path(format!("icons/{name}.svg"));
+        let run = |label: &str, icon_name: &str, f: fn(&mut Self, &mut Window, &mut Context<Self>)| {
+            let view = view.clone();
+            PopupMenuItem::new(label.to_string()).icon(icon(icon_name)).on_click(move |_, window, cx| {
+                let _ = view.update(cx, |this, cx| f(this, window, cx));
+            })
+        };
+        menu.action_context(focus)
+            .menu_with_icon_and_disabled("Copy", icon("copy"), Box::new(Copy), !selected)
+            .menu_with_icon_and_disabled("Paste", icon("clipboard-paste"), Box::new(Paste), !can_type)
+            .item(
+                run("Paste selection", "text-cursor-input", |this, _, cx| this.paste_selection(cx))
+                    .disabled(!(selected && can_type)),
+            )
+            .separator()
+            .item(run("Select all", "scan-text", |this, _, cx| this.select_all(cx)))
+            .separator()
+            .menu_with_icon("Copy output", icon("copy"), Box::new(crate::ui::workspace::CopyOutputText))
+            .menu_with_icon("Copy as .txt", icon("file-text"), Box::new(crate::ui::workspace::CopyOutputFile))
+    }
+
+    /// Type the selected text into the shell, as if pasted.
+    fn paste_selection(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = self.term.lock().selection_to_string().filter(|t| !t.is_empty()) else { return };
+        self.paste_or_confirm(text, cx);
+    }
+
+    /// Select the whole output: the Scrollback and the screen down to its last written line
+    /// (or the cursor's), not the blank rows below.
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        let mut term = self.term.lock();
+        let grid = term.grid();
+        let top = GridPoint::new(Line(-(grid.history_size() as i32)), Column(0));
+        let cols = grid.columns();
+        let last_written = (0..grid.screen_lines() as i32)
+            .rev()
+            .find(|&row| (0..cols).any(|col| grid[Line(row)][Column(col)].c != ' '))
+            .unwrap_or(0);
+        let last = last_written.max(grid.cursor.point.line.0);
+        let bottom = GridPoint::new(Line(last), grid.last_column());
+        let mut selection = Selection::new(SelectionType::Simple, top, Side::Left);
+        selection.update(bottom, Side::Right);
+        term.selection = Some(selection);
+        cx.notify();
     }
 
     /// Pointer motion over the terminal, for programs that asked for it. A selection follows
@@ -1882,6 +1958,10 @@ impl Render for TerminalView {
             .children(rail)
             .children(self.render_disconnected(cx))
             .children(self.render_route(cx))
+            .context_menu({
+                let (view, focus) = (cx.entity().downgrade(), self.focus.clone());
+                move |menu, _, cx| Self::context_menu(view.clone(), focus.clone(), menu, cx)
+            })
     }
 }
 
