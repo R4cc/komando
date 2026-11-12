@@ -2584,6 +2584,10 @@ fn window_controls(p: AppPalette, window: &Window) -> impl IntoElement {
             .items_center()
             .justify_center()
             .hover(move |s| s.bg(hover_bg))
+            // The button's hitbox hides the title bar's drag area behind it. Without this the
+            // system hit test can answer "caption" for a button (seen after maximising with a
+            // dialog open): a click then does nothing and only a double click acts.
+            .occlude()
             .window_control_area(area)
             .when(cfg!(not(windows)), |el| {
                 el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).on_click(move |_, window, _| match area {

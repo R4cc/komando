@@ -17,6 +17,11 @@ All notable changes to Komando are listed here. The format follows
 - The minimap no longer shows a box you can drag when there is nothing to scroll, such as a new
   session with just its prompt. It appears once output has scrolled off the screen, and stays
   out of the way of full-screen programs such as vim and htop.
+- The minimise, maximise and close buttons answer a single click again after you resize the
+  window with a dialog open. Before, only a double click did anything.
+- Clicking beside the username or password question shown while connecting no longer takes the
+  keyboard away from it, and clicking its field puts the cursor back there. The terminal behind
+  the question no longer starts a text selection either.
 
 ## [0.2.1] - 2026-11-12
 

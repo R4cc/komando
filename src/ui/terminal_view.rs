@@ -359,6 +359,18 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Give the keyboard to the open question: its field, or the terminal for a question
+    /// answered with buttons.
+    fn focus_prompt(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = match self.prompt.as_ref() {
+            Some(ActivePrompt::Input { input, .. }) => input.focus_handle(cx),
+            _ => self.focus.clone(),
+        };
+        if !handle.is_focused(window) {
+            window.focus(&handle, cx);
+        }
+    }
+
     fn answer_input(&mut self, submit: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ActivePrompt::Input { input, reply, .. }) = self.prompt.as_mut() {
             let value = input.read(cx).value().to_string();
@@ -561,6 +573,12 @@ impl TerminalView {
     }
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // A question is open: a click anywhere (its field included, since the card sits inside
+        // the terminal) keeps the keyboard on the question and selects nothing behind it.
+        if self.prompt.is_some() {
+            self.focus_prompt(window, cx);
+            return;
+        }
         window.focus(&self.focus, cx);
         if let Some(mode) = self.mouse_mode(event.modifiers.shift) {
             let button = report_button(event.button);
@@ -872,13 +890,17 @@ impl TerminalView {
         let p = cx.global::<Appearance>().app;
         Some(
             div()
+                .id("prompt-backdrop")
                 .absolute()
                 .inset_0()
+                // Clicks around the card must not reach the terminal (selection, mouse reports).
+                .occlude()
                 .rounded(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
                 .flex()
                 .items_center()
                 .justify_center()
                 .bg(alpha(0x000000, if p.dark { 0.45 } else { 0.18 }))
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, window, cx| this.focus_prompt(window, cx)))
                 .child(element)
                 .into_any_element(),
         )
