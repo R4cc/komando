@@ -6,8 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-12
+
 ### Changed
 
+- The add/edit host and new/edit project dialogs are wider and lay their sections out in two
+  columns side by side, so most of the form fits on screen without scrolling. On a window
+  narrower than about 940 pixels they keep the single column.
 - Local shells show their own icons, as in Windows Terminal: PowerShell 7, Windows PowerShell
   and Command Prompt each have theirs, and WSL and Linux shells show Tux. In the sidebar, quick
   connect and on the start screen.

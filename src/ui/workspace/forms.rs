@@ -317,7 +317,7 @@ impl Workspace {
         self.commit_library(library)
     }
 
-    pub(super) fn render_host_form(&self, form: &HostForm, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_host_form(&self, form: &HostForm, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let project = self.library.project(&form.project_id);
         // No project yet (the first connection, from the start screen): the host goes into a
         // new one, created when it is saved.
@@ -376,26 +376,26 @@ impl Workspace {
             ));
 
         let selected = form.icon.clone();
-        let body = div()
-            .flex()
-            .flex_col()
-            .gap(px(20.))
-            .child(connection)
-            .child(sign_in)
-            .child(route)
-            .child(commands)
-            .child(form_section("Icon", p).child(icon_picker(&form.icon_query, &selected, color, p, cx, |this, name| {
-                if let Some(form) = this.host_form() {
-                    form.icon = name;
-                }
-            })))
-            .children(form.error.clone().map(|e| form_error(e, p)));
+        let icon = form_section("Icon", p).child(icon_picker(&form.icon_query, &selected, color, p, cx, |this, name| {
+            if let Some(form) = this.host_form() {
+                form.icon = name;
+            }
+        }));
+        // Two columns: who it is and how you sign in on the left, how it is reached and what
+        // runs on it on the right.
+        let body = form_body(
+            wide,
+            vec![connection.into_any_element(), sign_in.into_any_element(), icon.into_any_element()],
+            vec![route.into_any_element(), commands.into_any_element()],
+            form.error.clone().map(|e| form_error(e, p)),
+        );
 
         let ok_label = if form.editing.is_some() { "Save" } else { "Add host" };
         form_shell(
             "host-form-body",
+            wide,
             form_header(badge(&project_icon, color, 34.).into_any_element(), title, format!("SSH host in {project_name}"), p),
-            body.into_any_element(),
+            body,
             form_footer("hf", ok_label, p, cx),
         )
     }
@@ -649,7 +649,7 @@ impl Workspace {
         self.commit_library(library)
     }
 
-    pub(super) fn render_project_form(&self, form: &ProjectForm, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_project_form(&self, form: &ProjectForm, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let (title, ok_label) = if form.editing.is_some() { ("Edit project", "Save") } else { ("New project", "Create project") };
         let current = form.color.clone();
         let swatches = div().flex().flex_wrap().gap(px(8.)).children(crate::theme::PROJECT_COLORS.iter().map(|(cname, _)| {
@@ -739,38 +739,38 @@ impl Workspace {
                             }
                         }))
                     }),
-            )
-            .child(form_field(
-                "Startup commands",
-                Some("One per line. Typed into every host's shell once it is ready, before the host's own."),
-                Textarea::new(&form.commands).into_any_element(),
-                p,
-            ));
+            );
+        let commands = form_section("Startup commands", p).child(form_field(
+            "For every host",
+            Some("One per line. Typed into every host's shell once it is ready, before the host's own."),
+            Textarea::new(&form.commands).into_any_element(),
+            p,
+        ));
 
         let selected_icon = form.icon.clone();
-        let body = div()
-            .flex()
-            .flex_col()
-            .gap(px(20.))
-            .child(
-                form_section("Project", p)
-                    .child(form_field("Name", None, Input::new(&form.name).into_any_element(), p))
-                    .child(field_label("Color", p))
-                    .child(swatches),
-            )
-            .child(defaults)
-            .child(form_section("Icon", p).child(icon_picker(&form.icon_query, &selected_icon, color, p, cx, |this, name| {
-                if let Some(form) = this.project_form() {
-                    form.icon = name;
-                }
-            })))
-            .children(form.error.clone().map(|e| form_error(e, p)));
+        let project = form_section("Project", p)
+            .child(form_field("Name", None, Input::new(&form.name).into_any_element(), p))
+            .child(field_label("Color", p))
+            .child(swatches);
+        let icon = form_section("Icon", p).child(icon_picker(&form.icon_query, &selected_icon, color, p, cx, |this, name| {
+            if let Some(form) = this.project_form() {
+                form.icon = name;
+            }
+        }));
+        // Two columns: the project itself on the left, what its hosts inherit on the right.
+        let (left, right) = if wide {
+            (vec![project.into_any_element(), icon.into_any_element(), commands.into_any_element()], vec![defaults.into_any_element()])
+        } else {
+            (vec![project.into_any_element(), defaults.into_any_element(), commands.into_any_element(), icon.into_any_element()], vec![])
+        };
+        let body = form_body(wide, left, right, form.error.clone().map(|e| form_error(e, p)));
 
         let subtitle = if form.editing.is_some() { "Its settings apply to all its hosts" } else { "A group of hosts that belong together" };
         form_shell(
             "project-form-body",
+            wide,
             form_header(badge(&form.icon, color, 34.).into_any_element(), title.into(), subtitle.into(), p),
-            body.into_any_element(),
+            body,
             form_footer("pf", ok_label, p, cx),
         )
     }
@@ -903,10 +903,31 @@ fn form_footer(id: &'static str, ok_label: &'static str, p: AppPalette, cx: &mut
         .into_any_element()
 }
 
+/// Width of a form laid out in two columns; one column is `NARROW_FORM_WIDTH`.
+pub(super) const WIDE_FORM_WIDTH: f32 = 880.;
+const NARROW_FORM_WIDTH: f32 = 520.;
+
+/// A form's sections: in two columns side by side when `wide`, else `left` then `right` in
+/// one. The error, if any, goes below everything, across the full width.
+fn form_body(wide: bool, left: Vec<AnyElement>, right: Vec<AnyElement>, error: Option<AnyElement>) -> AnyElement {
+    let column = || div().flex().flex_col().gap(px(20.));
+    let sections = if wide {
+        div()
+            .flex()
+            .items_start()
+            .gap(px(28.))
+            .child(column().flex_1().min_w_0().children(left))
+            .child(column().flex_1().min_w_0().children(right))
+    } else {
+        column().children(left).children(right)
+    };
+    div().flex().flex_col().gap(px(20.)).child(sections).children(error).into_any_element()
+}
+
 /// A form's layout: header and footer stay put, the middle scrolls.
-fn form_shell(id: &'static str, header: AnyElement, body: AnyElement, footer: AnyElement) -> AnyElement {
+fn form_shell(id: &'static str, wide: bool, header: AnyElement, body: AnyElement, footer: AnyElement) -> AnyElement {
     div()
-        .w(px(520.))
+        .w(px(if wide { WIDE_FORM_WIDTH } else { NARROW_FORM_WIDTH }))
         .flex_1()
         .min_h_0()
         .flex()

@@ -74,6 +74,10 @@ impl Render for SftpDivider {
 /// Height of Komando's own title bar (and of its window buttons).
 const TITLE_BAR_HEIGHT: f32 = 36.;
 
+/// Window width from which the host and project forms use two columns side by side: the
+/// wide form plus a margin each side. Narrower, they stack in one.
+const WIDE_FORM_MIN_WINDOW: f32 = forms::WIDE_FORM_WIDTH + 60.;
+
 #[derive(Clone)]
 enum SessionKind {
     Ssh { host_id: String },
@@ -2211,7 +2215,8 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_overlay(&self, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// `wide`: the window has room for forms laid out in two columns.
+    fn render_overlay(&self, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let overlay = self.overlay.as_ref()?;
         let body = match overlay {
             Overlay::Picker { query } => {
@@ -2288,8 +2293,8 @@ impl Workspace {
                     .child(list)
                     .into_any_element()
             }
-            Overlay::HostForm(form) => self.render_host_form(form, p, cx),
-            Overlay::ProjectForm(form) => self.render_project_form(form, p, cx),
+            Overlay::HostForm(form) => self.render_host_form(form, wide, p, cx),
+            Overlay::ProjectForm(form) => self.render_project_form(form, wide, p, cx),
             Overlay::Confirm { title, body, .. } => form_card(
                 p,
                 title,
@@ -2819,7 +2824,7 @@ impl Render for Workspace {
             .child(title_bar)
             .child(page)
             .children(downloads)
-            .children(self.render_overlay(p, cx))
+            .children(self.render_overlay(f32::from(window.bounds().size.width) >= WIDE_FORM_MIN_WINDOW, p, cx))
             .children(self.unlock.as_ref().map(|s| self.render_unlock(s, p, cx)))
             .children(toast)
             .into_any_element()
