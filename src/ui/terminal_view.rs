@@ -30,7 +30,7 @@ use crate::session::{
     Answer, EventProxy, GridSize, InputSink, Prompt, Remembered, SessionEvent, SharedTerm, Status, new_term,
     scrollback_text,
 };
-use crate::theme::{Appearance, UI_FONT, alpha, rgb_to_hsla};
+use crate::theme::{Appearance, UI_FONT, rgb_to_hsla};
 use crate::ui::box_drawing::{self, Prim};
 use crate::ui::widgets::{button, icon_el, ButtonKind};
 
@@ -351,7 +351,11 @@ impl TerminalView {
                     }
                 });
                 self._subscriptions.push(sub);
-                input.update(cx, |state, cx| state.focus(window, cx));
+                // Take the keyboard only from the terminal itself (a session you're watching
+                // connect), not from a dialog you're typing in; the question waits behind it.
+                if self.focus.is_focused(window) || window.focused(cx).is_none() {
+                    input.update(cx, |state, cx| state.focus(window, cx));
+                }
                 ActivePrompt::Input { label, error, input, remember, reply: Some(reply) }
             }
         });
@@ -360,7 +364,7 @@ impl TerminalView {
 
     /// Give the keyboard to the open question: its field, or the terminal for a question
     /// answered with buttons.
-    fn focus_prompt(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn focus_prompt(&self, window: &mut Window, cx: &mut Context<Self>) {
         let handle = match self.prompt.as_ref() {
             Some(ActivePrompt::Input { input, .. }) => input.focus_handle(cx),
             _ => self.focus.clone(),
@@ -889,45 +893,35 @@ impl TerminalView {
         (Some(rail), flash_row)
     }
 
-    /// Whether the open question belongs to the connection (and so to the route page).
-    fn prompt_on_route(&self) -> bool {
-        self.route.is_some()
-            && matches!(self.prompt, Some(ActivePrompt::HostKey { .. } | ActivePrompt::HostKeyChanged { .. } | ActivePrompt::Input { .. }))
+    /// Whether a question is open: a connection's user name, password or host key, or a paste
+    /// to confirm. The workspace shows it as a modal over the whole window (see `prompt_modal`).
+    pub fn has_prompt(&self) -> bool {
+        self.prompt.is_some()
     }
 
-    /// The open question as a card docked at the bottom of the terminal, unless the route page
-    /// shows it. The terminal stays readable behind a light dim: while connecting, it shows the
-    /// connection log the question belongs to.
-    fn render_prompt(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        if self.prompt_on_route() {
-            return None;
+    /// The open question as a card, for the workspace's modal layer. It lives there rather than
+    /// in the terminal so the rest of the window (sidebar, other dialogs) is blocked while it is
+    /// open.
+    pub fn prompt_modal(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        self.prompt_card(cx)
+    }
+
+    /// Escape on the open question: what its Cancel (or Close) button does.
+    pub fn cancel_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.prompt {
+            Some(ActivePrompt::Input { .. }) => self.answer_input(false, window, cx),
+            Some(ActivePrompt::HostKey { .. }) => self.answer_host_key(false, window, cx),
+            Some(_) => self.dismiss(window, cx),
+            None => {}
         }
-        let element = self.prompt_card(cx)?;
-        let p = cx.global::<Appearance>().app;
-        Some(
-            div()
-                .id("prompt-backdrop")
-                .absolute()
-                .inset_0()
-                // Clicks around the card must not reach the terminal (selection, mouse reports).
-                .occlude()
-                .rounded(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .p(px(24.))
-                .bg(alpha(0x000000, if p.dark { 0.28 } else { 0.10 }))
-                .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, window, cx| this.focus_prompt(window, cx)))
-                .child(element)
-                .into_any_element(),
-        )
     }
 
     /// While connecting through Jump Hosts: the route page, with the current hop's question.
     fn render_route(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let route = self.route.as_ref()?;
         let p = cx.global::<Appearance>().app;
-        let prompt = if self.prompt_on_route() { self.prompt_card(cx) } else { None };
+        // The current hop's question shows in the workspace's modal layer, over this page.
+        let prompt = None;
         let hop = route.current();
         let actions = vec![
             button("route-edit", "Edit host", ButtonKind::Secondary, p)
@@ -1760,7 +1754,6 @@ impl Render for TerminalView {
             .children(rail)
             .children(self.render_disconnected(cx))
             .children(self.render_route(cx))
-            .children(self.render_prompt(cx))
     }
 }
 

@@ -105,6 +105,10 @@ impl Workspace {
     }
 
     fn open_host_form(&mut self, project_id: String, editing: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        // One dialog at a time: a Session's open question comes first.
+        if self.prompt_open(cx) {
+            return;
+        }
         let host = editing.as_deref().and_then(|id| self.library.host(id)).cloned();
         let h = host.clone().unwrap_or_else(|| Host::new("", ""));
         let port = if h.port == 22 { String::new() } else { h.port.to_string() };
@@ -578,6 +582,10 @@ impl Workspace {
     }
 
     fn open_project_form(&mut self, editing: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        // One dialog at a time: a Session's open question comes first.
+        if self.prompt_open(cx) {
+            return;
+        }
         let project = editing.as_deref().and_then(|id| self.library.project(id)).cloned();
         let pr = project.clone().unwrap_or_else(|| Project::new("", "blue", "folder"));
         let name = self.form_input("", &pr.name, true, window, cx);

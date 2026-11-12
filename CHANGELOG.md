@@ -6,6 +6,19 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-11-12
+
+### Fixed
+
+- A connection question (user name, password, host key) is a proper dialog: the window behind
+  it is dimmed and can't be used until you answer or cancel it, and Escape cancels it. Before,
+  the sidebar stayed clickable, so a second dialog such as Edit project could open while the
+  question was still waiting behind it.
+- Only one dialog opens at a time: Quick connect, Edit project, Add host and delete
+  confirmations wait until an open connection question is answered.
+- Selecting text in a dialog's field by dragging past the dialog's edge no longer closes the
+  dialog. It closes when you press outside it.
+
 ## [0.2.6] - 2026-11-12
 
 ### Fixed

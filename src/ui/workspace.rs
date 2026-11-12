@@ -971,8 +971,8 @@ impl Workspace {
 
     fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(entry) = self.active_entry() {
-            let handle = entry.view.read(cx).focus_handle(cx);
-            window.focus(&handle, cx);
+            // The open question's field if it has one, else the terminal.
+            entry.view.update(cx, |view, cx| view.focus_prompt(window, cx));
         } else {
             window.focus(&self.focus, cx);
         }
@@ -980,6 +980,17 @@ impl Workspace {
 
     fn active_entry(&self) -> Option<&SessionEntry> {
         self.sessions.iter().find(|s| Some(s.id) == self.active)
+    }
+
+    /// Whether the active Session has a question open (a password, a host key…). It is a modal:
+    /// nothing else in the window can be used, and no other dialog opens, until it is answered.
+    fn prompt_open(&self, cx: &App) -> bool {
+        self.active_entry().is_some_and(|entry| entry.view.read(cx).has_prompt())
+    }
+
+    /// Whether a dialog is up, so the window's shortcuts and other dialogs must wait.
+    fn modal_open(&self, cx: &App) -> bool {
+        self.overlay.is_some() || self.prompt_open(cx)
     }
 
     /// × on a live Session disconnects it but keeps its output (the item goes idle and a
@@ -1102,6 +1113,9 @@ impl Workspace {
     // ---- overlays: picker and forms ----------------------------------------------------
 
     fn open_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.prompt_open(cx) {
+            return;
+        }
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search hosts and shells…"));
         let sub = cx.subscribe_in(&query, window, |this, _, event: &InputEvent, window, cx| match event {
             InputEvent::Change => cx.notify(),
@@ -1157,6 +1171,9 @@ impl Workspace {
     }
 
     fn confirm_delete_host(&mut self, host_id: String, cx: &mut Context<Self>) {
+        if self.prompt_open(cx) {
+            return;
+        }
         let Some(host) = self.library.host(&host_id) else { return };
         let projects = self.library.projects.iter().filter(|p| p.hosts.contains(&host_id)).count();
         let mut body = format!("{} ({}) is removed from Komando.", host.name, host.address);
@@ -1182,6 +1199,9 @@ impl Workspace {
     }
 
     fn confirm_delete_project(&mut self, project_id: String, cx: &mut Context<Self>) {
+        if self.prompt_open(cx) {
+            return;
+        }
         let Some(project) = self.library.project(&project_id) else { return };
         let only_here = project
             .hosts
@@ -2229,6 +2249,39 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The active Session's open question (a password, a host key…) as a modal over the whole
+    /// window: the sidebar and the rest are blocked until it is answered. A press on the
+    /// backdrop gives the keyboard back to the question. A dialog you opened yourself comes
+    /// first; the question waits behind it.
+    fn render_prompt_modal(&self, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.overlay.is_some() {
+            return None;
+        }
+        let view = self.active_entry()?.view.clone();
+        let card = view.update(cx, |view, cx| view.prompt_modal(cx))?;
+        Some(
+            div()
+                .id("prompt-backdrop")
+                .absolute()
+                .occlude()
+                // Below the title bar, as for the other dialogs.
+                .top(px(TITLE_BAR_HEIGHT))
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p(px(24.))
+                .bg(alpha(0x000000, if p.dark { 0.5 } else { 0.2 }))
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    view.update(cx, |view, cx| view.focus_prompt(window, cx));
+                })
+                .child(card)
+                .into_any_element(),
+        )
+    }
+
     /// `wide`: the window has room for forms laid out in two columns.
     fn render_overlay(&self, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let overlay = self.overlay.as_ref()?;
@@ -2341,7 +2394,9 @@ impl Workspace {
                 .pt(px(56.))
                 .pb(px(24.))
                 .bg(alpha(0x000000, if p.dark { 0.5 } else { 0.2 }))
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx)))
+                // Close on a press outside the card. Not on click: selecting text in a field by
+                // dragging past the card's edge ends outside it, and that must not close it.
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, window, cx| this.close_overlay(window, cx)))
                 .child(
                     div()
                         .id("overlay-card")
@@ -2355,7 +2410,7 @@ impl Workspace {
                         .border_1()
                         .border_color(p.border)
                         .shadow(elevation(p.dark))
-                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(body),
                 )
                 .into_any_element(),
@@ -2767,6 +2822,11 @@ impl Render for Workspace {
                 if event.keystroke.key == "escape" && this.overlay.is_some() {
                     this.close_overlay(window, cx);
                     cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.prompt_open(cx) {
+                    if let Some(entry) = this.active_entry() {
+                        entry.view.clone().update(cx, |view, cx| view.cancel_prompt(window, cx));
+                    }
+                    cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && matches!(this.page, Page::Settings(_)) && this.unlock.is_none() {
                     this.close_settings(window, cx);
                     cx.stop_propagation();
@@ -2774,22 +2834,35 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &QuickConnect, window, cx| this.open_picker(window, cx)))
             // Another Session on the item you're in; without one, quick connect.
-            .on_action(cx.listener(|this, _: &NewSession, window, cx| match this.active_item() {
-                Some(item) => this.activate_item(item, true, window, cx),
-                None => this.open_picker(window, cx),
+            .on_action(cx.listener(|this, _: &NewSession, window, cx| {
+                if this.modal_open(cx) {
+                    return;
+                }
+                match this.active_item() {
+                    Some(item) => this.activate_item(item, true, window, cx),
+                    None => this.open_picker(window, cx),
+                }
             }))
             .on_action(cx.listener(|this, _: &CloseSession, window, cx| {
-                if let Some(id) = this.active {
+                if let Some(id) = this.active.filter(|_| !this.modal_open(cx)) {
                     this.close_session(id, window, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &NextSession, window, cx| this.cycle(true, window, cx)))
-            .on_action(cx.listener(|this, _: &PrevSession, window, cx| this.cycle(false, window, cx)))
+            .on_action(cx.listener(|this, _: &NextSession, window, cx| {
+                if !this.modal_open(cx) {
+                    this.cycle(true, window, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &PrevSession, window, cx| {
+                if !this.modal_open(cx) {
+                    this.cycle(false, window, cx)
+                }
+            }))
             .on_action(cx.listener(|this, _: &CopyOutputText, _, cx| this.copy_output_text(cx)))
             .on_action(cx.listener(|this, _: &CopyOutputFile, _, cx| this.copy_output_file(cx)))
             .on_action(cx.listener(|this, _: &LockVault, _, cx| this.lock_vault(cx)))
             .on_action(cx.listener(|this, _: &ToggleSftp, window, cx| {
-                if let Some(id) = this.active {
+                if let Some(id) = this.active.filter(|_| !this.modal_open(cx)) {
                     this.toggle_sftp(id, window, cx);
                 }
             }))
@@ -2803,6 +2876,9 @@ impl Render for Workspace {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                if this.prompt_open(cx) {
+                    return;
+                }
                 if matches!(this.page, Page::Settings(_)) {
                     this.close_settings(window, cx);
                 } else {
@@ -2865,6 +2941,7 @@ impl Render for Workspace {
             .child(page)
             .children(downloads)
             .children(self.render_overlay(f32::from(window.bounds().size.width) >= WIDE_FORM_MIN_WINDOW, p, cx))
+            .children(self.render_prompt_modal(p, cx))
             .children(self.unlock.as_ref().map(|s| self.render_unlock(s, p, cx)))
             .children(toast)
             .into_any_element()
