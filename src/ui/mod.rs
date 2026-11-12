@@ -1,4 +1,5 @@
 pub mod box_drawing;
+pub mod connect_route;
 pub mod minimap;
 pub mod terminal_view;
 pub mod widgets;

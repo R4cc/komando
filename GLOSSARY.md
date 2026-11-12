@@ -12,6 +12,16 @@ _Avoid_: Workspace, folder, group
 A saved SSH destination: address, port, user, Credential and how it looks (icon, color). A Host can belong to more than one Project.
 _Avoid_: Profile, server, connection, bookmark
 
+**Jump Host**:
+A Host that another Host is reached through, because that Host can't be reached directly from
+this PC. A Jump Host can itself be reached through another, forming a chain.
+_Avoid_: Bastion, proxy, ProxyJump, gateway
+
+**Project Default**:
+A setting a Project gives its Hosts: user, Project Credential, Jump Host, Startup Commands. Each
+Host takes it, sets its own, or switches it off (no Jump Host means connecting directly).
+_Avoid_: Inherited setting, project setting
+
 **Host Key**:
 The public key a Host's server presents to prove its identity. It is trusted on first connection and checked on every connection after that.
 _Avoid_: Fingerprint (that is only its display form), known host
@@ -31,6 +41,11 @@ A Session connected to a Host. The shell runs on the remote machine; no local sh
 
 **Local Session**:
 A Session of a Local Shell, running on the Windows machine itself.
+
+**Startup Commands**:
+Lines Komando types into an SSH Session's shell once it is ready, as if the user typed them. A
+Project's run first, then the Host's own.
+_Avoid_: Init script, login script, RemoteCommand
 
 **Scrollback**:
 All output a Session has received and still holds, from its first line to its current screen.

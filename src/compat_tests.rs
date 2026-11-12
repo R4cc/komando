@@ -25,7 +25,7 @@ use alacritty_terminal::tty::{self, Shell};
 use futures::channel::mpsc;
 
 use crate::keys::{self, Mods, MouseAction, MouseButton, MouseMode};
-use crate::session::{EventProxy, GridSize, InputSink, Prompt, SessionEvent, SharedTerm, new_term};
+use crate::session::{EventProxy, GridSize, HopStep, InputSink, Prompt, SessionEvent, SharedTerm, new_term};
 use crate::theme::TerminalPalette;
 
 const NONE: Mods = Mods { ctrl: false, alt: false, shift: false };
@@ -65,6 +65,8 @@ struct Running {
     size: GridSize,
     /// The session reported that it ended.
     ended: bool,
+    /// Progress reported on the way to an SSH host, in order.
+    hops: Vec<(usize, HopStep)>,
 }
 
 impl Running {
@@ -98,7 +100,7 @@ impl Running {
         let sink = InputSink::Local(event_loop.channel());
         proxy.set_responder(sink.clone());
         event_loop.spawn();
-        Self { term, proxy, sink, events, size, ended: false }
+        Self { term, proxy, sink, events, size, ended: false, hops: vec![] }
     }
 
     fn line(&self, row: usize) -> String {
@@ -156,6 +158,7 @@ impl Running {
                 let _ = reply.send(true);
             }
             SessionEvent::Status(crate::session::Status::Disconnected(_)) => self.ended = true,
+            SessionEvent::Hop { index, step } => self.hops.push((index, step)),
             _ => {}
         }
     }
@@ -381,60 +384,92 @@ fn compat_shell_unicode_colours_and_queries() {
     r.wait_text("31 91");
 }
 
+/// A throwaway sshd on this machine that accepts one generated key.
+struct LocalSshd {
+    dir: PathBuf,
+    port: u16,
+    server: std::process::Child,
+}
+
+impl LocalSshd {
+    /// `None` (with a note) when sshd or ssh-keygen is not installed.
+    fn start(name: &str, port_offset: u16) -> Option<Self> {
+        let (Some(sshd), Some(keygen)) = (find("sshd"), find("ssh-keygen")) else {
+            eprintln!("skipped: sshd or ssh-keygen is not installed");
+            return None;
+        };
+        let dir = std::env::temp_dir().join(format!("komando-compat-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["host", "user"] {
+            let ok = std::process::Command::new(&keygen)
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(dir.join(name))
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok);
+        }
+        std::fs::copy(dir.join("user.pub"), dir.join("authorized_keys")).unwrap();
+        let port = 20000 + port_offset + (std::process::id() % 20000) as u16;
+        let config = format!(
+            "Port {port}\nListenAddress 127.0.0.1\nHostKey {host}\nAuthorizedKeysFile {keys}\nPidFile {pid}\n\
+             UsePAM no\nStrictModes no\nPasswordAuthentication no\nPrintMotd no\nPrintLastLog no\nAllowTcpForwarding yes\n",
+            host = dir.join("host").display(),
+            keys = dir.join("authorized_keys").display(),
+            pid = dir.join("sshd.pid").display(),
+        );
+        std::fs::write(dir.join("sshd_config"), config).unwrap();
+        let server = std::process::Command::new(&sshd)
+            .args(["-D", "-e", "-f"])
+            .arg(dir.join("sshd_config"))
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        Some(Self { dir, port, server })
+    }
+
+    /// Signing in to this server as the current user with the generated key.
+    fn hop(&self, name: &str, address: &str) -> crate::session::ssh::Hop {
+        crate::session::ssh::Hop {
+            name: name.into(),
+            address: address.into(),
+            port: self.port,
+            user: Some(std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_else(|_| {
+                let out = std::process::Command::new("whoami").output().unwrap();
+                String::from_utf8(out.stdout).unwrap().trim().to_string()
+            })),
+            secret: Some(crate::vault::Secret::PrivateKey {
+                key: std::fs::read_to_string(self.dir.join("user")).unwrap(),
+                passphrase: None,
+            }),
+        }
+    }
+
+    fn connect(&self, hops: Vec<crate::session::ssh::Hop>, size: GridSize) -> Running {
+        let (term, proxy, events) = Running::new(size);
+        let target = crate::session::ssh::Target { hops, known_hosts: self.dir.join("known_hosts") };
+        let sink = crate::session::ssh::spawn(target, size, term.clone(), proxy.clone());
+        Running { term, proxy, sink, events, size, ended: false, hops: vec![] }
+    }
+}
+
+impl Drop for LocalSshd {
+    fn drop(&mut self) {
+        let _ = self.server.kill();
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 /// The SSH path end to end against a throwaway sshd on this machine: host key prompt,
 /// key authentication, the PTY modes and size the server sees, UTF-8 and resizing.
 #[test]
 #[ignore]
 fn compat_ssh_session_against_a_local_sshd() {
-    let sshd = require!("sshd").to_owned();
-    let keygen = require!("ssh-keygen").to_owned();
-    let dir = std::env::temp_dir().join(format!("komando-compat-ssh-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    for name in ["host", "user"] {
-        let ok = std::process::Command::new(&keygen)
-            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
-            .arg(dir.join(name))
-            .status()
-            .unwrap()
-            .success();
-        assert!(ok);
-    }
-    std::fs::copy(dir.join("user.pub"), dir.join("authorized_keys")).unwrap();
-    let port = 20000 + (std::process::id() % 20000) as u16;
-    let config = format!(
-        "Port {port}\nListenAddress 127.0.0.1\nHostKey {host}\nAuthorizedKeysFile {keys}\nPidFile {pid}\n\
-         UsePAM no\nStrictModes no\nPasswordAuthentication no\nPrintMotd no\nPrintLastLog no\n",
-        host = dir.join("host").display(),
-        keys = dir.join("authorized_keys").display(),
-        pid = dir.join("sshd.pid").display(),
-    );
-    std::fs::write(dir.join("sshd_config"), config).unwrap();
-    let mut server = std::process::Command::new(&sshd)
-        .args(["-D", "-e", "-f"])
-        .arg(dir.join("sshd_config"))
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    std::thread::sleep(Duration::from_millis(500));
-
+    let Some(sshd) = LocalSshd::start("ssh", 0) else { return };
     let size = GridSize { cols: 100, rows: 30, cell_width: 9, cell_height: 18 };
-    let (term, proxy, events) = Running::new(size);
-    let target = crate::session::ssh::Target {
-        address: "127.0.0.1".into(),
-        port,
-        user: Some(std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_else(|_| {
-            let out = std::process::Command::new("whoami").output().unwrap();
-            String::from_utf8(out.stdout).unwrap().trim().to_string()
-        })),
-        secret: Some(crate::vault::Secret::PrivateKey {
-            key: std::fs::read_to_string(dir.join("user")).unwrap(),
-            passphrase: None,
-        }),
-        known_hosts: dir.join("known_hosts"),
-    };
-    let sink = crate::session::ssh::spawn(target, size, term.clone(), proxy.clone());
-    let mut r = Running { term, proxy, sink, events, size, ended: false };
+    let mut r = sshd.connect(vec![sshd.hop("local", "127.0.0.1")], size);
     r.settle();
     r.text("stty -a | tr ' ;' '\\n\\n' | grep -xE -- '-?iutf8' ; stty size; echo \"T=$TERM\"\r");
     r.wait_text("T=xterm-256color");
@@ -449,7 +484,23 @@ fn compat_ssh_session_against_a_local_sshd() {
     r.wait_text("40 120");
     r.text("exit\r");
     r.wait("the session to end", |r| r.ended);
+}
 
-    let _ = server.kill();
-    let _ = std::fs::remove_dir_all(&dir);
+/// A Host reached through a Jump Host: Komando signs in to the Jump Host, tunnels to the
+/// Host through it, and signs in again there. Both hops are the same local sshd, the second
+/// reached through a tunnel opened by the first.
+#[test]
+#[ignore]
+fn compat_ssh_session_through_a_jump_host() {
+    let Some(sshd) = LocalSshd::start("jump", 1) else { return };
+    let size = GridSize { cols: 100, rows: 30, cell_width: 9, cell_height: 18 };
+    let mut r = sshd.connect(vec![sshd.hop("bastion", "127.0.0.1"), sshd.hop("web01", "127.0.0.1")], size);
+    r.settle();
+    r.text("echo \"via=$SSH_CONNECTION\"\r");
+    r.wait_text("via=");
+    let done: Vec<usize> = r.hops.iter().filter(|(_, step)| *step == HopStep::Done).map(|(i, _)| *i).collect();
+    assert_eq!(done, [0, 1], "both hops signed in, in order: {:?}", r.hops);
+    assert_eq!(r.hops.first(), Some(&(0, HopStep::Reaching)));
+    r.text("exit\r");
+    r.wait("the session to end", |r| r.ended);
 }

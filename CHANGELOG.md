@@ -6,6 +6,30 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-11-12
+
+### Added
+
+- Jump hosts. A host that can only be reached from another host now says so under
+  "Reached through": pick the host it goes through, which can itself go through another.
+  While connecting, Komando shows the way there as a row of cards, one per host, starting from
+  this PC. Green shows how far the connection has got, and a red card with an ✕ shows where it
+  failed and why, with Retry and Edit host right there. Questions about trusting a host key or
+  typing a password show on the page too, and name the host they are for.
+- Startup commands. Lines you give a host or a project are typed into the shell once it is
+  ready, as if you typed them: `cd /srv/app`, `sudo -i`, `tmux attach`. A project's commands
+  run first, then the host's own; a host can skip the project's. If a command asks for a
+  password, Komando waits until you have answered before typing the next one.
+
+### Changed
+
+- Projects now set defaults for their hosts in one place: user, key or password, jump host and
+  startup commands. Before, a project's default user and password could only be set by
+  saving a typed password. In the host form, each of these says where it comes from: the
+  project, the host itself, or neither (ask each time, or connect directly).
+- Deleting a host that others are reached through says which ones; they connect directly
+  afterwards.
+
 ## [0.1.16] - 2026-11-12
 
 ### Changed
@@ -308,7 +332,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.16...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.17...HEAD
+[0.1.17]: https://github.com/R4cc/komando/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/R4cc/komando/compare/v0.1.9...v0.1.16
 [0.1.9]: https://github.com/R4cc/komando/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/R4cc/komando/compare/v0.1.7...v0.1.8

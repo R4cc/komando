@@ -9,7 +9,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use komando::model::{AppThemeSetting, Host, Library, Project, Settings, new_id};
+use komando::model::{AppThemeSetting, Host, Library, Project, Settings};
 use komando::ui::workspace::{SettingsSection, Startup};
 use komando::vault::{Credential, Secret, Vault};
 
@@ -33,14 +33,9 @@ fn main() {
     let key_id_for_stress = key_id.clone();
 
     let host = |name: &str, address: &str, port: u16, icon: &str| Host {
-        id: new_id(),
-        name: name.into(),
-        address: address.into(),
         port,
-        user: None,
-        credential: None,
-        color: None,
         icon: Some(icon.into()),
+        ..Host::new(name, address)
     };
     let web01 = host("web01", "127.0.0.1", port, "server");
     let web02 = host("web02", "10.20.1.12", 22, "server");
@@ -51,14 +46,10 @@ fn main() {
     let backup = host("backup", "10.0.0.30", 22, "hard-drive");
 
     let project = |name: &str, color: &str, icon: &str, hosts: &[&Host], credential: Option<String>| Project {
-        id: new_id(),
-        name: name.into(),
-        color: color.into(),
-        icon: icon.into(),
         default_user: Some(user.clone()),
         credential,
         hosts: hosts.iter().map(|h| h.id.clone()).collect(),
-        shells: vec![],
+        ..Project::new(name, color, icon)
     };
     let library = Library {
         shells: None,
@@ -123,14 +114,10 @@ fn main() {
                 library.hosts.push(h);
             }
             library.projects.push(Project {
-                id: new_id(),
-                name: format!("Project {pi:02}"),
-                color: colors[pi % colors.len()].into(),
-                icon: icons[pi % icons.len()].into(),
                 default_user: Some(user.clone()),
                 credential: Some(key_id_for_stress.clone()),
                 hosts,
-                shells: vec![],
+                ..Project::new(format!("Project {pi:02}"), colors[pi % colors.len()], icons[pi % icons.len()])
             });
         }
         library.save(&dir).unwrap();

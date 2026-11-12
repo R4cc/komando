@@ -23,7 +23,9 @@
 
 - **Every server one click away.** The sidebar always lists your saved SSH hosts and local shells. Click to connect, or to jump back to a server you're already on.
 - **Projects with colours and icons.** A coloured strip above the terminal shows the active project at a glance, so you don't run a command on production by accident.
-- **Shared settings per project.** Set a default user and password once for a project and every host inherits it. A host can belong to several projects.
+- **Shared settings per project.** Set a default user, key or password, jump host and startup commands once for a project and every host inherits them, unless it sets its own. A host can belong to several projects.
+- **Jump hosts.** Reach servers that are only reachable from another server. While connecting, Komando shows each host on the way and where the connection is, or where it failed.
+- **Startup commands.** Have `cd /srv/app`, `sudo -i` or `tmux attach` typed for you once the shell is ready.
 - **Reconnect in place.** If a connection drops, you keep the output and one click reconnects in the same window.
 - **Multiple sessions per host.** Ctrl+click a host to open a second session on the same server.
 - **Local shells too.** PowerShell 7, Windows PowerShell and Command Prompt are detected automatically and can live inside your projects.
@@ -100,7 +102,7 @@ In an encrypted vault on your computer, protected by your master password. Nothi
 
 ## Coming soon
 
-Search in output (Ctrl+F), editing hosts and projects inside the app (for now edit `library.toml`), jump hosts, split view, Windows Hello unlock and changing the master password.
+Search in output (Ctrl+F), split view, Windows Hello unlock and changing the master password.
 
 ## For developers
 

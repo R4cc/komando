@@ -2,6 +2,11 @@
 //!
 //! Network bytes go straight into the terminal parser on a tokio worker. No local shell and
 //! no ConPTY are involved.
+//!
+//! A Host behind Jump Hosts is reached hop by hop: Komando signs in to the first Jump Host,
+//! asks it for a tunnel (`direct-tcpip`) to the next one, runs a new SSH connection inside that
+//! tunnel, and so on until the target. Each hop checks its own Host Key and signs in with its
+//! own Credential, exactly as if it were opened directly.
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -16,7 +21,7 @@ use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertific
 use russh::{ChannelMsg, Disconnect, Pty};
 use tokio::sync::mpsc;
 
-use super::{EventProxy, GridSize, InputSink, Prompt, SessionEvent, SharedTerm, Status};
+use super::{EventProxy, GridSize, HopStep, InputSink, Prompt, SessionEvent, SharedTerm, Status};
 use crate::vault::Secret;
 
 pub enum Command {
@@ -27,14 +32,24 @@ pub enum Command {
 
 /// Everything a connection needs, resolved on the UI thread before it starts.
 pub struct Target {
+    /// The Hosts to sign in to, in order: Jump Hosts first, the Host with the shell last.
+    pub hops: Vec<Hop>,
+    /// Komando's own trusted Host Keys.
+    pub known_hosts: PathBuf,
+}
+
+/// One Host on the way.
+pub struct Hop {
+    pub name: String,
     pub address: String,
     pub port: u16,
     pub user: Option<String>,
     /// The saved Credential's secret, if the Vault is unlocked and one is configured.
     pub secret: Option<Secret>,
-    /// Komando's own trusted Host Keys.
-    pub known_hosts: PathBuf,
 }
+
+/// How long reaching one hop may take, Host Key questions aside.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -68,6 +83,8 @@ struct Client {
     port: u16,
     known_hosts: PathBuf,
     proxy: EventProxy,
+    /// Which hop this connection is, for progress events.
+    hop: usize,
 }
 
 impl client::Handler for Client {
@@ -81,6 +98,7 @@ impl client::Handler for Client {
             }
         };
         let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
+        self.proxy.send(SessionEvent::Hop { index: self.hop, step: HopStep::CheckingKey });
 
         // Komando's own list first, then the user's OpenSSH known_hosts (read-only import).
         let mut sources = vec![self.known_hosts.clone()];
@@ -148,24 +166,48 @@ async fn run(
         nodelay: true,
         ..Default::default()
     });
-    let handler = Client {
-        host: target.address.clone(),
-        port: target.port,
-        known_hosts: target.known_hosts.clone(),
-        proxy: proxy.clone(),
-    };
-    let mut handle = tokio::time::timeout(
-        Duration::from_secs(15),
-        client::connect(config, (target.address.as_str(), target.port), handler),
-    )
-    .await
-    .map_err(|_| anyhow!("Timed out connecting to {}:{}.", target.address, target.port))??;
-
-    let user = match target.user.clone() {
-        Some(user) => user,
-        None => ask(&proxy, "User name", false, None).await.ok_or_else(|| anyhow!("Cancelled."))?,
-    };
-    authenticate(&mut handle, &user, target.secret.as_ref(), &proxy).await?;
+    // Every hop's connection stays open: the next one runs through it.
+    let mut handles: Vec<Handle<Client>> = Vec::with_capacity(target.hops.len());
+    for (index, hop) in target.hops.iter().enumerate() {
+        proxy.send(SessionEvent::Hop { index, step: HopStep::Reaching });
+        let handler = Client {
+            host: hop.address.clone(),
+            port: hop.port,
+            known_hosts: target.known_hosts.clone(),
+            proxy: proxy.clone(),
+            hop: index,
+        };
+        let timed_out = || anyhow!("Timed out connecting to {}:{}.", hop.address, hop.port);
+        let mut handle = match handles.last() {
+            None => tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config.clone(), (hop.address.as_str(), hop.port), handler))
+                .await
+                .map_err(|_| timed_out())??,
+            Some(through) => {
+                let via = &target.hops[index - 1].name;
+                let tunnel = tokio::time::timeout(
+                    CONNECT_TIMEOUT,
+                    through.channel_open_direct_tcpip(hop.address.as_str(), hop.port as u32, "127.0.0.1", 0),
+                )
+                .await
+                .map_err(|_| timed_out())?
+                .map_err(|err| anyhow!("{via} could not open a tunnel to {}:{}: {err}", hop.address, hop.port))?;
+                tokio::time::timeout(CONNECT_TIMEOUT, client::connect_stream(config.clone(), tunnel.into_stream(), handler))
+                    .await
+                    .map_err(|_| timed_out())??
+            }
+        };
+        let user = match hop.user.clone() {
+            Some(user) => user,
+            None => ask(&proxy, &format!("User name for {}", hop.name), false, None)
+                .await
+                .ok_or_else(|| anyhow!("Cancelled."))?,
+        };
+        proxy.send(SessionEvent::Hop { index, step: HopStep::SigningIn });
+        authenticate(&mut handle, &user, hop.secret.as_ref(), &proxy, index).await?;
+        proxy.send(SessionEvent::Hop { index, step: HopStep::Done });
+        handles.push(handle);
+    }
+    let handle = handles.pop().ok_or_else(|| anyhow!("Nothing to connect to."))?;
 
     let mut channel = handle.channel_open_session().await?;
     channel
@@ -226,6 +268,10 @@ async fn run(
             _ = sleep_until(sync_deadline), if sync_deadline.is_some() => output.flush(&term, &proxy),
         }
     };
+    // The Jump Hosts' connections, innermost first.
+    for jump in handles.iter().rev() {
+        let _ = jump.disconnect(Disconnect::ByApplication, "", "en").await;
+    }
     Ok(reason)
 }
 
@@ -296,7 +342,7 @@ impl Output {
     }
 }
 
-async fn authenticate(handle: &mut Handle<Client>, user: &str, secret: Option<&Secret>, proxy: &EventProxy) -> Result<()> {
+async fn authenticate(handle: &mut Handle<Client>, user: &str, secret: Option<&Secret>, proxy: &EventProxy, hop: usize) -> Result<()> {
     let mut last_error = None;
     match secret {
         Some(Secret::PrivateKey { key, passphrase }) => {
@@ -338,7 +384,7 @@ async fn authenticate(handle: &mut Handle<Client>, user: &str, secret: Option<&S
             return Err(anyhow!("Cancelled."));
         };
         if matches!(handle.authenticate_password(user, password.as_str()).await?, AuthResult::Success) {
-            proxy.send(SessionEvent::OfferSave { password });
+            proxy.send(SessionEvent::OfferSave { password, hop });
             return Ok(());
         }
         last_error = Some("Wrong password. Try again.".to_string());

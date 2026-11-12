@@ -5,5 +5,5 @@ SSH Sessions use an SSH library inside the Komando process (russh), not the Wind
 ## Consequences
 
 - `~/.ssh/config` is not read automatically. Hosts are configured in Komando.
-- Only password and private-key authentication are supported. Kerberos/GSSAPI, ssh-agent forwarding and jump hosts are out of scope for v1.
+- Only password and private-key authentication are supported. Kerberos/GSSAPI and ssh-agent forwarding are out of scope for v1. (Jump hosts were too; see ADR 0006.)
 - Local Sessions (PowerShell, cmd) still go through ConPTY. That is unavoidable for local Windows shells.

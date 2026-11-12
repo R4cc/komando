@@ -1,7 +1,7 @@
 //! One terminal pane: paints the grid on the GPU and turns input into bytes for its Session.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -25,6 +25,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use crate::highlight::{self, ActiveHighlights};
 use crate::keys::{self, MouseAction, MouseMode, Mods};
 use crate::marks::Marks;
+use crate::ui::connect_route::{self, ConnectRoute, RouteCard};
 use crate::session::{
     EventProxy, GridSize, InputSink, Prompt, SessionEvent, SharedTerm, Status, new_term, scrollback_text,
 };
@@ -41,20 +42,51 @@ const PADDING_Y: f32 = 8.0;
 const RAIL_STEP: f32 = 8.0;
 /// How long a row stays lit after jumping to it.
 const FLASH: Duration = Duration::from_millis(1400);
+/// How long the shell must stay quiet before the next Startup Command is typed.
+const STARTUP_QUIET: Duration = Duration::from_millis(150);
+/// How long to wait for the shell's first output before typing anyway.
+const STARTUP_FIRST: Duration = Duration::from_millis(1500);
+
+/// Startup Commands still to type. They go in one at a time, each once the shell has printed
+/// something and then gone quiet, so each lands at a prompt like a typed command.
+#[derive(Default)]
+struct StartupCommands {
+    queue: VecDeque<String>,
+    /// Bumped whenever a new wait starts; a timer only types if no newer wait replaced it.
+    generation: u64,
+    /// The shell asked for a password (e.g. `sudo`): wait until the user has answered.
+    paused: bool,
+}
+
+impl StartupCommands {
+    fn waiting(&self) -> bool {
+        !self.queue.is_empty() && !self.paused
+    }
+}
+
+/// Whether a terminal line is asking for a secret ("[sudo] password for ana:").
+fn asks_for_secret(line: &str) -> bool {
+    let line = line.trim_end().to_lowercase();
+    line.ends_with(':') && (line.contains("password") || line.contains("passphrase"))
+}
 
 /// What a terminal tells the workspace about.
 pub enum TerminalEvent {
     /// Status or title changed: refresh the sidebar.
     Changed,
-    SavePassword { password: String, as_project: bool },
+    /// Save a typed password for the Host of hop `hop` (0 is the first Jump Host, or the Host
+    /// itself when there are none), or for its Project.
+    SavePassword { password: String, as_project: bool, hop: usize },
     Reconnect,
+    /// Open the host form for the Host of hop `hop`.
+    EditHost { hop: usize },
 }
 
 enum ActivePrompt {
     HostKey { fingerprint: String, algorithm: String, reply: Option<oneshot::Sender<bool>> },
     HostKeyChanged { fingerprint: String },
     Input { label: String, error: Option<String>, input: Entity<InputState>, reply: Option<oneshot::Sender<Option<String>>> },
-    OfferSave { password: String },
+    OfferSave { password: String, hop: usize },
     ConfirmPaste { text: String, lines: usize },
 }
 
@@ -80,8 +112,11 @@ pub struct TerminalView {
     scroll_remainder: f32,
     /// Focus as last reported to the program (DECSET 1004).
     focus_reported: Option<bool>,
-    /// Whether this session can offer "save as project password".
-    pub has_project: bool,
+    /// Per hop: whether a typed password can be saved as its Project's password.
+    save_as_project: Vec<bool>,
+    /// While connecting through Jump Hosts: the route page.
+    route: Option<ConnectRoute>,
+    startup: StartupCommands,
     pub confirm_multiline_paste: bool,
     /// PuTTY-style: selecting copies, right-click pastes.
     pub putty_clipboard: bool,
@@ -144,7 +179,9 @@ impl TerminalView {
             mouse_cell: None,
             scroll_remainder: 0.,
             focus_reported: None,
-            has_project: true,
+            save_as_project: vec![],
+            route: None,
+            startup: StartupCommands::default(),
             confirm_multiline_paste: true,
             putty_clipboard: false,
             command_rail: true,
@@ -181,6 +218,15 @@ impl TerminalView {
     /// The grid size last laid out, or a sensible default before the first paint.
     pub fn grid_size(&self) -> GridSize {
         self.grid.get().unwrap_or(GridSize { cols: 120, rows: 36, cell_width: 8, cell_height: 18 })
+    }
+
+    /// Get ready for a new connection: the route page if it goes through Jump Hosts, which
+    /// hops may save a typed password for their Project, and the Startup Commands to type
+    /// once the shell is open.
+    pub fn begin_connect(&mut self, route: Option<Vec<RouteCard>>, save_as_project: Vec<bool>, startup: Vec<String>) {
+        self.route = route.map(ConnectRoute::new);
+        self.save_as_project = save_as_project;
+        self.startup = StartupCommands { queue: startup.into(), ..StartupCommands::default() };
     }
 
     pub fn attach(&mut self, sink: InputSink) {
@@ -220,6 +266,9 @@ impl TerminalView {
                 if self.marks.is_pending() {
                     self.marks.output(&mut *self.term.lock());
                 }
+                if self.startup.waiting() && !self.is_disconnected() && self.status == Status::Connected {
+                    self.schedule_startup(STARTUP_QUIET, window, cx);
+                }
                 cx.notify();
             }
             SessionEvent::Title(title) => {
@@ -233,19 +282,51 @@ impl TerminalView {
             SessionEvent::Status(status) => {
                 if self.status != status {
                     self.status = status;
-                    if self.is_disconnected() {
-                        // A pending question can no longer be answered.
-                        if matches!(self.prompt, Some(ActivePrompt::Input { .. } | ActivePrompt::HostKey { .. })) {
-                            self.prompt = None;
+                    match &self.status {
+                        Status::Disconnected(reason) => {
+                            // A pending question can no longer be answered.
+                            if matches!(self.prompt, Some(ActivePrompt::Input { .. } | ActivePrompt::HostKey { .. })) {
+                                self.prompt = None;
+                            }
+                            self.startup = StartupCommands::default();
+                            match self.route.as_mut() {
+                                Some(route) if !route.is_finished() => route.fail(reason.clone()),
+                                _ => self.route = None,
+                            }
                         }
+                        Status::Connected => {
+                            if let Some(route) = self.route.as_mut() {
+                                route.finish();
+                                cx.spawn_in(window, async move |this, cx| {
+                                    cx.background_executor().timer(connect_route::FADE).await;
+                                    let _ = this.update(cx, |this, cx| {
+                                        if this.route.as_ref().is_some_and(|r| r.is_finished()) {
+                                            this.route = None;
+                                            cx.notify();
+                                        }
+                                    });
+                                })
+                                .detach();
+                            }
+                            if self.startup.waiting() {
+                                self.schedule_startup(STARTUP_FIRST, window, cx);
+                            }
+                        }
+                        Status::Connecting => {}
                     }
                     cx.emit(TerminalEvent::Changed);
                     cx.notify();
                 }
             }
+            SessionEvent::Hop { index, step } => {
+                if let Some(route) = self.route.as_mut() {
+                    route.advance(index, step);
+                    cx.notify();
+                }
+            }
             SessionEvent::Prompt(prompt) => self.show_prompt(prompt, window, cx),
-            SessionEvent::OfferSave { password } => {
-                self.prompt = Some(ActivePrompt::OfferSave { password });
+            SessionEvent::OfferSave { password, hop } => {
+                self.prompt = Some(ActivePrompt::OfferSave { password, hop });
                 cx.notify();
             }
             SessionEvent::ClipboardStore(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
@@ -302,6 +383,48 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Type the next Startup Command after `delay`, unless output arrives in the meantime
+    /// (which starts a new wait).
+    fn schedule_startup(&mut self, delay: Duration, window: &mut Window, cx: &mut Context<Self>) {
+        self.startup.generation += 1;
+        let generation = self.startup.generation;
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.startup.generation == generation {
+                    this.type_startup_command(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn type_startup_command(&mut self, cx: &mut Context<Self>) {
+        if !self.startup.waiting() || self.status != Status::Connected {
+            return;
+        }
+        let cursor_line = {
+            let term = self.term.lock();
+            let grid = term.grid();
+            let row = &grid[grid.cursor.point.line];
+            (0..term.columns()).map(|c| row[Column(c)].c).collect::<String>()
+        };
+        if asks_for_secret(&cursor_line) {
+            self.startup.paused = true;
+            return;
+        }
+        let Some(line) = self.startup.queue.pop_front() else { return };
+        self.scroll_to_bottom();
+        {
+            let mut term = self.term.lock();
+            if self.command_rail && !term.mode().contains(TermMode::ALT_SCREEN) {
+                self.marks.entered(&mut term);
+            }
+        }
+        self.write(format!("{line}\r").into_bytes());
+        cx.notify();
+    }
+
     fn write(&mut self, bytes: Vec<u8>) {
         if let Some(sink) = &self.sink {
             sink.write(bytes);
@@ -342,6 +465,10 @@ impl TerminalView {
                 if ks.key == "enter" && !m.control && !m.alt && self.command_rail && !mode.contains(TermMode::ALT_SCREEN) {
                     self.marks.entered(&mut term);
                 }
+            }
+            // The user answered the question that paused the Startup Commands.
+            if ks.key == "enter" && self.startup.paused {
+                self.startup.paused = false;
             }
             self.write(bytes);
             cx.stop_propagation();
@@ -725,9 +852,55 @@ impl TerminalView {
         (Some(rail), flash_row)
     }
 
+    /// Whether the open question belongs to the connection (and so to the route page).
+    fn prompt_on_route(&self) -> bool {
+        self.route.is_some()
+            && matches!(self.prompt, Some(ActivePrompt::HostKey { .. } | ActivePrompt::HostKeyChanged { .. } | ActivePrompt::Input { .. }))
+    }
+
+    /// The open question as a dimmed overlay over the terminal, unless the route page shows it.
     fn render_prompt(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if self.prompt_on_route() {
+            return None;
+        }
+        let element = self.prompt_card(cx)?;
+        let p = cx.global::<Appearance>().app;
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(alpha(0x000000, if p.dark { 0.45 } else { 0.18 }))
+                .child(element)
+                .into_any_element(),
+        )
+    }
+
+    /// While connecting through Jump Hosts: the route page, with the current hop's question.
+    fn render_route(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let route = self.route.as_ref()?;
+        let p = cx.global::<Appearance>().app;
+        let prompt = if self.prompt_on_route() { self.prompt_card(cx) } else { None };
+        let hop = route.current();
+        let actions = vec![
+            button("route-edit", "Edit host", ButtonKind::Secondary, p)
+                .on_click(cx.listener(move |_, _, _, cx| cx.emit(TerminalEvent::EditHost { hop })))
+                .into_any_element(),
+            button("route-retry", "Retry", ButtonKind::Primary, p)
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(TerminalEvent::Reconnect)))
+                .into_any_element(),
+        ];
+        Some(route.render(prompt, actions, p))
+    }
+
+    /// The open question as a card.
+    fn prompt_card(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let p = cx.global::<Appearance>().app;
         let prompt = self.prompt.as_ref()?;
+        let hop_name = self.route.as_ref().and_then(|r| r.hop_name(r.current()).map(str::to_string));
         let card = |title: &str, body: gpui::AnyElement, actions: Vec<gpui::AnyElement>| {
             div()
                 .w(px(420.))
@@ -761,7 +934,10 @@ impl TerminalView {
         };
         let element = match prompt {
             ActivePrompt::HostKey { fingerprint, algorithm, .. } => card(
-                "Trust this server?",
+                &match &hop_name {
+                    Some(name) => format!("Trust {name}?"),
+                    None => "Trust this server?".to_string(),
+                },
                 div()
                     .flex()
                     .flex_col()
@@ -813,13 +989,13 @@ impl TerminalView {
                         .into_any_element(),
                 ],
             ),
-            ActivePrompt::OfferSave { .. } => {
+            ActivePrompt::OfferSave { hop, .. } => {
                 let mut actions = vec![
                     button("sv-no", "Not now", ButtonKind::Ghost, p)
                         .on_click(cx.listener(|this, _, window, cx| this.dismiss(window, cx)))
                         .into_any_element(),
                 ];
-                if self.has_project {
+                if self.save_as_project.get(*hop).copied().unwrap_or(false) {
                     actions.push(
                         button("sv-project", "As project password", ButtonKind::Secondary, p)
                             .on_click(cx.listener(|this, _, window, cx| this.save_password(true, window, cx)))
@@ -831,8 +1007,12 @@ impl TerminalView {
                         .on_click(cx.listener(|this, _, window, cx| this.save_password(false, window, cx)))
                         .into_any_element(),
                 );
+                let title = match self.route.as_ref().and_then(|r| r.hop_name(*hop)) {
+                    Some(name) => format!("Save the password for {name}?"),
+                    None => "Save this password?".to_string(),
+                };
                 card(
-                    "Save this password?",
+                    &title,
                     text("It is stored encrypted in your vault and filled in automatically next time.".into()),
                     actions,
                 )
@@ -855,29 +1035,22 @@ impl TerminalView {
                 ],
             ),
         };
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .rounded(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(alpha(0x000000, if p.dark { 0.45 } else { 0.18 }))
-                .child(element)
-                .into_any_element(),
-        )
+        Some(element)
     }
 
     fn save_password(&mut self, as_project: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ActivePrompt::OfferSave { password }) = self.prompt.take() {
-            cx.emit(TerminalEvent::SavePassword { password, as_project });
+        if let Some(ActivePrompt::OfferSave { password, hop }) = self.prompt.take() {
+            cx.emit(TerminalEvent::SavePassword { password, as_project, hop });
         }
         self.dismiss(window, cx);
     }
 
     fn render_disconnected(&self, cx: &Context<Self>) -> Option<gpui::AnyElement> {
         let Status::Disconnected(reason) = &self.status else { return None };
+        // The route page shows where and why the connection failed.
+        if self.route.is_some() {
+            return None;
+        }
         let p = cx.global::<Appearance>().app;
         Some(
             div()
@@ -1529,6 +1702,21 @@ impl Render for TerminalView {
             )
             .children(rail)
             .children(self.render_disconnected(cx))
+            .children(self.render_route(cx))
             .children(self.render_prompt(cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::asks_for_secret;
+
+    #[test]
+    fn startup_commands_wait_at_password_questions() {
+        assert!(asks_for_secret("[sudo] password for ana:   "));
+        assert!(asks_for_secret("Enter passphrase for key '/root/.ssh/id_ed25519':"));
+        assert!(asks_for_secret("Password:"));
+        assert!(!asks_for_secret("ana@web01:~$ "));
+        assert!(!asks_for_secret("export PASSWORD_FILE=/tmp/x"));
     }
 }

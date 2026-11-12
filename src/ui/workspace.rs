@@ -21,7 +21,8 @@ use crate::model::{
     self, AppThemeSetting, CredentialSource, Host, Library, LocalShell, Project, Settings, TerminalThemeSetting,
 };
 use crate::session::{self, Status, ssh};
-use crate::theme::{AppPalette, Appearance, DISPLAY_FONT, PROJECT_COLORS, TerminalPalette, UI_FONT, alpha, project_color};
+use crate::theme::{AppPalette, Appearance, DISPLAY_FONT, TerminalPalette, UI_FONT, alpha, project_color};
+use crate::ui::connect_route::RouteCard;
 use crate::ui::terminal_view::{TerminalEvent, TerminalView};
 use crate::ui::widgets::{
     ButtonKind, ISLAND_GAP, ISLAND_RADIUS, badge, button, elevation, icon_button, icon_el, icon_text_button, island,
@@ -29,6 +30,7 @@ use crate::ui::widgets::{
 };
 use crate::vault::{Credential, Secret, Vault};
 
+mod forms;
 mod settings;
 mod updates;
 pub use settings::SettingsSection;
@@ -132,41 +134,12 @@ impl SessionEntry {
 
 enum Overlay {
     Picker { query: Entity<InputState> },
-    /// Add a Host to a Project, or edit one (`editing` is its id).
-    NewHost {
-        project_id: String,
-        editing: Option<String>,
-        fields: Vec<Entity<InputState>>,
-        icon: String,
-        /// The icon picker's search.
-        icon_query: Entity<InputState>,
-        auth: HostAuth,
-        error: Option<String>,
-    },
-    /// Create a Project, or edit one (`editing` is its id).
-    NewProject {
-        editing: Option<String>,
-        name: Entity<InputState>,
-        color: String,
-        icon: String,
-        /// The icon picker's search.
-        icon_query: Entity<InputState>,
-        error: Option<String>,
-    },
+    /// Add a Host to a Project, or edit one.
+    HostForm(forms::HostForm),
+    /// Create a Project, or edit one.
+    ProjectForm(forms::ProjectForm),
     /// Ask before something that can't be undone.
     Confirm { title: String, body: String, action: ConfirmAction },
-}
-
-/// How a Host signs in, as chosen in the host form.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum HostAuth {
-    /// No credential of its own: the Project's saved credential if it has one, else a
-    /// password typed on connect (which Komando offers to save).
-    Inherit,
-    /// Keep the Host's own saved credential (editing only).
-    Saved,
-    /// Import a private key file into the vault.
-    KeyFile,
 }
 
 #[derive(Clone)]
@@ -177,7 +150,7 @@ enum ConfirmAction {
 
 enum Pending {
     Open { project_id: String, host_id: String },
-    Save { session: usize, password: String, as_project: bool },
+    Save { session: usize, hop: usize, password: String, as_project: bool },
 }
 
 /// Things to do right after launch. Used by development tooling (screenshots, demos);
@@ -570,8 +543,8 @@ impl Workspace {
                 self.last_activity = Instant::now();
                 match self.pending.take() {
                     Some(Pending::Open { project_id, host_id }) => self.open_host(&project_id, &host_id, window, cx),
-                    Some(Pending::Save { session, password, as_project }) => {
-                        self.save_password(session, password, as_project, cx)
+                    Some(Pending::Save { session, hop, password, as_project }) => {
+                        self.save_password(session, hop, password, as_project, cx)
                     }
                     None => self.focus_active(window, cx),
                 }
@@ -584,7 +557,7 @@ impl Workspace {
     fn skip_unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.unlock = None;
         if let Some(Pending::Open { project_id, host_id }) = self.pending.take() {
-            self.open_host_with_secret(&project_id, &host_id, None, window, cx);
+            self.open_host_session(&project_id, &host_id, window, cx);
         }
         self.focus_active(window, cx);
         cx.notify();
@@ -715,15 +688,20 @@ impl Workspace {
                 }
                 cx.notify();
             }
-            TerminalEvent::SavePassword { password, as_project } => {
+            TerminalEvent::SavePassword { password, as_project, hop } => {
                 if this.vault.is_some() {
-                    this.save_password(id, password.clone(), *as_project, cx);
+                    this.save_password(id, *hop, password.clone(), *as_project, cx);
                 } else {
-                    this.pending = Some(Pending::Save { session: id, password: password.clone(), as_project: *as_project });
+                    this.pending = Some(Pending::Save { session: id, hop: *hop, password: password.clone(), as_project: *as_project });
                     this.show_unlock(false, window, cx);
                 }
             }
             TerminalEvent::Reconnect => this.reconnect(id, window, cx),
+            TerminalEvent::EditHost { hop } => {
+                if let Some((project_id, host_id)) = this.hop_host(id, *hop) {
+                    this.open_edit_host(project_id, host_id, window, cx);
+                }
+            }
         });
         if let Some(project_id) = &project_id {
             self.collapsed.remove(project_id);
@@ -746,71 +724,75 @@ impl Workspace {
         let item = ItemKey::Shell { project: project_id.clone(), name: shell.name.clone() };
         let kind = SessionKind::Local { shell: shell.clone() };
         let view = self.add_session(item, project_id.clone(), kind.clone(), &shell.name, window, cx);
-        self.start_backend(&view, &kind, project_id.as_deref(), None, cx);
+        self.start_backend(&view, &kind, project_id.as_deref(), cx);
     }
 
+    /// Open a new Session for a Host. If any Host on the way has a saved Credential, the
+    /// Vault is unlocked first (or skipped, and passwords are asked instead).
     fn open_host(&mut self, project_id: &str, host_id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(resolved) = self.library.resolve(project_id, host_id) else { return };
-        if resolved.credential.is_some() && self.vault.is_none() {
+        let needs_vault = self
+            .library
+            .route(project_id, host_id)
+            .is_ok_and(|route| route.iter().any(|hop| hop.credential.is_some()));
+        if needs_vault && self.vault.is_none() {
             self.pending = Some(Pending::Open { project_id: project_id.into(), host_id: host_id.into() });
             self.show_unlock(false, window, cx);
             return;
         }
-        let secret = resolved
-            .credential
-            .as_deref()
-            .and_then(|id| self.vault.as_ref()?.get(id))
-            .map(|c| c.secret.clone());
-        self.open_host_with_secret(project_id, host_id, secret, window, cx);
+        self.open_host_session(project_id, host_id, window, cx);
     }
 
-    fn open_host_with_secret(
-        &mut self,
-        project_id: &str,
-        host_id: &str,
-        secret: Option<Secret>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn open_host_session(&mut self, project_id: &str, host_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(resolved) = self.library.resolve(project_id, host_id) else { return };
         let item = ItemKey::Host { project: project_id.to_string(), host: host_id.to_string() };
         let kind = SessionKind::Ssh { host_id: host_id.to_string() };
         let view = self.add_session(item, Some(project_id.to_string()), kind.clone(), &resolved.name, window, cx);
-        self.start_backend(&view, &kind, Some(project_id), secret, cx);
+        self.start_backend(&view, &kind, Some(project_id), cx);
     }
 
-    fn start_backend(
-        &mut self,
-        view: &Entity<TerminalView>,
-        kind: &SessionKind,
-        project_id: Option<&str>,
-        secret: Option<Secret>,
-        cx: &mut Context<Self>,
-    ) {
+    fn start_backend(&mut self, view: &Entity<TerminalView>, kind: &SessionKind, project_id: Option<&str>, cx: &mut Context<Self>) {
         let (term, proxy, size) = {
             let v = view.read(cx);
             (v.term(), v.proxy(), v.grid_size())
         };
         let sink = match kind {
-            SessionKind::Local { shell } => match session::local::spawn(shell, size, term, proxy.clone()) {
-                Ok(sink) => {
-                    proxy.send(session::SessionEvent::Status(Status::Connected));
-                    Some(sink)
+            SessionKind::Local { shell } => {
+                view.update(cx, |v, _| v.begin_connect(None, vec![], vec![]));
+                match session::local::spawn(shell, size, term, proxy.clone()) {
+                    Ok(sink) => {
+                        proxy.send(session::SessionEvent::Status(Status::Connected));
+                        Some(sink)
+                    }
+                    Err(err) => {
+                        proxy.send(session::SessionEvent::Status(Status::Disconnected(format!("{err:#}"))));
+                        None
+                    }
                 }
-                Err(err) => {
-                    proxy.send(session::SessionEvent::Status(Status::Disconnected(format!("{err:#}"))));
-                    None
-                }
-            },
+            }
             SessionKind::Ssh { host_id } => {
-                let Some(resolved) = project_id.and_then(|p| self.library.resolve(p, host_id)) else { return };
-                let target = ssh::Target {
-                    address: resolved.address,
-                    port: resolved.port,
-                    user: resolved.user,
-                    secret,
-                    known_hosts: self.data_dir.join("known_hosts"),
+                let route = match project_id.map(|p| self.library.route(p, host_id)) {
+                    Some(Ok(route)) => route,
+                    Some(Err(err)) => {
+                        proxy.send(session::SessionEvent::Status(Status::Disconnected(err.to_string())));
+                        return;
+                    }
+                    None => return,
                 };
+                let cards = (route.len() > 1).then(|| route.iter().map(route_card).collect());
+                let save_as_project = route.iter().map(|hop| hop.credential_source != CredentialSource::Off).collect();
+                let startup = route.last().map(|target| target.startup_commands.clone()).unwrap_or_default();
+                view.update(cx, |v, _| v.begin_connect(cards, save_as_project, startup));
+                let hops = route
+                    .into_iter()
+                    .map(|hop| ssh::Hop {
+                        secret: hop.credential.as_deref().and_then(|id| self.vault.as_ref()?.get(id)).map(|c| c.secret.clone()),
+                        name: hop.name,
+                        address: hop.address,
+                        port: hop.port,
+                        user: hop.user,
+                    })
+                    .collect();
+                let target = ssh::Target { hops, known_hosts: self.data_dir.join("known_hosts") };
                 Some(ssh::spawn(target, size, term, proxy))
             }
         };
@@ -826,18 +808,18 @@ impl Workspace {
     fn reconnect(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
         let (view, kind, project_id) = (entry.view.clone(), entry.kind.clone(), entry.project_id.clone());
-        let secret = match &kind {
-            SessionKind::Ssh { host_id } => project_id
-                .as_deref()
-                .and_then(|p| self.library.resolve(p, host_id))
-                .and_then(|r| r.credential)
-                .and_then(|cred| self.vault.as_ref()?.get(&cred))
-                .map(|c| c.secret.clone()),
-            SessionKind::Local { .. } => None,
-        };
         view.update(cx, |v, _| v.close());
-        self.start_backend(&view, &kind, project_id.as_deref(), secret, cx);
+        self.start_backend(&view, &kind, project_id.as_deref(), cx);
         self.focus_active(window, cx);
+    }
+
+    /// The Host of one hop of a Session's route: (Project id, Host id).
+    fn hop_host(&self, session_id: usize, hop: usize) -> Option<(String, String)> {
+        let entry = self.sessions.iter().find(|s| s.id == session_id)?;
+        let SessionKind::Ssh { host_id } = &entry.kind else { return None };
+        let route = self.library.route(entry.project_id.as_deref()?, host_id).ok()?;
+        let resolved = route.get(hop)?;
+        Some((resolved.project_id.clone(), resolved.host_id.clone()))
     }
 
     fn activate(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -909,10 +891,9 @@ impl Workspace {
 
     // ---- passwords & output -----------------------------------------------------------
 
-    fn save_password(&mut self, session_id: usize, password: String, as_project: bool, cx: &mut Context<Self>) {
-        let Some(entry) = self.sessions.iter().find(|s| s.id == session_id) else { return };
-        let SessionKind::Ssh { host_id } = entry.kind.clone() else { return };
-        let Some(project_id) = entry.project_id.clone() else { return };
+    /// Save a password typed for one hop of a Session: for that hop's Host, or its Project.
+    fn save_password(&mut self, session_id: usize, hop: usize, password: String, as_project: bool, cx: &mut Context<Self>) {
+        let Some((project_id, host_id)) = self.hop_host(session_id, hop) else { return };
         let Some(resolved) = self.library.resolve(&project_id, &host_id) else { return };
         let Some(vault) = self.vault.as_mut() else { return };
         let project_name = self.library.project(&project_id).map(|p| p.name.clone()).unwrap_or_default();
@@ -944,7 +925,7 @@ impl Workspace {
                         p.credential = Some(cred_id);
                     }
                 } else if let Some(h) = self.library.hosts.iter_mut().find(|h| h.id == host_id) {
-                    h.credential = Some(cred_id);
+                    h.credential = model::Inherited::Own(cred_id);
                 }
                 let _ = self.library.save(&self.data_dir);
                 self.show_toast("Password saved to the vault.", cx);
@@ -1030,61 +1011,6 @@ impl Workspace {
         self.activate_item(item, false, window, cx);
     }
 
-    fn open_new_host(&mut self, project_id: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_host_form(project_id, None, window, cx);
-    }
-
-    fn open_edit_host(&mut self, project_id: String, host_id: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_host_form(project_id, Some(host_id), window, cx);
-    }
-
-    /// The host form's text fields, in order: name, address, user, port, key file.
-    fn open_host_form(&mut self, project_id: String, editing: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        let host = editing.as_deref().and_then(|id| self.library.host(id)).cloned();
-        let default_user = self.library.project(&project_id).and_then(|p| p.default_user.clone());
-        let user_hint = match &default_user {
-            Some(u) => format!("{u} (project default)"),
-            None => "root".to_string(),
-        };
-        let placeholders: [String; 5] = [
-            "e.g. web01".into(),
-            "e.g. 10.0.4.21 or web01.example.com".into(),
-            user_hint,
-            "22".into(),
-            r"C:\Users\you\.ssh\id_ed25519".into(),
-        ];
-        let values = match &host {
-            Some(h) => [
-                h.name.clone(),
-                h.address.clone(),
-                h.user.clone().unwrap_or_default(),
-                if h.port == 22 { String::new() } else { h.port.to_string() },
-                String::new(),
-            ],
-            None => Default::default(),
-        };
-        let fields: Vec<_> = placeholders
-            .into_iter()
-            .zip(values)
-            .map(|(ph, value)| cx.new(|cx| InputState::new(window, cx).placeholder(ph).default_value(value)))
-            .collect();
-        // Enter in any field submits the form.
-        for field in &fields {
-            let sub = cx.subscribe_in(field, window, |this, _, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    this.submit_new_host(window, cx);
-                }
-            });
-            self._subscriptions.push(sub);
-        }
-        fields[0].update(cx, |f, cx| f.focus(window, cx));
-        let auth = if host.as_ref().is_some_and(|h| h.credential.is_some()) { HostAuth::Saved } else { HostAuth::Inherit };
-        let icon = host.and_then(|h| h.icon).unwrap_or_else(|| "server".into());
-        let icon_query = self.new_icon_query(window, cx);
-        self.overlay = Some(Overlay::NewHost { project_id, editing, fields, icon, icon_query, auth, error: None });
-        cx.notify();
-    }
-
     /// The search box of a form's icon picker.
     fn new_icon_query(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search icons, e.g. database, cloud, git"));
@@ -1097,173 +1023,6 @@ impl Workspace {
         query
     }
 
-    /// Pick a private key file for the host form's key field.
-    fn browse_key_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("Use key".into()),
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = picked.await else { return };
-            let Some(path) = paths.into_iter().next() else { return };
-            let _ = this.update_in(cx, |this, window, cx| {
-                if let Some(Overlay::NewHost { fields, auth, error, .. }) = this.overlay.as_mut() {
-                    *auth = HostAuth::KeyFile;
-                    *error = None;
-                    fields[4].update(cx, |f, cx| f.set_value(path.display().to_string(), window, cx));
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn submit_new_host(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Overlay::NewHost { project_id, editing, fields, icon, auth, error, .. }) = self.overlay.as_mut() else { return };
-        let value = |i: usize| fields[i].read(cx).value().trim().to_string();
-        let (name, address, user, port, key_path) = (value(0), value(1), value(2), value(3), value(4));
-        let fail = |error: &mut Option<String>, message: String, cx: &mut Context<Self>| {
-            *error = Some(message);
-            cx.notify();
-        };
-        if name.is_empty() || address.is_empty() {
-            return fail(error, "Give the host a name and an address.".into(), cx);
-        }
-        let port = if port.is_empty() {
-            22
-        } else {
-            match port.parse::<u16>() {
-                Ok(p) if p > 0 => p,
-                _ => return fail(error, "The port is a number from 1 to 65535.".into(), cx),
-            }
-        };
-        // What the host's own credential becomes: `Some(new)` replaces it, `None` keeps it.
-        let mut credential: Option<Option<String>> = match auth {
-            HostAuth::Inherit => Some(None),
-            HostAuth::Saved => None,
-            HostAuth::KeyFile => None,
-        };
-        if *auth == HostAuth::KeyFile {
-            if key_path.is_empty() {
-                return fail(error, "Choose a private key file, or pick another sign-in.".into(), cx);
-            }
-            let Some(vault) = self.vault.as_mut() else {
-                return fail(error, "Unlock the vault to import a key.".into(), cx);
-            };
-            let key = match std::fs::read_to_string(&key_path) {
-                Ok(key) => key,
-                Err(err) => return fail(error, format!("Could not read {key_path}: {err}"), cx),
-            };
-            match vault.add(Credential { label: format!("{name} key"), secret: Secret::PrivateKey { key, passphrase: None } }) {
-                Ok(id) => credential = Some(Some(id)),
-                Err(err) => return fail(error, format!("Could not store the key: {err}"), cx),
-            }
-        }
-        let user = (!user.is_empty()).then_some(user);
-        let icon = icon.clone();
-        if let Some(id) = editing.clone() {
-            if let Some(host) = self.library.hosts.iter_mut().find(|h| h.id == id) {
-                host.name = name;
-                host.address = address;
-                host.port = port;
-                host.user = user;
-                host.icon = Some(icon);
-                if let Some(credential) = credential {
-                    host.credential = credential;
-                }
-            }
-        } else {
-            let host = Host {
-                id: model::new_id(),
-                name,
-                address,
-                port,
-                user,
-                credential: credential.flatten(),
-                color: None,
-                icon: Some(icon),
-            };
-            let project_id = project_id.clone();
-            match self.library.projects.iter_mut().find(|p| p.id == project_id) {
-                Some(project) => project.hosts.push(host.id.clone()),
-                // The first connection, added from the start screen: give it a project.
-                None => self.library.projects.push(Project {
-                    id: model::new_id(),
-                    name: FIRST_PROJECT_NAME.into(),
-                    color: FIRST_PROJECT_COLOR.into(),
-                    icon: "folder".into(),
-                    default_user: None,
-                    credential: None,
-                    hosts: vec![host.id.clone()],
-                    shells: vec![],
-                }),
-            }
-            self.library.hosts.push(host);
-        }
-        let _ = self.library.save(&self.data_dir);
-        self.overlay = None;
-        cx.notify();
-    }
-
-    fn open_new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_project_form(None, window, cx);
-    }
-
-    fn open_edit_project(&mut self, project_id: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_project_form(Some(project_id), window, cx);
-    }
-
-    fn open_project_form(&mut self, editing: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        let project = editing.as_deref().and_then(|id| self.library.project(id)).cloned();
-        let value = project.as_ref().map(|p| p.name.clone()).unwrap_or_default();
-        let name = cx.new(|cx| InputState::new(window, cx).placeholder("Project name, e.g. Atlas Production").default_value(value));
-        name.update(cx, |f, cx| f.focus(window, cx));
-        let (color, icon) = match &project {
-            Some(p) => (p.color.clone(), p.icon.clone()),
-            None => ("blue".into(), "folder".into()),
-        };
-        let icon_query = self.new_icon_query(window, cx);
-        self.overlay = Some(Overlay::NewProject { editing, name, color, icon, icon_query, error: None });
-        cx.notify();
-    }
-
-    fn submit_new_project(&mut self, cx: &mut Context<Self>) {
-        let Some(Overlay::NewProject { editing, name, color, icon, error, .. }) = self.overlay.as_mut() else { return };
-        let name = name.read(cx).value().trim().to_string();
-        if name.is_empty() {
-            *error = Some("Give the project a name.".into());
-            cx.notify();
-            return;
-        }
-        if let Some(id) = editing.clone() {
-            let (color, icon) = (color.clone(), icon.clone());
-            if let Some(project) = self.library.projects.iter_mut().find(|p| p.id == id) {
-                project.name = name;
-                project.color = color;
-                project.icon = icon;
-            }
-            let _ = self.library.save(&self.data_dir);
-            self.overlay = None;
-            cx.notify();
-            return;
-        }
-        self.library.projects.push(Project {
-            id: model::new_id(),
-            name,
-            color: color.clone(),
-            icon: icon.clone(),
-            default_user: None,
-            credential: None,
-            hosts: vec![],
-            shells: vec![],
-        });
-        let _ = self.library.save(&self.data_dir);
-        self.overlay = None;
-        cx.notify();
-    }
-
     fn confirm_delete_host(&mut self, host_id: String, cx: &mut Context<Self>) {
         let Some(host) = self.library.host(&host_id) else { return };
         let projects = self.library.projects.iter().filter(|p| p.hosts.contains(&host_id)).count();
@@ -1272,6 +1031,15 @@ impl Workspace {
             body.push_str(&format!(" It is in {projects} projects and leaves all of them."));
         }
         body.push_str(" Its open sessions are closed. A saved key or password stays in the vault.");
+        let mut reached: Vec<&str> = self.library.reached_through(&host_id).iter().map(|h| h.name.as_str()).collect();
+        reached.sort_unstable();
+        match reached.as_slice() {
+            [] => {}
+            [one] => body.push_str(&format!(" {one} is reached through it and will connect directly.")),
+            [rest @ .., last] => {
+                body.push_str(&format!(" {} and {last} are reached through it and will connect directly.", rest.join(", ")))
+            }
+        }
         self.overlay = Some(Overlay::Confirm {
             title: format!("Delete {}?", host.name),
             body,
@@ -1301,18 +1069,11 @@ impl Workspace {
         match action {
             ConfirmAction::DeleteHost(id) => {
                 self.discard_sessions(|s| matches!(&s.kind, SessionKind::Ssh { host_id } if *host_id == id), cx);
-                for project in &mut self.library.projects {
-                    project.hosts.retain(|h| *h != id);
-                }
-                self.library.hosts.retain(|h| h.id != id);
+                self.library.remove_host(&id);
             }
             ConfirmAction::DeleteProject(id) => {
                 self.discard_sessions(|s| s.project_id.as_deref() == Some(id.as_str()), cx);
-                let hosts = self.library.project(&id).map(|p| p.hosts.clone()).unwrap_or_default();
-                self.library.projects.retain(|p| p.id != id);
-                let still_used = |h: &String| self.library.projects.iter().any(|p| p.hosts.contains(h));
-                let orphans: Vec<String> = hosts.into_iter().filter(|h| !still_used(h)).collect();
-                self.library.hosts.retain(|h| !orphans.contains(&h.id));
+                self.library.remove_project(&id);
                 self.collapsed.remove(&id);
             }
         }
@@ -1351,8 +1112,8 @@ impl Workspace {
 
 
 /// The project the first connection goes into when it is added before any project exists.
-const FIRST_PROJECT_NAME: &str = "My servers";
-const FIRST_PROJECT_COLOR: &str = "blue";
+pub(super) const FIRST_PROJECT_NAME: &str = "My servers";
+pub(super) const FIRST_PROJECT_COLOR: &str = "blue";
 
 /// The local shells offered on the start screen, with short labels: one per kind
 /// (PowerShell 7 wins over Windows PowerShell), at most three.
@@ -1371,6 +1132,18 @@ fn welcome_shells(shells: Vec<LocalShell>) -> Vec<(String, LocalShell)> {
         }
     }
     picked
+}
+
+/// How a Host on the way shows on the route page.
+fn route_card(hop: &model::ResolvedHost) -> RouteCard {
+    let user = hop.user.as_deref().map(|u| format!("{u}@")).unwrap_or_default();
+    let port = if hop.port == 22 { String::new() } else { format!(":{}", hop.port) };
+    RouteCard {
+        name: hop.name.clone(),
+        detail: format!("{user}{}{port}", hop.address),
+        icon: hop.icon.clone(),
+        color: project_color(&hop.color),
+    }
 }
 
 fn sanitize(s: &str) -> String {
@@ -2200,7 +1973,13 @@ impl Workspace {
                         SidebarItem::Host { project, host } => {
                             let r = model::resolve(host, project);
                             let user = r.user.clone().map(|u| format!("{u}@")).unwrap_or_default();
-                            (r.icon.clone(), project_color(&r.color), host.name.clone(), format!("{user}{} · {}", host.address, project.name))
+                            let via = r
+                                .jump_host
+                                .as_deref()
+                                .and_then(|id| self.library.host(id))
+                                .map(|jump| format!(" · via {}", jump.name))
+                                .unwrap_or_default();
+                            (r.icon.clone(), project_color(&r.color), host.name.clone(), format!("{user}{}{via} · {}", host.address, project.name))
                         }
                         SidebarItem::Shell { project, shell } => (
                             "square-terminal".to_string(),
@@ -2254,228 +2033,8 @@ impl Workspace {
                     .child(list)
                     .into_any_element()
             }
-            Overlay::NewHost { project_id, editing, fields, icon, icon_query, auth, error } => {
-                let project = self.library.project(project_id);
-                // No project yet (the first connection, from the start screen): the host goes
-                // into a new one, created when it is saved.
-                let project_name = project.map(|pr| pr.name.clone()).unwrap_or_else(|| FIRST_PROJECT_NAME.into());
-                let project_icon = project.map(|pr| pr.icon.clone()).unwrap_or_else(|| "folder".into());
-                let project_has_credential = project.is_some_and(|pr| pr.credential.is_some());
-                let color = project_color(project.map(|pr| pr.color.as_str()).unwrap_or(FIRST_PROJECT_COLOR));
-                let host = editing.as_deref().and_then(|id| self.library.host(id));
-                let has_saved = host.is_some_and(|h| h.credential.is_some());
-                let title = match host {
-                    Some(h) => format!("Edit {}", h.name),
-                    None => "Add host".to_string(),
-                };
-                let ok_label = if editing.is_some() { "Save" } else { "Add host" };
-                let auth = *auth;
-
-                // Sign-in: what the host uses to log in. The labels follow what "no credential
-                // of its own" means for this Project.
-                let inherit_label = if project_has_credential { "Project credential" } else { "Password" };
-                let mut choices: Vec<(&'static str, HostAuth)> = vec![];
-                if has_saved {
-                    choices.push(("Saved key", HostAuth::Saved));
-                }
-                choices.push((inherit_label, HostAuth::Inherit));
-                choices.push(("Key file", HostAuth::KeyFile));
-                let options: Vec<(&'static str, bool)> = choices.iter().map(|(l, a)| (*l, *a == auth)).collect();
-                let picks: Vec<HostAuth> = choices.iter().map(|(_, a)| *a).collect();
-                let auth_choice = segmented("host-auth", &options, p, cx, move |this, i, _, cx| {
-                    if let Some(Overlay::NewHost { auth, error, .. }) = this.overlay.as_mut() {
-                        *auth = picks[i];
-                        *error = None;
-                    }
-                    cx.notify();
-                });
-                let auth_hint = match auth {
-                    HostAuth::Saved => "Keeps the key or password already saved in the vault for this host.",
-                    HostAuth::Inherit if project_has_credential => {
-                        "Uses the key or password saved for the project, shared by all its hosts."
-                    }
-                    HostAuth::Inherit => "Asked when you connect. Once it works, Komando offers to save it in the vault.",
-                    HostAuth::KeyFile => "The key is copied into the vault, encrypted. The file itself isn't needed afterwards.",
-                };
-                let key_row = (auth == HostAuth::KeyFile).then(|| {
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .child(div().flex_1().min_w_0().child(Input::new(&fields[4])))
-                        .child(
-                            button("nh-browse", "Browse…", ButtonKind::Secondary, p)
-                                .h(px(32.))
-                                .flex_shrink_0()
-                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.browse_key_file(window, cx))),
-                        )
-                });
-
-                let selected = icon.clone();
-                let body = div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(20.))
-                    .child(
-                        form_section("Connection", p)
-                            .child(form_field("Name", None, Input::new(&fields[0]).into_any_element(), p))
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap(px(10.))
-                                    .child(div().flex_1().min_w_0().child(form_field(
-                                        "Address",
-                                        None,
-                                        Input::new(&fields[1]).into_any_element(),
-                                        p,
-                                    )))
-                                    .child(div().w(px(92.)).flex_shrink_0().child(form_field(
-                                        "Port",
-                                        None,
-                                        Input::new(&fields[3]).into_any_element(),
-                                        p,
-                                    ))),
-                            )
-                            .child(form_field(
-                                "User",
-                                Some("Leave empty to use the project's default user."),
-                                Input::new(&fields[2]).into_any_element(),
-                                p,
-                            )),
-                    )
-                    .child(
-                        form_section("Sign-in", p)
-                            .child(div().flex().child(auth_choice))
-                            .children(key_row)
-                            .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(auth_hint)),
-                    )
-                    .child(form_section("Icon", p).child(icon_picker(icon_query, &selected, color, p, cx, |this, name| {
-                        if let Some(Overlay::NewHost { icon, .. }) = this.overlay.as_mut() {
-                            *icon = name;
-                        }
-                    })))
-                    .when_some(error.clone(), |el, e| {
-                        el.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .px(px(12.))
-                                .py(px(9.))
-                                .rounded(px(8.))
-                                .bg(p.danger.opacity(0.1))
-                                .text_size(px(12.5))
-                                .text_color(p.danger)
-                                .child(icon_el("circle-alert", 14., p.danger))
-                                .child(e),
-                        )
-                    });
-
-                div()
-                    .w(px(520.))
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    // Header: which project the host belongs to.
-                    .child(
-                        div()
-                            .px(px(24.))
-                            .pt(px(22.))
-                            .pb(px(18.))
-                            .flex()
-                            .items_center()
-                            .gap(px(12.))
-                            .child(badge(&project_icon, color, 34.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
-                                    .child(
-                                        div()
-                                            .text_size(px(12.5))
-                                            .text_color(p.text_muted)
-                                            .child(format!("SSH host in {project_name}")),
-                                    ),
-                            ),
-                    )
-                    // Only the middle scrolls; header and footer (with the buttons) stay put.
-                    .child(div().id("host-form-body").flex_1().min_h_0().overflow_y_scroll().px(px(24.)).pb(px(22.)).child(body))
-                    // Footer.
-                    .child(
-                        div()
-                            .px(px(24.))
-                            .py(px(14.))
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .border_t_1()
-                            .border_color(p.border)
-                            .child(div().flex_1().text_size(px(11.5)).text_color(p.text_faint).child("Enter to save · Esc to cancel"))
-                            .child(
-                                button("nh-cancel", "Cancel", ButtonKind::Ghost, p)
-                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx))),
-                            )
-                            .child(
-                                button("nh-ok", ok_label, ButtonKind::Primary, p)
-                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.submit_new_host(window, cx))),
-                            ),
-                    )
-                    .into_any_element()
-            }
-            Overlay::NewProject { editing, name, color, icon, icon_query, error } => {
-                let (title, ok_label) = if editing.is_some() { ("Edit project", "Save") } else { ("New project", "Create project") };
-                let current = color.clone();
-                let selected_icon = icon.clone();
-                let swatches = div().flex().flex_wrap().gap(px(8.)).children(PROJECT_COLORS.iter().map(|(cname, _)| {
-                    let cname = cname.to_string();
-                    let selected = cname == current;
-                    let c = project_color(&cname);
-                    div()
-                        .id(SharedString::from(format!("swatch-{cname}")))
-                        .size(px(26.))
-                        .rounded_full()
-                        .p(px(3.))
-                        .cursor_pointer()
-                        .border_2()
-                        .border_color(if selected { c } else { gpui::transparent_black() })
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            if let Some(Overlay::NewProject { color, .. }) = this.overlay.as_mut() {
-                                *color = cname.clone();
-                            }
-                            cx.notify();
-                        }))
-                        .child(div().size_full().rounded_full().bg(c))
-                }));
-                form_card(
-                    p,
-                    title,
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(12.))
-                        .child(Input::new(name))
-                        .child(section_label("Color", p))
-                        .child(swatches)
-                        .child(section_label("Icon", p))
-                        .child(icon_picker(icon_query, &selected_icon, project_color(&current), p, cx, |this, name| {
-                            if let Some(Overlay::NewProject { icon, .. }) = this.overlay.as_mut() {
-                                *icon = name;
-                            }
-                        }))
-                        .when_some(error.clone(), |el, e| el.child(div().text_size(px(12.)).text_color(p.danger).child(e)))
-                        .into_any_element(),
-                    vec![
-                        button("np-cancel", "Cancel", ButtonKind::Ghost, p)
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx)))
-                            .into_any_element(),
-                        button("np-ok", ok_label, ButtonKind::Primary, p)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.submit_new_project(cx)))
-                            .into_any_element(),
-                    ],
-                )
-            }
+            Overlay::HostForm(form) => self.render_host_form(form, p, cx),
+            Overlay::ProjectForm(form) => self.render_project_form(form, p, cx),
             Overlay::Confirm { title, body, .. } => form_card(
                 p,
                 title,
@@ -2531,9 +2090,9 @@ impl Workspace {
 }
 
 /// A segmented control: one choice of several.
-fn segmented(
+fn segmented<L: Into<SharedString> + Clone>(
     id: &'static str,
-    options: &[(&'static str, bool)],
+    options: &[(L, bool)],
     p: AppPalette,
     cx: &mut Context<Workspace>,
     pick: impl Fn(&mut Workspace, usize, &mut Window, &mut Context<Workspace>) + Clone + 'static,
@@ -2554,7 +2113,7 @@ fn segmented(
                 .when(*selected, |el| el.bg(p.brand_soft).text_color(p.brand))
                 .when(!*selected, |el| el.hover(|s| s.text_color(p.text)))
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| pick(this, i, window, cx)))
-                .child(*label)
+                .child(label.clone().into())
         })
         .collect();
     div()

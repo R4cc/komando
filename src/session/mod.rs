@@ -33,8 +33,10 @@ pub enum SessionEvent {
     Title(String),
     Status(Status),
     Prompt(Prompt),
-    /// Authentication with a typed-in password worked; offer to save it.
-    OfferSave { password: String },
+    /// Progress on the way to the Host: `index` is the hop (Jump Hosts first, the Host last).
+    Hop { index: usize, step: HopStep },
+    /// Authentication with a typed-in password worked; offer to save it for that hop's Host.
+    OfferSave { password: String, hop: usize },
     /// A program asked to put text on the clipboard (OSC 52).
     ClipboardStore(String),
 }
@@ -45,6 +47,17 @@ pub enum Status {
     Connected,
     /// The connection or shell ended. The tab keeps its Scrollback.
     Disconnected(String),
+}
+
+/// Where one hop of a connection is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HopStep {
+    /// Opening the network connection, or the tunnel through the previous hop.
+    Reaching,
+    CheckingKey,
+    SigningIn,
+    /// Signed in: the next hop goes through this one, or the shell opens.
+    Done,
 }
 
 pub enum Prompt {

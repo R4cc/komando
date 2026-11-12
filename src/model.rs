@@ -43,6 +43,13 @@ pub struct Project {
     /// The Project Credential: used by Hosts that set no Credential of their own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<CredentialId>,
+    /// The Jump Host its Hosts are reached through, unless a Host sets its own or connects
+    /// directly. The Jump Host itself is never reached through itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jump_host: Option<HostId>,
+    /// Startup Commands typed into every Host's shell, before the Host's own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub startup_commands: Vec<String>,
     /// Hosts in this Project, in sidebar order. A Host may appear in several Projects.
     #[serde(default)]
     pub hosts: Vec<HostId>,
@@ -55,6 +62,89 @@ fn default_project_icon() -> String {
     "folder".into()
 }
 
+impl Project {
+    /// An empty Project with a fresh id and no defaults for its Hosts.
+    pub fn new(name: impl Into<String>, color: impl Into<String>, icon: impl Into<String>) -> Self {
+        Self {
+            id: new_id(),
+            name: name.into(),
+            color: color.into(),
+            icon: icon.into(),
+            default_user: None,
+            credential: None,
+            jump_host: None,
+            startup_commands: vec![],
+            hosts: vec![],
+            shells: vec![],
+        }
+    }
+}
+
+/// A Host setting that can come from the Project the Host is opened from.
+///
+/// In `library.toml` an inherited setting is left out, the Host's own value is written as is,
+/// and a switched-off setting is written as `false`. Files from before this type existed only
+/// have plain values and missing keys, so they read the same as they always did.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Inherited<T> {
+    /// Use the Project's value, if it has one.
+    #[default]
+    Project,
+    /// The Host's own value.
+    Own(T),
+    /// Neither: no Jump Host (connect directly), no saved Credential or user (ask).
+    Off,
+}
+
+impl<T> Inherited<T> {
+    pub fn is_project(&self) -> bool {
+        matches!(self, Inherited::Project)
+    }
+
+    pub fn own(&self) -> Option<&T> {
+        match self {
+            Inherited::Own(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// The value in effect, given what the Project offers.
+    pub fn or_project<'a>(&'a self, project: Option<&'a T>) -> Option<&'a T> {
+        match self {
+            Inherited::Project => project,
+            Inherited::Own(value) => Some(value),
+            Inherited::Off => None,
+        }
+    }
+}
+
+impl<T: Serialize> Serialize for Inherited<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            // Left out by `skip_serializing_if`; written as "no value" if it ever is not.
+            Inherited::Project => serializer.serialize_none(),
+            Inherited::Own(value) => value.serialize(serializer),
+            Inherited::Off => serializer.serialize_bool(false),
+        }
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Inherited<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr<T> {
+            Switch(bool),
+            Value(T),
+        }
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Switch(false) => Inherited::Off,
+            Repr::Switch(true) => Inherited::Project,
+            Repr::Value(value) => Inherited::Own(value),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Host {
     pub id: HostId,
@@ -62,14 +152,50 @@ pub struct Host {
     pub address: String,
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential: Option<CredentialId>,
+    #[serde(default, skip_serializing_if = "Inherited::is_project")]
+    pub user: Inherited<String>,
+    #[serde(default, skip_serializing_if = "Inherited::is_project")]
+    pub credential: Inherited<CredentialId>,
+    /// The Host this one is reached through. Off: connect directly.
+    #[serde(default, skip_serializing_if = "Inherited::is_project")]
+    pub jump_host: Inherited<HostId>,
+    /// Startup Commands typed after the Project's (see `run_project_commands`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub startup_commands: Vec<String>,
+    /// Type the Project's Startup Commands before the Host's own.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub run_project_commands: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+}
+
+impl Host {
+    /// A Host with a fresh id that takes everything it can from its Project.
+    pub fn new(name: impl Into<String>, address: impl Into<String>) -> Self {
+        Self {
+            id: new_id(),
+            name: name.into(),
+            address: address.into(),
+            port: default_port(),
+            user: Inherited::Project,
+            credential: Inherited::Project,
+            jump_host: Inherited::Project,
+            startup_commands: vec![],
+            run_project_commands: true,
+            color: None,
+            icon: None,
+        }
+    }
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 fn default_port() -> u16 {
@@ -86,7 +212,7 @@ pub struct LocalShell {
 
 /// A Host's effective settings when opened from a specific Project.
 ///
-/// The Host's own values win; anything it leaves unset comes from the Project it was
+/// The Host's own values win; anything it leaves to the Project comes from the Project it was
 /// opened from. The same Host can therefore look and authenticate differently per Project.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedHost {
@@ -99,6 +225,10 @@ pub struct ResolvedHost {
     pub credential: Option<CredentialId>,
     /// Where the credential came from, so "save password" can offer the right target.
     pub credential_source: CredentialSource,
+    /// The Jump Host this Host is reached through, if any.
+    pub jump_host: Option<HostId>,
+    /// The Project's Startup Commands (unless the Host skips them), then the Host's own.
+    pub startup_commands: Vec<String>,
     pub color: String,
     pub icon: String,
 }
@@ -107,28 +237,58 @@ pub struct ResolvedHost {
 pub enum CredentialSource {
     Host,
     Project,
+    /// Neither has one: asked on connect, and may be saved for the Host or the Project.
     None,
+    /// The Host ignores the Project Credential: asked on connect, saved for the Host only.
+    Off,
 }
 
 pub fn resolve(host: &Host, project: &Project) -> ResolvedHost {
     let (credential, credential_source) = match (&host.credential, &project.credential) {
-        (Some(c), _) => (Some(c.clone()), CredentialSource::Host),
-        (None, Some(c)) => (Some(c.clone()), CredentialSource::Project),
-        (None, None) => (None, CredentialSource::None),
+        (Inherited::Own(c), _) => (Some(c.clone()), CredentialSource::Host),
+        (Inherited::Off, _) => (None, CredentialSource::Off),
+        (Inherited::Project, Some(c)) => (Some(c.clone()), CredentialSource::Project),
+        (Inherited::Project, None) => (None, CredentialSource::None),
     };
+    // The Project's Jump Host connects directly itself.
+    let project_jump = project.jump_host.as_ref().filter(|id| **id != host.id);
+    let mut startup_commands = if host.run_project_commands { project.startup_commands.clone() } else { vec![] };
+    startup_commands.extend(host.startup_commands.iter().cloned());
     ResolvedHost {
         host_id: host.id.clone(),
         project_id: project.id.clone(),
         name: host.name.clone(),
         address: host.address.clone(),
         port: host.port,
-        user: host.user.clone().or_else(|| project.default_user.clone()),
+        user: host.user.or_project(project.default_user.as_ref()).cloned(),
         credential,
         credential_source,
+        jump_host: host.jump_host.or_project(project_jump).cloned(),
+        startup_commands,
         color: host.color.clone().unwrap_or_else(|| project.color.clone()),
         icon: host.icon.clone().unwrap_or_else(|| "server".into()),
     }
 }
+
+/// Why a Host can't be reached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouteError {
+    /// The named Host is reached through itself, directly or through other Jump Hosts.
+    Cycle(String),
+    /// The named Host's Jump Host no longer exists.
+    Missing(String),
+}
+
+impl std::fmt::Display for RouteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RouteError::Cycle(name) => write!(f, "{name} would be reached through itself. Pick another jump host."),
+            RouteError::Missing(name) => write!(f, "The jump host of {name} no longer exists."),
+        }
+    }
+}
+
+impl std::error::Error for RouteError {}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Library {
@@ -180,11 +340,90 @@ impl Library {
         Some(resolve(self.host(host_id)?, self.project(project_id)?))
     }
 
+    /// The Hosts to connect to, in order, to reach a Host opened from a Project: its Jump
+    /// Hosts first (outermost first), the Host itself last.
+    ///
+    /// A Jump Host takes its settings from the same Project if it is in it, otherwise from the
+    /// first Project that holds it.
+    pub fn route(&self, project_id: &str, host_id: &str) -> Result<Vec<ResolvedHost>, RouteError> {
+        let mut hops = vec![self.resolve(project_id, host_id).ok_or_else(|| RouteError::Missing(host_id.into()))?];
+        while let Some(jump) = hops.last().and_then(|h| h.jump_host.clone()) {
+            let from = hops.last().expect("not empty");
+            if hops.iter().any(|h| h.host_id == jump) {
+                return Err(RouteError::Cycle(hops[0].name.clone()));
+            }
+            let project = match self.project(&from.project_id) {
+                Some(p) if p.hosts.contains(&jump) => Some(p),
+                _ => self.projects.iter().find(|p| p.hosts.contains(&jump)),
+            };
+            let hop = project
+                .and_then(|p| self.resolve(&p.id, &jump))
+                .ok_or_else(|| RouteError::Missing(from.name.clone()))?;
+            hops.push(hop);
+        }
+        hops.reverse();
+        Ok(hops)
+    }
+
+    /// Whether every Host in every Project can be reached: no Jump Host cycles, no missing
+    /// Jump Hosts. Forms check a changed copy of the Library with this before saving it.
+    pub fn check_routes(&self) -> Result<(), RouteError> {
+        for project in &self.projects {
+            for host in &project.hosts {
+                self.route(&project.id, host)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Hosts that are reached through a Host, on their own or by their Project's default.
+    pub fn reached_through(&self, jump: &str) -> Vec<&Host> {
+        self.hosts
+            .iter()
+            .filter(|h| h.id != jump)
+            .filter(|h| match &h.jump_host {
+                Inherited::Own(id) => id == jump,
+                Inherited::Off => false,
+                Inherited::Project => self
+                    .projects
+                    .iter()
+                    .any(|p| p.hosts.contains(&h.id) && p.jump_host.as_deref() == Some(jump)),
+            })
+            .collect()
+    }
+
+    /// Delete a Host. Hosts that were reached through it connect directly from now on.
+    pub fn remove_host(&mut self, id: &str) {
+        self.hosts.retain(|h| h.id != id);
+        for host in &mut self.hosts {
+            if host.jump_host.own().is_some_and(|j| j == id) {
+                host.jump_host = Inherited::Off;
+            }
+        }
+        for project in &mut self.projects {
+            project.hosts.retain(|h| h != id);
+            if project.jump_host.as_deref() == Some(id) {
+                project.jump_host = None;
+            }
+        }
+    }
+
+    /// Delete a Project, and the Hosts that are in no other Project.
+    pub fn remove_project(&mut self, id: &str) {
+        let Some(index) = self.projects.iter().position(|p| p.id == id) else { return };
+        let project = self.projects.remove(index);
+        for host in project.hosts {
+            if !self.projects.iter().any(|p| p.hosts.contains(&host)) {
+                self.remove_host(&host);
+            }
+        }
+    }
+
     /// Number of Hosts and Projects that reference a Credential, for "used by N" hints.
     pub fn credential_users(&self, credential: &str) -> usize {
         self.hosts
             .iter()
-            .filter(|h| h.credential.as_deref() == Some(credential))
+            .filter(|h| h.credential.own().is_some_and(|c| c == credential))
             .count()
             + self
                 .projects
@@ -337,9 +576,15 @@ mod tests {
             icon: "folder".into(),
             default_user: user.map(Into::into),
             credential: credential.map(Into::into),
+            jump_host: None,
+            startup_commands: vec![],
             hosts: vec!["h1".into()],
             shells: vec![],
         }
+    }
+
+    fn own(value: Option<&str>) -> Inherited<String> {
+        value.map_or(Inherited::Project, |v| Inherited::Own(v.into()))
     }
 
     fn host(credential: Option<&str>, user: Option<&str>, color: Option<&str>) -> Host {
@@ -348,11 +593,155 @@ mod tests {
             name: "db01".into(),
             address: "10.0.0.5".into(),
             port: 22,
-            user: user.map(Into::into),
-            credential: credential.map(Into::into),
+            user: own(user),
+            credential: own(credential),
+            jump_host: Inherited::Project,
+            startup_commands: vec![],
+            run_project_commands: true,
             color: color.map(Into::into),
             icon: None,
         }
+    }
+
+    /// A Host with only an id and a name, for routing tests.
+    fn named(id: &str) -> Host {
+        Host { id: id.into(), name: id.into(), address: format!("{id}.lan"), ..host(None, None, None) }
+    }
+
+    fn reached_through(mut host: Host, jump: &str) -> Host {
+        host.jump_host = Inherited::Own(jump.into());
+        host
+    }
+
+    /// A Library with one Project "p1" holding the given Hosts.
+    fn library(hosts: Vec<Host>) -> Library {
+        let mut p = project(None, None);
+        p.hosts = hosts.iter().map(|h| h.id.clone()).collect();
+        Library { shells: None, projects: vec![p], hosts }
+    }
+
+    fn route_names(lib: &Library, host: &str) -> Vec<String> {
+        lib.route("p1", host).unwrap().into_iter().map(|h| h.name).collect()
+    }
+
+    #[test]
+    fn a_host_without_jump_host_is_its_own_route() {
+        let lib = library(vec![named("web")]);
+        assert_eq!(route_names(&lib, "web"), ["web"]);
+    }
+
+    #[test]
+    fn jump_hosts_chain_in_connection_order() {
+        let lib = library(vec![reached_through(named("web"), "inner"), reached_through(named("inner"), "outer"), named("outer")]);
+        assert_eq!(route_names(&lib, "web"), ["outer", "inner", "web"]);
+    }
+
+    #[test]
+    fn the_project_jump_host_applies_to_all_but_itself() {
+        let mut lib = library(vec![named("web"), named("bastion")]);
+        lib.projects[0].jump_host = Some("bastion".into());
+        assert_eq!(route_names(&lib, "web"), ["bastion", "web"]);
+        assert_eq!(route_names(&lib, "bastion"), ["bastion"]);
+    }
+
+    #[test]
+    fn a_host_can_connect_directly_despite_the_project_jump_host() {
+        let mut web = named("web");
+        web.jump_host = Inherited::Off;
+        let mut lib = library(vec![web, named("bastion")]);
+        lib.projects[0].jump_host = Some("bastion".into());
+        assert_eq!(route_names(&lib, "web"), ["web"]);
+    }
+
+    #[test]
+    fn a_jump_host_outside_the_project_resolves_in_its_own_project() {
+        let mut lib = library(vec![reached_through(named("web"), "bastion")]);
+        let mut infra = project(Some("infra-key"), Some("ops"));
+        infra.id = "p2".into();
+        infra.color = "green".into();
+        infra.hosts = vec!["bastion".into()];
+        lib.projects.push(infra);
+        lib.hosts.push(named("bastion"));
+        lib.projects[0].credential = Some("atlas-key".into());
+
+        let route = lib.route("p1", "web").unwrap();
+        assert_eq!((route[0].project_id.as_str(), route[0].credential.as_deref()), ("p2", Some("infra-key")));
+        assert_eq!(route[0].user.as_deref(), Some("ops"));
+        assert_eq!((route[1].project_id.as_str(), route[1].credential.as_deref()), ("p1", Some("atlas-key")));
+    }
+
+    #[test]
+    fn a_jump_host_in_the_same_project_resolves_there() {
+        let mut lib = library(vec![reached_through(named("web"), "bastion"), named("bastion")]);
+        let mut other = project(Some("other-key"), None);
+        other.id = "p0".into();
+        other.hosts = vec!["bastion".into()];
+        lib.projects.insert(0, other);
+        lib.projects[1].credential = Some("atlas-key".into());
+        let route = lib.route("p1", "web").unwrap();
+        assert_eq!(route[0].credential.as_deref(), Some("atlas-key"));
+    }
+
+    #[test]
+    fn cycles_are_refused() {
+        let lib = library(vec![reached_through(named("a"), "b"), reached_through(named("b"), "a")]);
+        assert_eq!(lib.route("p1", "a").unwrap_err(), RouteError::Cycle("a".into()));
+        assert!(lib.check_routes().is_err());
+        assert!(library(vec![reached_through(named("a"), "b"), named("b")]).check_routes().is_ok());
+    }
+
+    #[test]
+    fn a_missing_jump_host_is_reported() {
+        let lib = library(vec![reached_through(named("web"), "gone")]);
+        assert_eq!(lib.route("p1", "web").unwrap_err(), RouteError::Missing("web".into()));
+    }
+
+    #[test]
+    fn startup_commands_run_project_first_unless_skipped() {
+        let mut web = named("web");
+        web.startup_commands = vec!["tail -f app.log".into()];
+        let mut lib = library(vec![web]);
+        lib.projects[0].startup_commands = vec!["cd /srv/atlas".into()];
+        assert_eq!(lib.resolve("p1", "web").unwrap().startup_commands, ["cd /srv/atlas", "tail -f app.log"]);
+        lib.hosts[0].run_project_commands = false;
+        assert_eq!(lib.resolve("p1", "web").unwrap().startup_commands, ["tail -f app.log"]);
+    }
+
+    #[test]
+    fn switched_off_sign_in_ignores_the_project_credential() {
+        let mut h = host(None, None, None);
+        h.credential = Inherited::Off;
+        h.user = Inherited::Off;
+        let r = resolve(&h, &project(Some("shared"), Some("root")));
+        assert_eq!((r.credential, r.credential_source), (None, CredentialSource::Off));
+        assert_eq!(r.user, None);
+    }
+
+    #[test]
+    fn removing_a_jump_host_makes_its_hosts_connect_directly() {
+        let mut lib = library(vec![reached_through(named("web"), "bastion"), named("db"), named("bastion")]);
+        lib.projects[0].jump_host = Some("bastion".into());
+        let mut names: Vec<_> = lib.reached_through("bastion").into_iter().map(|h| h.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, ["db", "web"]);
+
+        lib.remove_host("bastion");
+        assert!(lib.host("bastion").is_none());
+        assert_eq!(lib.projects[0].jump_host, None);
+        assert_eq!(lib.host("web").unwrap().jump_host, Inherited::Off);
+        assert_eq!(route_names(&lib, "db"), ["db"]);
+    }
+
+    #[test]
+    fn removing_a_project_removes_hosts_that_are_in_no_other_project() {
+        let mut lib = library(vec![named("web"), named("shared")]);
+        let mut other = project(None, None);
+        other.id = "p2".into();
+        other.hosts = vec!["shared".into()];
+        lib.projects.push(other);
+        lib.remove_project("p1");
+        assert!(lib.host("web").is_none());
+        assert!(lib.host("shared").is_some());
     }
 
     #[test]
@@ -403,6 +792,42 @@ mod tests {
         // An explicit empty list means "no standalone shells", not "the defaults".
         let lib = Library { shells: Some(vec![]), ..Library::default() };
         assert!(lib.standalone_shells().is_empty());
+    }
+
+    #[test]
+    fn older_library_files_still_load() {
+        // A Host as Komando 0.1.15 wrote it: plain values mean "the Host's own".
+        let text = r#"
+            [[hosts]]
+            id = "h1"
+            name = "db01"
+            address = "10.0.0.5"
+            user = "admin"
+            credential = "c1"
+
+            [[hosts]]
+            id = "h2"
+            name = "db02"
+            address = "10.0.0.6"
+        "#;
+        let lib: Library = toml::from_str(text).unwrap();
+        assert_eq!(lib.hosts[0].user, Inherited::Own("admin".into()));
+        assert_eq!(lib.hosts[0].credential, Inherited::Own("c1".into()));
+        assert_eq!(lib.hosts[1].user, Inherited::Project);
+        assert_eq!(lib.hosts[1].jump_host, Inherited::Project);
+        assert!(lib.hosts[1].run_project_commands);
+    }
+
+    #[test]
+    fn switched_off_settings_are_written_as_false() {
+        let mut h = host(None, None, None);
+        h.jump_host = Inherited::Off;
+        h.credential = Inherited::Own("c1".into());
+        let text = toml::to_string(&h).unwrap();
+        assert!(text.contains("jump_host = false"), "{text}");
+        assert!(text.contains("credential = \"c1\""), "{text}");
+        assert!(!text.contains("user"), "inherited settings are left out: {text}");
+        assert_eq!(toml::from_str::<Host>(&text).unwrap(), h);
     }
 
     #[test]
