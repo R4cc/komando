@@ -6,6 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Update downloads use a fresh installer filename for each attempt, avoiding "Access is
+  denied" when Windows still has an earlier installer open. Brief Windows file locks are
+  retried, and download errors now name the file operation that failed. Old downloads are
+  cleaned up after a week without removing recent downloads another Komando window may need.
+
 ## [0.3.0] - 2026-11-12
 
 ### Added

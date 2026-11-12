@@ -156,7 +156,11 @@ pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<
         .call()
         .map_err(|err| anyhow!("Couldn't download {}: {err}", asset.name))?;
     let partial = dest.with_extension("part");
+    if let Some(dir) = dest.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("Couldn't create {}", dir.display()))?;
+    }
     let mut file = fs::File::create(&partial).with_context(|| format!("Couldn't write {}", partial.display()))?;
+    let saving = || format!("Couldn't save the download to {}", partial.display());
     let mut reader = response.into_reader();
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 64 * 1024];
@@ -166,12 +170,12 @@ pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<
         if read == 0 {
             break;
         }
-        file.write_all(&buffer[..read])?;
+        file.write_all(&buffer[..read]).with_context(saving)?;
         hasher.update(&buffer[..read]);
         total += read as u64;
         progress.store(total, Ordering::Relaxed);
     }
-    file.flush()?;
+    file.flush().with_context(saving)?;
     drop(file);
     let check = || -> Result<()> {
         if total != asset.size {
@@ -189,8 +193,24 @@ pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<
         let _ = fs::remove_file(&partial);
         return Err(err);
     }
-    fs::rename(&partial, dest)?;
+    rename_with_retries(&partial, dest).with_context(|| format!("Couldn't put the download at {}", dest.display()))?;
     Ok(())
+}
+
+/// A scanner can temporarily hold a downloaded file open without allowing a rename on
+/// Windows. Retry access-denied, sharing and lock violations for up to three seconds.
+fn rename_with_retries(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(err) if cfg!(windows) && matches!(err.raw_os_error(), Some(5 | 32 | 33)) && tries < 10 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 /// How this copy of Komando gets updated.
@@ -260,13 +280,40 @@ pub fn clean_up() {
         let _ = fs::remove_file(exe.with_extension("download"));
         let _ = fs::remove_file(exe.with_extension("part"));
     }
+    remove_installers(&installer_dir());
+}
+
+/// Remove only week-old downloads from our own directory. A second Komando window may
+/// still be downloading or using a recent installer when this window starts.
+fn remove_installers(dir: &Path) {
+    let Some(cutoff) = std::time::SystemTime::now().checked_sub(Duration::from_secs(7 * 24 * 60 * 60)) else { return };
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let stale_file =
+            entry.metadata().ok().is_some_and(|meta| meta.is_file() && meta.modified().ok().is_some_and(|modified| modified < cutoff));
+        if stale_file && name.starts_with("Komando-") && (name.ends_with(".msi") || name.ends_with(".part")) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Where downloaded installers go.
+fn installer_dir() -> PathBuf {
+    std::env::temp_dir().join("Komando updates")
 }
 
 /// Where a download for `kind` goes.
+///
+/// Each attempt gets a fresh filename so it never has to overwrite an installer still
+/// open from an earlier attempt.
 pub fn download_path(kind: &InstallKind, release: &Release) -> PathBuf {
     match kind {
         InstallKind::Portable { exe } => exe.with_extension("download"),
-        _ => std::env::temp_dir().join(format!("Komando-{}-x64.msi", release.version_text())),
+        _ => {
+            let unique = uuid::Uuid::new_v4().simple().to_string();
+            installer_dir().join(format!("Komando-{}-x64-{unique}.msi", release.version_text()))
+        }
     }
 }
 
@@ -286,6 +333,78 @@ pub fn relaunch(exe: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("komando-update-test-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Serve one download without depending on a release or an internet connection.
+    fn download_fixture(body: &'static [u8]) -> (Asset, std::thread::JoinHandle<()>) {
+        use std::io::BufRead;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/installer.msi", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = std::io::BufReader::new(&stream);
+            loop {
+                let mut line = String::new();
+                assert_ne!(request.read_line(&mut line).unwrap(), 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+            stream.write_all(body).unwrap();
+        });
+        let digest = format!("sha256:{:x}", Sha256::digest(body));
+        (Asset { name: "installer.msi".into(), browser_download_url: url, size: body.len() as u64, digest: Some(digest) }, server)
+    }
+
+    #[test]
+    fn retrying_a_download_leaves_an_open_installer_alone() {
+        let release = parse_release(api("v9.0.1", &["Komando-9.0.1-x64.msi"])).unwrap();
+        // Keep the fixture out of the real updater's directory.
+        let dir = TestDir::new();
+        let kind = InstallKind::Installer { all_users: true };
+        let first = dir.0.join(download_path(&kind, &release).file_name().unwrap());
+        fs::write(&first, b"previous installer").unwrap();
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        // Windows Installer can keep an MSI open without allowing replacement or deletion.
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.share_mode(1); // FILE_SHARE_READ
+        }
+        let open_installer = options.open(&first).unwrap();
+
+        let next = dir.0.join(download_path(&kind, &release).file_name().unwrap());
+        let (asset, server) = download_fixture(b"new installer");
+        let progress = Arc::new(AtomicU64::new(0));
+        let result = download(&asset, &next, progress.clone());
+        server.join().unwrap();
+        result.unwrap();
+        assert_eq!(fs::read(&first).unwrap(), b"previous installer");
+        assert_eq!(fs::read(&next).unwrap(), b"new installer");
+        assert_eq!(progress.load(Ordering::Relaxed), asset.size);
+        drop(open_installer);
+    }
 
     #[test]
     fn install_kind_tells_msi_installs_from_portable_copies() {
@@ -340,6 +459,103 @@ mod tests {
         assert_eq!(release.msi.unwrap().name, "Komando-x64.msi");
         assert!(!parse_release(api("v0.0.1", &[])).unwrap().is_newer());
         assert!(parse_release(api("nightly", &[])).is_err());
+    }
+
+    #[test]
+    fn each_installer_download_gets_a_file_of_its_own() {
+        let release = parse_release(api("v9.0.1", &["Komando-9.0.1-x64.msi"])).unwrap();
+        let kind = InstallKind::Installer { all_users: true };
+        let (a, b) = (download_path(&kind, &release), download_path(&kind, &release));
+        assert_ne!(a, b);
+        assert_eq!(a.parent(), Some(installer_dir().as_path()));
+        let name = a.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("Komando-9.0.1-x64-") && name.ends_with(".msi"), "{name}");
+    }
+
+    #[test]
+    fn cleanup_removes_only_stale_installers_and_keeps_active_downloads() {
+        let dir = TestDir::new();
+        let old = std::time::SystemTime::now() - Duration::from_secs(8 * 24 * 60 * 60);
+        for name in
+            ["Komando-0.3.0-x64.msi", "Komando-0.3.1-x64-1a2b3c4d.msi", "Komando-0.3.1-x64-1a2b3c4d.part", "other.msi", "Komando.txt"]
+        {
+            fs::File::create(dir.0.join(name)).unwrap().set_modified(old).unwrap();
+        }
+        // A recently downloaded MSI may be waiting on its setup window, and another
+        // running Komando can be writing a .part file when cleanup runs.
+        fs::write(dir.0.join("Komando-recent.msi"), "x").unwrap();
+        fs::write(dir.0.join("Komando-active.part"), "x").unwrap();
+        remove_installers(&dir.0);
+        let mut left: Vec<String> = fs::read_dir(&dir.0).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+        left.sort();
+        assert_eq!(left, ["Komando-active.part", "Komando-recent.msi", "Komando.txt", "other.msi"]);
+    }
+
+    #[test]
+    fn a_download_lands_in_a_folder_that_does_not_exist_yet() {
+        let dir = TestDir::new();
+        let dest = dir.0.join("new folder").join("installer.msi");
+        let (asset, server) = download_fixture(b"installer");
+        let result = download(&asset, &dest, Arc::new(AtomicU64::new(0)));
+        server.join().unwrap();
+        result.unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"installer");
+        assert!(!dest.with_extension("part").exists());
+    }
+
+    #[test]
+    fn incomplete_or_tampered_downloads_never_become_installers() {
+        let dir = TestDir::new();
+        for wrong_size in [true, false] {
+            let dest = dir.0.join("installer.msi");
+            let (mut asset, server) = download_fixture(b"installer");
+            if wrong_size {
+                asset.size += 1;
+            } else {
+                asset.digest = Some(format!("sha256:{}", "0".repeat(64)));
+            }
+            let result = download(&asset, &dest, Arc::new(AtomicU64::new(0)));
+            server.join().unwrap();
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains(if wrong_size { "incomplete" } else { "checksum" }), "{error}");
+            assert!(!dest.exists());
+            assert!(!dest.with_extension("part").exists());
+        }
+    }
+
+    #[test]
+    fn download_errors_identify_the_failed_file_operation() {
+        let dir = TestDir::new();
+        let dest = dir.0.join("installer.msi");
+        // A directory cannot be replaced by the downloaded file.
+        fs::create_dir(&dest).unwrap();
+        let (asset, server) = download_fixture(b"installer");
+        let result = download(&asset, &dest, Arc::new(AtomicU64::new(0)));
+        server.join().unwrap();
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(error.contains(&format!("Couldn't put the download at {}:", dest.display())), "{error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_temporary_windows_file_lock_does_not_fail_the_download_rename() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = TestDir::new();
+        let from = dir.0.join("installer.part");
+        let dest = dir.0.join("installer.msi");
+        fs::write(&from, b"installer").unwrap();
+        let scanner = fs::OpenOptions::new().read(true).share_mode(1).open(&from).unwrap();
+        // Establish that the held handle actually prevents the rename.
+        assert!(fs::rename(&from, &dest).is_err());
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(scanner);
+        });
+        let result = rename_with_retries(&from, &dest);
+        release.join().unwrap();
+        result.unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"installer");
     }
 
     #[test]
