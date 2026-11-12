@@ -79,6 +79,22 @@ A missing program is skipped with a note. Put programs unpacked elsewhere on
 `KOMANDO_COMPAT_PATH` (for example a `.deb` extracted with `dpkg-deb -x`, along with
 `LD_LIBRARY_PATH` for its libraries).
 
+### SFTP stress test
+
+`compat_sftp_stress` puts the SFTP transfers under load against the same throwaway `sshd`:
+a large file each way, a folder of 1000 small files each way, deleting it, several transfers at
+once, 1000 separate downloads started together, and cancelling. It runs each three times:
+directly, through a proxy that adds latency (25 ms each way), and through one that also limits
+the speed (1 MiB/s), and prints the timings. Every transferred byte is checked.
+
+```sh
+TMPDIR=~/.cache/komando-stress cargo test --lib compat_sftp_stress -- --ignored --nocapture
+```
+
+`KOMANDO_STRESS_MB` sets the large file's size (default 128), `KOMANDO_STRESS_LATENCY_MS` the
+delay and `KOMANDO_STRESS_SLOW_KBPS` the slow link's speed in KiB/s (0 skips it). Point
+`TMPDIR` at a disk: on a RAM-backed `/tmp` large files run the machine out of memory.
+
 ### Updates
 
 Settings → About checks the latest GitHub release (`/repos/R4cc/komando/releases/latest`) and

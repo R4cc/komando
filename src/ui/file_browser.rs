@@ -730,13 +730,18 @@ impl FileBrowser {
         let names: Vec<String> = paths.iter().map(|p| upload_name(p)).collect();
         let check_dir = dir.clone();
         let task = sftp::spawn(async move {
-            let mut taken = vec![];
-            for name in names {
-                if remote.exists(&sftp::join(&check_dir, &name)).await? {
-                    taken.push(name);
-                }
-            }
-            Ok::<_, OpError>(taken)
+            use futures::{StreamExt as _, TryStreamExt as _};
+            // Asked together: one at a time, a thousand dropped files would wait a thousand
+            // round trips before the first upload starts.
+            let checks: Vec<_> = names
+                .into_iter()
+                .map(|name| {
+                    let (remote, path) = (remote.clone(), sftp::join(&check_dir, &name));
+                    async move { remote.exists(&path).await.map(|exists| exists.then_some(name)) }
+                })
+                .collect();
+            let taken: Vec<Option<String>> = futures::stream::iter(checks).buffered(32).try_collect().await?;
+            Ok::<_, OpError>(taken.into_iter().flatten().collect::<Vec<_>>())
         });
         cx.spawn(async move |this, cx| {
             let result = task.await.and_then(|r| r);

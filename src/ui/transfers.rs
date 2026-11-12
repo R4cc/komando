@@ -377,7 +377,9 @@ impl Transfers {
             State::Done { local: Some(path), .. } => Some(path.exists()),
             _ => None,
         };
+        let waiting = done == 0 && t.progress.waiting.load(Ordering::Relaxed) > 0;
         let detail: SharedString = match &t.state {
+            State::Active if waiting => format!("Waiting for other transfers · {}", t.host).into(),
             State::Active if total > 0 => {
                 format!("{} of {} · {}", format_size(done), format_size(total), t.host).into()
             }

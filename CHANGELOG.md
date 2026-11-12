@@ -6,6 +6,29 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- File transfers are much faster to servers that are far away. A folder of many small files
+  transfers several files at once instead of one after another (about 30 times faster with
+  50 ms between you and the server), large downloads are about 3.5 times faster, and large
+  uploads about 4 times faster. Deleting a large folder on the server is faster too.
+- Many transfers on one connection take turns instead of all running at once: a transfer
+  waiting for others says "Waiting for other transfers" in Downloads. Selecting a thousand
+  files and downloading them, or starting several large downloads on a slow connection, no
+  longer fails.
+- Uploading many dropped files starts right away. Before, Komando checked the names on the
+  server one at a time first.
+
+### Fixed
+
+- Downloading the same file twice at the same moment broke both downloads; each now gets a file
+  of its own ("name (1)"). An upload started while another upload to the same place is still
+  running is refused instead of breaking the first one.
+- Selecting a large number of files and downloading them no longer fails with "The server
+  reported a failure" (the server's limit on open files).
+- Uploading a folder with very many files no longer freezes the terminals while Komando looks
+  through the folder.
+
 ## [0.2.8] - 2026-11-12
 
 ### Changed

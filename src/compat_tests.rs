@@ -616,3 +616,349 @@ fn compat_sftp_on_the_sessions_connection() {
     r.text("exit\r");
     r.wait("the session to end", |r| r.ended);
 }
+
+/// A TCP forwarder that delays every byte by `one_way` in each direction, like a distant
+/// server, and with `bytes_per_sec` caps each direction's bandwidth, like a slow link.
+/// Loopback has neither, which hides costs paid per round trip and queues that build up.
+struct DelayProxy {
+    port: u16,
+}
+
+impl DelayProxy {
+    fn start(target_port: u16, one_way: Duration, bytes_per_sec: Option<u64>) -> Self {
+        use std::net::{TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        fn pump(mut from: TcpStream, mut to: TcpStream, delay: Duration, rate: Option<u64>) {
+            use std::io::{Read, Write};
+            let (tx, rx) = std::sync::mpsc::channel::<(Instant, Vec<u8>)>();
+            std::thread::spawn(move || {
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    match from.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if tx.send((Instant::now() + delay, buf[..n].to_vec())).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+            std::thread::spawn(move || {
+                let mut free_at = Instant::now();
+                while let Ok((mut at, bytes)) = rx.recv() {
+                    if let Some(rate) = rate {
+                        // The link sends one thing at a time, at `rate`.
+                        free_at = at.max(free_at) + Duration::from_secs_f64(bytes.len() as f64 / rate as f64);
+                        at = free_at;
+                    }
+                    if let Some(wait) = at.checked_duration_since(Instant::now()) {
+                        std::thread::sleep(wait);
+                    }
+                    if to.write_all(&bytes).is_err() {
+                        break;
+                    }
+                }
+                let _ = to.shutdown(std::net::Shutdown::Write);
+            });
+        }
+        std::thread::spawn(move || {
+            for client in listener.incoming().flatten() {
+                let server = TcpStream::connect(("127.0.0.1", target_port)).unwrap();
+                client.set_nodelay(true).unwrap();
+                server.set_nodelay(true).unwrap();
+                pump(client.try_clone().unwrap(), server.try_clone().unwrap(), one_way, bytes_per_sec);
+                pump(server, client, one_way, bytes_per_sec);
+            }
+        });
+        Self { port }
+    }
+}
+
+/// Deterministic bytes that don't compress, so SSH compression can't flatter the numbers.
+fn noise(len: usize, seed: u64) -> Vec<u8> {
+    let mut x = seed | 1;
+    let mut out = Vec::with_capacity(len + 8);
+    while out.len() < len {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    out.truncate(len);
+    out
+}
+
+/// Whether two files hold the same bytes, compared a piece at a time (they can be large).
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    use std::io::Read;
+    let (mut x, mut y) = (std::fs::File::open(a).unwrap(), std::fs::File::open(b).unwrap());
+    if x.metadata().unwrap().len() != y.metadata().unwrap().len() {
+        return false;
+    }
+    let (mut bx, mut by) = (vec![0u8; 1 << 20], vec![0u8; 1 << 20]);
+    loop {
+        let n = x.read(&mut bx).unwrap();
+        if n == 0 {
+            return true;
+        }
+        y.read_exact(&mut by[..n]).unwrap();
+        if bx[..n] != by[..n] {
+            return false;
+        }
+    }
+}
+
+/// Every file under `a` exists under `b` with the same bytes, and nothing else is there.
+fn assert_same_tree(a: &std::path::Path, b: &std::path::Path) {
+    fn walk(root: &std::path::Path, rel: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(root.join(rel)).unwrap() {
+            let entry = entry.unwrap();
+            let child = rel.join(entry.file_name());
+            out.push(child.clone());
+            if entry.file_type().unwrap().is_dir() {
+                walk(root, &child, out);
+            }
+        }
+    }
+    let (mut left, mut right) = (vec![], vec![]);
+    walk(a, std::path::Path::new(""), &mut left);
+    walk(b, std::path::Path::new(""), &mut right);
+    left.sort();
+    right.sort();
+    assert_eq!(left, right, "the same entries under {} and {}", a.display(), b.display());
+    for rel in left {
+        let (x, y) = (a.join(&rel), b.join(&rel));
+        if x.is_file() {
+            assert!(same_file(&x, &y), "same bytes: {}", rel.display());
+        }
+    }
+}
+
+/// SFTP transfers under load against a throwaway sshd, directly, through a link with latency,
+/// and through a slow link with latency: a large file each way, a folder of many small files
+/// each way, deleting a large folder, several transfers at once on one connection, and
+/// cancelling. Prints timings; checks every byte.
+///
+/// `KOMANDO_STRESS_MB` sets the large file's size (default 128; 8 on the slow link),
+/// `KOMANDO_STRESS_LATENCY_MS` the one-way delay (default 25) and `KOMANDO_STRESS_SLOW_KBPS`
+/// the slow link's speed in KiB/s (default 1024; 0 skips it).
+#[test]
+#[ignore]
+fn compat_sftp_stress() {
+    use crate::sftp::{self, ErrorKind, PARTIAL_SUFFIX, Progress, Remote};
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    let Some(sshd) = LocalSshd::start("sftp-stress", 3) else { return };
+    let mb: usize = std::env::var("KOMANDO_STRESS_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(128);
+    let latency_ms: u64 = std::env::var("KOMANDO_STRESS_LATENCY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(25);
+    let slow_kbps: u64 = std::env::var("KOMANDO_STRESS_SLOW_KBPS").ok().and_then(|v| v.parse().ok()).unwrap_or(1024);
+
+    // The server side: a large file (a smaller one for the slow link) and a tree of small ones.
+    let base = sshd.dir.join("server");
+    std::fs::create_dir_all(&base).unwrap();
+    {
+        use std::io::Write;
+        let mut big = std::io::BufWriter::new(std::fs::File::create(base.join("big.bin")).unwrap());
+        for i in 0..mb {
+            big.write_all(&noise(1024 * 1024, 7 + i as u64)).unwrap();
+        }
+    }
+    std::fs::write(base.join("big-slow.bin"), noise(8 * 1024 * 1024, 9)).unwrap();
+    let small = base.join("small");
+    let mut small_bytes = 0u64;
+    for d in 0..20 {
+        let dir = small.join(format!("dir{d:02}")).join("nested");
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in 0..50 {
+            let len = (d * 50 + f) * 37 % 8192;
+            small_bytes += len as u64;
+            std::fs::write(dir.join(format!("file{f:03}.txt")), noise(len, (d * 50 + f) as u64 + 1)).unwrap();
+        }
+    }
+    std::fs::create_dir_all(small.join("empty-dir")).unwrap();
+    std::fs::write(small.join("empty.txt"), b"").unwrap();
+
+    let run = |f: futures::future::BoxFuture<'static, ()>| futures::executor::block_on(sftp::spawn(f)).unwrap();
+    let rate = |bytes: u64, d: Duration| format!("{:.1} MB/s", bytes as f64 / 1048576. / d.as_secs_f64());
+
+    let latency = Duration::from_millis(latency_ms);
+    let mut links = vec![(Duration::ZERO, None), (latency, None)];
+    if slow_kbps > 0 {
+        links.push((latency, Some(slow_kbps * 1024)));
+    }
+    for (round, (one_way, bandwidth)) in links.into_iter().enumerate() {
+        let label = match bandwidth {
+            Some(bps) => format!("{}ms one-way, {} KiB/s", one_way.as_millis(), bps / 1024),
+            None => format!("{}ms one-way", one_way.as_millis()),
+        };
+        let mb = if bandwidth.is_some() { 8 } else { mb };
+        let big = base.join(if bandwidth.is_some() { "big-slow.bin" } else { "big.bin" });
+        let proxy = (!one_way.is_zero()).then(|| DelayProxy::start(sshd.port, one_way, bandwidth));
+        let size = GridSize { cols: 100, rows: 30, cell_width: 9, cell_height: 18 };
+        let mut hop = sshd.hop("local", "127.0.0.1");
+        if let Some(proxy) = &proxy {
+            hop.port = proxy.port;
+        }
+        let mut r = sshd.connect(vec![hop], size);
+        r.settle();
+        r.text("echo stress-ready\r");
+        r.wait_text("stress-ready");
+        let answer = r.sink.open_sftp().expect("an SSH session opens SFTP");
+        let remote: Arc<Remote> = Arc::new(futures::executor::block_on(answer).expect("reply").expect("SFTP starts"));
+
+        let local = sshd.dir.join(format!("local-{round}"));
+        std::fs::create_dir_all(&local).unwrap();
+        let upload_dir = base.join(format!("up-{round}"));
+        std::fs::create_dir_all(&upload_dir).unwrap();
+        let (big_s, small_s, up_s) =
+            (big.display().to_string(), small.display().to_string(), upload_dir.display().to_string());
+        let big_len = (mb * 1024 * 1024) as u64;
+
+        // One large file down and back up.
+        let (rm, l, b, u, lb) = (remote.clone(), local.clone(), big_s.clone(), up_s.clone(), label.clone());
+        let big_copy = big.clone();
+        run(Box::pin(async move {
+            let p = Progress::default();
+            let t = Instant::now();
+            let got = rm.download(&b, &l, &p).await.unwrap();
+            let d = t.elapsed();
+            assert_eq!(got.file_name().unwrap(), big_copy.file_name().unwrap());
+            eprintln!("[{lb}] download {mb} MB: {:?} ({})", d, rate(big_len, d));
+            assert_eq!(p.done.load(Ordering::Relaxed), big_len);
+            assert!(same_file(&got, &big_copy), "download is byte-identical");
+            let p = Progress::default();
+            let t = Instant::now();
+            let sent = rm.upload(&got, &u, "big.bin", false, &p).await.unwrap();
+            assert_eq!(p.done.load(Ordering::Relaxed), big_len);
+            let d = t.elapsed();
+            eprintln!("[{lb}] upload {mb} MB: {:?} ({})", d, rate(big_len, d));
+            assert!(same_file(std::path::Path::new(&sent), &big_copy), "upload is byte-identical");
+        }));
+
+        // Many small files down and back up.
+        let (rm, l, s, u, lb) = (remote.clone(), local.clone(), small_s.clone(), up_s.clone(), label.clone());
+        let small_copy = small.clone();
+        let up_small = upload_dir.join("small");
+        run(Box::pin(async move {
+            let p = Progress::default();
+            let t = Instant::now();
+            let got = rm.download(&s, &l, &p).await.unwrap();
+            let d = t.elapsed();
+            eprintln!("[{lb}] download 1001 small files ({} KB): {:?} ({:.0} files/s)", small_bytes / 1024, d, 1001. / d.as_secs_f64());
+            assert_eq!(p.done.load(Ordering::Relaxed), small_bytes);
+            assert_same_tree(&small_copy, &got);
+            let p = Progress::default();
+            let t = Instant::now();
+            rm.upload(&got, &u, "small", false, &p).await.unwrap();
+            let d = t.elapsed();
+            eprintln!("[{lb}] upload 1001 small files: {:?} ({:.0} files/s)", d, 1001. / d.as_secs_f64());
+            assert_eq!(p.done.load(Ordering::Relaxed), small_bytes);
+            assert_same_tree(&small_copy, &up_small);
+            let t = Instant::now();
+            let up_small_s = up_small.display().to_string();
+            rm.remove(&up_small_s).await.unwrap();
+            eprintln!("[{lb}] delete the uploaded folder (1001 files, 41 folders): {:?}", t.elapsed());
+            assert!(!up_small.exists());
+
+            // A second upload to where one is running is refused, and doesn't touch the first.
+            let (first, second) = (Progress::default(), Progress::default());
+            let (a, b) = futures::future::join(
+                rm.upload(&got, &u, "twice", false, &first),
+                rm.upload(&got, &u, "twice", false, &second),
+            )
+            .await;
+            let (won, lost) = if a.is_ok() { (a, b) } else { (b, a) };
+            assert!(won.is_ok(), "{won:?}");
+            assert_eq!(lost.unwrap_err().kind, ErrorKind::Exists);
+            assert_same_tree(&small_copy, &std::path::Path::new(&u).join("twice"));
+        }));
+
+        // Several transfers at once on the one connection, as the Downloads panel runs them.
+        let (rm, l, b, s, lb) = (remote.clone(), local.join("parallel"), big_s.clone(), small_s.clone(), label.clone());
+        let (big_copy, small_copy) = (big.clone(), small.clone());
+        run(Box::pin(async move {
+            let t = Instant::now();
+            let jobs = (0..4).map(|i| {
+                let (rm, l, path) = (rm.clone(), l.clone(), if i % 2 == 0 { b.clone() } else { s.clone() });
+                async move { rm.download(&path, &l, &Progress::default()).await }
+            });
+            let results = futures::future::join_all(jobs).await;
+            eprintln!("[{lb}] 2 large + 2 folder downloads at once: {:?}", t.elapsed());
+            for (i, result) in results.into_iter().enumerate() {
+                let got = result.unwrap();
+                if i % 2 == 0 {
+                    assert!(same_file(&got, &big_copy));
+                } else {
+                    assert_same_tree(&small_copy, &got);
+                }
+            }
+        }));
+
+        // Every small file as a download of its own, all started at once: what selecting a
+        // thousand files and pressing Download does.
+        let (rm, l, s, lb) = (remote.clone(), local.join("each"), small_s.clone(), label.clone());
+        let small_copy = small.clone();
+        run(Box::pin(async move {
+            let mut paths = vec![];
+            for d in 0..20 {
+                for f in 0..50 {
+                    paths.push(format!("{s}/dir{d:02}/nested/file{f:03}.txt"));
+                }
+            }
+            let t = Instant::now();
+            let jobs = paths.iter().map(|path| {
+                let (rm, l, path) = (rm.clone(), l.clone(), path.clone());
+                async move { rm.download(&path, &l, &Progress::default()).await }
+            });
+            let results = futures::future::join_all(jobs).await;
+            eprintln!("[{lb}] 1000 separate downloads started at once: {:?}", t.elapsed());
+            let mut names = std::collections::HashSet::new();
+            for (path, result) in paths.iter().zip(results) {
+                let got = result.unwrap_or_else(|err| panic!("{path}: {err}"));
+                let rel = path.strip_prefix(&format!("{s}/")).unwrap();
+                assert!(same_file(&got, &small_copy.join(rel)), "{path}");
+                assert!(names.insert(got), "each got a file of its own");
+            }
+        }));
+
+        // Cancelling partway leaves nothing behind, and the connection keeps working.
+        let (rm, l, b) = (remote.clone(), local.join("cancel"), big_s.clone());
+        run(Box::pin(async move {
+            let p = Arc::new(Progress::default());
+            let watcher = p.clone();
+            let cancel = tokio::spawn(async move {
+                while watcher.done.load(Ordering::Relaxed) < 4 * 1024 * 1024 {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                watcher.cancel.store(true, Ordering::Relaxed);
+                Instant::now()
+            });
+            let err = rm.download(&b, &l, &p).await.unwrap_err();
+            let cancelled_at = cancel.await.unwrap();
+            assert_eq!(err.kind, ErrorKind::Cancelled, "{err}");
+            assert!(cancelled_at.elapsed() < Duration::from_secs(2), "cancelling is prompt: {:?}", cancelled_at.elapsed());
+            let left: Vec<_> = std::fs::read_dir(&l).map(|d| d.flatten().map(|e| e.file_name()).collect()).unwrap_or_default();
+            assert!(left.is_empty(), "nothing left after cancelling: {left:?}");
+            assert!(rm.list(&b.rsplit_once('/').unwrap().0.to_string()).await.is_ok(), "still connected");
+        }));
+
+        for dir in [&local, &upload_dir] {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                assert!(!name.ends_with(PARTIAL_SUFFIX), "left behind: {name}");
+            }
+        }
+        std::fs::remove_dir_all(&local).ok();
+        std::fs::remove_dir_all(&upload_dir).ok();
+        r.text("exit\r");
+        r.wait("the session to end", |r| r.ended);
+    }
+    // Transfers stream: memory stays flat however large the files.
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    if let Some(peak) = status.lines().find(|l| l.starts_with("VmHWM")) {
+        eprintln!("peak memory of the test process: {}", peak.trim_start_matches("VmHWM:").trim());
+    }
+}

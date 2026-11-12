@@ -227,6 +227,9 @@ async fn run(
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 4,
         nodelay: true,
+        // How much the server may send before we acknowledge it. The default 2 MiB caps an
+        // SFTP download at 2 MiB per round trip (40 MB/s at 50 ms) before anything else does.
+        window_size: 8 * 1024 * 1024,
         ..Default::default()
     });
     // Every hop's connection stays open: the next one runs through it.

@@ -11,13 +11,14 @@
 //! the server.
 
 use std::future::Future;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use futures::StreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use russh::ChannelMsg;
 use russh::client::Handle;
 use russh_sftp::client::SftpSession;
@@ -30,6 +31,27 @@ use crate::session::ssh::{self, Client};
 /// Suffix of files and folders still being transferred.
 pub const PARTIAL_SUFFIX: &str = ".komando-part";
 const CHUNK: usize = 256 * 1024;
+
+/// Read and write requests one file keeps in flight, of up to [`REQUEST_KIB`] each.
+/// Throughput is what is in flight per round trip, so a distant server needs many; but on a
+/// slow link the last ones queue behind the others and must still arrive within
+/// [`REQUEST_TIMEOUT_SECS`].
+const PIPELINE: usize = 16;
+/// The largest read or write request: OpenSSH's limit (256 KiB packets, less headers).
+const REQUEST_KIB: usize = 255;
+/// How long the server may take to answer one request. Generous, because a request waits
+/// behind everything in flight before it: up to [`BUDGET_KIB`], 32 s at 256 KiB/s. A dead
+/// connection is noticed sooner by the SSH keepalive.
+const REQUEST_TIMEOUT_SECS: u64 = 60;
+/// How many files a folder transfer (or delete) works on at once, and how many files all
+/// transfers on one connection have open together. Each file costs a few round trips of its
+/// own (open, read, close) that one at a time would wait out back to back; but servers limit
+/// open files (OpenSSH fails opens past a few hundred).
+const PARALLEL: usize = 32;
+/// How many bytes all transfers on one connection may have in flight together, in KiB: many
+/// small files at once, but large ones two at a time, so however many transfers run, the
+/// server answers every request within the timeout on a slow link too. More wait their turn.
+const BUDGET_KIB: u32 = 8192;
 
 /// Run `future` on the SSH runtime. The handle can be awaited from any executor.
 pub fn spawn<F>(future: F) -> impl Future<Output = Result<F::Output, OpError>>
@@ -487,6 +509,8 @@ pub struct Progress {
     pub done: AtomicU64,
     pub total: AtomicU64,
     pub cancel: AtomicBool,
+    /// Files of this transfer waiting for other transfers on the connection to make room.
+    pub waiting: AtomicUsize,
 }
 
 impl Progress {
@@ -508,6 +532,31 @@ pub struct Remote {
     pub identity: Identity,
     /// The folder SFTP starts in (the user's home).
     pub home: String,
+    /// Remote paths an upload on this connection is writing to right now.
+    uploading: Mutex<HashSet<String>>,
+    /// What the transfers on this connection may have in flight together (KiB permits).
+    budget: tokio::sync::Semaphore,
+    /// Files the transfers on this connection may have open together.
+    slots: tokio::sync::Semaphore,
+}
+
+/// A file's turn among the connection's transfers, until dropped.
+struct Room<'a> {
+    _slot: tokio::sync::SemaphorePermit<'a>,
+    _budget: tokio::sync::SemaphorePermit<'a>,
+}
+
+/// A remote path claimed by one upload until dropped, so a second upload to the same place
+/// can't take over (and delete) the first one's partial file.
+struct UploadClaim<'a> {
+    set: &'a Mutex<HashSet<String>>,
+    path: String,
+}
+
+impl Drop for UploadClaim<'_> {
+    fn drop(&mut self) {
+        self.set.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.path);
+    }
 }
 
 pub struct ExecOutput {
@@ -520,13 +569,23 @@ impl Remote {
     pub(crate) async fn open(handle: Arc<Handle<Client>>) -> Result<Remote> {
         let channel = handle.channel_open_session().await.map_err(|e| anyhow!("Could not open a channel: {e}"))?;
         channel.request_subsystem(true, "sftp").await.map_err(|e| anyhow!("Could not start SFTP: {e}"))?;
-        let config = russh_sftp::client::Config { request_timeout_secs: 30, ..Default::default() };
+        let config = russh_sftp::client::Config {
+            request_timeout_secs: REQUEST_TIMEOUT_SECS,
+            max_concurrent_reads: PIPELINE,
+            max_concurrent_writes: PIPELINE,
+            // As large as the server allows (OpenSSH: 255 KiB); the default 32 KiB needs 8x
+            // the requests for the same data.
+            max_write_packet_len: (REQUEST_KIB * 1024) as u32,
+            ..Default::default()
+        };
         let sftp = tokio::time::timeout(Duration::from_secs(20), SftpSession::new_with_config(channel.into_stream(), config))
             .await
             .map_err(|_| anyhow!("The server did not start SFTP. It may not offer it."))?
             .map_err(|e| anyhow!("Could not start SFTP: {e}"))?;
         let home = sftp.canonicalize(".").await.unwrap_or_else(|_| "/".into());
-        let mut remote = Remote { sftp, handle, identity: Identity::default(), home };
+        let mut remote = Remote { sftp, handle, identity: Identity::default(), home, uploading: Mutex::default(), budget: tokio::sync::Semaphore::new(BUDGET_KIB as usize),
+            slots: tokio::sync::Semaphore::new(PARALLEL),
+        };
         // Who we are decides which files look inaccessible. Without it nothing is marked.
         if let Ok(Ok(out)) = tokio::time::timeout(Duration::from_secs(10), remote.exec("id")).await
             && out.code == Some(0)
@@ -634,31 +693,49 @@ impl Remote {
 
     /// Delete a file, or a folder with everything in it. Symlinks are removed, never followed.
     pub async fn remove(&self, path: &str) -> Result<(), OpError> {
-        let mut stack = vec![(path.to_string(), false)];
-        while let Some((current, children_done)) = stack.pop() {
-            if children_done {
-                self.sftp.remove_dir(current.as_str()).await.map_err(|e| OpError::from(e).at(&current))?;
-                continue;
-            }
-            let attrs = self.sftp.symlink_metadata(current.as_str()).await.map_err(|e| OpError::from(e).at(&current))?;
-            if is_dir_mode(attrs.permissions) {
-                stack.push((current.clone(), true));
-                let read = self.sftp.read_dir(current.as_str()).await.map_err(|e| OpError::from(e).at(&current))?;
-                for entry in read {
-                    let name = entry.file_name();
-                    if name == "." || name == ".." {
-                        continue;
+        let attrs = self.sftp.symlink_metadata(path).await.map_err(|e| OpError::from(e).at(path))?;
+        if !is_dir_mode(attrs.permissions) {
+            return self.sftp.remove_file(path).await.map_err(|e| OpError::from(e).at(path));
+        }
+        // A level of folders at a time: list them, delete their files as they are found. Then
+        // the folders themselves, deepest level first.
+        let mut levels = vec![vec![path.to_string()]];
+        loop {
+            let level = levels.last().expect("starts with one");
+            let below: Vec<Vec<String>> = futures::stream::iter(level.clone())
+                .map(|dir| async move {
+                    let read = self.read_dir_in_turn(&dir).await?;
+                    let (mut folders, mut files) = (vec![], vec![]);
+                    for entry in read {
+                        let name = entry.file_name();
+                        if name == "." || name == ".." {
+                            continue;
+                        }
+                        let child = join(&dir, &name);
+                        if is_dir_mode(entry.metadata().permissions) { folders.push(child) } else { files.push(child) }
                     }
-                    let child = join(&current, &name);
-                    if is_dir_mode(entry.metadata().permissions) {
-                        stack.push((child, false));
-                    } else {
-                        self.sftp.remove_file(child.as_str()).await.map_err(|e| OpError::from(e).at(&child))?;
-                    }
-                }
-            } else {
-                self.sftp.remove_file(current.as_str()).await.map_err(|e| OpError::from(e).at(&current))?;
+                    futures::stream::iter(files)
+                        .map(|file| async move { self.sftp.remove_file(file.as_str()).await.map_err(|e| OpError::from(e).at(&file)) })
+                        .buffer_unordered(PARALLEL)
+                        .try_collect::<Vec<()>>()
+                        .await?;
+                    Ok::<_, OpError>(folders)
+                })
+                .buffer_unordered(8)
+                .try_collect()
+                .await?;
+            let below: Vec<String> = below.into_iter().flatten().collect();
+            if below.is_empty() {
+                break;
             }
+            levels.push(below);
+        }
+        for level in levels.into_iter().rev() {
+            futures::stream::iter(level)
+                .map(|dir| async move { self.sftp.remove_dir(dir.as_str()).await.map_err(|e| OpError::from(e).at(&dir)) })
+                .buffer_unordered(PARALLEL)
+                .try_collect::<Vec<()>>()
+                .await?;
         }
         Ok(())
     }
@@ -719,6 +796,52 @@ impl Remote {
             .map_err(|e| OpError::from(e).at(path))
     }
 
+    /// Room for a file of `size` among the connection's transfers: a slot to open it and its
+    /// share of the budget. Waits while others use them (shown as waiting), and gives up when
+    /// the transfer is cancelled meanwhile.
+    async fn take_room(&self, size: u64, progress: &Progress) -> Result<Room<'_>, OpError> {
+        let kib = budget_kib(size);
+        if let Ok(slot) = self.slots.try_acquire()
+            && let Ok(budget) = self.budget.try_acquire_many(kib)
+        {
+            return Ok(Room { _slot: slot, _budget: budget });
+        }
+        progress.waiting.fetch_add(1, Ordering::Relaxed);
+        let acquire = async {
+            let slot = self.slots.acquire().await.expect("never closed");
+            let budget = self.budget.acquire_many(kib).await.expect("never closed");
+            Room { _slot: slot, _budget: budget }
+        };
+        tokio::pin!(acquire);
+        let result = loop {
+            tokio::select! {
+                room = &mut acquire => break Ok(room),
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    if let Err(err) = progress.check() {
+                        break Err(err);
+                    }
+                }
+            }
+        };
+        progress.waiting.fetch_sub(1, Ordering::Relaxed);
+        result
+    }
+
+    /// List a folder for a transfer or delete, taking one of the connection's open-file slots
+    /// for it (a listing holds the folder open on the server).
+    async fn read_dir_in_turn(&self, dir: &str) -> Result<russh_sftp::client::fs::ReadDir, OpError> {
+        let _slot = self.slots.acquire().await.expect("never closed");
+        self.sftp.read_dir(dir).await.map_err(|e| OpError::from(e).at(dir))
+    }
+
+    fn claim_upload(&self, target: &str, name: &str, remote_dir: &str) -> Result<UploadClaim<'_>, OpError> {
+        let mut set = self.uploading.lock().unwrap_or_else(|e| e.into_inner());
+        if !set.insert(target.to_string()) {
+            return Err(OpError::new(ErrorKind::Exists, format!("\"{name}\" is already being uploaded to {remote_dir}")));
+        }
+        Ok(UploadClaim { set: &self.uploading, path: target.to_string() })
+    }
+
     async fn set_mode(&self, path: &str, mode: u32) -> Result<(), OpError> {
         let mut attrs = FileAttributes::empty();
         attrs.permissions = Some(mode & 0o7777);
@@ -735,19 +858,15 @@ impl Remote {
         if is_dir_mode(attrs.permissions) {
             return self.download_dir(remote_path, local_dir, &name, progress).await;
         }
+        // Wait for room among the connection's other transfers before opening anything.
+        let _room = self.take_room(attrs.size.unwrap_or(0), progress).await?;
         // Open the remote file before creating anything here: no access, no file.
         let mut input = self.sftp.open(remote_path).await.map_err(|e| OpError::from(e).at(remote_path))?;
         progress.total.store(attrs.size.unwrap_or(0), Ordering::Relaxed);
         tokio::fs::create_dir_all(local_dir).await.map_err(|e| OpError::local(&e, local_dir))?;
-        let target = unique_local_path(local_dir, &name);
-        let partial = partial_path(&target);
+        let (target, partial, output) = reserve_local(local_dir, &name, false).await?;
         let result = async {
-            let mut output = tokio::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&partial)
-                .await
-                .map_err(|e| OpError::local(&e, &partial))?;
+            let mut output = output.expect("a file was reserved");
             copy_down(&mut input, &mut output, remote_path, &partial, progress).await?;
             output.sync_all().await.map_err(|e| OpError::local(&e, &partial))?;
             drop(output);
@@ -762,31 +881,22 @@ impl Remote {
 
     async fn download_dir(&self, remote_path: &str, local_dir: &Path, name: &str, progress: &Progress) -> Result<PathBuf, OpError> {
         // Walk first: an unreadable folder fails before anything is written, and the
-        // progress bar knows the total.
-        let mut files = vec![];
+        // progress bar knows the total. A level of folders at a time, listed together.
+        let mut files: Vec<(String, u64)> = vec![];
         let mut dirs = vec![String::new()];
-        let mut queue = vec![String::new()];
-        while let Some(rel) = queue.pop() {
+        let mut level = vec![String::new()];
+        while !level.is_empty() {
             progress.check()?;
-            let dir = if rel.is_empty() { remote_path.to_string() } else { join(remote_path, &rel) };
-            let read = self.sftp.read_dir(dir.as_str()).await.map_err(|e| OpError::from(e).at(&dir))?;
-            for entry in read {
-                let child_name = entry.file_name();
-                if child_name == "." || child_name == ".." {
-                    continue;
-                }
-                let child_rel = if rel.is_empty() { child_name.clone() } else { format!("{rel}/{child_name}") };
-                let mut attrs = entry.metadata();
-                if is_link_mode(attrs.permissions) {
-                    // Follow links to files; links to folders are skipped (they can loop).
-                    match self.sftp.metadata(join(&dir, &child_name)).await {
-                        Ok(target) if !is_dir_mode(target.permissions) => attrs = target,
-                        _ => continue,
-                    }
-                }
+            let listed: Vec<Vec<(String, FileAttributes)>> = futures::stream::iter(level)
+                .map(|rel| self.walk_dir(remote_path, rel))
+                .buffer_unordered(PARALLEL)
+                .try_collect()
+                .await?;
+            level = vec![];
+            for (child_rel, attrs) in listed.into_iter().flatten() {
                 if is_dir_mode(attrs.permissions) {
                     dirs.push(child_rel.clone());
-                    queue.push(child_rel);
+                    level.push(child_rel);
                 } else if attrs.permissions.is_none_or(|m| m & S_IFMT == S_IFREG) {
                     files.push((child_rel, attrs.size.unwrap_or(0)));
                 }
@@ -794,22 +904,32 @@ impl Remote {
         }
         progress.total.store(files.iter().map(|(_, s)| s).sum(), Ordering::Relaxed);
         tokio::fs::create_dir_all(local_dir).await.map_err(|e| OpError::local(&e, local_dir))?;
-        let target = unique_local_path(local_dir, name);
-        let partial = partial_path(&target);
+        let (target, partial, _) = reserve_local(local_dir, name, true).await?;
         let result = async {
             for rel in &dirs {
                 let dir = local_rel(&partial, rel);
                 tokio::fs::create_dir_all(&dir).await.map_err(|e| OpError::local(&e, &dir))?;
             }
-            for (rel, _) in &files {
-                let remote = join(remote_path, rel);
-                let local = local_rel(&partial, rel);
-                let mut input = self.sftp.open(remote.as_str()).await.map_err(|e| OpError::from(e).at(&remote))?;
-                let mut output = tokio::fs::File::create(&local).await.map_err(|e| OpError::local(&e, &local))?;
-                copy_down(&mut input, &mut output, &remote, &local, progress).await?;
-                output.sync_all().await.map_err(|e| OpError::local(&e, &local))?;
-            }
-            finish_local(&partial, &target).await
+            let partial = &partial;
+            let jobs: Vec<_> = files
+                .iter()
+                .map(|(rel, size)| async move {
+                    let _room = self.take_room(*size, progress).await?;
+                    progress.check()?;
+                    let remote = join(remote_path, rel);
+                    let local = local_rel(partial, rel);
+                    let mut input = self.sftp.open(remote.as_str()).await.map_err(|e| OpError::from(e).at(&remote))?;
+                    let mut output = tokio::fs::File::create(&local).await.map_err(|e| OpError::local(&e, &local))?;
+                    copy_down(&mut input, &mut output, &remote, &local, progress).await?;
+                    // Written and closed before the folder is renamed (Windows can't rename a
+                    // folder with an open file in it). Not synced to disk one by one: with
+                    // thousands of small files that costs more than the transfer.
+                    output.flush().await.map_err(|e| OpError::local(&e, &local))?;
+                    Ok(())
+                })
+                .collect();
+            all(jobs, PARALLEL).await?;
+            finish_local(partial, &target).await
         }
         .await;
         if result.is_err() {
@@ -818,15 +938,46 @@ impl Remote {
         result
     }
 
+    /// One folder of a download: its entries as (path relative to `root`, attributes), links
+    /// to files followed, links to folders skipped (they can loop).
+    async fn walk_dir(&self, root: &str, rel: String) -> Result<Vec<(String, FileAttributes)>, OpError> {
+        let dir = if rel.is_empty() { root.to_string() } else { join(root, &rel) };
+        let read = self.read_dir_in_turn(&dir).await?;
+        let mut out = vec![];
+        for entry in read {
+            let child_name = entry.file_name();
+            if child_name == "." || child_name == ".." {
+                continue;
+            }
+            let child_rel = if rel.is_empty() { child_name.clone() } else { format!("{rel}/{child_name}") };
+            let mut attrs = entry.metadata();
+            if is_link_mode(attrs.permissions) {
+                match self.sftp.metadata(join(&dir, &child_name)).await {
+                    Ok(target) if !is_dir_mode(target.permissions) => attrs = target,
+                    _ => continue,
+                }
+            }
+            out.push((child_rel, attrs));
+        }
+        Ok(out)
+    }
+
     // ---- uploads ------------------------------------------------------------------
 
     /// Upload a local file or folder into `remote_dir` as `name`. With `replace`, an existing
     /// file or folder of that name is replaced once the upload is complete; otherwise an
     /// existing one fails the upload.
     pub async fn upload(&self, local: &Path, remote_dir: &str, name: &str, replace: bool, progress: &Progress) -> Result<String, OpError> {
-        let plan = plan_local(local)?;
-        progress.total.store(plan.iter().map(|(_, size)| size.unwrap_or(0)).sum(), Ordering::Relaxed);
+        // Claimed before anything else, so of two uploads to the same place the first wins.
         let target = join(remote_dir, name);
+        let _claim = self.claim_upload(&target, name, remote_dir)?;
+        // Off the SSH runtime's few threads: walking a large folder blocks for a while, and
+        // every terminal on the runtime would freeze meanwhile.
+        let walk = local.to_path_buf();
+        let plan = tokio::task::spawn_blocking(move || plan_local(&walk))
+            .await
+            .map_err(|err| OpError::new(ErrorKind::Other, format!("Stopped unexpectedly: {err}")))??;
+        progress.total.store(plan.iter().map(|(_, size)| size.unwrap_or(0)).sum(), Ordering::Relaxed);
         let existing = match self.sftp.symlink_metadata(target.as_str()).await {
             Ok(attrs) => Some(attrs),
             Err(SftpError::Status(s)) if s.status_code == StatusCode::NoSuchFile => None,
@@ -835,25 +986,45 @@ impl Remote {
         if existing.is_some() && !replace {
             return Err(OpError::new(ErrorKind::Exists, format!("\"{name}\" already exists in {remote_dir}")));
         }
+        // Left over from an upload that was interrupted (no upload here is using it: claimed).
         let partial = join(remote_dir, &format!(".{name}{PARTIAL_SUFFIX}"));
         if self.exists(&partial).await? {
             self.remove(&partial).await?;
         }
+        let remote_of = |rel: &str| if rel.is_empty() { partial.clone() } else { join(&partial, rel) };
         let result = async {
-            for (rel, size) in &plan {
+            // Folders first, a level at a time (each needs its parent), then the files.
+            let mut folders: Vec<&str> = plan.iter().filter(|(_, size)| size.is_none()).map(|(rel, _)| rel.as_str()).collect();
+            folders.sort_by_key(|rel| depth(rel));
+            for level in folders.chunk_by(|a, b| depth(a) == depth(b)) {
                 progress.check()?;
-                let remote = if rel.is_empty() { partial.clone() } else { join(&partial, rel) };
-                let local_path = local_rel(local, rel);
-                match size {
-                    None => self.sftp.create_dir(remote.as_str()).await.map_err(|e| OpError::from(e).at(remote_dir))?,
-                    Some(_) => {
+                let jobs: Vec<_> = level
+                    .iter()
+                    .map(|rel| {
+                        let remote = remote_of(rel);
+                        async move { self.sftp.create_dir(remote.as_str()).await.map_err(|e| OpError::from(e).at(remote_dir)) }
+                    })
+                    .collect();
+                all(jobs, PARALLEL).await?;
+            }
+            let jobs: Vec<_> = plan
+                .iter()
+                .filter_map(|(rel, size)| size.map(|size| (rel, size)))
+                .map(|(rel, size)| {
+                    let remote = remote_of(rel);
+                    async move {
+                        let _room = self.take_room(size, progress).await?;
+                        progress.check()?;
+                        let local_path = local_rel(local, rel);
                         let mut input = tokio::fs::File::open(&local_path).await.map_err(|e| OpError::local(&e, &local_path))?;
                         let mut output = self.create_file(&remote).await.map_err(|e| e.at(remote_dir))?;
                         copy_up(&mut input, &mut output, &local_path, progress).await?;
                         output.shutdown().await.map_err(|e| OpError::remote_io(&e))?;
+                        Ok(())
                     }
-                }
-            }
+                })
+                .collect();
+            all(jobs, PARALLEL).await?;
             progress.check()?;
             // A replaced file keeps its permissions (an executable script stays executable).
             if let Some(attrs) = &existing {
@@ -880,6 +1051,44 @@ fn partial_path(target: &Path) -> PathBuf {
     let mut name = target.file_name().map(|n| n.to_os_string()).unwrap_or_default();
     name.push(PARTIAL_SUFFIX);
     target.with_file_name(name)
+}
+
+/// Claim a free name in `dir` for a download: create its partial file (or folder) so that no
+/// other download can take the same name, even one started at the same moment. Returns the
+/// final path, the partial path, and the partial file when it is one.
+async fn reserve_local(dir: &Path, name: &str, folder: bool) -> Result<(PathBuf, PathBuf, Option<tokio::fs::File>), OpError> {
+    loop {
+        let target = unique_local_path(dir, name);
+        let partial = partial_path(&target);
+        let created = if folder {
+            tokio::fs::create_dir(&partial).await.map(|()| None)
+        } else {
+            tokio::fs::OpenOptions::new().write(true).create_new(true).open(&partial).await.map(Some)
+        };
+        match created {
+            Ok(file) => return Ok((target, partial, file)),
+            // Another download claimed it between the check and here: take the next name.
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(OpError::local(&err, &partial)),
+        }
+    }
+}
+
+/// Run `jobs`, up to `at_once` at a time; the first error stops the rest.
+async fn all<F: Future<Output = Result<(), OpError>>>(jobs: Vec<F>, at_once: usize) -> Result<(), OpError> {
+    futures::stream::iter(jobs).buffer_unordered(at_once).try_collect::<Vec<()>>().await.map(drop)
+}
+
+/// How deep a relative path is: 0 for the top ("").
+fn depth(rel: &str) -> usize {
+    if rel.is_empty() { 0 } else { rel.matches('/').count() + 1 }
+}
+
+/// A file's share of the connection's budget: its size, up to what one file can have in
+/// flight at once, and at least 1 KiB.
+fn budget_kib(size: u64) -> u32 {
+    let in_flight = (PIPELINE * REQUEST_KIB) as u64;
+    (size / 1024).clamp(1, in_flight.min(BUDGET_KIB as u64)) as u32
 }
 
 fn local_rel(base: &Path, rel: &str) -> PathBuf {
@@ -1103,6 +1312,19 @@ mod tests {
         assert_eq!(unique_name(".env", is_taken), ".env (1)");
         assert_eq!(local_file_name("a:b?.txt"), "a_b_.txt");
         assert_eq!(local_file_name("trailing. "), "trailing");
+    }
+
+    #[test]
+    fn large_files_share_the_connection_two_at_a_time() {
+        // Small files take what they are; a large one what it can have in flight, which
+        // leaves room for exactly one more.
+        assert_eq!(budget_kib(0), 1);
+        assert_eq!(budget_kib(10 * 1024), 10);
+        let large = budget_kib(1 << 30);
+        assert_eq!(large as usize, PIPELINE * REQUEST_KIB);
+        assert!(2 * large <= BUDGET_KIB && 3 * large > BUDGET_KIB);
+        assert_eq!(depth(""), 0);
+        assert_eq!(depth("a/b"), 2);
     }
 
     #[test]
