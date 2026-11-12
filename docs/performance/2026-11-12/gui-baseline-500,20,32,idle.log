@@ -1,0 +1,5 @@
+perf (last 5 s):
+  sidebar + main                   0.2/s  total    219.5 ms/s  avg 1.097686748s
+  workspace render (frame)         0.2/s  total      0.0 ms/s  avg 0ns
+perf (last 5 s):
+perf (last 5 s):

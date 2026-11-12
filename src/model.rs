@@ -3,7 +3,7 @@
 //! Secrets never live here: a Host or Project only names a Credential by id, and the
 //! Credential itself lives in the Vault (see `vault.rs`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -395,6 +395,16 @@ impl Library {
 
     pub fn hosts_of<'a>(&'a self, project: &'a Project) -> impl Iterator<Item = &'a Host> + 'a {
         project.hosts.iter().filter_map(|id| self.host(id))
+    }
+
+    /// Build once for a batch of Project lookups. Indices stay valid while the Library is
+    /// unchanged; do not persist them across edits. Like `host`, the first duplicate wins.
+    pub fn host_indices(&self) -> HashMap<&str, usize> {
+        let mut index = HashMap::with_capacity(self.hosts.len());
+        for (i, host) in self.hosts.iter().enumerate() {
+            index.entry(host.id.as_str()).or_insert(i);
+        }
+        index
     }
 
     pub fn resolve(&self, project_id: &str, host_id: &str) -> Option<ResolvedHost> {
@@ -959,4 +969,52 @@ mod tests {
         assert_eq!(lib.credential_users("c"), 1);
         fs::remove_dir_all(dir).ok();
     }
+    #[test]
+    #[ignore]
+    fn stress_project_host_resolution() {
+        for projects in [10, 100, 500] {
+            let mut library = Library::default();
+            for pi in 0..projects {
+                let mut project = Project::new(format!("Project {pi}"), "blue", "server");
+                for hi in 0..20 {
+                    let host = Host::new(format!("p{pi}-host{hi}"), "127.0.0.1");
+                    project.hosts.push(host.id.clone());
+                    library.hosts.push(host);
+                }
+                library.projects.push(project);
+            }
+            for indexed in [false, true] {
+                let start = std::time::Instant::now();
+                for _ in 0..30 {
+                    let resolved: usize = if indexed {
+                        let index = library.host_indices();
+                        library.projects.iter().map(|p| p.hosts.iter().filter_map(|id| index.get(id.as_str())).count()).sum()
+                    } else {
+                        library.projects.iter().map(|p| library.hosts_of(p).count()).sum()
+                    };
+                    assert_eq!(std::hint::black_box(resolved), projects * 20);
+                }
+                eprintln!("project resolution {projects} projects / {} hosts indexed={indexed}: {:?}/frame", projects * 20, start.elapsed() / 30);
+            }
+        }
+    }
+
+    #[test]
+    fn indexed_hosts_match_ordered_lookup_after_edits() {
+        let mut library = Library::default();
+        let first = Host::new("first", "localhost");
+        let second = Host::new("second", "localhost");
+        let mut duplicate = first.clone();
+        duplicate.name = "duplicate".into();
+        let mut project = Project::new("shared", "blue", "server");
+        project.hosts = vec![second.id.clone(), "missing".into(), first.id.clone(), second.id.clone()];
+        library.hosts = vec![first, second, duplicate];
+        for _ in 0..2 {
+            let index = library.host_indices();
+            let indexed: Vec<_> = project.hosts.iter().filter_map(|id| index.get(id.as_str())).map(|i| &library.hosts[*i]).collect();
+            assert_eq!(indexed, library.hosts_of(&project).collect::<Vec<_>>());
+            library.hosts.remove(0);
+        }
+    }
+
 }

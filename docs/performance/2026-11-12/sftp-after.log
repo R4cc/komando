@@ -1,0 +1,28 @@
+running 1 test
+[0ms one-way] download 128 MB: 1.766822312s (72.4 MB/s)
+[0ms one-way] upload 128 MB: 452.247018ms (283.0 MB/s)
+[0ms one-way] download 1001 small files (3776 KB): 173.425955ms (5772 files/s)
+[0ms one-way] upload 1001 small files: 84.977375ms (11780 files/s)
+[0ms one-way] delete the uploaded folder (1001 files, 41 folders): 30.337929ms
+[0ms one-way] 2 large + 2 folder downloads at once: 4.044766168s
+[0ms one-way] 1000 separate downloads started at once: 756.496684ms
+[25ms one-way] download 128 MB: 3.531400841s (36.2 MB/s)
+[25ms one-way] upload 128 MB: 4.039776834s (31.7 MB/s)
+[25ms one-way] download 1001 small files (3776 KB): 5.703068378s (176 files/s)
+[25ms one-way] upload 1001 small files: 5.222044398s (192 files/s)
+[25ms one-way] delete the uploaded folder (1001 files, 41 folders): 1.98486804s
+[25ms one-way] 2 large + 2 folder downloads at once: 14.612152369s
+[25ms one-way] 1000 separate downloads started at once: 5.570025087s
+test compat_tests::compat_sftp_stress has been running for over 60 seconds
+[25ms one-way, 1024 KiB/s] download 8 MB: 8.34342709s (1.0 MB/s)
+[25ms one-way, 1024 KiB/s] upload 8 MB: 8.323174468s (1.0 MB/s)
+[25ms one-way, 1024 KiB/s] download 1001 small files (3776 KB): 7.691316854s (130 files/s)
+[25ms one-way, 1024 KiB/s] upload 1001 small files: 7.060860398s (142 files/s)
+[25ms one-way, 1024 KiB/s] delete the uploaded folder (1001 files, 41 folders): 2.086312984s
+[25ms one-way, 1024 KiB/s] 2 large + 2 folder downloads at once: 30.458328299s
+[25ms one-way, 1024 KiB/s] 1000 separate downloads started at once: 7.592657467s
+peak memory of the test process: 57544 kB
+test compat_tests::compat_sftp_stress ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 163 filtered out; finished in 146.89s
+

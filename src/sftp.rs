@@ -1053,25 +1053,78 @@ fn partial_path(target: &Path) -> PathBuf {
     target.with_file_name(name)
 }
 
+// If a reservation future is dropped while the blocking job runs, its result still
+// cleans up the claimed partial. Completed reservations are handed to the transfer.
+struct LocalReservation {
+    target: PathBuf,
+    partial: PathBuf,
+    file: Option<std::fs::File>,
+    folder: bool,
+    handed_off: bool,
+}
+
+impl Drop for LocalReservation {
+    fn drop(&mut self) {
+        if !self.handed_off {
+            drop(self.file.take());
+            if self.folder {
+                let _ = std::fs::remove_dir(&self.partial);
+            } else {
+                let _ = std::fs::remove_file(&self.partial);
+            }
+        }
+    }
+}
+
 /// Claim a free name in `dir` for a download: create its partial file (or folder) so that no
 /// other download can take the same name, even one started at the same moment. Returns the
 /// final path, the partial path, and the partial file when it is one.
 async fn reserve_local(dir: &Path, name: &str, folder: bool) -> Result<(PathBuf, PathBuf, Option<tokio::fs::File>), OpError> {
-    loop {
-        let target = unique_local_path(dir, name);
-        let partial = partial_path(&target);
-        let created = if folder {
-            tokio::fs::create_dir(&partial).await.map(|()| None)
-        } else {
-            tokio::fs::OpenOptions::new().write(true).create_new(true).open(&partial).await.map(Some)
+    let (dir, name) = (dir.to_path_buf(), name.to_string());
+    // Filesystem enumeration and exclusive creation must not block the SSH executor.
+    let mut reserved = tokio::task::spawn_blocking(move || {
+        let claim = |candidate: &str| -> std::io::Result<LocalReservation> {
+            let target = dir.join(candidate);
+            if target.try_exists()? {
+                return Err(std::io::ErrorKind::AlreadyExists.into());
+            }
+            let partial = partial_path(&target);
+            let file = if folder {
+                std::fs::create_dir(&partial)?;
+                None
+            } else {
+                Some(std::fs::OpenOptions::new().write(true).create_new(true).open(&partial)?)
+            };
+            Ok(LocalReservation { target, partial, file, folder, handed_off: false })
         };
-        match created {
-            Ok(file) => return Ok((target, partial, file)),
-            // Another download claimed it between the check and here: take the next name.
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(OpError::local(&err, &partial)),
+        // Most names are unused: don't enumerate a potentially huge folder for those.
+        match claim(&name) {
+            Ok(reserved) => return Ok(reserved),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(OpError::local(&e, &dir.join(&name))),
         }
-    }
+        // One directory snapshot instead of two metadata calls per existing name on
+        // every retry. Exclusive creation below still handles simultaneous downloads.
+        let mut taken: HashSet<_> = std::fs::read_dir(&dir)
+            .map_err(|e| OpError::local(&e, &dir))?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<_>>()
+            .map_err(|e| OpError::local(&e, &dir))?;
+        loop {
+            let candidate = unique_name(&name, |n| {
+                taken.contains(std::ffi::OsStr::new(n)) || taken.contains(std::ffi::OsStr::new(&format!("{n}{PARTIAL_SUFFIX}")))
+            });
+            match claim(&candidate) {
+                Ok(reserved) => return Ok(reserved),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    taken.insert(std::ffi::OsString::from(candidate));
+                }
+                Err(e) => return Err(OpError::local(&e, &dir.join(candidate))),
+            }
+        }
+    }).await.map_err(|e| OpError::new(ErrorKind::Other, e.to_string()))??;
+    reserved.handed_off = true;
+    Ok((reserved.target.clone(), reserved.partial.clone(), reserved.file.take().map(tokio::fs::File::from_std)))
 }
 
 /// Run `jobs`, up to `at_once` at a time; the first error stops the rest.
@@ -1360,4 +1413,72 @@ mod tests {
         assert_eq!(OpError::from(SftpError::Timeout).kind, ErrorKind::Connection);
         assert_eq!(OpError::from_message("cp: cannot open 'x': Permission denied").kind, ErrorKind::PermissionDenied);
     }
+    #[test]
+    #[ignore]
+    fn stress_download_name_collisions() {
+        for optimized in [false, true] {
+            let dir = std::env::temp_dir().join(format!("komando-name-stress-{}-{optimized}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let start = std::time::Instant::now();
+            futures::executor::block_on(spawn(async move {
+                let mut jobs = Vec::new();
+                for _ in 0..1000 {
+                    let dir = dir.clone();
+                    jobs.push(async move {
+                        if optimized { return reserve_local(&dir, "shared.log", false).await; }
+                        // The former production path, retained here for a reproducible
+                        // comparison with the same filesystem, concurrency and input.
+                        loop {
+                            let target = unique_local_path(&dir, "shared.log");
+                            let partial = partial_path(&target);
+                            match tokio::fs::OpenOptions::new().write(true).create_new(true).open(&partial).await {
+                                Ok(file) => return Ok((target, partial, Some(file))),
+                                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                                Err(e) => return Err(OpError::local(&e, &partial)),
+                            }
+                        }
+                    });
+                }
+                let paths: Vec<_> = futures::stream::iter(jobs).buffer_unordered(32).try_collect().await.unwrap();
+                let mut unique = HashSet::new();
+                for (target, partial, file) in paths {
+                    assert!(unique.insert(target));
+                    drop(file);
+                    std::fs::remove_file(partial).unwrap();
+                }
+                assert_eq!(unique.len(), 1000);
+                std::fs::remove_dir(&dir).unwrap();
+            })).unwrap();
+            eprintln!("1000 colliding download reservations optimized={optimized}: {:?}", start.elapsed());
+        }
+    }
+
+    #[test]
+    fn concurrent_reservations_preserve_existing_files_and_partials() {
+        let dir = std::env::temp_dir().join(format!("komando-reserve-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("shared.log"), b"keep final").unwrap();
+        std::fs::write(dir.join("shared (1).log.komando-part"), b"keep partial").unwrap();
+        futures::executor::block_on(spawn(async move {
+            let jobs = (0..32).map(|i| {
+                let dir = dir.clone();
+                async move { reserve_local(&dir, "shared.log", i % 2 == 0).await.unwrap() }
+            });
+            let reservations = futures::future::join_all(jobs).await;
+            let mut names = HashSet::new();
+            for (target, partial, file) in reservations {
+                assert!(names.insert(target.clone()));
+                assert_ne!(target, dir.join("shared.log"));
+                assert_ne!(target, dir.join("shared (1).log"));
+                assert!(partial.exists());
+                drop(file);
+                if partial.is_dir() { std::fs::remove_dir(partial).unwrap(); }
+                else { std::fs::remove_file(partial).unwrap(); }
+            }
+            assert_eq!(std::fs::read(dir.join("shared.log")).unwrap(), b"keep final");
+            assert_eq!(std::fs::read(dir.join("shared (1).log.komando-part")).unwrap(), b"keep partial");
+            std::fs::remove_dir_all(&dir).unwrap();
+        })).unwrap();
+    }
+
 }

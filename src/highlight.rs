@@ -141,6 +141,7 @@ struct Rule {
     regex: Regex,
     group: Group,
     style: Style,
+    display: [Style; 2],
 }
 
 /// The highlighter every terminal uses; replaced when rules change.
@@ -192,7 +193,11 @@ impl Highlighter {
             };
             let flags = if kw.case_sensitive() { "" } else { "(?i)" };
             patterns.push(format!("{flags}{pattern}"));
-            rules.push(Rule { regex, group, style });
+            let display = [false, true].map(|dark| Style {
+                fg: style.fg.map(|c| if style.bg.is_some() { c } else { readable_on(c, dark) }),
+                ..style
+            });
+            rules.push(Rule { regex, group, style, display });
         }
         let set = (!patterns.is_empty()).then(|| RegexSetBuilder::new(&patterns).build().ok()).flatten();
         Self { set, rules, skipped }
@@ -208,6 +213,16 @@ impl Highlighter {
 
     /// One entry per byte of `line`: the style of the first rule that covers it.
     pub fn styles(&self, line: &str) -> Option<Vec<Option<Style>>> {
+        self.match_styles(line, |rule| rule.style)
+    }
+
+    /// Colours adjusted once when rules compile, rather than for every matched character
+    /// on every repaint. Rules with their own background retain their original colours.
+    pub fn styles_for_background(&self, line: &str, dark: bool) -> Option<Vec<Option<Style>>> {
+        self.match_styles(line, |rule| rule.display[usize::from(dark)])
+    }
+
+    fn match_styles(&self, line: &str, style: impl Fn(&Rule) -> Style) -> Option<Vec<Option<Style>>> {
         let set = self.set.as_ref()?;
         let matched = set.matches(line);
         if !matched.matched_any() {
@@ -219,7 +234,7 @@ impl Highlighter {
             let mut paint = |start: usize, end: usize| {
                 for slot in &mut out[start..end] {
                     if slot.is_none() {
-                        *slot = Some(rule.style);
+                        *slot = Some(style(rule));
                     }
                 }
             };
@@ -463,4 +478,55 @@ mod tests {
         assert_eq!(parse_hex("#abc"), Some(Rgb8 { r: 0xaa, g: 0xbb, b: 0xcc }));
         assert_eq!(parse_hex("0"), None);
     }
+    /// Representative terminal repaint, including the per-cell contrast work done by the
+    /// renderer. Run explicitly in release mode; reports timings without flaky thresholds.
+    #[test]
+    #[ignore]
+    fn stress_highlight_repaints() {
+        let sets = parse(DEFAULT_SET).unwrap();
+        let h = Highlighter::from_sets(&sets, &[]);
+        let rows: Vec<String> = (0..40).map(|i| format!(
+            "2026-11-12T18:22:31 INFO project-{i:03} 192.168.0.20 Active: active (running) health: starting ERROR timeout WARNING {}",
+            "successful ".repeat(4)
+        )).collect();
+        for dark in [true, false] {
+            for prepared in [false, true] {
+                let start = std::time::Instant::now();
+                for _ in 0..500 {
+                    for row in &rows {
+                        let styles = if prepared { h.styles_for_background(row, dark) } else { h.styles(row) }.unwrap();
+                        for style in styles.into_iter().flatten() {
+                            if let Some(c) = style.fg {
+                                std::hint::black_box(if prepared || style.bg.is_some() { c } else { readable_on(c, dark) });
+                            }
+                        }
+                    }
+                }
+                eprintln!("highlight repaint dark={dark} prepared={prepared}: {:?}/frame (40 rows, 500 frames)", start.elapsed() / 500);
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_styles_preserve_matches_precedence_and_backgrounds() {
+        let mut background = kw("special", "#00ff00");
+        background.background = Some(true);
+        background.background_color = Some("#123456".into());
+        let mut group = kw(r"health: (?P<state>starting)", "#0000ff");
+        group.is_reg_exp = Some(true);
+        group.is_match_group = Some(true);
+        group.match_group = Some("state".into());
+        let sets = parse(DEFAULT_SET).unwrap();
+        let h = Highlighter::new(sets[0].keywords.iter().chain([&background, &group]));
+        for dark in [false, true] {
+            for line in ["WARNING WARN ERROR café 日本語", "special health: starting", "no matches here", ""] {
+                let expected = h.styles(line).map(|styles| styles.into_iter().map(|s| s.map(|s| Style {
+                    fg: s.fg.map(|c| if s.bg.is_some() { c } else { readable_on(c, dark) }),
+                    ..s
+                })).collect::<Vec<_>>());
+                assert_eq!(h.styles_for_background(line, dark), expected, "{line}, dark={dark}");
+            }
+        }
+    }
+
 }

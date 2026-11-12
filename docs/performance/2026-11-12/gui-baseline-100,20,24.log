@@ -1,0 +1,24 @@
+perf (last 5 s):
+  sidebar + main                   2.6/s  total     80.9 ms/s  avg 31.113041ms
+  terminal grid paint              2.4/s  total      6.0 ms/s  avg 2.519664ms
+  terminal grid prepaint           2.4/s  total      4.7 ms/s  avg 1.961226ms
+  command rail                     2.4/s  total      0.0 ms/s  avg 201ns
+  terminal render                  2.4/s  total      0.0 ms/s  avg 0ns
+  session wakeup                  58.0/s  total      0.0 ms/s  avg 0ns
+  workspace render (frame)         2.6/s  total      0.0 ms/s  avg 0ns
+perf (last 5 s):
+  sidebar + main                   6.6/s  total    118.0 ms/s  avg 17.873568ms
+  terminal grid paint              6.6/s  total      6.4 ms/s  avg 967.466µs
+  terminal grid prepaint           6.6/s  total      5.3 ms/s  avg 808.671µs
+  command rail                     6.6/s  total      0.0 ms/s  avg 234ns
+  session wakeup                 202.2/s  total      0.0 ms/s  avg 0ns
+  terminal render                  6.6/s  total      0.0 ms/s  avg 0ns
+  workspace render (frame)         6.6/s  total      0.0 ms/s  avg 0ns
+perf (last 5 s):
+  sidebar + main                   3.8/s  total    106.9 ms/s  avg 28.131383ms
+  terminal grid prepaint           3.8/s  total      5.8 ms/s  avg 1.522774ms
+  terminal grid paint              3.8/s  total      4.4 ms/s  avg 1.156371ms
+  command rail                     3.8/s  total      0.0 ms/s  avg 274ns
+  session wakeup                 106.4/s  total      0.0 ms/s  avg 0ns
+  terminal render                  3.8/s  total      0.0 ms/s  avg 0ns
+  workspace render (frame)         3.8/s  total      0.0 ms/s  avg 0ns

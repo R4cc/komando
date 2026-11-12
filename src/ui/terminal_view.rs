@@ -1596,7 +1596,7 @@ fn layout_row(
                 text.extend(extra.iter());
             }
         }
-        h.styles(text)
+        h.styles_for_background(text, ctx.dark)
     });
 
     let cursor_here = ctx.cursor.filter(|k| k.row == row);
@@ -1607,8 +1607,6 @@ fn layout_row(
         let mut bold = cell.flags.contains(Flags::BOLD);
         if let Some(rule) = styles.as_ref().and_then(|s| s[starts[i]]) {
             if let Some(c) = rule.fg {
-                // A rule with its own background keeps its colours.
-                let c = if rule.bg.is_some() { c } else { highlight::readable_on(c, ctx.dark) };
                 fg = Rgb { r: c.r, g: c.g, b: c.b };
             }
             if let Some(c) = rule.bg {

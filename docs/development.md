@@ -118,6 +118,30 @@ session busy. Add `,idle` (`30,10,24,idle`) to show a quiet local shell while th
 the background; nothing should be redrawn then. Measure a `--release` build: debug builds are
 several times slower in different places.
 
+### Mixed load and performance comparisons
+
+The mixed-load test creates a temporary library with 500 Projects and 10,000 Hosts, opens
+32 real SSH connections to a throwaway local `sshd`, streams 320,000 Unicode log lines, and
+runs 32 simultaneous downloads into one folder. It checks every downloaded byte, unique
+filenames, bounded Scrollback, final output, and clean disconnection:
+
+```sh
+cargo test --release --lib compat_many_projects_connections_and_downloads -- --ignored --nocapture
+```
+
+Three smaller workloads compare the former algorithm with the optimized production path
+in the same process. They cover 40-row highlighted repaints in both Themes, 10/100/500
+Projects, and 1,000 queued download reservations (32 active) with identical filenames:
+
+```sh
+cargo test --release --lib stress_ -- --ignored --nocapture --test-threads=1
+```
+
+These print timings without machine-dependent pass/fail thresholds. See
+[the recorded performance investigation](performance/2026-11-12/REPORT.md) for measured
+results, raw test output, scope, and limitations. SSH tests run entirely against temporary
+fixtures; they do not connect to saved Hosts or change a user's library.
+
 ## Design notes
 
 - [GLOSSARY.md](../GLOSSARY.md): the terms used in code and docs (Project, Host, Session,

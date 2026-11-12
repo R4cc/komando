@@ -1,0 +1,9 @@
+
+running 1 test
+500 Projects, 10,000 Hosts: 32 concurrent SSH handshakes 309.296429ms
+32 simultaneous 1 MiB downloads during 320,000 log lines: 418.417082ms
+mixed load complete, all 32 terminals and downloads verified: 1.95402081s
+test compat_tests::compat_many_projects_connections_and_downloads ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 163 filtered out; finished in 2.62s
+

@@ -414,7 +414,7 @@ impl LocalSshd {
         let port = 20000 + port_offset + (std::process::id() % 20000) as u16;
         let config = format!(
             "Port {port}\nListenAddress 127.0.0.1\nHostKey {host}\nAuthorizedKeysFile {keys}\nPidFile {pid}\n\
-             UsePAM no\nStrictModes no\nPasswordAuthentication no\nPrintMotd no\nPrintLastLog no\nAllowTcpForwarding yes\n\
+             UsePAM no\nStrictModes no\nPasswordAuthentication no\nPrintMotd no\nPrintLastLog no\nAllowTcpForwarding yes\nMaxStartups 100\n\
              Subsystem sftp internal-sftp\n",
             host = dir.join("host").display(),
             keys = dir.join("authorized_keys").display(),
@@ -961,4 +961,84 @@ fn compat_sftp_stress() {
     if let Some(peak) = status.lines().find(|l| l.starts_with("VmHWM")) {
         eprintln!("peak memory of the test process: {}", peak.trim_start_matches("VmHWM:").trim());
     }
+}
+
+
+/// Real embedded SSH connections, busy terminal parsers and downloads together. All
+/// fixtures live under a throwaway server; no saved Projects or homelab Hosts are used.
+#[test]
+#[ignore]
+fn compat_many_projects_connections_and_downloads() {
+    use crate::model::{Host, Library, Project};
+    use crate::sftp::{self, Progress};
+    use std::sync::Arc;
+
+    let sshd = LocalSshd::start("mixed-load", 7).expect("mixed load requires sshd and ssh-keygen");
+    let mut library = Library::default();
+    for pi in 0..500 {
+        let mut project = Project::new(format!("Project {pi}"), "blue", "server");
+        for hi in 0..20 {
+            let host = Host::new(format!("p{pi}-node{hi}"), "127.0.0.1");
+            project.hosts.push(host.id.clone());
+            library.hosts.push(host);
+        }
+        library.projects.push(project);
+    }
+    library.save(&sshd.dir).unwrap();
+    assert_eq!(Library::load(&sshd.dir).unwrap(), library);
+    let log: String = (0..10_000).map(|i| format!("INFO row-{i:05} café 日本語 ERROR timeout 192.168.0.20\n")).collect();
+    let log_path = sshd.dir.join("output.log");
+    std::fs::write(&log_path, &log).unwrap();
+    let source = sshd.dir.join("payload.bin");
+    std::fs::write(&source, noise(1024 * 1024, 42)).unwrap();
+    let local = sshd.dir.join("downloads");
+    let size = GridSize { cols: 120, rows: 40, cell_width: 9, cell_height: 18 };
+    let start = Instant::now();
+    let mut sessions: Vec<_> = (0..32).map(|i| {
+        let project = &library.projects[i * 15];
+        let resolved = library.resolve(&project.id, &project.hosts[0]).unwrap();
+        sshd.connect(vec![sshd.hop(&resolved.name, &resolved.address)], size)
+    }).collect();
+    // Drive every host-key prompt fairly while all handshakes proceed in parallel.
+    loop {
+        for r in &mut sessions {
+            while let Ok(event) = r.events.try_recv() { r.handle(event); }
+        }
+        if sessions.iter().all(|r| r.hops.last().is_some_and(|(_, step)| *step == HopStep::Done)) { break; }
+        assert!(start.elapsed() < Duration::from_secs(20), "32 concurrent handshakes timed out");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    eprintln!("500 Projects, 10,000 Hosts: 32 concurrent SSH handshakes {:?}", start.elapsed());
+    for r in &sessions {
+        r.text(&format!("stty -echo; cat {}; printf 'mixed-load-%s\\n' done\r", sftp::shell_quote(&log_path.to_string_lossy())));
+    }
+    let answers: Vec<_> = sessions.iter().map(|r| r.sink.open_sftp().unwrap()).collect();
+    let remotes: Vec<_> = futures::executor::block_on(futures::future::join_all(answers)).into_iter()
+        .map(|answer| Arc::new(answer.unwrap().unwrap())).collect();
+    let downloads_start = Instant::now();
+    let results = futures::executor::block_on(sftp::spawn(async move {
+        let jobs = remotes.iter().map(|remote| {
+            let (source, local) = (source.clone(), local.clone());
+            async move {
+                let progress = Progress::default();
+                let got = remote.download(&source.to_string_lossy(), &local, &progress).await.unwrap();
+                assert!(same_file(&got, &source), "download is byte-identical during log flood");
+                got
+            }
+        });
+        futures::future::join_all(jobs).await
+    })).unwrap();
+    assert_eq!(results.into_iter().collect::<std::collections::HashSet<_>>().len(), 32);
+    eprintln!("32 simultaneous 1 MiB downloads during 320,000 log lines: {:?}", downloads_start.elapsed());
+    for r in &mut sessions {
+        r.wait_text("mixed-load-done");
+        let term = r.term.lock();
+        let text = crate::session::scrollback_text(&*term);
+        assert!(text.contains("row-09999 café 日本語 ERROR"));
+        assert_eq!(term.grid().history_size(), 1000, "bounded Scrollback filled under load");
+        drop(term);
+        r.text("exit\r");
+        r.wait("connection to close", |r| r.ended);
+    }
+    eprintln!("mixed load complete, all 32 terminals and downloads verified: {:?}", start.elapsed());
 }

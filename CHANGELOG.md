@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-12
+
 ### Added
 
 - A download icon beside Settings at the bottom of the sidebar appears when an update is
@@ -21,6 +23,13 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- Large Project libraries stay responsive while terminals stream output. The sidebar resolves
+  Hosts once per frame and builds only the visible Host or Local Shell, avoiding repeated
+  searches and copies of entire Projects.
+- Highlighted terminal output uses precomputed readable colours for both dark and light
+  Themes, reducing repaint work while preserving Highlight Rule precedence and custom backgrounds.
+- Concurrent downloads with matching filenames reserve their destinations without blocking
+  SSH processing. Existing files and partial downloads keep their names and contents.
 - The Windows title bar uses one consistent background with Mica enabled, removing the
   dark rectangle behind the window buttons and covering stray native caption pixels beside
   them. The rounded hover effects and window actions are unchanged.

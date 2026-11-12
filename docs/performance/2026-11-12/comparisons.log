@@ -1,0 +1,20 @@
+
+running 3 tests
+test highlight::tests::stress_highlight_repaints ... highlight repaint dark=true prepared=false: 165.191µs/frame (40 rows, 500 frames)
+highlight repaint dark=true prepared=true: 79.853µs/frame (40 rows, 500 frames)
+highlight repaint dark=false prepared=false: 346.464µs/frame (40 rows, 500 frames)
+highlight repaint dark=false prepared=true: 79.599µs/frame (40 rows, 500 frames)
+ok
+test model::tests::stress_project_host_resolution ... project resolution 10 projects / 200 hosts indexed=false: 83.082µs/frame
+project resolution 10 projects / 200 hosts indexed=true: 10.072µs/frame
+project resolution 100 projects / 2000 hosts indexed=false: 11.491813ms/frame
+project resolution 100 projects / 2000 hosts indexed=true: 110.535µs/frame
+project resolution 500 projects / 10000 hosts indexed=false: 304.384236ms/frame
+project resolution 500 projects / 10000 hosts indexed=true: 627.965µs/frame
+ok
+test sftp::tests::stress_download_name_collisions ... 1000 colliding download reservations optimized=false: 2.204648651s
+1000 colliding download reservations optimized=true: 1.220752057s
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 162 filtered out; finished in 13.27s
+

@@ -1,0 +1,23 @@
+running 11 tests
+test compat_tests::compat_htop_draws_and_quits_with_a_mouse_click ... skipped: htop is not installed
+ok
+test compat_tests::compat_htop_function_keys_and_resize ... skipped: htop is not installed
+ok
+test compat_tests::compat_less_scrolls_with_the_wheel ... ok
+test compat_tests::compat_many_projects_connections_and_downloads ... 500 Projects, 10,000 Hosts: 32 concurrent SSH handshakes 433.480935ms
+32 simultaneous 1 MiB downloads during 320,000 log lines: 1.056136617s
+mixed load complete, all 32 terminals and downloads verified: 3.20243236s
+ok
+test compat_tests::compat_sftp_on_the_sessions_connection ... ok
+test compat_tests::compat_shell_unicode_colours_and_queries ... ok
+test compat_tests::compat_ssh_session_against_a_local_sshd ... ok
+test compat_tests::compat_ssh_session_through_a_jump_host ... ok
+test compat_tests::compat_tmux_status_resize_and_focus ... skipped: tmux is not installed
+ok
+test compat_tests::compat_vim_editing_mouse_resize_and_unicode ... skipped: vim is not installed
+ok
+test compat_tests::compat_vim_reads_the_background_colour ... skipped: vim is not installed
+ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 154 filtered out; finished in 7.85s
+

@@ -105,7 +105,8 @@ enum SidebarRow {
     NoProjects,
     Project { index: usize },
     FirstHost { project: usize },
-    Item { project: usize, index: usize, sessions: usize },
+    Host { project: usize, host: usize, sessions: usize },
+    ProjectShell { project: usize, shell: usize, sessions: usize },
 }
 
 /// A row in the sidebar.
@@ -360,18 +361,17 @@ impl Workspace {
     }
 
     fn run_startup(&mut self, startup: &Startup, window: &mut Window, cx: &mut Context<Self>) {
+        // Resolve the library once, even when opening many Sessions together.
+        let items = self.sidebar_items();
         // An empty project name means a standalone Local Shell.
         for (project_name, name) in &startup.open {
-            let item = self
-                .sidebar_items()
-                .into_iter()
-                .find(|item| {
-                    let project = match item {
-                        SidebarItem::Host { project, .. } => Some(project.name.as_str()),
-                        SidebarItem::Shell { project, .. } => project.as_ref().map(|p| p.name.as_str()),
-                    };
-                    project.unwrap_or("") == project_name && item.label() == name
-                });
+            let item = items.iter().find(|item| {
+                let project = match item {
+                    SidebarItem::Host { project, .. } => Some(project.name.as_str()),
+                    SidebarItem::Shell { project, .. } => project.as_ref().map(|p| p.name.as_str()),
+                };
+                project.unwrap_or("") == project_name && item.label() == name
+            }).cloned();
             // Listed again: another Session on the same item.
             if let Some(item) = item {
                 let another = self.sessions_of(&item.key()).next().is_some();
@@ -718,8 +718,12 @@ impl Workspace {
             .chain(self.orphan_shells())
             .map(|shell| SidebarItem::Shell { project: None, shell })
             .collect();
+        let hosts = self.library.host_indices();
         for project in &self.library.projects {
-            items.extend(self.project_items(project));
+            items.extend(project.hosts.iter().filter_map(|id| hosts.get(id.as_str())).map(|&index| {
+                SidebarItem::Host { project: project.clone(), host: self.library.hosts[index].clone() }
+            }));
+            items.extend(project.shells.iter().map(|shell| SidebarItem::Shell { project: Some(project.clone()), shell: shell.clone() }));
         }
         items
     }
@@ -757,16 +761,6 @@ impl Workspace {
     /// not folded away.
     fn nested_rows(&self, key: &ItemKey, sessions: usize) -> usize {
         if sessions > 1 && !self.collapsed_items.contains(key) { sessions } else { 0 }
-    }
-
-    fn project_items(&self, project: &Project) -> Vec<SidebarItem> {
-        let mut items: Vec<SidebarItem> = self
-            .library
-            .hosts_of(project)
-            .map(|host| SidebarItem::Host { project: project.clone(), host: host.clone() })
-            .collect();
-        items.extend(project.shells.iter().map(|shell| SidebarItem::Shell { project: Some(project.clone()), shell: shell.clone() }));
-        items
     }
 
     fn sessions_of(&self, key: &ItemKey) -> impl Iterator<Item = &SessionEntry> {
@@ -1195,7 +1189,21 @@ impl Workspace {
     /// The item of the active Session, for "new session on this item".
     fn active_item(&self) -> Option<SidebarItem> {
         let key = self.active_entry()?.item.clone();
-        self.sidebar_items().into_iter().find(|item| item.key() == key)
+        match key {
+            ItemKey::Host { project, host } => {
+                let project = self.library.project(&project)?;
+                if !project.hosts.contains(&host) { return None; }
+                Some(SidebarItem::Host { project: project.clone(), host: self.library.host(&host)?.clone() })
+            }
+            ItemKey::Shell { project: Some(id), name } => {
+                let project = self.library.project(&id)?;
+                let shell = project.shells.iter().find(|sh| sh.name == name)?.clone();
+                Some(SidebarItem::Shell { project: Some(project.clone()), shell })
+            }
+            ItemKey::Shell { project: None, name } => self.library.standalone_shells().into_iter()
+                .chain(self.orphan_shells()).find(|sh| sh.name == name)
+                .map(|shell| SidebarItem::Shell { project: None, shell }),
+        }
     }
 
     // ---- passwords & output -----------------------------------------------------------
@@ -1574,6 +1582,7 @@ impl Workspace {
         for s in &self.sessions {
             *counts.entry(&s.item).or_default() += 1;
         }
+        let hosts = self.library.host_indices();
         let mut rows = vec![];
         for (index, shell) in self.sidebar_shells().iter().enumerate() {
             let key = ItemKey::Shell { project: None, name: shell.name.clone() };
@@ -1589,15 +1598,20 @@ impl Workspace {
             if self.collapsed.contains(&project.id) {
                 continue;
             }
-            let hosts = self.library.hosts_of(project).map(|h| ItemKey::Host { project: project.id.clone(), host: h.id.clone() });
-            let shells = project.shells.iter().map(|sh| ItemKey::Shell { project: Some(project.id.clone()), name: sh.name.clone() });
-            let keys: Vec<ItemKey> = hosts.chain(shells).collect();
-            if keys.is_empty() {
-                rows.push(SidebarRow::FirstHost { project: pi });
+            let start = rows.len();
+            for id in &project.hosts {
+                let Some(&host) = hosts.get(id.as_str()) else { continue };
+                let key = ItemKey::Host { project: project.id.clone(), host: id.clone() };
+                let sessions = self.nested_rows(&key, counts.get(&key).copied().unwrap_or(0));
+                rows.push(SidebarRow::Host { project: pi, host, sessions });
             }
-            for (index, key) in keys.iter().enumerate() {
-                let sessions = self.nested_rows(key, counts.get(key).copied().unwrap_or(0));
-                rows.push(SidebarRow::Item { project: pi, index, sessions });
+            for (shell, sh) in project.shells.iter().enumerate() {
+                let key = ItemKey::Shell { project: Some(project.id.clone()), name: sh.name.clone() };
+                let sessions = self.nested_rows(&key, counts.get(&key).copied().unwrap_or(0));
+                rows.push(SidebarRow::ProjectShell { project: pi, shell, sessions });
+            }
+            if rows.len() == start {
+                rows.push(SidebarRow::FirstHost { project: pi });
             }
         }
         rows
@@ -1665,18 +1679,22 @@ impl Workspace {
                         .child("Add a host")
                     .into_any_element()
             }
-            SidebarRow::Item { project, index, .. } => {
-                let Some(project) = self.library.projects.get(project).cloned() else { return div().into_any_element() };
+            SidebarRow::Host { project, host, .. } => {
+                let (Some(project), Some(host)) = (self.library.projects.get(project), self.library.hosts.get(host)) else {
+                    return div().into_any_element();
+                };
                 let color = project_color(&project.color);
-                match self.project_items(&project).get(index) {
-                    Some(item) => div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .children(self.render_item(item, color, 20., p, cx))
-                        .into_any_element(),
-                    None => div().into_any_element(),
-                }
+                let item = SidebarItem::Host { project: project.clone(), host: host.clone() };
+                div().flex().flex_col().gap(px(2.))
+                    .children(self.render_item(&item, color, 20., p, cx)).into_any_element()
+            }
+            SidebarRow::ProjectShell { project, shell, .. } => {
+                let Some(project) = self.library.projects.get(project) else { return div().into_any_element() };
+                let Some(shell) = project.shells.get(shell) else { return div().into_any_element() };
+                let color = project_color(&project.color);
+                let item = SidebarItem::Shell { project: Some(project.clone()), shell: shell.clone() };
+                div().flex().flex_col().gap(px(2.))
+                    .children(self.render_item(&item, color, 20., p, cx)).into_any_element()
             }
         };
         div().px(px(8.)).pb(px(2.)).child(element).into_any_element()
@@ -1686,8 +1704,10 @@ impl Workspace {
         let Some(project) = self.library.projects.get(index) else { return div().into_any_element() };
             let color = project_color(&project.color);
             let collapsed = self.collapsed.contains(&project.id);
-            let items = self.project_items(project);
-            let sessions: Vec<&SessionEntry> = items.iter().flat_map(|item| self.sessions_of(&item.key()).collect::<Vec<_>>()).collect();
+            let sessions: Vec<&SessionEntry> = self.sessions.iter().filter(|s| match &s.item {
+                ItemKey::Host { project: id, host } => id == &project.id && project.hosts.contains(host),
+                ItemKey::Shell { project: id, name } => id.as_ref() == Some(&project.id) && project.shells.iter().any(|sh| &sh.name == name),
+            }).collect();
             let live = sessions.iter().filter(|s| s.is_live()).count();
             let busy = sessions.iter().any(|s| s.busy);
             let pid = project.id.clone();
@@ -1781,7 +1801,7 @@ impl Workspace {
     fn render_sidebar(&mut self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         // Only the rows in view are built (hundreds of hosts would otherwise cost milliseconds
         // on every frame). Row heights are measured once and kept until the rows change.
-        let rows = self.sidebar_rows();
+        let rows = crate::perf::time("sidebar rows", || self.sidebar_rows());
         if rows != self.sidebar_rows {
             self.sidebar_list.reset(rows.len());
             self.sidebar_rows = rows;

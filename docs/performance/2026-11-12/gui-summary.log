@@ -1,0 +1,3 @@
+10,20,8: /tmp/komando-gui-after-10,20,8.log; SSH connections authenticated: 8/8
+100,20,24: /tmp/komando-gui-after-100,20,24.log; SSH connections authenticated: 24/24
+500,20,32,idle: /tmp/komando-gui-after-500,20,32,idle.log; SSH connections authenticated: 32/32
