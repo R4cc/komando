@@ -200,7 +200,7 @@ pub struct TerminalView {
     pub putty_clipboard: bool,
     /// Show the command rail and record entered lines for it.
     pub command_rail: bool,
-    /// Show the minimap on the right edge.
+    /// Allow the minimap to appear after dwelling at the window's right edge.
     pub minimap: bool,
     minimap_state: Rc<crate::ui::minimap::MinimapState>,
     glyph_cache: Rc<RefCell<GlyphCache>>,
@@ -852,6 +852,44 @@ impl TerminalView {
             if mode.wants(button, MouseAction::Motion) {
                 self.report_mouse(mode, button, MouseAction::Motion, event.position, &event.modifiers);
             }
+        }
+    }
+
+    /// Listen at window level so the gutter outside the terminal can activate the minimap.
+    /// Merely passing over right-aligned output must not activate it, nor may a selection.
+    fn minimap_hover(&mut self, event: &MouseMoveEvent, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.minimap_state.clone();
+        if state.dragging() && event.pressed_button == Some(MouseButton::Left) {
+            crate::ui::minimap::drag_to(&self.term, &state, event.position.y);
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        let was_visible = state.visible();
+        let (at_edge, over_map) = crate::ui::minimap::hover_region(event.position, bounds, window.viewport_size().width);
+        let blocked = !self.minimap || self.prompt.is_some() || self.route.is_some()
+            || self.selecting || self.mouse_pressed.is_some() || event.pressed_button.is_some()
+            || !window.is_window_active() || self.term.lock().grid().history_size() == 0;
+        let generation = state.track_hover(at_edge, over_map, blocked);
+        if was_visible != state.visible() {
+            state.hide();
+            cx.notify();
+        }
+        if let Some(generation) = generation {
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(crate::ui::minimap::REVEAL_DELAY).await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let (at_edge, _) = crate::ui::minimap::hover_region(window.mouse_position(), bounds, window.viewport_size().width);
+                    if this.minimap && this.prompt.is_none() && this.route.is_none()
+                        && !this.selecting && this.mouse_pressed.is_none()
+                        && window.is_window_active() && window.is_window_hovered() && at_edge
+                        && this.term.lock().grid().history_size() > 0
+                        && state.reveal(generation)
+                    {
+                        cx.notify();
+                    }
+                });
+            }).detach();
         }
     }
 
@@ -1797,6 +1835,9 @@ impl Render for TerminalView {
         let family = appearance.font_family.clone();
         let font_size = px(appearance.font_size);
         let term_bg = palette.background_hsla();
+        if !self.minimap || !window.is_window_active() || !window.is_window_hovered() {
+            self.minimap_state.hide();
+        }
         let focused = self.focus.is_focused(window) && self.prompt.is_none() && window.is_window_active();
         // Colour queries (OSC 10/11/4) are answered with the colours on screen.
         self.proxy.set_palette(&palette);
@@ -1808,6 +1849,10 @@ impl Render for TerminalView {
         let grid = self.grid.clone();
         let this = cx.entity().downgrade();
         let this_drag = this.clone();
+        let this_hover = this.clone();
+        let hover_entity = this.entity_id();
+        let hover_state = self.minimap_state.clone();
+        let exit_state = self.minimap_state.clone();
         let origin_cell = self.origin.clone();
         let cell_cell = self.cell.clone();
         let glyph_cache = self.glyph_cache.clone();
@@ -1971,6 +2016,29 @@ impl Render for TerminalView {
                 frame
             }),
             move |bounds, frame, window, _cx| crate::perf::time("terminal grid paint", || {
+                let terminal_bounds = Bounds::new(
+                    point(bounds.left() - px(PADDING_X), bounds.top() - px(PADDING_Y)),
+                    size(bounds.size.width + px(PADDING_X * 2.), bounds.size.height + px(PADDING_Y * 2.)),
+                );
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if phase == gpui::DispatchPhase::Capture {
+                        let _ = this_hover.update(cx, |this, cx| this.minimap_hover(event, terminal_bounds, window, cx));
+                    }
+                });
+                window.on_mouse_event(move |_: &MouseDownEvent, phase, _, _| {
+                    if phase == gpui::DispatchPhase::Capture {
+                        hover_state.cancel_pending();
+                    }
+                });
+                window.on_mouse_event(move |_: &gpui::MouseExitEvent, phase, _, cx| {
+                    if phase == gpui::DispatchPhase::Capture && !exit_state.dragging() {
+                        let visible = exit_state.visible();
+                        exit_state.hide();
+                        if visible {
+                            cx.notify(hover_entity);
+                        }
+                    }
+                });
                 // A selection keeps following the pointer once it leaves the terminal.
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
                     if phase == gpui::DispatchPhase::Bubble {

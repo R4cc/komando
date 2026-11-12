@@ -4,8 +4,8 @@
 //! marks the lines on screen; click or drag to scroll there.
 //!
 //! It takes no columns from the terminal. Its width follows the terminal's, its height the
-//! output's (up to the terminal's), and it only shows once there is Scrollback to move through:
-//! with everything on screen there is nothing to scroll.
+//! output's (up to the terminal's), and it appears only after dwelling at the window's right
+//! edge. With everything on screen there is nothing to scroll, so it stays hidden.
 //!
 //! When the Scrollback is taller than the strip, the strip scrolls with the terminal, the same
 //! way VS Code's minimap does: its position follows the viewport proportionally.
@@ -40,6 +40,55 @@ const LINE_H: f32 = 2.;
 /// Width of one character.
 const CHAR_W: f32 = 1.;
 const PAD_X: f32 = 8.;
+/// The window gutter, outside the terminal text. Moving across output never opens the map.
+const EDGE_WIDTH: f32 = 6.;
+pub const REVEAL_DELAY: std::time::Duration = std::time::Duration::from_millis(330);
+
+/// A reveal timer belongs to one uninterrupted visit to the edge. An old timer must not
+/// open the map after the pointer leaves and returns, or starts selecting text.
+#[derive(Default)]
+struct Reveal {
+    visible: bool,
+    pending: Option<u64>,
+    generation: u64,
+}
+
+impl Reveal {
+    fn track(&mut self, at_edge: bool, over_map: bool, blocked: bool) -> Option<u64> {
+        if blocked || !(at_edge || (self.visible && over_map)) {
+            self.hide();
+        } else if !self.visible && self.pending.is_none() {
+            self.generation += 1;
+            self.pending = Some(self.generation);
+            return self.pending;
+        }
+        None
+    }
+
+    fn show(&mut self, generation: u64) -> bool {
+        if self.pending != Some(generation) {
+            return false;
+        }
+        self.pending = None;
+        self.visible = true;
+        true
+    }
+
+    fn hide(&mut self) {
+        self.pending = None;
+        self.visible = false;
+    }
+}
+
+/// The activation strip is at the actual window edge, including the gutter outside the
+/// terminal island. Once revealed, the pointer may move left onto the map to use it.
+pub fn hover_region(position: gpui::Point<Pixels>, terminal: Bounds<Pixels>, window_width: Pixels) -> (bool, bool) {
+    let in_rows = position.y >= terminal.top() && position.y < terminal.bottom();
+    let in_window = position.x >= px(0.) && position.x < window_width;
+    let at_edge = in_rows && in_window && position.x >= window_width - px(EDGE_WIDTH);
+    let over_map = in_rows && in_window && position.x >= terminal.right() - px(width_for(terminal.size.width.into()));
+    (at_edge, over_map)
+}
 
 /// What the last paint showed, so a click can be turned into a line.
 #[derive(Clone, Copy, Default)]
@@ -78,10 +127,38 @@ pub struct MinimapState {
     geometry: Cell<Geometry>,
     dragging: Cell<bool>,
     cache: RefCell<LineCache>,
+    reveal: RefCell<Reveal>,
+}
+
+impl MinimapState {
+    pub fn visible(&self) -> bool {
+        self.reveal.borrow().visible
+    }
+
+    pub fn dragging(&self) -> bool {
+        self.dragging.get()
+    }
+
+    pub fn track_hover(&self, at_edge: bool, over_map: bool, blocked: bool) -> Option<u64> {
+        self.reveal.borrow_mut().track(at_edge, over_map, blocked)
+    }
+
+    pub fn reveal(&self, generation: u64) -> bool {
+        self.reveal.borrow_mut().show(generation)
+    }
+
+    pub fn hide(&self) {
+        self.reveal.borrow_mut().hide();
+        self.dragging.set(false);
+    }
+
+    pub fn cancel_pending(&self) {
+        self.reveal.borrow_mut().pending = None;
+    }
 }
 
 /// Scroll so the line under `y` is in the middle of the screen.
-fn scroll_to(term: &SharedTerm, state: &MinimapState, y: Pixels) {
+pub fn drag_to(term: &SharedTerm, state: &MinimapState, y: Pixels) {
     let g = state.geometry.get();
     let line = g.start as f32 + ((f32::from(y) - g.top) / LINE_H).max(0.);
     let top = (line - g.screen as f32 / 2.).round().clamp(0., g.history as f32) as i32;
@@ -273,6 +350,9 @@ pub fn minimap(
     width: f32,
     cx: &mut Context<TerminalView>,
 ) -> Option<AnyElement> {
+    if !state.visible() {
+        return None;
+    }
     let lines = {
         let term = term.lock();
         (term.grid().history_size() > 0).then(|| content_lines(&term))?
@@ -309,7 +389,7 @@ pub fn minimap(
     .size_full();
 
     let (down_term, move_term) = (term.clone(), term);
-    let (down_state, move_state, up_state) = (state.clone(), state.clone(), state);
+    let (down_state, move_state, up_state, up_out_state) = (state.clone(), state.clone(), state.clone(), state);
     let element = div()
         .id("minimap")
         .absolute()
@@ -319,9 +399,8 @@ pub fn minimap(
         .h(px(height))
         .max_h_full()
         .py(px(PAD_Y))
-        // Over the text: the terminal's own colour, mostly opaque, so the miniature reads and the
-        // text underneath still shows through faintly.
-        .bg(backdrop.opacity(0.82))
+        // A temporary opaque overlay: no overlapping output and no terminal resize/reflow.
+        .bg(backdrop)
         .rounded_bl(px(8.))
         .cursor_default()
         // Clicks here scroll; they must not start a text selection in the terminal.
@@ -330,20 +409,34 @@ pub fn minimap(
             cx.listener(move |_, event: &MouseDownEvent, _, cx| {
                 cx.stop_propagation();
                 down_state.dragging.set(true);
-                scroll_to(&down_term, &down_state, event.position.y);
+                drag_to(&down_term, &down_state, event.position.y);
                 cx.notify();
             }),
         )
         .on_mouse_move(cx.listener(move |_, event: &MouseMoveEvent, _, cx| {
             if move_state.dragging.get() && event.pressed_button == Some(MouseButton::Left) {
                 cx.stop_propagation();
-                scroll_to(&move_term, &move_state, event.position.y);
+                drag_to(&move_term, &move_state, event.position.y);
                 cx.notify();
             }
         }))
         .on_mouse_up(
             MouseButton::Left,
-            cx.listener(move |_, _: &MouseUpEvent, _, _| up_state.dragging.set(false)),
+            cx.listener(move |_, _: &MouseUpEvent, _, cx| {
+                cx.stop_propagation();
+                up_state.dragging.set(false);
+                cx.notify();
+            }),
+        )
+        .on_mouse_up_out(
+            MouseButton::Left,
+            cx.listener(move |_, _: &MouseUpEvent, _, cx| {
+                if up_out_state.dragging() {
+                    up_out_state.hide();
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }),
         )
         .child(strip)
         .into_any_element();
@@ -392,6 +485,74 @@ mod tests {
 
     fn strip() -> Bounds<Pixels> {
         Bounds::new(point(px(0.), px(0.)), size(px(MAX_WIDTH), px(800.)))
+    }
+
+    #[test]
+    fn output_hover_does_not_reveal_but_window_gutter_does() {
+        // The terminal ends 8px before the window edge. Even the last output column
+        // and the minimap's former footprint are not activation targets.
+        let terminal = Bounds::new(point(px(200.), px(40.)), size(px(792.), px(600.)));
+        let region = |x, y| hover_region(point(px(x), px(y)), terminal, px(1000.));
+        assert_eq!(region(920., 100.), (false, true));
+        assert_eq!(region(987., 100.), (false, true));
+        assert_eq!(region(993., 100.), (false, true));
+        assert_eq!(region(999., 100.), (true, true));
+        assert_eq!(region(999., 20.), (false, false)); // Title bar.
+        assert_eq!(region(999., 650.), (false, false)); // Below terminal.
+        assert_eq!(region(1001., 100.), (false, false)); // Outside window.
+
+        let mut reveal = Reveal::default();
+        assert_eq!(reveal.track(false, true, false), None);
+        assert!(!reveal.visible);
+        let timer = reveal.track(true, true, false).unwrap();
+        assert!(!reveal.visible); // Still waiting, not visible on entry.
+        assert_eq!(reveal.track(true, true, false), None); // Motion doesn't restart the wait.
+        assert!(reveal.show(timer));
+        assert!(reveal.visible);
+        reveal.track(false, true, false); // Move left from the gutter onto the map.
+        assert!(reveal.visible);
+        reveal.track(false, false, false); // Leave the map.
+        assert!(!reveal.visible);
+    }
+
+    #[test]
+    fn leaving_the_edge_requires_a_fresh_full_delay() {
+        let mut reveal = Reveal::default();
+        let first = reveal.track(true, true, false).unwrap();
+        reveal.track(false, true, false); // Leave early, staying over terminal output.
+        let second = reveal.track(true, true, false).unwrap();
+        assert!(!reveal.show(first)); // The first timer expires during the second visit.
+        assert!(!reveal.visible);
+        assert!(reveal.show(second));
+    }
+
+    #[test]
+    fn selecting_or_clicking_cancels_a_pending_reveal() {
+        let state = MinimapState::default();
+        let timer = state.track_hover(true, true, false).unwrap();
+        state.track_hover(true, true, true); // A selection reaches the window edge.
+        assert!(!state.reveal(timer));
+        assert_eq!(state.track_hover(true, true, true), None);
+        assert!(!state.visible());
+
+        let timer = state.track_hover(true, true, false).unwrap();
+        state.cancel_pending(); // Mouse down with no subsequent pointer motion.
+        assert!(!state.reveal(timer));
+        assert!(!state.visible());
+    }
+
+    #[test]
+    fn window_exit_or_disabling_cancels_reveal_and_dragging() {
+        let state = MinimapState::default();
+        let timer = state.track_hover(true, true, false).unwrap();
+        state.hide();
+        assert!(!state.reveal(timer));
+        let timer = state.track_hover(true, true, false).unwrap();
+        assert!(state.reveal(timer));
+        state.dragging.set(true);
+        state.hide();
+        assert!(!state.visible());
+        assert!(!state.dragging());
     }
 
     #[test]

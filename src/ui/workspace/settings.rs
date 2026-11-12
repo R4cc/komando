@@ -609,7 +609,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "Minimap",
-                    "The whole output in miniature on the right edge, coloured like the text. Click or drag it to scroll.",
+                    "Hover at the window's far-right edge briefly to show the output in miniature. Click or drag to scroll; move away to hide. The terminal keeps its full width.",
                     switch("minimap".into(), "Minimap", minimap, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.minimap = !minimap;

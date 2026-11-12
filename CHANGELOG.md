@@ -29,6 +29,15 @@ All notable changes to Komando are listed here. The format follows
   retried, and download errors now name the file operation that failed. Old downloads are
   cleaned up after a week without removing recent downloads another Komando window may need.
 
+## [0.3.1] - 2026-11-12
+
+### Changed
+
+- The minimap stays hidden until you hover at the window's far-right edge for a third of a
+  second. Click or drag it to scroll, then move away to hide it. Selecting text does not
+  open it. Its background hides the output underneath while it is open; terminal columns
+  and line wrapping stay unchanged, even while new output arrives.
+
 ## [0.3.0] - 2026-11-12
 
 ### Added
