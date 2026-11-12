@@ -367,14 +367,17 @@ impl Workspace {
         // Mica: Windows blurs the desktop behind the window; our surfaces become partly
         // transparent so it shows through. The slider sets how much.
         let blur = crate::platform::SUPPORTS_BACKDROP && self.settings.background_blur;
-        let t = if blur { self.settings.background_blur_intensity as f32 / 100. } else { 0. };
         window.set_background_appearance(if blur {
             gpui::WindowBackgroundAppearance::MicaBackdrop
         } else {
             gpui::WindowBackgroundAppearance::Opaque
         });
-        crate::platform::extend_backdrop(window, blur);
         crate::platform::set_window_dark_mode(window, app_dark);
+        let backdrop_enabled = crate::platform::set_backdrop(window, blur);
+        if blur && !backdrop_enabled {
+            window.set_background_appearance(gpui::WindowBackgroundAppearance::Opaque);
+        }
+        let t = if backdrop_enabled { self.settings.background_blur_intensity as f32 / 100. } else { 0. };
         cx.set_global(Appearance {
             app: AppPalette::from_theme(self.theme_for(app_dark)).translucent(t),
             term: TerminalPalette::from_theme(self.theme_for(term_dark)).translucent(t),
@@ -2839,7 +2842,6 @@ impl Render for Workspace {
                 // The title bar above is the top margin.
                 .px(px(ISLAND_GAP))
                 .pb(px(ISLAND_GAP))
-                .bg(p.canvas)
                 .child(self.render_sidebar(p, cx))
                 .child(self.render_main(p, window, cx))
                 .into_any_element()),

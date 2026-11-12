@@ -24,6 +24,14 @@ All notable changes to Komando are listed here. The format follows
 - Terminal text aligns vertically with the cursor on Windows, including when starting a new console.
 - Window buttons no longer show ghosted icons behind them when the Mica background is enabled.
 
+## [0.2.4] - 2026-11-12
+
+### Fixed
+
+- Windows background blur now configures the wallpaper backdrop directly and clears it when
+  switched off. If Windows cannot enable it, the window keeps an opaque background.
+- Removed duplicate background layers that obscured the wallpaper blur in Sessions and Settings.
+
 ## [0.2.3] - 2026-11-12
 
 ### Added

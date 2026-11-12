@@ -273,7 +273,6 @@ impl Workspace {
             // The title bar above is the top margin.
             .px(px(ISLAND_GAP))
             .pb(px(ISLAND_GAP))
-            .bg(p.canvas)
             .child(nav)
             .child(content)
             .into_any_element()

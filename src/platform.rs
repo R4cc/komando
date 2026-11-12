@@ -28,30 +28,49 @@ pub fn set_window_dark_mode(window: &gpui::Window, dark: bool) {
 #[cfg(not(windows))]
 pub fn set_window_dark_mode(_window: &gpui::Window, _dark: bool) {}
 
-/// Let the Mica backdrop show behind the whole window, or only behind its (invisible) frame.
-/// gpui asks DWM for Mica, but DWM paints it in the frame alone; Komando draws its own title
-/// bar, so the client area is the whole visible window and Mica stayed hidden. Extending the
-/// frame over the client area ("sheet of glass") puts the backdrop under everything we draw.
+/// Configure DWM directly: gpui 0.3.12's Mica path has a version probe with an
+/// uninitialised structure size, and its Opaque path never clears SYSTEMBACKDROP_TYPE.
+/// Return whether the backdrop was enabled, so failed native calls keep our UI opaque.
 #[cfg(windows)]
-pub fn extend_backdrop(window: &gpui::Window, on: bool) {
+pub fn set_backdrop(window: &gpui::Window, on: bool) -> bool {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows::Win32::Foundation::HWND;
-    use windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
+    use windows::Win32::Graphics::Dwm::{
+        DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_MAINWINDOW, DWMSBT_NONE,
+        DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+    };
     use windows::Win32::UI::Controls::MARGINS;
 
-    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
-    if let RawWindowHandle::Win32(win32) = handle.as_raw() {
-        let hwnd = HWND(win32.hwnd.get() as *mut core::ffi::c_void);
-        let m = if on { -1 } else { 0 };
+    let Ok(handle) = HasWindowHandle::window_handle(window) else { return false };
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else { return false };
+    let hwnd = HWND(win32.hwnd.get() as *mut core::ffi::c_void);
+    let configure = |enabled| -> windows::core::Result<()> {
+        let backdrop = if enabled { DWMSBT_MAINWINDOW } else { DWMSBT_NONE };
+        let m = if enabled { -1 } else { 0 };
         let margins = MARGINS { cxLeftWidth: m, cxRightWidth: m, cyTopHeight: m, cyBottomHeight: m };
         unsafe {
-            let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_SYSTEMBACKDROP_TYPE,
+                &backdrop as *const _ as *const core::ffi::c_void,
+                std::mem::size_of_val(&backdrop) as u32,
+            )?;
+            DwmExtendFrameIntoClientArea(hwnd, &margins)
+        }
+    };
+    match configure(on) {
+        Ok(()) => on,
+        Err(error) => {
+            log::warn!("Could not configure Windows backdrop: {error}");
+            // Best effort rollback if extending the frame failed after enabling Mica.
+            let _ = configure(false);
+            false
         }
     }
 }
 
 #[cfg(not(windows))]
-pub fn extend_backdrop(_window: &gpui::Window, _on: bool) {}
+pub fn set_backdrop(_window: &gpui::Window, _on: bool) -> bool { false }
 
 /// Mica is a Windows 11 feature; elsewhere (Linux dev builds) the window stays opaque.
 pub const SUPPORTS_BACKDROP: bool = cfg!(windows);
