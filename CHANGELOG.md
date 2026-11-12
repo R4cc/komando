@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-12
+
 ### Added
 
 - When `sudo` asks for your password in an SSH session, Komando shows "Press Enter to use your
@@ -13,7 +15,6 @@ All notable changes to Komando are listed here. The format follows
   the host with, saved or typed; press any other key to type your own. It is offered only when
   sudo asks for the user you signed in as, and not again right after it was rejected. Sessions
   that sign in with a key have no password to offer.
-
 - Settings → Local shells lists the shells at the top of the sidebar. Switch off "Show in
   sidebar" for the ones you don't use (Command Prompt, say), remove them, or add your own with a
   name, program and arguments, such as WSL or Git Bash. Hidden shells are still found by quick
@@ -30,14 +31,6 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
-- The window buttons (minimize, maximize, close) are rounded like the rest of Komando and sit
-  inside a slightly taller title bar, with room between them and the terminal's coloured top
-  edge; the close button's red no longer runs into it. The close button lines up with the
-  terminal's right edge, and the window's top-right corner still closes a maximized window.
-- The vault's auto-lock goes up to 7 days: 5, 15 or 30 minutes, 1 or 8 hours, 1 day, 7 days,
-  or "Until restart", which keeps it unlocked until you close Komando. "Until restart" is the
-  default for new installs; existing installs keep their current setting (30 minutes unless you
-  changed it), which Settings → Security can change.
 - A host or shell with several sessions is now a group in the sidebar: its row shows how many
   sessions it has and folds them away with the chevron. Each session's row shows the title its
   shell set (such as `user@web01: ~`) or "Session 2", with its number, and has its own close
@@ -45,6 +38,14 @@ All notable changes to Komando are listed here. The format follows
   right-click it for "Disconnect all". Closing the session you are on shows another session of
   the same host or shell.
 - A hidden or removed shell stays in the sidebar while it has sessions open.
+- The vault's auto-lock goes up to 7 days: 5, 15 or 30 minutes, 1 or 8 hours, 1 day, 7 days,
+  or "Until restart", which keeps it unlocked until you close Komando. "Until restart" is the
+  default for new installs; existing installs keep their current setting (30 minutes unless you
+  changed it), which Settings → Security can change.
+- The window buttons (minimize, maximize, close) are rounded like the rest of Komando and sit
+  inside a slightly taller title bar, with room between them and the terminal's coloured top
+  edge; the close button's red no longer runs into it. The close button lines up with the
+  terminal's right edge, and the window's top-right corner still closes a maximized window.
 
 ### Fixed
 
@@ -568,7 +569,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.17...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/R4cc/komando/compare/v0.2.8...v0.3.0
 [0.1.17]: https://github.com/R4cc/komando/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/R4cc/komando/compare/v0.1.9...v0.1.16
 [0.1.9]: https://github.com/R4cc/komando/compare/v0.1.8...v0.1.9
