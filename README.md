@@ -83,7 +83,7 @@ All app shortcuts use Ctrl+Shift, so plain Ctrl keys (Ctrl+W, Ctrl+R, …) still
 
 ## Install
 
-1. **[Download the latest Komando-x64.msi](https://github.com/R4cc/komando/releases/latest/download/Komando-x64.msi)** and run it.
+1. **[Download the latest Komando-x64.msi](https://github.com/R4cc/komando/releases/latest/download/Komando-x64.msi)** and run it. Choose **Install for me only** (no administrator rights needed) or **Install for all users** of the PC.
 2. Start Komando and set a master password for the vault.
 3. Add your first project and host, and click to connect.
 

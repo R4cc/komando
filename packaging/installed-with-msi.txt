@@ -1,0 +1,5 @@
+Komando was installed with its MSI installer.
+
+Komando's updater looks for this file: when it is here, updates run the new installer
+(which keeps Windows' list of installed apps right) instead of swapping komando.exe.
+Please don't delete it.

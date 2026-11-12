@@ -47,7 +47,7 @@ jobs:
         shell: pwsh
         run: |
           $v = "${{ steps.version.outputs.version }}"
-          wix build packaging/komando.wxs -arch x64 -d Version=$v -d BinDir=target\release -o "Komando-$v-x64.msi"
+          ./packaging/build-msi.ps1 -Version $v -BinDir target\release -Out "Komando-$v-x64.msi"
           Copy-Item target\release\komando.exe "Komando-$v-x64.exe"
           # Same files under fixed names, so the README can link to
           # releases/latest/download/Komando-x64.msi and Komando-x64.exe.

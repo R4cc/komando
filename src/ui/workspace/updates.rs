@@ -52,7 +52,7 @@ impl Workspace {
         let kind = update::install_kind();
         let asset = match &kind {
             InstallKind::Portable { .. } => release.exe.clone(),
-            InstallKind::Installer => release.msi.clone(),
+            InstallKind::Installer { .. } => release.msi.clone(),
             InstallKind::Unsupported => None,
         };
         let Some(asset) = asset else {
@@ -157,8 +157,11 @@ impl Workspace {
                 let kind = update::install_kind();
                 let how = match kind {
                     InstallKind::Portable { .. } => "Komando downloads it, checks it and swaps it in; a restart finishes the update.",
-                    InstallKind::Installer => {
+                    InstallKind::Installer { all_users: true } => {
                         "Komando downloads the installer and starts it. Windows asks for administrator rights, then the installer replaces this version and Komando closes."
+                    }
+                    InstallKind::Installer { all_users: false } => {
+                        "Komando downloads the installer and starts it. The installer replaces this version and Komando closes."
                     }
                     InstallKind::Unsupported => "Updates install on Windows only.",
                 };

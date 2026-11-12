@@ -38,3 +38,10 @@ jobs:
         run: cargo build --locked
       - name: Test
         run: cargo test --lib --locked
+      # The installer is otherwise only built for a release; building it from the debug program
+      # here catches mistakes in packaging/ before then.
+      - name: Install WiX
+        run: dotnet tool install --global wix --version 5.0.2
+      - name: Build installer
+        shell: pwsh
+        run: ./packaging/build-msi.ps1 -Version 0.0.0 -BinDir target\debug -Out Komando-ci.msi

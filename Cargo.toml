@@ -1,6 +1,6 @@
 [package]
 name = "komando"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 description = "A fast terminal for system engineers who SSH into Linux machines."
 publish = false

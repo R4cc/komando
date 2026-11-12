@@ -50,6 +50,13 @@ Publish a GitHub release with a tag that matches `Cargo.toml`, like `v0.2.0`. Th
 `Komando-x64.msi` and `Komando-x64.exe`, which the README's "latest" download links point to. To rebuild an existing release, run the workflow
 manually with its tag.
 
+The installer is built from [packaging/komando.wxs](../packaging/komando.wxs) by
+[packaging/build-msi.ps1](../packaging/build-msi.ps1) (WiX v5). CI builds it on every push, from
+the debug program, so a mistake in the installer shows up before a release. It asks whether to
+install for the current user only (no administrator rights) or for all users; for scripted
+installs, `msiexec /i Komando-x64.msi /qn` installs for the current user and adding `ALLUSERS=1`
+installs for all users.
+
 ## Developing on Linux
 
 Komando ships for Windows only, but it also builds on Linux, which is handy for tests and
@@ -76,8 +83,10 @@ A missing program is skipped with a note. Put programs unpacked elsewhere on
 
 Settings → About checks the latest GitHub release (`/repos/R4cc/komando/releases/latest`) and
 installs it: a portable `komando.exe` in a writable folder is swapped in place (the old file is
-kept as `komando.exe.old` until the next start), an MSI install under Program Files runs the new
-installer. Downloads are checked against the size and SHA-256 digest GitHub lists. To try the
+kept as `komando.exe.old` until the next start), an MSI install runs the new installer. An install
+for all users is the one under Program Files; one for a single user is in a writable folder too
+(`%LOCALAPPDATA%\Programs\Komando`), and is recognised by the `installed-with-msi.txt` file the
+MSI puts next to `komando.exe`. Downloads are checked against the size and SHA-256 digest GitHub lists. To try the
 flow against the current release, start Komando with `KOMANDO_PRETEND_VERSION=0.0.1`.
 
 ### Profiling

@@ -6,8 +6,10 @@
 //! - A portable `komando.exe` in a folder the user can write to is replaced in place. Windows
 //!   lets a running program's file be renamed, so the old one moves aside as `komando.exe.old`
 //!   (deleted at the next start) and the new one takes its name. A restart finishes it.
-//! - An installed Komando (the MSI puts it under Program Files, which needs administrator
-//!   rights to change) is updated by running the new MSI, which replaces the old version.
+//! - An installed Komando is updated by running the new MSI, which replaces the old version.
+//!   Installed for all users it is under Program Files (administrator rights to change);
+//!   installed for one user it is in a folder the user can write to, so the installer leaves
+//!   a marker file next to the program (`MSI_MARKER`) to tell it apart from a portable copy.
 //!
 //! Downloads are checked against the size GitHub reports and, when GitHub lists one, the
 //! asset's SHA-256 digest, before anything is replaced.
@@ -196,26 +198,40 @@ pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<
 pub enum InstallKind {
     /// Replace the program file in place, then restart.
     Portable { exe: PathBuf },
-    /// Run the new installer (asks for administrator rights).
-    Installer,
+    /// Run the new installer. `all_users`: installed for all users, so Windows asks for
+    /// administrator rights.
+    Installer { all_users: bool },
     /// Not on Windows: Komando ships for Windows only, so there is nothing to install.
     Unsupported,
 }
+
+/// The file the MSI puts next to `komando.exe` (see packaging/installed-with-msi.txt).
+pub const MSI_MARKER: &str = "installed-with-msi.txt";
 
 pub fn install_kind() -> InstallKind {
     if !cfg!(windows) {
         return InstallKind::Unsupported;
     }
-    let Ok(exe) = std::env::current_exe() else { return InstallKind::Installer };
-    let Some(dir) = exe.parent() else { return InstallKind::Installer };
-    // A folder we can write to means a portable copy; Program Files means the MSI.
+    let Ok(exe) = std::env::current_exe() else { return InstallKind::Installer { all_users: true } };
+    let Some(dir) = exe.parent() else { return InstallKind::Installer { all_users: true } };
+    // A folder we can't write to is Program Files: the MSI, for all users. One we can write
+    // to is the MSI for one user if it left its marker, else a portable copy.
     let probe = dir.join(".komando-update-probe");
-    match fs::File::create(&probe) {
+    let writable = match fs::File::create(&probe) {
         Ok(_) => {
             let _ = fs::remove_file(&probe);
-            InstallKind::Portable { exe }
+            true
         }
-        Err(_) => InstallKind::Installer,
+        Err(_) => false,
+    };
+    kind_for(exe.clone(), writable, dir.join(MSI_MARKER).is_file())
+}
+
+fn kind_for(exe: PathBuf, writable: bool, has_msi_marker: bool) -> InstallKind {
+    match (writable, has_msi_marker) {
+        (false, _) => InstallKind::Installer { all_users: true },
+        (true, true) => InstallKind::Installer { all_users: false },
+        (true, false) => InstallKind::Portable { exe },
     }
 }
 
@@ -270,6 +286,15 @@ pub fn relaunch(exe: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_kind_tells_msi_installs_from_portable_copies() {
+        let exe = PathBuf::from(r"C:\Komando\komando.exe");
+        assert_eq!(kind_for(exe.clone(), false, false), InstallKind::Installer { all_users: true });
+        assert_eq!(kind_for(exe.clone(), false, true), InstallKind::Installer { all_users: true });
+        assert_eq!(kind_for(exe.clone(), true, true), InstallKind::Installer { all_users: false });
+        assert_eq!(kind_for(exe.clone(), true, false), InstallKind::Portable { exe });
+    }
 
     #[test]
     fn versions_parse_and_compare() {

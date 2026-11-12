@@ -1,0 +1,11 @@
+<!--
+  Komando's wording for the standard WiX dialogs it uses. These override the WiX UI
+  extension's strings of the same Id.
+-->
+<WixLocalization Culture="en-US" xmlns="http://wixtoolset.org/schemas/v4/wxl">
+  <!-- The last page says what happened: installed, repaired or removed (set in komando.wxs). -->
+  <String Id="ExitDialogTitle" Value="{\WixUI_Font_Bigger}[KomandoDoneTitle]" />
+  <String Id="ExitDialogDescription" Value="[KomandoDoneText]" />
+  <!-- Microsoft's wizard guidelines: "Close" once the task is done, not "Finish". -->
+  <String Id="WixUIFinish" Value="&amp;Close" />
+</WixLocalization>

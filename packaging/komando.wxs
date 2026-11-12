@@ -1,7 +1,14 @@
 <!--
-  Komando MSI (WiX Toolset v5). Built by .github/workflows/release.yml:
-    wix build packaging/komando.wxs -arch x64 -d Version=1.2.3 -d BinDir=target\release -o Komando.msi
-  The UpgradeCode must never change: it is how Windows recognises newer versions.
+  Komando MSI (WiX Toolset v5). Built by packaging/build-msi.ps1, which the CI and Release
+  workflows run. The UpgradeCode must never change: it is how Windows recognises newer versions.
+
+  A dual-purpose package (Microsoft's "single package authoring"): the first page asks whether
+  to install for the current user only (in %LOCALAPPDATA%\Programs, no administrator rights) or
+  for all users (in Program Files, Windows asks for administrator rights). Command line:
+    msiexec /i Komando.msi                        for you only (the default)
+    msiexec /i Komando.msi ALLUSERS=1             for all users
+  Versions up to 0.2.2 always installed for all users; an existing install for all users is
+  preselected, so an update replaces it instead of adding a second copy.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
@@ -9,17 +16,30 @@
       Manufacturer="Komando"
       Version="$(Version)"
       UpgradeCode="7a5f00bc-ed5c-4bbb-8efc-507f1daae512"
-      Scope="perMachine">
+      Scope="perUserOrMachine">
     <SummaryInformation Description="Komando terminal" />
     <MajorUpgrade DowngradeErrorMessage="A newer version of Komando is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="KomandoIcon" SourceFile="assets\icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="KomandoIcon" />
 
+    <!-- The directory id has lower-case letters on purpose: it keeps the folder a private
+         property, so the path the setup window works out for the default scope (per user) is
+         not handed to the installation, which resolves it again for the chosen scope. -->
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="Komando">
+      <Directory Id="InstallFolder" Name="Komando">
         <Component Id="MainExecutable">
           <File Id="KomandoExe" Source="$(BinDir)\komando.exe" KeyPath="yes" />
+        </Component>
+        <!-- Tells Komando's updater that this copy came from the MSI, so an install for one
+             user (in a folder the user can write to) is still updated by the installer. -->
+        <Component Id="InstallerMarker">
+          <File Id="InstallerMarkerFile" Source="packaging\installed-with-msi.txt" KeyPath="yes" />
+        </Component>
+        <!-- HKMU: HKLM for an install for all users, HKCU for one user. Read back below to
+             preselect the same scope for the next version. -->
+        <Component Id="InstallScopeMarker">
+          <RegistryValue Root="HKMU" Key="Software\Komando" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
         </Component>
       </Directory>
     </StandardDirectory>
@@ -27,9 +47,120 @@
     <StandardDirectory Id="ProgramMenuFolder">
       <Component Id="StartMenuShortcut">
         <Shortcut Id="KomandoShortcut" Name="Komando" Description="Terminal for SSH and local shells"
-                  Target="[INSTALLFOLDER]komando.exe" WorkingDirectory="INSTALLFOLDER" />
+                  Target="[InstallFolder]komando.exe" WorkingDirectory="InstallFolder" />
         <RegistryValue Root="HKCU" Key="Software\Komando" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </StandardDirectory>
+
+    <!-- Which scope to preselect: the one Komando is already installed in, else "for me only".
+         Up to 0.2.2 every install was for all users and left only the HKCU shortcut value. -->
+    <Property Id="KOMANDO_SCOPE" Value="perUser" Secure="yes" />
+    <Property Id="KOMANDO_FOUND_MACHINE">
+      <RegistrySearch Id="FindMachineInstall" Root="HKLM" Key="Software\Komando" Name="Installed" Type="raw" />
+    </Property>
+    <Property Id="KOMANDO_FOUND_USER">
+      <RegistrySearch Id="FindUserInstall" Root="HKCU" Key="Software\Komando" Name="Installed" Type="raw" />
+    </Property>
+    <Property Id="KOMANDO_FOUND_OLD">
+      <RegistrySearch Id="FindOldInstall" Root="HKCU" Key="Software\Komando" Name="StartMenuShortcut" Type="raw" />
+    </Property>
+    <SetProperty Id="KOMANDO_SCOPE" Action="KomandoPreselectAllUsers" Value="perMachine" After="AppSearch" Sequence="first"
+                 Condition="KOMANDO_FOUND_MACHINE OR (KOMANDO_FOUND_OLD AND NOT KOMANDO_FOUND_USER)" />
+    <!-- Also without the setup window (msiexec /qn), so a quiet update stays for all users. -->
+    <SetProperty Id="ALLUSERS" Action="KomandoInstallForAllUsers" Value="1" After="KomandoPreselectAllUsers" Sequence="first"
+                 Condition="KOMANDO_SCOPE = &quot;perMachine&quot;" />
+
+    <!-- The last page: what happened, and a box (ticked) to open Komando when it closes. -->
+    <Property Id="KomandoDoneTitle" Value="Komando is installed" />
+    <Property Id="KomandoDoneText" Value="You can open it from the Start menu any time." />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Open Komando now" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[LocalAppDataFolder]Programs\Komando\komando.exe" />
+    <CustomActionRef Id="Wix4ShellExec_X64" />
+
+    <UI Id="KomandoUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <TextStyle Id="WixUI_Font_Emphasized" FaceName="Tahoma" Size="8" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+
+      <!-- First install: one page, the scope, whose button installs. -->
+      <Dialog Id="KomandoScopeDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}Who should be able to use Komando?" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="330" Height="18" Transparent="yes" NoPrefix="yes"
+                 Text="Install it for your Windows account only, or for everyone who signs in to this PC." />
+
+        <Control Id="Scope" Type="RadioButtonGroup" X="20" Y="58" Width="330" Height="150" Property="KOMANDO_SCOPE">
+          <RadioButtonGroup Property="KOMANDO_SCOPE">
+            <RadioButton Value="perUser" X="0" Y="0" Width="320" Height="16" Text="{\WixUI_Font_Emphasized}Install for &amp;me only ([LogonUser])" />
+            <RadioButton Value="perMachine" X="0" Y="66" Width="320" Height="16" Text="{\WixUI_Font_Emphasized}Install for &amp;all users" />
+          </RadioButtonGroup>
+        </Control>
+        <Control Id="PerUserText" Type="Text" X="37" Y="76" Width="310" Height="40" NoPrefix="yes"
+                 Text="Komando goes in your user folder (AppData\Local\Programs). You don't need administrator rights, and other people who use this PC won't see it." />
+        <Control Id="PerMachineText" Type="Text" X="37" Y="142" Width="310" Height="40" NoPrefix="yes"
+                 Text="Komando goes in the Program Files folder and appears in the Start menu of everyone who signs in to this PC. Windows asks for administrator rights." />
+
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <!-- Two Install buttons, so the UAC shield shows only when Windows will ask. -->
+        <Control Id="InstallForAll" Type="PushButton" ElevationShield="yes" X="212" Y="243" Width="80" Height="17"
+                 Default="yes" Hidden="yes" Text="&amp;Install"
+                 ShowCondition="KOMANDO_SCOPE = &quot;perMachine&quot;" HideCondition="KOMANDO_SCOPE &lt;&gt; &quot;perMachine&quot;"
+                 DefaultCondition="KOMANDO_SCOPE = &quot;perMachine&quot;">
+          <Publish Property="ALLUSERS" Value="1" Order="1" />
+          <Publish Event="EndDialog" Value="Return" Order="2" />
+        </Control>
+        <Control Id="InstallForMe" Type="PushButton" ElevationShield="no" X="212" Y="243" Width="80" Height="17"
+                 Default="yes" Hidden="yes" Text="&amp;Install"
+                 ShowCondition="KOMANDO_SCOPE &lt;&gt; &quot;perMachine&quot;" HideCondition="KOMANDO_SCOPE = &quot;perMachine&quot;"
+                 DefaultCondition="KOMANDO_SCOPE &lt;&gt; &quot;perMachine&quot;">
+          <Publish Property="ALLUSERS" Value="2" Order="1" />
+          <Publish Property="MSIINSTALLPERUSER" Value="1" Order="2" />
+          <Publish Event="EndDialog" Value="Return" Order="3" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <InstallUISequence>
+        <Show Dialog="KomandoScopeDlg" Before="ProgressDlg" Condition="NOT Installed" />
+      </InstallUISequence>
+
+      <!-- Last page: open Komando from where this install put it (the folder the setup window
+           worked out before the choice is the per-user one, so name it here). -->
+      <Publish Dialog="ExitDialog" Control="Finish" Property="WixShellExecTarget" Value="[%ProgramW6432]\Komando\komando.exe" Order="1"
+               Condition="KOMANDO_SCOPE = &quot;perMachine&quot;" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="Wix4ShellExec_X64" Order="2"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+
+      <!-- Running the MSI again with Komando installed: repair or remove. -->
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Property="KomandoDoneTitle" Value="Komando is repaired" Order="1" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Property="KomandoDoneText" Value="Its program files are restored. Your projects, hosts and vault were not touched." Order="2" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" Order="3" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Property="KomandoDoneTitle" Value="Komando is removed" Order="1" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Property="KomandoDoneText" Value="Your projects, hosts and vault are still in %APPDATA%\Komando. Delete that folder if you no longer need them." Order="2" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" Order="3" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" />
+
+      <Property Id="ARPNOMODIFY" Value="1" />
+    </UI>
+    <UIRef Id="WixUI_Common" />
   </Package>
 </Wix>

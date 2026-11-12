@@ -6,6 +6,20 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-12
+
+### Added
+
+- The installer asks who Komando is for. **Install for me only** puts it in your user folder
+  and needs no administrator rights; **Install for all users** puts it in Program Files for
+  everyone who signs in to the PC, and Windows asks for administrator rights. A new install
+  starts on "for me only"; if Komando is already installed for all users (as every version up
+  to 0.2.2 was), that is preselected, so the update replaces it instead of adding a second copy.
+- The installer ends on a page that says Komando is installed, with a ticked "Open Komando now"
+  box. Repairing or removing Komando from the installer says what happened too.
+- Updating from Settings → About runs the installer for an install for one user as well, and
+  says whether Windows will ask for administrator rights.
+
 ### Fixed
 
 - Validation errors in the Project and Host dialogs stay visible above the action buttons,
