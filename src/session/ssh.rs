@@ -13,6 +13,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use alacritty_terminal::event::{Event, EventListener};
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::Processor;
 use anyhow::{Result, anyhow};
 use futures::channel::oneshot;
@@ -21,8 +23,10 @@ use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertific
 use russh::{ChannelMsg, Disconnect, Pty};
 use tokio::sync::mpsc;
 
+use super::sudo::SudoPassword;
 use super::{Answer, EventProxy, GridSize, HopStep, InputSink, Prompt, Remembered, SessionEvent, SharedTerm, Status};
 use crate::vault::Secret;
+use zeroize::Zeroizing;
 
 pub enum Command {
     Input(Vec<u8>),
@@ -234,6 +238,8 @@ async fn run(
     });
     // Every hop's connection stays open: the next one runs through it.
     let mut handles: Vec<Handle<Client>> = Vec::with_capacity(target.hops.len());
+    // The last hop's user and the password it signed in with, offered at sudo prompts.
+    let mut sudo = None;
     for (index, hop) in target.hops.iter().enumerate() {
         proxy.send(SessionEvent::Hop { index, step: HopStep::Reaching });
         match index {
@@ -280,20 +286,23 @@ async fn run(
         proxy.send(SessionEvent::Hop { index, step: HopStep::SigningIn });
         // Saved only once it signed in, so a mistyped user name is not remembered. Before the
         // password, so the password's vault entry is labelled with it.
-        let remember_password = authenticate(&mut handle, &user, hop.secret.as_ref(), &proxy, &log).await?;
+        let signed_in = authenticate(&mut handle, &user, hop.secret.as_ref(), &proxy, &log).await?;
         log.line(LogKind::Good, &format!("Signed in to {} as {user}", hop.name));
         if remember_user {
             proxy.send(SessionEvent::Remember { hop: index, what: Remembered::User(user.clone()) });
         }
-        if let Some(password) = remember_password {
-            proxy.send(SessionEvent::Remember { hop: index, what: Remembered::Password(password) });
+        if let Some(password) = &signed_in.password {
+            if signed_in.remember {
+                proxy.send(SessionEvent::Remember { hop: index, what: Remembered::Password(password.to_string()) });
+            }
         }
+        sudo = signed_in.password.map(|password| SudoPassword::new(user, password));
         proxy.send(SessionEvent::Hop { index, step: HopStep::Done });
         handles.push(handle);
     }
     // Shared with SFTP channels opened on the same connection.
     let handle = Arc::new(handles.pop().ok_or_else(|| anyhow!("Nothing to connect to."))?);
-    let result = shell(&handle, &mut size, &term, &proxy, &mut commands).await;
+    let result = shell(&handle, &mut size, &term, &proxy, &mut commands, sudo).await;
     // Always end the connection with the terminal, so SFTP channels opened on it end too.
     let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
     // The Jump Hosts' connections, innermost first.
@@ -309,6 +318,7 @@ async fn shell(
     term: &SharedTerm,
     proxy: &EventProxy,
     commands: &mut mpsc::UnboundedReceiver<Command>,
+    mut sudo: Option<SudoPassword>,
 ) -> Result<String> {
     let mut channel = handle.channel_open_session().await?;
     channel
@@ -334,9 +344,10 @@ async fn shell(
         let sync_deadline = output.sync_deadline();
         tokio::select! {
             msg = channel.wait() => match msg {
-                Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                    output.feed(term, proxy, &data);
-                }
+                Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => match &mut sudo {
+                    Some(sudo) => show_watching_sudo(&mut output, term, proxy, sudo, &data),
+                    None => output.feed(term, proxy, &data),
+                },
                 Some(ChannelMsg::ExitStatus { exit_status: code }) => exit_status = Some(code),
                 // The exit status may still follow the end of output; wait for Close.
                 Some(ChannelMsg::Eof) => {}
@@ -350,7 +361,16 @@ async fn shell(
                 Some(_) => {}
             },
             command = commands.recv() => match command {
-                Some(Command::Input(bytes)) => channel.data_bytes(bytes).await?,
+                Some(Command::Input(bytes)) => match &mut sudo {
+                    Some(sudo) => {
+                        let typed = sudo.typed(bytes);
+                        if typed.clear {
+                            output.feed(term, proxy, super::sudo::CLEAR);
+                        }
+                        channel.data(&typed.send[..]).await?;
+                    }
+                    None => channel.data_bytes(bytes).await?,
+                },
                 Some(Command::Resize(new_size)) => {
                     if new_size != *size {
                         *size = new_size;
@@ -373,6 +393,29 @@ async fn shell(
         }
     };
     Ok(reason)
+}
+
+/// Shows output, and offers the sign-in password after a sudo prompt for the signed-in user:
+/// a hint after the prompt, where there is room for it on the line and the screen is the
+/// shell's (not a full-screen program's, which would draw over it).
+fn show_watching_sudo(output: &mut Output, term: &SharedTerm, proxy: &EventProxy, sudo: &mut SudoPassword, data: &[u8]) {
+    if sudo.output_arrives() {
+        output.feed(term, proxy, super::sudo::CLEAR);
+    }
+    output.feed(term, proxy, data);
+    if sudo.output_shown(data) {
+        let room = {
+            let term = term.lock();
+            if term.mode().contains(TermMode::ALT_SCREEN) {
+                0
+            } else {
+                term.columns().saturating_sub(term.grid().cursor.point.column.0 + 1)
+            }
+        };
+        if let Some(hint) = sudo.offer(room) {
+            output.feed(term, proxy, hint.as_bytes());
+        }
+    }
 }
 
 /// POSIX terminal modes for the remote PTY, as OpenSSH sends them from a local terminal.
@@ -442,13 +485,21 @@ impl Output {
     }
 }
 
+/// How a hop signed in.
+struct SignedIn {
+    /// The password that worked, saved or typed; `None` for a key.
+    password: Option<Zeroizing<String>>,
+    /// It was typed with "Remember" ticked: save it for the Host.
+    remember: bool,
+}
+
 async fn authenticate(
     handle: &mut Handle<Client>,
     user: &str,
     secret: Option<&Secret>,
     proxy: &EventProxy,
     log: &ConnectLog,
-) -> Result<Option<String>> {
+) -> Result<SignedIn> {
     let mut last_error = None;
     match secret {
         Some(Secret::PrivateKey { key, passphrase }) => {
@@ -468,7 +519,7 @@ async fn authenticate(
                         .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(private_key), hash))
                         .await?;
                     if matches!(result, AuthResult::Success) {
-                        return Ok(None);
+                        return Ok(SignedIn { password: None, remember: false });
                     }
                     last_error = Some("The server rejected the saved key.".to_string());
                 }
@@ -478,7 +529,7 @@ async fn authenticate(
         Some(Secret::Password { password }) => {
             log.line(LogKind::Step, &format!("Signing in as {user} with the saved password"));
             if matches!(handle.authenticate_password(user, password.as_str()).await?, AuthResult::Success) {
-                return Ok(None);
+                return Ok(SignedIn { password: Some(Zeroizing::new(password.clone())), remember: false });
             }
             last_error = Some("The saved password was rejected.".to_string());
         }
@@ -489,8 +540,7 @@ async fn authenticate(
     }
     log.line(LogKind::Step, &format!("Signing in as {user} with a password: waiting for it"));
 
-    // Fall back to asking. A typed password that works is returned when "Remember" was
-    // ticked, for saving; the tick carries over to the next try.
+    // Fall back to asking. The tick on "Remember" carries over to the next try.
     let mut remember = false;
     for _ in 0..3 {
         let label = format!("Password for {user}");
@@ -498,8 +548,9 @@ async fn authenticate(
             return Err(anyhow!("Cancelled."));
         };
         remember = answer.remember;
-        if matches!(handle.authenticate_password(user, answer.value.as_str()).await?, AuthResult::Success) {
-            return Ok(remember.then_some(answer.value));
+        let password = Zeroizing::new(answer.value);
+        if matches!(handle.authenticate_password(user, password.as_str()).await?, AuthResult::Success) {
+            return Ok(SignedIn { password: Some(password), remember });
         }
         log.line(LogKind::Warn, "Wrong password");
         last_error = Some("Wrong password. Try again.".to_string());
@@ -509,7 +560,37 @@ async fn authenticate(
 
 #[cfg(test)]
 mod tests {
-    use super::{LogKind, log_line};
+    use super::{LogKind, Output, SudoPassword, log_line, show_watching_sudo};
+    use crate::session::{EventProxy, GridSize, new_term, scrollback_text};
+
+    #[test]
+    fn the_sudo_hint_sits_after_the_prompt_and_goes_away() {
+        let (tx, _rx) = futures::channel::mpsc::unbounded();
+        let proxy = EventProxy::new(tx);
+        let size = GridSize { cols: 80, rows: 5, cell_width: 9, cell_height: 18 };
+        let term = new_term(size, 100, proxy.clone());
+        let mut output = Output::default();
+        let mut sudo = SudoPassword::new("ana".into(), zeroize::Zeroizing::new("hunter2".into()));
+        let cursor = |term: &crate::session::SharedTerm| term.lock().grid().cursor.point;
+
+        show_watching_sudo(&mut output, &term, &proxy, &mut sudo, b"$ sudo ls\r\n[sudo] password for ana: ");
+        let text = scrollback_text(&*term.lock());
+        assert!(text.contains("[sudo] password for ana:   Komando  Press Enter to use your sign-in password"), "{text:?}");
+        assert_eq!(cursor(&term).column.0, "[sudo] password for ana: ".len(), "the cursor stays at the prompt");
+
+        let typed = sudo.typed(b"\r".to_vec());
+        assert!(typed.clear);
+        assert_eq!(&*typed.send, b"hunter2\r");
+        output.feed(&term, &proxy, crate::session::sudo::CLEAR);
+        assert_eq!(scrollback_text(&*term.lock()), "$ sudo ls\r\n[sudo] password for ana:\r\n");
+
+        // Too little room left on the line: nothing is drawn or offered.
+        let narrow = new_term(GridSize { cols: 30, ..size }, 100, proxy.clone());
+        let mut sudo = SudoPassword::new("ana".into(), zeroize::Zeroizing::new("hunter2".into()));
+        show_watching_sudo(&mut output, &narrow, &proxy, &mut sudo, b"[sudo] password for ana: ");
+        assert_eq!(scrollback_text(&*narrow.lock()), "[sudo] password for ana:\r\n");
+        assert_eq!(&*sudo.typed(b"\r".to_vec()).send, b"\r");
+    }
 
     #[test]
     fn log_lines_are_tagged_and_end_the_line() {

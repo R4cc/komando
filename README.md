@@ -37,6 +37,7 @@
 
 - **Encrypted password and key vault.** Argon2id and XChaCha20-Poly1305, locked by a master password. Auto-locks after 30 minutes idle while your sessions stay connected.
 - **Saves passwords for you.** When a password you typed works, Komando offers to remember it for that host or for the whole project.
+- **Sudo without retyping.** When `sudo` asks for your password, press Enter and Komando types the password you signed in with.
 - **Import SSH keys.** OpenSSH and PuTTY `.ppk` keys are supported.
 - **Server fingerprint checks.** New servers ask for your trust on first connect, and a changed key blocks the connection. Hosts you already trust in your OpenSSH `known_hosts` are recognised.
 

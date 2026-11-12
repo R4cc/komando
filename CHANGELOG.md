@@ -6,6 +6,14 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- When `sudo` asks for your password in an SSH session, Komando shows "Press Enter to use your
+  sign-in password" after the prompt. Press Enter and it types the password you signed in to
+  the host with, saved or typed; press any other key to type your own. It is offered only when
+  sudo asks for the user you signed in as, and not again right after it was rejected. Sessions
+  that sign in with a key have no password to offer.
+
 ## [0.2.8] - 2026-11-12
 
 ### Changed

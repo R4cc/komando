@@ -7,6 +7,7 @@
 
 pub mod local;
 pub mod ssh;
+mod sudo;
 
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
