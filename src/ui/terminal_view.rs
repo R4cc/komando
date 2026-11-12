@@ -465,6 +465,12 @@ impl TerminalView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Keys typed into a field on top of the terminal (a connection question's user name or
+        // password) bubble up to here. They belong to that field: sending them to the session
+        // and stopping propagation would also stop the field from receiving the text.
+        if !self.focus.is_focused(window) {
+            return;
+        }
         let ks = &event.keystroke;
         let m = &ks.modifiers;
         // Application shortcuts are all ctrl+shift+… (and ctrl+tab); plain ctrl+letter keys
@@ -500,7 +506,6 @@ impl TerminalView {
             cx.stop_propagation();
             cx.notify();
         }
-        let _ = window;
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {

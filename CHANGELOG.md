@@ -6,6 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-11-12
+
+### Fixed
+
+- Typing into a connection question (the user name or password asked while connecting) works
+  again. The keys went to the terminal behind it, so the field stayed empty.
+
 ## [0.2.5] - 2026-11-12
 
 ### Added
