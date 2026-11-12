@@ -6,6 +6,12 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-12
+
+### Changed
+
+- Refreshed the README screenshots to show the current terminal, SFTP browser and highlight settings.
+
 ## [0.2.0] - 2026-11-12
 
 ### Added

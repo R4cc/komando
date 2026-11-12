@@ -8,7 +8,7 @@
 
 <img src="assets/screenshot-dark.png" alt="Komando SSH terminal: servers grouped into projects in a sidebar, an SSH session showing systemctl status and a highlighted application log">
 
-<sub>Screenshots of the real app: live SSH sessions to a test server, one host still connecting, idle hosts dimmed.</sub>
+<sub>Screenshots of the real app: SSH sessions and SFTP against an isolated test server, with example logs and files.</sub>
 
 ## Why Komando
 
@@ -38,6 +38,8 @@
 - **Server fingerprint checks.** New servers ask for your trust on first connect, and a changed key blocks the connection. Hosts you already trust in your OpenSSH `known_hosts` are recognised.
 
 ### Files over SFTP
+
+<img src="assets/screenshot-sftp.png" alt="Komando SFTP browser beside an SSH terminal, showing deployment folders, configuration files, sizes, modification dates and permissions">
 
 - **A file browser beside the terminal.** Click **SFTP** above any SSH session: the server's files open on the right, over the connection you already have, with no second login. Drag the divider to size it.
 - **Everything a quick file job needs.** Upload and download files and whole folders (or drop them in from Explorer), create, rename, copy, move and delete, sort by name, size or date, and see each file's permissions.
