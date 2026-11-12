@@ -1,0 +1,17 @@
+2026-11-12T18:57:53.7800319Z ---- sftp::tests::concurrent_reservations_preserve_existing_files_and_partials stdout ----
+2026-11-12T18:57:53.7800702Z 
+2026-11-12T18:57:53.7800936Z thread 'komando-ssh' (9140) panicked at src\sftp.rs:1465:82:
+2026-11-12T18:57:53.7801775Z called `Result::unwrap()` on an `Err` value: OpError { kind: Local, message: "Access denied: C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\komando-reserve-test-6516\\shared (2).log" }
+2026-11-12T18:57:53.7802647Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2026-11-12T18:57:53.7802987Z 
+2026-11-12T18:57:53.7803371Z thread 'sftp::tests::concurrent_reservations_preserve_existing_files_and_partials' (7660) panicked at src\sftp.rs:1481:13:
+2026-11-12T18:57:53.7808572Z called `Result::unwrap()` on an `Err` value: OpError { kind: Other, message: "Stopped unexpectedly: task 3 panicked with message \"called `Result::unwrap()` on an `Err` value: OpError { kind: Local, message: \\\"Access denied: C:\\\\\\\\Users\\\\\\\\RUNNER~1\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\komando-reserve-test-6516\\\\\\\\shared (2).log\\\" }\"" }
+2026-11-12T18:57:53.7810618Z 
+2026-11-12T18:57:53.7810634Z 
+2026-11-12T18:57:53.7810770Z failures:
+2026-11-12T18:57:53.7811166Z     sftp::tests::concurrent_reservations_preserve_existing_files_and_partials
+2026-11-12T18:57:53.7811546Z 
+2026-11-12T18:57:53.7811832Z test result: FAILED. 146 passed; 1 failed; 7 ignored; 0 measured; 0 filtered out; finished in 3.10s
+2026-11-12T18:57:53.7812430Z 
+2026-11-12T18:57:53.7835542Z ^[[1m^[[91merror^[[0m: test failed, to rerun pass `--lib`
+2026-11-12T18:57:53.8934242Z ##[error]Process completed with exit code 1.

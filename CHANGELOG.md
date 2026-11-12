@@ -6,6 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-12
+
+### Fixed
+
+- Simultaneous file and folder downloads with matching names choose separate destinations
+  on Windows, including when Windows reports a filename collision as "Access denied".
+
 ## [0.3.2] - 2026-11-12
 
 ### Added

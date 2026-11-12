@@ -1090,11 +1090,19 @@ async fn reserve_local(dir: &Path, name: &str, folder: bool) -> Result<(PathBuf,
             }
             let partial = partial_path(&target);
             let file = if folder {
-                std::fs::create_dir(&partial)?;
-                None
+                std::fs::create_dir(&partial).map(|()| None)
             } else {
-                Some(std::fs::OpenOptions::new().write(true).create_new(true).open(&partial)?)
-            };
+                std::fs::OpenOptions::new().write(true).create_new(true).open(&partial).map(Some)
+            }.map_err(|error| {
+                // Windows reports AccessDenied when CREATE_NEW races with a directory
+                // claiming the partial path. Confirm the collision before choosing a new
+                // name; genuine permission errors must still reach the user.
+                if error.kind() == std::io::ErrorKind::PermissionDenied && partial.try_exists().unwrap_or(false) {
+                    std::io::Error::from(std::io::ErrorKind::AlreadyExists)
+                } else {
+                    error
+                }
+            })?;
             Ok(LocalReservation { target, partial, file, folder, handed_off: false })
         };
         // Most names are unused: don't enumerate a potentially huge folder for those.

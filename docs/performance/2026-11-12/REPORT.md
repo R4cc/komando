@@ -1,4 +1,4 @@
-# Performance investigation: 0.3.2
+# Performance investigation: 0.3.3
 
 ## Scope and selection
 
@@ -78,6 +78,12 @@ see `gui-summary.log` and `gui-*.log`. The largest scenario held an idle Local S
 front of streaming background Sessions; its empty later profiling windows confirm no
 continuous workspace repaint. These are observational software-rendering samples, distinct
 from the controlled operation benchmarks above.
+
+The first Windows candidate's concurrent file/folder reservation test exposed Windows'
+`CREATE_NEW` returning AccessDenied when a directory won the same partial path. Version
+0.3.3 verifies that the partial exists before treating this as a collision and retrying;
+real permission failures still propagate. The measurements above were recorded on 0.3.2;
+this final platform correction only changes the error/collision branch.
 
 ## Validation
 
