@@ -29,7 +29,7 @@ _Avoid_: Fingerprint (that is only its display form), known host
 ## Running terminals
 
 **Local Shell**:
-A saved local shell, such as PowerShell or cmd, that Komando can start. It belongs to a Project or stands alone.
+A saved local shell, such as PowerShell or cmd, that Komando can start. It belongs to a Project or stands alone. Standalone ones are managed in Settings → Local shells, where they can be hidden from the sidebar.
 _Avoid_: Local profile
 
 **Session**:

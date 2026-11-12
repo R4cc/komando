@@ -14,6 +14,21 @@ All notable changes to Komando are listed here. The format follows
   sudo asks for the user you signed in as, and not again right after it was rejected. Sessions
   that sign in with a key have no password to offer.
 
+- Settings → Local shells lists the shells at the top of the sidebar. Switch off "Show in
+  sidebar" for the ones you don't use (Command Prompt, say), remove them, or add your own with a
+  name, program and arguments, such as WSL or Git Bash. Hidden shells are still found by quick
+  connect. "Restore detected shells" brings back the ones found on this PC.
+
+### Changed
+
+- A host or shell with several sessions is now a group in the sidebar: its row shows how many
+  sessions it has and folds them away with the chevron. Each session's row shows the title its
+  shell set (such as `user@web01: ~`) or "Session 2", with its number, and has its own close
+  button. The group's row no longer has one, since it closed whichever session you used last;
+  right-click it for "Disconnect all". Closing the session you are on shows another session of
+  the same host or shell.
+- A hidden or removed shell stays in the sidebar while it has sessions open.
+
 ### Fixed
 
 - A new terminal no longer lets you scroll up into a few empty lines above the first output,

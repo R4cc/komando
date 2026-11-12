@@ -92,8 +92,8 @@ enum ItemKey {
     Shell { project: Option<String>, name: String },
 }
 
-/// A row of the sidebar list: what it shows, by position in the Library. `sessions` is part of
-/// it because a host with several Sessions is taller (one nested row each).
+/// A row of the sidebar list: what it shows, by position in the Library. `sessions` (the
+/// Session rows shown under the item) is part of it because they make the row taller.
 #[derive(Clone, PartialEq)]
 enum SidebarRow {
     Shell { index: usize, sessions: usize },
@@ -144,6 +144,10 @@ struct SessionEntry {
     kind: SessionKind,
     /// "web01" or "web01 (2)" when the same Host is open twice.
     label: SharedString,
+    /// Its number among the item's Sessions: the lowest one free when it was opened.
+    number: usize,
+    /// The terminal's title (set by the shell), copied here like `status`.
+    title: SharedString,
     view: Entity<TerminalView>,
     /// The terminal's status, copied here when it changes. The sidebar reads this rather than
     /// the terminal: reading a terminal while rendering makes gpui redraw the whole window on
@@ -194,7 +198,8 @@ enum Pending {
 #[derive(Clone, Default)]
 pub struct Startup {
     pub master_password: Option<String>,
-    /// (Project name, Host or local shell name) pairs to open, in order.
+    /// (Project name, Host or local shell name) pairs to open, in order. A pair listed again
+    /// opens another Session on it.
     pub open: Vec<(String, String)>,
     pub active: Option<usize>,
     /// Open the Settings page at this section (used for screenshots).
@@ -222,6 +227,10 @@ pub struct Workspace {
     blur_slider: Option<Entity<SliderState>>,
     font_slider: Option<Entity<SliderState>>,
     font_input: Option<Entity<InputState>>,
+    /// Settings → Local shells: the form that adds a shell or edits one.
+    shell_editor: Option<settings::ShellEditor>,
+    /// A shell whose Remove button was clicked once, waiting for the second click.
+    confirm_remove_shell: Option<(String, Instant)>,
     vault: Option<Vault>,
     /// Shown full-window at launch; as a dialog when a locked Vault is needed later.
     unlock: Option<UnlockState>,
@@ -236,6 +245,8 @@ pub struct Workspace {
     /// instead of a guess, so it isn't resized (and repainted) straight after it starts.
     pane_size: Option<session::GridSize>,
     collapsed: HashSet<String>,
+    /// Sidebar items whose Sessions are folded away under the item's row.
+    collapsed_items: HashSet<ItemKey>,
     overlay: Option<Overlay>,
     toast: Option<(SharedString, Instant)>,
     last_activity: Instant,
@@ -293,6 +304,8 @@ impl Workspace {
             blur_slider: None,
             font_slider: None,
             font_input: None,
+            shell_editor: None,
+            confirm_remove_shell: None,
             vault: None,
             unlock: None,
             pending: vec![],
@@ -302,6 +315,7 @@ impl Workspace {
             next_id: 1,
             pane_size: None,
             collapsed: HashSet::new(),
+            collapsed_items: HashSet::new(),
             overlay: None,
             toast: None,
             last_activity: Instant::now(),
@@ -351,8 +365,10 @@ impl Workspace {
                     };
                     project.unwrap_or("") == project_name && item.label() == name
                 });
+            // Listed again: another Session on the same item.
             if let Some(item) = item {
-                self.activate_item(item, false, window, cx);
+                let another = self.sessions_of(&item.key()).next().is_some();
+                self.activate_item(item, another, window, cx);
             }
         }
         if let Some(index) = startup.active
@@ -692,12 +708,48 @@ impl Workspace {
             .library
             .standalone_shells()
             .into_iter()
+            .chain(self.orphan_shells())
             .map(|shell| SidebarItem::Shell { project: None, shell })
             .collect();
         for project in &self.library.projects {
             items.extend(self.project_items(project));
         }
         items
+    }
+
+    /// Standalone shells removed in Settings whose Sessions are still open, so those Sessions
+    /// stay reachable until they are closed.
+    fn orphan_shells(&self) -> Vec<LocalShell> {
+        let saved = self.library.standalone_shells();
+        let mut orphans: Vec<LocalShell> = vec![];
+        for s in &self.sessions {
+            if let (ItemKey::Shell { project: None, name }, SessionKind::Local { shell }) = (&s.item, &s.kind)
+                && !saved.iter().any(|saved| saved.name == *name)
+                && !orphans.iter().any(|o| o.name == *name)
+            {
+                orphans.push(LocalShell { name: name.clone(), ..shell.clone() });
+            }
+        }
+        orphans
+    }
+
+    /// The standalone shells the sidebar lists: those not hidden in Settings, plus any with
+    /// Sessions open.
+    fn sidebar_shells(&self) -> Vec<LocalShell> {
+        self.library
+            .standalone_shells()
+            .into_iter()
+            .chain(self.orphan_shells())
+            .filter(|shell| {
+                !shell.hidden || self.sessions_of(&ItemKey::Shell { project: None, name: shell.name.clone() }).next().is_some()
+            })
+            .collect()
+    }
+
+    /// How many Session rows show under an item: one each when it has several and they are
+    /// not folded away.
+    fn nested_rows(&self, key: &ItemKey, sessions: usize) -> usize {
+        if sessions > 1 && !self.collapsed_items.contains(key) { sessions } else { 0 }
     }
 
     fn project_items(&self, project: &Project) -> Vec<SidebarItem> {
@@ -751,9 +803,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<TerminalView> {
-        let existing = self.sessions_of(&item).count();
-        let label: SharedString =
-            if existing == 0 { base_label.to_string().into() } else { format!("{base_label} ({})", existing + 1).into() };
+        let taken: HashSet<usize> = self.sessions_of(&item).map(|s| s.number).collect();
+        let number = (1..).find(|n| !taken.contains(n)).unwrap_or(1);
+        let label: SharedString = if number == 1 { base_label.to_string().into() } else { format!("{base_label} ({number})").into() };
+        // A new Session shows under its item even if the item's Sessions were folded away.
+        self.collapsed_items.remove(&item);
         let scrollback = self.settings.scrollback_lines;
         let confirm_paste = self.settings.confirm_multiline_paste;
         let putty = self.settings.putty_clipboard;
@@ -773,6 +827,7 @@ impl Workspace {
             TerminalEvent::Changed => {
                 let status = view.read(cx).status.clone();
                 if let Some(entry) = this.sessions.iter_mut().find(|s| s.id == id) {
+                    entry.title = view.read(cx).title.clone();
                     let changed = entry.status != status;
                     entry.status = status.clone();
                     // The file browser follows its terminal's connection.
@@ -824,7 +879,9 @@ impl Workspace {
             item,
             project_id,
             kind,
-            label,
+            label: label.clone(),
+            number,
+            title: label,
             view: view.clone(),
             status: Status::Connecting,
             browser: None,
@@ -1100,6 +1157,11 @@ impl Workspace {
             entry.view.update(cx, |v, _| v.close());
             if self.active == Some(id) {
                 self.active = None;
+                // Stay with the item: show another of its Sessions, if it has one.
+                let next = self.sessions_of(&entry.item).next().map(|s| s.id);
+                if let Some(next) = next {
+                    self.activate(next, window, cx);
+                }
             }
         }
         self.focus_active(window, cx);
@@ -1504,9 +1566,10 @@ impl Workspace {
             *counts.entry(&s.item).or_default() += 1;
         }
         let mut rows = vec![];
-        for (index, shell) in self.library.standalone_shells().iter().enumerate() {
+        for (index, shell) in self.sidebar_shells().iter().enumerate() {
             let key = ItemKey::Shell { project: None, name: shell.name.clone() };
-            rows.push(SidebarRow::Shell { index, sessions: counts.get(&key).copied().unwrap_or(0) });
+            let sessions = self.nested_rows(&key, counts.get(&key).copied().unwrap_or(0));
+            rows.push(SidebarRow::Shell { index, sessions });
         }
         rows.push(SidebarRow::ProjectsHeader);
         if self.library.projects.is_empty() {
@@ -1524,7 +1587,8 @@ impl Workspace {
                 rows.push(SidebarRow::FirstHost { project: pi });
             }
             for (index, key) in keys.iter().enumerate() {
-                rows.push(SidebarRow::Item { project: pi, index, sessions: counts.get(key).copied().unwrap_or(0) });
+                let sessions = self.nested_rows(key, counts.get(key).copied().unwrap_or(0));
+                rows.push(SidebarRow::Item { project: pi, index, sessions });
             }
         }
         rows
@@ -1535,7 +1599,7 @@ impl Workspace {
         let p = cx.global::<Appearance>().app;
         let Some(row) = self.sidebar_rows.get(ix).cloned() else { return div().into_any_element() };
         let element = match row {
-            SidebarRow::Shell { index, .. } => match self.library.standalone_shells().get(index).cloned() {
+            SidebarRow::Shell { index, .. } => match self.sidebar_shells().get(index).cloned() {
                 Some(shell) => div()
                     .flex()
                     .flex_col()
@@ -1843,96 +1907,104 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// One sidebar item, plus a nested row for each additional Session on it.
+    /// One sidebar item, plus a row for each of its Sessions when it has several.
     ///
     /// Live items are bright with a status dot; idle ones are dimmed; a dropped Session
     /// that still holds its output shows a hollow ring until it is reconnected or discarded.
+    /// An item with several Sessions is a group: its row shows how many and folds them away,
+    /// and each Session has its own row with its own close button.
     fn render_item(&self, item: &SidebarItem, color: Hsla, indent: f32, p: AppPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let key = item.key();
         let sessions: Vec<&SessionEntry> = self.sessions_of(&key).collect();
+        let grouped = sessions.len() > 1;
+        let expanded = grouped && !self.collapsed_items.contains(&key);
         let shown = self.last_active.get(&key).copied().or_else(|| sessions.first().map(|s| s.id));
-        let mut rows = vec![];
-        let row = |id: SharedString,
-                   label: SharedString,
-                   icon: String,
-                   session: Option<&SessionEntry>,
-                   nested: bool,
-                   item: SidebarItem,
-                   cx: &mut Context<Self>| {
-            let status = session.map(|s| s.status.clone());
-            let active = session.is_some_and(|s| Some(s.id) == self.active);
-            let live = matches!(status, Some(Status::Connected | Status::Connecting));
-            let session_id = session.map(|s| s.id);
-            let item_for_new = item.clone();
-            let ws = cx.entity().downgrade();
-            let menu_item_src = item.clone();
-            let dropped = matches!(status, Some(Status::Disconnected(_)));
-            let item_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
-                let item = menu_item_src.clone();
-                let mut menu = menu;
-                if nested {
-                    // A specific Session of the item.
-                    if let Some(id) = session_id {
-                        if dropped {
-                            menu = menu
-                                .item(menu_item("Reconnect", "refresh-cw", &ws, move |this, window, cx| {
-                                    this.activate(id, window, cx);
-                                    this.reconnect(id, window, cx);
-                                }))
-                                .item(menu_item("Close", "x", &ws, move |this, window, cx| this.close_session(id, window, cx)));
-                        } else {
-                            menu = menu.item(menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.close_session(id, window, cx)));
-                        }
-                    }
-                    return menu;
-                }
-                let (open, another) = (item.clone(), item.clone());
+        let main = shown.and_then(|id| sessions.iter().find(|s| s.id == id).copied()).or(sessions.first().copied());
+        let holds_active = sessions.iter().any(|s| Some(s.id) == self.active);
+        // A group's state: live if any Session is, connecting if any is on the way.
+        let status = if grouped {
+            let any = |f: fn(&Status) -> bool| sessions.iter().any(|s| f(&s.status));
+            Some(if any(|s| matches!(s, Status::Connected)) {
+                Status::Connected
+            } else if any(|s| matches!(s, Status::Connecting)) {
+                Status::Connecting
+            } else {
+                Status::Disconnected(String::new())
+            })
+        } else {
+            main.map(|s| s.status.clone())
+        };
+        let live = matches!(status, Some(Status::Connected | Status::Connecting));
+        // With the Sessions listed below, the active one is marked there instead.
+        let active = holds_active && !expanded;
+        let any_live = sessions.iter().any(|s| s.is_live());
+        let session_id = main.map(|s| s.id);
+        let icon = item.icon();
+
+        let ws = cx.entity().downgrade();
+        let menu_item_src = item.clone();
+        let menu_key = key.clone();
+        let count = sessions.len();
+        let item_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+            let item = menu_item_src.clone();
+            let (open, another) = (item.clone(), item.clone());
+            let mut menu = menu
+                .item(menu_item(if live { "Show session" } else { "Connect" }, "plug", &ws, move |this, window, cx| {
+                    this.activate_item(open.clone(), false, window, cx)
+                }))
+                .item(menu_item("New session", "plus", &ws, move |this, window, cx| this.activate_item(another.clone(), true, window, cx)));
+            if grouped {
+                let (fold, all) = (menu_key.clone(), menu_key.clone());
                 menu = menu
-                    .item(menu_item(if live { "Show session" } else { "Connect" }, "plug", &ws, move |this, window, cx| {
-                        this.activate_item(open.clone(), false, window, cx)
-                    }))
-                    .item(menu_item("New session", "plus", &ws, move |this, window, cx| this.activate_item(another.clone(), true, window, cx)));
-                if let Some(id) = session_id {
-                    if live {
-                        menu = menu.item(menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.close_session(id, window, cx)));
-                    } else {
-                        menu = menu.item(menu_item("Close session", "x", &ws, move |this, window, cx| this.close_session(id, window, cx)));
-                    }
+                    .item(menu_item(
+                        if expanded { "Collapse sessions" } else { "Expand sessions" },
+                        if expanded { "chevron-up" } else { "chevron-down" },
+                        &ws,
+                        move |this, _, cx| this.toggle_item_sessions(&fold, cx),
+                    ))
+                    .item(menu_item(
+                        &if any_live { format!("Disconnect all {count}") } else { format!("Close all {count}") },
+                        if any_live { "unplug" } else { "x" },
+                        &ws,
+                        move |this, window, cx| this.close_item_sessions(&all, window, cx),
+                    ));
+            } else if let Some(id) = session_id {
+                if live {
+                    menu = menu.item(menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.close_session(id, window, cx)));
+                } else {
+                    menu = menu.item(menu_item("Close session", "x", &ws, move |this, window, cx| this.close_session(id, window, cx)));
                 }
-                if let SidebarItem::Host { project, host } = &item {
-                    let (pa, ha) = (project.id.clone(), host.id.clone());
-                    let (pb, hb) = (project.id.clone(), host.id.clone());
-                    let hc = host.id.clone();
-                    menu = menu
-                        .separator()
-                        .item(menu_item("Edit host…", "pencil", &ws, move |this, window, cx| this.open_edit_host(pa.clone(), ha.clone(), window, cx)))
-                        .item(menu_item("Copy address", "copy", &ws, move |this, _, cx| this.copy_host_address(&pb, &hb, cx)))
-                        .separator()
-                        .item(menu_item("Delete host…", "trash", &ws, move |this, _, cx| this.confirm_delete_host(hc.clone(), cx)));
-                }
-                menu
-            };
-            let indicator = match &status {
-                Some(Status::Connected) => status_dot(p.success).into_any_element(),
-                Some(Status::Connecting) => status_dot(p.warning).into_any_element(),
-                Some(Status::Disconnected(_)) => div()
-                    .size(px(7.))
-                    .flex_shrink_0()
-                    .rounded_full()
-                    .border_1()
-                    .border_color(p.text_faint)
-                    .into_any_element(),
-                None => div().into_any_element(),
-            };
+            }
+            if let SidebarItem::Host { project, host } = &item {
+                let (pa, ha) = (project.id.clone(), host.id.clone());
+                let (pb, hb) = (project.id.clone(), host.id.clone());
+                let hc = host.id.clone();
+                menu = menu
+                    .separator()
+                    .item(menu_item("Edit host…", "pencil", &ws, move |this, window, cx| this.open_edit_host(pa.clone(), ha.clone(), window, cx)))
+                    .item(menu_item("Copy address", "copy", &ws, move |this, _, cx| this.copy_host_address(&pb, &hb, cx)))
+                    .separator()
+                    .item(menu_item("Delete host…", "trash", &ws, move |this, _, cx| this.confirm_delete_host(hc.clone(), cx)));
+            }
+            menu
+        };
+
+        let item_for_click = item.clone();
+        let item_for_new = item.clone();
+        let toggle_key = key.clone();
+        // A shell's coloured icon is dimmed like the tinted ones when it's idle.
+        let dim = !(active || live) && is_artwork(&icon);
+        let mut rows = vec![];
+        rows.push(
             div()
-                .id(id)
+                .id(SharedString::from(format!("item-{key:?}")))
                 .group("item-row")
                 // Also the size of its right-click menu, which inherits it.
                 .text_size(px(13.))
                 .relative()
-                .h(px(if nested { 30. } else { 34. }))
-                .pl(px(if nested { indent + 18. } else { indent }))
-                .pr(px(10.))
+                .h(px(34.))
+                .pl(px(indent))
+                .pr(px(if grouped { 6. } else { 10. }))
                 .flex()
                 .items_center()
                 .gap(px(10.))
@@ -1940,103 +2012,214 @@ impl Workspace {
                 .cursor_pointer()
                 .when(active, |el| el.bg(p.active))
                 .when(!active, |el| el.hover(|s| s.bg(p.hover)))
-                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| match session_id {
-                    // Nested rows are specific Sessions.
-                    Some(id) if nested => {
-                        this.activate(id, window, cx);
-                        let dropped = this.sessions.iter().find(|s| s.id == id).is_some_and(|s| !s.is_live());
-                        if dropped {
-                            this.reconnect(id, window, cx);
-                        }
-                    }
-                    _ => this.activate_item(item.clone(), event.modifiers().control, window, cx),
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    this.activate_item(item_for_click.clone(), event.modifiers().control, window, cx)
                 }))
-                .when(!nested, |el| {
-                    // A shell's coloured icon is dimmed like the tinted ones when it's idle.
-                    let dim = !(active || live) && is_artwork(&icon);
-                    el.child(
-                        div()
-                            .flex_shrink_0()
-                            .when(dim, |el| el.opacity(0.55))
-                            .child(icon_el(&icon, 15., if active || live { color } else { p.text_faint })),
-                    )
-                })
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .when(dim, |el| el.opacity(0.55))
+                        .child(icon_el(&icon, 15., if active || live { color } else { p.text_faint })),
+                )
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(px(if nested { 12.5 } else { 13. }))
                         .text_color(if active || live { p.text } else { p.text_muted })
-                        .child(label),
+                        .child(item.label().to_string()),
                 )
-                // The status dot gives way to the row's buttons while hovered, so the two
-                // never sit on top of each other.
-                .child(div().flex_shrink_0().group_hover("item-row", |s| s.invisible()).child(indicator))
+                // The status (and a group's count) gives way to the row's buttons while
+                // hovered, so the two never sit on top of each other.
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .group_hover("item-row", |s| s.invisible())
+                        .child(status_indicator(status.as_ref(), p))
+                        .when(grouped, |el| {
+                            el.child(div().text_size(px(11.5)).text_color(p.text_faint).child(count.to_string()))
+                        }),
+                )
+                // A group folds its Sessions away with the chevron, which is always there.
+                .when(grouped, |el| {
+                    el.child(
+                        div()
+                            .id(SharedString::from(format!("fold-{key:?}")))
+                            .role(gpui::Role::Button)
+                            .aria_label(if expanded { "Collapse sessions" } else { "Expand sessions" })
+                            .aria_expanded(expanded)
+                            .flex_shrink_0()
+                            .size(px(22.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.))
+                            .hover(|s| s.bg(p.hover))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.toggle_item_sessions(&toggle_key, cx);
+                            }))
+                            .child(icon_el(if expanded { "chevron-down" } else { "chevron-right" }, 14., p.text_faint)),
+                    )
+                })
                 .child(
                     // Opaque sidebar colour under the row's translucent hover colour, so the
                     // buttons' backdrop matches the row and covers the end of a long label.
                     div()
                         .absolute()
-                        .right(px(4.))
-                        .top(px(if nested { 3. } else { 5. }))
+                        .right(px(if grouped { 30. } else { 4. }))
+                        .top(px(5.))
                         .rounded(px(7.))
                         .bg(p.sidebar)
                         .invisible()
                         .group_hover("item-row", |s| s.visible())
                         .child(
-                    div()
-                        .flex()
-                        .gap(px(2.))
-                        .rounded(px(7.))
-                        .bg(if active { p.active } else { p.hover })
-                        .when(!nested, |el| {
-                            el.child(
-                                icon_button(SharedString::from(format!("another-{key:?}")), "plus", p).size(px(24.)).on_click(
-                                    cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                        cx.stop_propagation();
-                                        this.activate_item(item_for_new.clone(), true, window, cx);
-                                    }),
-                                ),
-                            )
-                        })
-                        .when_some(session_id, |el, id| {
-                            el.child(icon_button(SharedString::from(format!("close-{id}")), "x", p).size(px(24.)).on_click(
-                                cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    this.close_session(id, window, cx);
+                            div()
+                                .flex()
+                                .gap(px(2.))
+                                .rounded(px(7.))
+                                .bg(if active { p.active } else { p.hover })
+                                .child(
+                                    icon_button(SharedString::from(format!("another-{key:?}")), "plus", p)
+                                        .aria_label("New session")
+                                        .size(px(24.))
+                                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                            cx.stop_propagation();
+                                            this.activate_item(item_for_new.clone(), true, window, cx);
+                                        })),
+                                )
+                                // A group has no close button of its own: which Session would it
+                                // close? Each Session's row has one.
+                                .when_some(session_id.filter(|_| !grouped), |el, id| {
+                                    el.child(
+                                        icon_button(SharedString::from(format!("close-{id}")), "x", p)
+                                            .aria_label(if live { "Disconnect" } else { "Close session" })
+                                            .size(px(24.))
+                                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                                cx.stop_propagation();
+                                                this.close_session(id, window, cx);
+                                            })),
+                                    )
                                 }),
-                            ))
-                        }),
                         ),
                 )
                 .context_menu(item_menu)
-                .into_any_element()
-        };
-        let main = shown.and_then(|id| sessions.iter().find(|s| s.id == id).copied()).or(sessions.first().copied());
-        rows.push(row(
-            SharedString::from(format!("item-{key:?}")),
-            item.label().to_string().into(),
-            item.icon(),
-            main,
-            false,
-            item.clone(),
-            cx,
-        ));
-        if sessions.len() > 1 {
+                .into_any_element(),
+        );
+        if expanded {
             for session in &sessions {
-                rows.push(row(
-                    SharedString::from(format!("session-{}", session.id)),
-                    session.label.clone(),
-                    item.icon(),
-                    Some(session),
-                    true,
-                    item.clone(),
-                    cx,
-                ));
+                rows.push(self.render_session_row(session, indent, p, cx));
             }
         }
         rows
+    }
+
+    /// One Session of an item with several: its state, its title (or "Session 2"), and a
+    /// button that disconnects it, or closes it once it has dropped.
+    fn render_session_row(&self, session: &SessionEntry, indent: f32, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let id = session.id;
+        let active = Some(id) == self.active;
+        let live = session.is_live();
+        let dropped = !live;
+        let title = session_title(session);
+        let ws = cx.entity().downgrade();
+        let session_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+            if dropped {
+                menu.item(menu_item("Reconnect", "refresh-cw", &ws, move |this, window, cx| {
+                    this.activate(id, window, cx);
+                    this.reconnect(id, window, cx);
+                }))
+                .item(menu_item("Close", "x", &ws, move |this, window, cx| this.close_session(id, window, cx)))
+            } else {
+                menu.item(menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.close_session(id, window, cx)))
+            }
+        };
+        div()
+            .id(SharedString::from(format!("session-{id}")))
+            .group("session-row")
+            .text_size(px(12.5))
+            .relative()
+            .h(px(30.))
+            // The status dot sits under the item's icon, the title under its name.
+            .pl(px(indent + 4.))
+            .pr(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(14.))
+            .rounded(px(8.))
+            .cursor_pointer()
+            .when(active, |el| el.bg(p.active))
+            .when(!active, |el| el.hover(|s| s.bg(p.hover)))
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                this.activate(id, window, cx);
+                let dropped = this.sessions.iter().find(|s| s.id == id).is_some_and(|s| !s.is_live());
+                if dropped {
+                    this.reconnect(id, window, cx);
+                }
+            }))
+            .child(div().w(px(7.)).flex_shrink_0().child(status_indicator(Some(&session.status), p)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(if active || live { p.text } else { p.text_muted })
+                    .child(title.clone()),
+            )
+            // Titles can repeat (two shells in the same folder); the number tells them apart.
+            .when(title.as_ref() != format!("Session {}", session.number), |el| {
+                el.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(11.))
+                        .text_color(p.text_faint)
+                        .group_hover("session-row", |s| s.invisible())
+                        .child(format!("#{}", session.number)),
+                )
+            })
+            .child(
+                div()
+                    .absolute()
+                    .right(px(4.))
+                    .top(px(3.))
+                    .rounded(px(7.))
+                    .bg(p.sidebar)
+                    .invisible()
+                    .group_hover("session-row", |s| s.visible())
+                    .child(
+                        div().rounded(px(7.)).bg(if active { p.active } else { p.hover }).child(
+                            icon_button(SharedString::from(format!("close-{id}")), "x", p)
+                                .aria_label(if live { "Disconnect" } else { "Close session" })
+                                .size(px(24.))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_session(id, window, cx);
+                                })),
+                        ),
+                    ),
+            )
+            .context_menu(session_menu)
+            .into_any_element()
+    }
+
+    /// Fold an item's Sessions away under its row, or show them again.
+    fn toggle_item_sessions(&mut self, key: &ItemKey, cx: &mut Context<Self>) {
+        if !self.collapsed_items.remove(key) {
+            self.collapsed_items.insert(key.clone());
+        }
+        cx.notify();
+    }
+
+    /// Disconnect every live Session of an item; when none is live, close them all.
+    fn close_item_sessions(&mut self, key: &ItemKey, window: &mut Window, cx: &mut Context<Self>) {
+        let any_live = self.sessions_of(key).any(|s| s.is_live());
+        let ids: Vec<usize> = self.sessions_of(key).filter(|s| s.is_live() == any_live).map(|s| s.id).collect();
+        for id in ids {
+            self.close_session(id, window, cx);
+        }
     }
 
     /// The active Session's state, name and address with its actions. Lives in the title
@@ -2316,7 +2499,7 @@ impl Workspace {
     /// The start screen, shown until the first project or connection exists: what Komando is,
     /// and one click to add a server or open a local shell.
     fn render_welcome(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let shells = welcome_shells(self.library.standalone_shells());
+        let shells = welcome_shells(self.library.standalone_shells().into_iter().filter(|s| !s.hidden).collect());
         let hero = |id: SharedString, icon: &str, label: String, kind: ButtonKind| {
             icon_text_button(id, icon, label, kind, p).h(px(44.)).px(px(20.)).gap(px(10.)).rounded(px(10.)).text_size(px(14.))
         };
@@ -2530,6 +2713,28 @@ impl Workspace {
 }
 
 /// A segmented control: one choice of several.
+/// A Session's state in the sidebar: a dot while live (green) or connecting (amber), a hollow
+/// ring once it dropped.
+fn status_indicator(status: Option<&Status>, p: AppPalette) -> AnyElement {
+    match status {
+        Some(Status::Connected) => status_dot(p.success).into_any_element(),
+        Some(Status::Connecting) => status_dot(p.warning).into_any_element(),
+        Some(Status::Disconnected(_)) => {
+            div().size(px(7.)).flex_shrink_0().rounded_full().border_1().border_color(p.text_faint).into_any_element()
+        }
+        None => div().into_any_element(),
+    }
+}
+
+/// What a Session's own row in the sidebar says: the title its shell set, unless that only
+/// repeats the item's name or is the program's path (as Windows shells set it); otherwise
+/// "Session 2".
+fn session_title(session: &SessionEntry) -> SharedString {
+    let title = session.title.trim();
+    let useless = title.is_empty() || title == session.label.as_ref() || title.to_ascii_lowercase().ends_with(".exe");
+    if useless { format!("Session {}", session.number).into() } else { title.to_string().into() }
+}
+
 fn segmented<L: Into<SharedString> + Clone>(
     id: &'static str,
     options: &[(L, bool)],
@@ -3059,7 +3264,7 @@ mod welcome_tests {
     use super::*;
 
     fn shell(name: &str) -> LocalShell {
-        LocalShell { name: name.into(), program: String::new(), args: vec![] }
+        LocalShell { name: name.into(), ..LocalShell::default() }
     }
 
     #[test]

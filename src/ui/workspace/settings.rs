@@ -9,19 +9,21 @@ use super::*;
 pub enum SettingsSection {
     Appearance,
     Terminal,
+    Shells,
     Highlights,
     Security,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 5] =
-        [Self::Appearance, Self::Terminal, Self::Highlights, Self::Security, Self::About];
+    pub const ALL: [SettingsSection; 6] =
+        [Self::Appearance, Self::Terminal, Self::Shells, Self::Highlights, Self::Security, Self::About];
 
     fn label(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
             Self::Terminal => "Terminal",
+            Self::Shells => "Local shells",
             Self::Highlights => "Highlights",
             Self::Security => "Security",
             Self::About => "About",
@@ -32,6 +34,7 @@ impl SettingsSection {
         match self {
             Self::Appearance => "palette",
             Self::Terminal => "square-terminal",
+            Self::Shells => "terminal",
             Self::Highlights => "highlighter",
             Self::Security => "shield",
             Self::About => "info",
@@ -42,6 +45,7 @@ impl SettingsSection {
         match self {
             Self::Appearance => "Dark and light mode, a theme for each, and the background blur.",
             Self::Terminal => "Font, scrollback and clipboard behaviour for every session.",
+            Self::Shells => "The shells on this PC listed at the top of the sidebar. Hide the ones you don't use, remove them, or add your own, such as WSL or Git Bash.",
             Self::Highlights => "Colour matching text in terminal output. Rules apply top to bottom; the first match wins.",
             Self::Security => "The vault that holds your passwords and keys.",
             Self::About => "",
@@ -53,6 +57,15 @@ const SCROLLBACK_CHOICES: [(usize, &str); 4] = [(10_000, "10k"), (50_000, "50k")
 const AUTO_LOCK_CHOICES: [(u32, &str); 5] = [(0, "Off"), (5, "5 min"), (15, "15 min"), (30, "30 min"), (60, "1 h")];
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Settings → Local shells: the fields that add a shell, or edit the one named in `editing`.
+pub struct ShellEditor {
+    name: Entity<InputState>,
+    program: Entity<InputState>,
+    args: Entity<InputState>,
+    editing: Option<String>,
+    error: Option<String>,
+}
 
 fn logo() -> Arc<gpui::Image> {
     static LOGO: OnceLock<Arc<gpui::Image>> = OnceLock::new();
@@ -110,6 +123,20 @@ impl Workspace {
             });
             self._subscriptions.push(sub);
             self.font_slider = Some(slider);
+        }
+        if self.shell_editor.is_none() {
+            let name = cx.new(|cx| InputState::new(window, cx).placeholder("Ubuntu (WSL)"));
+            let program = cx.new(|cx| InputState::new(window, cx).placeholder("wsl.exe"));
+            let args = cx.new(|cx| InputState::new(window, cx).placeholder("-d Ubuntu"));
+            for input in [&name, &program, &args] {
+                let sub = cx.subscribe_in(input, window, |this, _, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::PressEnter { .. }) {
+                        this.save_shell(window, cx);
+                    }
+                });
+                self._subscriptions.push(sub);
+            }
+            self.shell_editor = Some(ShellEditor { name, program, args, editing: None, error: None });
         }
         if self.font_input.is_none() {
             let family = self.settings.font_family.clone();
@@ -223,6 +250,7 @@ impl Workspace {
         let body = match section {
             SettingsSection::Appearance => self.settings_appearance(p, cx),
             SettingsSection::Terminal => self.settings_terminal(p, cx),
+            SettingsSection::Shells => self.settings_shells(p, cx),
             SettingsSection::Highlights => self.settings_highlights(p, cx),
             SettingsSection::Security => self.settings_security(p, cx),
             SettingsSection::About => self.settings_about(p, cx),
@@ -719,6 +747,323 @@ impl Workspace {
                 ],
             ))
             .child(self.render_updates(p, cx))
+            .into_any_element()
+    }
+
+    // ---- local shells ------------------------------------------------------------------
+
+    fn save_library_or_toast(&mut self, cx: &mut Context<Self>) {
+        if let Err(err) = self.library.save(&self.data_dir) {
+            self.show_toast(format!("Could not save: {err:#}"), cx);
+        }
+        cx.notify();
+    }
+
+    fn toggle_shell_hidden(&mut self, name: &str, cx: &mut Context<Self>) {
+        if let Some(shell) = self.library.standalone_shells_mut().iter_mut().find(|s| s.name == name) {
+            shell.hidden = !shell.hidden;
+        }
+        self.save_library_or_toast(cx);
+    }
+
+    fn remove_shell(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.library.standalone_shells_mut().retain(|s| s.name != name);
+        if self.shell_editor.as_ref().is_some_and(|e| e.editing.as_deref() == Some(name)) {
+            self.clear_shell_editor(window, cx);
+        }
+        self.save_library_or_toast(cx);
+    }
+
+    fn restore_detected_shells(&mut self, cx: &mut Context<Self>) {
+        self.library.restore_detected_shells();
+        self.save_library_or_toast(cx);
+    }
+
+    /// Fill the form with a shell to edit it.
+    fn edit_shell(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(shell) = self.library.standalone_shells().into_iter().find(|s| s.name == name) else { return };
+        let Some(editor) = self.shell_editor.as_mut() else { return };
+        editor.editing = Some(shell.name.clone());
+        editor.error = None;
+        let (n, prog, args) = (editor.name.clone(), editor.program.clone(), editor.args.clone());
+        n.update(cx, |f, cx| f.set_value(shell.name.clone(), window, cx));
+        prog.update(cx, |f, cx| f.set_value(shell.program.clone(), window, cx));
+        args.update(cx, |f, cx| f.set_value(shell.args_line(), window, cx));
+        n.update(cx, |f, cx| f.focus(window, cx));
+        cx.notify();
+    }
+
+    fn clear_shell_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.shell_editor.as_mut() else { return };
+        editor.editing = None;
+        editor.error = None;
+        for input in [editor.name.clone(), editor.program.clone(), editor.args.clone()] {
+            input.update(cx, |f, cx| f.set_value("", window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Add the shell in the form, or save the changes to the one being edited.
+    fn save_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.shell_editor.as_ref() else { return };
+        let name = editor.name.read(cx).value().trim().to_string();
+        let program = editor.program.read(cx).value().trim().to_string();
+        let args = model::split_args(editor.args.read(cx).value().as_ref());
+        let editing = editor.editing.clone();
+        let error = if name.is_empty() {
+            Some("Give the shell a name.".to_string())
+        } else if program.is_empty() {
+            Some("Enter the program to start, such as wsl.exe or the path to bash.exe.".to_string())
+        } else if self.library.standalone_shells().iter().any(|s| s.name == name && Some(&s.name) != editing.as_ref()) {
+            Some(format!("There is already a shell called {name}."))
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            if let Some(editor) = self.shell_editor.as_mut() {
+                editor.error = Some(error);
+            }
+            cx.notify();
+            return;
+        }
+        let shells = self.library.standalone_shells_mut();
+        match editing.as_ref().and_then(|old| shells.iter_mut().find(|s| s.name == *old)) {
+            Some(shell) => {
+                shell.name = name.clone();
+                shell.program = program;
+                shell.args = args;
+            }
+            None => shells.push(LocalShell { name: name.clone(), program, args, hidden: false }),
+        }
+        let saved = self.library.standalone_shells().into_iter().find(|s| s.name == name);
+        // Open Sessions follow the change: they stay under the shell, and reconnect with it.
+        if let (Some(old), Some(saved)) = (editing, saved) {
+            let (old_key, new_key) = (ItemKey::Shell { project: None, name: old }, ItemKey::Shell { project: None, name });
+            for entry in self.sessions.iter_mut().filter(|s| s.item == old_key) {
+                entry.item = new_key.clone();
+                entry.kind = SessionKind::Local { shell: saved.clone() };
+            }
+            if let Some(id) = self.last_active.remove(&old_key) {
+                self.last_active.insert(new_key.clone(), id);
+            }
+            if self.collapsed_items.remove(&old_key) {
+                self.collapsed_items.insert(new_key);
+            }
+        }
+        self.clear_shell_editor(window, cx);
+        self.save_library_or_toast(cx);
+    }
+
+    fn browse_shell_program(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Use program".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let _ = this.update_in(cx, |this, window, cx| {
+                let Some(editor) = this.shell_editor.as_ref() else { return };
+                let (program, name) = (editor.program.clone(), editor.name.clone());
+                program.update(cx, |f, cx| f.set_value(path.display().to_string(), window, cx));
+                // Suggest a name from the file when there is none yet.
+                if name.read(cx).value().trim().is_empty()
+                    && let Some(stem) = path.file_stem()
+                {
+                    name.update(cx, |f, cx| f.set_value(stem.to_string_lossy().to_string(), window, cx));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn settings_shells(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let shells = self.library.standalone_shells();
+        let shown = shells.iter().filter(|s| !s.hidden).count();
+        let mut list = div().flex().flex_col().gap(px(2.)).p(px(6.));
+        if shells.is_empty() {
+            list = list.child(
+                div()
+                    .p(px(16.))
+                    .text_size(px(13.))
+                    .text_color(p.text_faint)
+                    .child("No local shells. Add one below, or restore the ones found on this PC."),
+            );
+        }
+        let editing = self.shell_editor.as_ref().and_then(|e| e.editing.clone());
+        for shell in &shells {
+            let name = shell.name.clone();
+            let (n_toggle, n_edit, n_remove, n_confirm) = (name.clone(), name.clone(), name.clone(), name.clone());
+            let confirming = self.confirm_remove_shell.as_ref().is_some_and(|(n, _)| *n == name);
+            let icon = shell_icon(&shell.program).unwrap_or("square-terminal");
+            let command = format!("{} {}", shell.program, shell.args_line()).trim().to_string();
+            let open = self.sessions_of(&ItemKey::Shell { project: None, name: name.clone() }).count();
+            let detail = match open {
+                0 => command,
+                1 => format!("{command} · 1 session open"),
+                n => format!("{command} · {n} sessions open"),
+            };
+            list = list.child(
+                div()
+                    .id(SharedString::from(format!("shell-{name}")))
+                    .min_h(px(52.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .rounded(px(8.))
+                    .when(editing.as_deref() == Some(name.as_str()), |el| el.bg(p.active))
+                    .child(div().when(shell.hidden, |el| el.opacity(0.5)).child(icon_el(icon, 18., p.text_muted)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(if shell.hidden { p.text_muted } else { p.text })
+                                    .truncate()
+                                    .child(name.clone()),
+                            )
+                            .child(div().text_size(px(12.)).text_color(p.text_faint).truncate().child(detail)),
+                    )
+                    .child(
+                        icon_button(SharedString::from(format!("shell-edit-{name}")), "pencil", p)
+                            .aria_label(format!("Edit shell: {name}"))
+                            .tooltip(|window, cx| Tooltip::new("Edit").build(window, cx))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.confirm_remove_shell = None;
+                                this.edit_shell(&n_edit, window, cx);
+                            })),
+                    )
+                    // Removing takes a second click, like deleting a highlight set.
+                    .child(if confirming {
+                        button(SharedString::from(format!("shell-remove-{name}")), "Remove", ButtonKind::Danger, p)
+                            .h(px(28.))
+                            .w(px(84.))
+                            .justify_center()
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                if this.confirm_remove_shell.as_ref().is_some_and(|(_, at)| at.elapsed() < Duration::from_millis(500)) {
+                                    return;
+                                }
+                                this.confirm_remove_shell = None;
+                                this.remove_shell(&n_confirm, window, cx);
+                            }))
+                            .into_any_element()
+                    } else {
+                        icon_button(SharedString::from(format!("shell-remove-{name}")), "trash", p)
+                            .aria_label(format!("Remove shell: {name}"))
+                            .tooltip(|window, cx| Tooltip::new("Remove").build(window, cx))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.confirm_remove_shell = Some((n_remove.clone(), Instant::now()));
+                                cx.notify();
+                            }))
+                            .into_any_element()
+                    })
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("shell-show-{name}")))
+                            .tooltip(|window, cx| Tooltip::new("Show in sidebar").build(window, cx))
+                            .child(
+                                switch(SharedString::from(format!("shell-toggle-{name}")), format!("Show {name} in the sidebar"), !shell.hidden, p)
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                        this.confirm_remove_shell = None;
+                                        this.toggle_shell_hidden(&n_toggle, cx);
+                                    })),
+                            ),
+                    ),
+            );
+        }
+
+        let form = self.shell_editor.as_ref().map(|editor| {
+            let title = match &editor.editing {
+                Some(name) => format!("Edit {name}"),
+                None => "Add a shell".to_string(),
+            };
+            let program_field = div()
+                .flex()
+                .gap(px(8.))
+                .child(div().flex_1().child(Input::new(&editor.program)))
+                .child(
+                    button("shell-browse", "Browse…", ButtonKind::Secondary, p)
+                        .flex_shrink_0()
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.browse_shell_program(window, cx))),
+                )
+                .into_any_element();
+            div()
+                .rounded(px(12.))
+                .border_1()
+                .border_color(p.border)
+                .bg(p.background)
+                .p(px(18.))
+                .flex()
+                .flex_col()
+                .gap(px(14.))
+                .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(title))
+                .child(form_field("Name", None, Input::new(&editor.name).into_any_element(), p))
+                .child(form_field(
+                    "Program",
+                    Some("A program on the PATH, such as wsl.exe, or the full path to one."),
+                    program_field,
+                    p,
+                ))
+                .child(form_field(
+                    "Arguments",
+                    Some("Optional. Put an argument with spaces in double quotes."),
+                    Input::new(&editor.args).into_any_element(),
+                    p,
+                ))
+                .when_some(editor.error.clone(), |el, error| {
+                    el.child(div().text_size(px(12.5)).text_color(p.danger).child(error))
+                })
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(px(8.))
+                        .when(editor.editing.is_some(), |el| {
+                            el.child(
+                                button("shell-cancel", "Cancel", ButtonKind::Ghost, p)
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.clear_shell_editor(window, cx))),
+                            )
+                        })
+                        .child(
+                            button("shell-save", if editor.editing.is_some() { "Save" } else { "Add shell" }, ButtonKind::Primary, p)
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.save_shell(window, cx))),
+                        ),
+                )
+        });
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.))
+                            .text_color(p.text_faint)
+                            .child(format!("{shown} of {} shown in the sidebar. A hidden shell is still found by search.", shells.len())),
+                    )
+                    .child(
+                        button("shells-restore", "Restore detected shells", ButtonKind::Secondary, p)
+                            .flex_shrink_0()
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.restore_detected_shells(cx))),
+                    ),
+            )
+            .child(div().rounded(px(12.)).border_1().border_color(p.border).bg(p.background).child(list))
+            .children(form)
             .into_any_element()
     }
 

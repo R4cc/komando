@@ -202,12 +202,56 @@ fn default_port() -> u16 {
     22
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct LocalShell {
     pub name: String,
     pub program: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
+    /// Left out of the sidebar (standalone shells only); still found by search, and shown
+    /// while it has Sessions open.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+}
+
+impl LocalShell {
+    /// The arguments as one line, quoting those with spaces, for editing.
+    pub fn args_line(&self) -> String {
+        self.args
+            .iter()
+            .map(|a| if a.is_empty() || a.contains(char::is_whitespace) { format!("\"{a}\"") } else { a.clone() })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// Split a line of arguments at spaces; double quotes keep spaces inside one argument.
+pub fn split_args(line: &str) -> Vec<String> {
+    let mut args = vec![];
+    let mut current = String::new();
+    let (mut quoted, mut started) = (false, false);
+    for c in line.chars() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                started = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if started {
+                    args.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            c => {
+                current.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        args.push(current);
+    }
+    args
 }
 
 /// A Host's effective settings when opened from a specific Project.
@@ -319,9 +363,26 @@ impl Library {
         write_atomic(&dir.join(Self::FILE), toml::to_string_pretty(self)?.as_bytes())
     }
 
-    /// Local Shells outside any Project.
+    /// Local Shells outside any Project, hidden ones included.
     pub fn standalone_shells(&self) -> Vec<LocalShell> {
         self.shells.clone().unwrap_or_else(default_shells)
+    }
+
+    /// The standalone shells to change: the detected ones become a saved list on first change.
+    pub fn standalone_shells_mut(&mut self) -> &mut Vec<LocalShell> {
+        self.shells.get_or_insert_with(default_shells)
+    }
+
+    /// Bring back the shells detected on this PC: shown again if hidden, added if removed.
+    /// Shells added by hand stay.
+    pub fn restore_detected_shells(&mut self) {
+        let shells = self.standalone_shells_mut();
+        for detected in default_shells() {
+            match shells.iter_mut().find(|s| s.name == detected.name) {
+                Some(existing) => existing.hidden = false,
+                None => shells.push(detected),
+            }
+        }
     }
 
     pub fn project(&self, id: &str) -> Option<&Project> {
@@ -539,10 +600,10 @@ pub fn default_shells() -> Vec<LocalShell> {
     {
         let mut shells = Vec::new();
         if which("pwsh.exe") {
-            shells.push(LocalShell { name: "PowerShell 7".into(), program: "pwsh.exe".into(), args: vec!["-NoLogo".into()] });
+            shells.push(LocalShell { name: "PowerShell 7".into(), program: "pwsh.exe".into(), args: vec!["-NoLogo".into()], hidden: false });
         }
-        shells.push(LocalShell { name: "Windows PowerShell".into(), program: "powershell.exe".into(), args: vec!["-NoLogo".into()] });
-        shells.push(LocalShell { name: "Command Prompt".into(), program: "cmd.exe".into(), args: vec![] });
+        shells.push(LocalShell { name: "Windows PowerShell".into(), program: "powershell.exe".into(), args: vec!["-NoLogo".into()], hidden: false });
+        shells.push(LocalShell { name: "Command Prompt".into(), program: "cmd.exe".into(), args: vec![], hidden: false });
         shells
     }
     #[cfg(not(windows))]
@@ -552,7 +613,7 @@ pub fn default_shells() -> Vec<LocalShell> {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "shell".into());
-        vec![LocalShell { name, program, args: vec![] }]
+        vec![LocalShell { name, program, ..LocalShell::default() }]
     }
 }
 
@@ -804,12 +865,52 @@ mod tests {
     fn standalone_shells_default_to_detected_ones() {
         let lib = Library::default();
         assert_eq!(lib.standalone_shells(), default_shells());
-        let custom = vec![LocalShell { name: "WSL".into(), program: "wsl.exe".into(), args: vec![] }];
+        let custom = vec![LocalShell { name: "WSL".into(), program: "wsl.exe".into(), ..LocalShell::default() }];
         let lib = Library { shells: Some(custom.clone()), ..Library::default() };
         assert_eq!(lib.standalone_shells(), custom);
         // An explicit empty list means "no standalone shells", not "the defaults".
         let lib = Library { shells: Some(vec![]), ..Library::default() };
         assert!(lib.standalone_shells().is_empty());
+    }
+
+    #[test]
+    fn restoring_detected_shells_keeps_your_own() {
+        let mut lib = Library::default();
+        let detected = default_shells();
+        let first = detected[0].name.clone();
+        lib.standalone_shells_mut().retain(|s| s.name != first);
+        lib.standalone_shells_mut().push(LocalShell { name: "WSL".into(), program: "wsl.exe".into(), ..LocalShell::default() });
+        if let Some(other) = lib.standalone_shells_mut().first_mut() {
+            other.hidden = true;
+        }
+        lib.restore_detected_shells();
+        let shells = lib.standalone_shells();
+        assert!(shells.iter().any(|s| s.name == "WSL"));
+        for d in &detected {
+            assert!(shells.iter().any(|s| s.name == d.name && !s.hidden), "{} is back and shown", d.name);
+        }
+    }
+
+    #[test]
+    fn hidden_shells_round_trip_and_old_files_still_load() {
+        let lib: Library = toml::from_str("[[shells]]\nname = \"cmd\"\nprogram = \"cmd.exe\"\n").unwrap();
+        assert!(!lib.standalone_shells()[0].hidden);
+        let text = toml::to_string_pretty(&lib).unwrap();
+        assert!(!text.contains("hidden"), "only written when set: {text}");
+        let mut lib = lib;
+        lib.standalone_shells_mut()[0].hidden = true;
+        let back: Library = toml::from_str(&toml::to_string_pretty(&lib).unwrap()).unwrap();
+        assert!(back.standalone_shells()[0].hidden);
+    }
+
+    #[test]
+    fn arguments_split_and_join_with_quotes() {
+        assert_eq!(split_args(r#"-NoLogo  -d "Ubuntu 22.04" x"#), ["-NoLogo", "-d", "Ubuntu 22.04", "x"]);
+        assert_eq!(split_args("  "), Vec::<String>::new());
+        assert_eq!(split_args(r#"a "" b"#), ["a", "", "b"]);
+        let shell = LocalShell { args: split_args(r#"-d "Ubuntu 22.04""#), ..LocalShell::default() };
+        assert_eq!(shell.args_line(), r#"-d "Ubuntu 22.04""#);
+        assert_eq!(split_args(&shell.args_line()), shell.args);
     }
 
     #[test]

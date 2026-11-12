@@ -30,8 +30,8 @@
 - **Jump hosts.** Reach servers that are only reachable from another server. While connecting, Komando shows each host on the way and where the connection is, or where it failed.
 - **Startup commands.** Have `cd /srv/app`, `sudo -i` or `tmux attach` typed for you once the shell is ready.
 - **Reconnect in place.** If a connection drops, you keep the output and one click reconnects in the same window.
-- **Multiple sessions per host.** Ctrl+click a host to open a second session on the same server.
-- **Local shells too.** PowerShell 7, Windows PowerShell and Command Prompt are detected automatically and can live inside your projects.
+- **Multiple sessions per host.** Ctrl+click a host to open a second session on the same server. A host or shell with several sessions folds them into a group in the sidebar, each with its own row and close button.
+- **Local shells too.** PowerShell 7, Windows PowerShell and Command Prompt are detected automatically and can live inside your projects. In Settings → Local shells, hide the ones you don't use or add your own, such as WSL or Git Bash.
 
 ### Secure by default
 
