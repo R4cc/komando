@@ -74,3 +74,8 @@ pub fn set_backdrop(_window: &gpui::Window, _on: bool) -> bool { false }
 
 /// Mica is a Windows 11 feature; elsewhere (Linux dev builds) the window stays opaque.
 pub const SUPPORTS_BACKDROP: bool = cfg!(windows);
+
+#[cfg(windows)]
+mod tray;
+#[cfg(windows)]
+pub use tray::Tray;

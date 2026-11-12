@@ -6,6 +6,12 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Windows minimizes to the notification area by default, keeping Sessions running. Click the
+  Komando tray icon to restore, or right-click for Show Komando and Exit. Turn this off in
+  Settings → Appearance → Minimize to tray to use normal taskbar minimization.
+
 ### Changed
 
 - When connecting asks for a user name or password, the question has a "Remember for this host"

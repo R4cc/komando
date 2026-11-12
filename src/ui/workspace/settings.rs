@@ -321,6 +321,22 @@ impl Workspace {
             .flex_col()
             .gap(px(20.))
             .child(group(p, vec![setting_row(p, "Mode", mode_hint, mode_choice)]))
+            .when(cfg!(windows), |el| el.child(group(p, vec![setting_row(
+                p,
+                "Minimize to tray",
+                "Keep sessions running in the notification area when minimized. Click the tray icon to restore; right-click for Exit.",
+                switch("minimize-to-tray".into(), "Minimize to tray", self.settings.minimize_to_tray, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.settings.minimize_to_tray = !this.settings.minimize_to_tray;
+                        #[cfg(windows)]
+                        if let Some(tray) = &this.tray { tray.set_enabled(this.settings.minimize_to_tray); }
+                        if let Err(error) = this.settings.save(&this.data_dir) {
+                            log::error!("Could not save minimize-to-tray setting: {error}");
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            )])))
             .child(group(p, vec![self.theme_picker(true, p, cx), self.theme_picker(false, p, cx)]))
             .child(group(
                 p,

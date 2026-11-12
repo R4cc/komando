@@ -479,6 +479,8 @@ pub struct Settings {
     pub disabled_highlight_sets: Vec<String>,
     /// Windows 11 Mica: the blurred desktop shows through Komando's background.
     pub background_blur: bool,
+    /// Hide minimized windows in the Windows notification area.
+    pub minimize_to_tray: bool,
     /// 0–100: how much of the blurred backdrop shows through.
     pub background_blur_intensity: u8,
     /// Look for a newer release on GitHub when Komando starts.
@@ -506,6 +508,7 @@ impl Default for Settings {
             minimap: true,
             disabled_highlight_sets: vec![],
             background_blur: true,
+            minimize_to_tray: true,
             background_blur_intensity: 60,
             check_for_updates: true,
             sftp_width: 540.,
@@ -628,6 +631,15 @@ mod tests {
 
     fn route_names(lib: &Library, host: &str) -> Vec<String> {
         lib.route("p1", host).unwrap().into_iter().map(|h| h.name).collect()
+    }
+
+    #[test]
+    fn minimize_to_tray_defaults_on_and_remembers_opt_out() {
+        let mut settings: Settings = toml::from_str("font_size = 16.0").unwrap();
+        assert!(settings.minimize_to_tray);
+        settings.minimize_to_tray = false;
+        let loaded: Settings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
+        assert!(!loaded.minimize_to_tray);
     }
 
     #[test]

@@ -200,6 +200,8 @@ pub struct Workspace {
     data_dir: PathBuf,
     library: Library,
     settings: Settings,
+    #[cfg(windows)]
+    tray: Option<crate::platform::Tray>,
     highlights: Vec<HighlightSet>,
     /// Rules that could not be compiled, with the reason.
     highlight_skipped: Vec<(String, String)>,
@@ -266,6 +268,8 @@ impl Workspace {
         let mut this = Self {
             data_dir,
             library,
+            #[cfg(windows)]
+            tray: crate::platform::Tray::new(window, settings.minimize_to_tray),
             settings,
             highlights,
             highlight_skipped: vec![],
