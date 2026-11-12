@@ -54,7 +54,17 @@ impl SettingsSection {
 }
 
 const SCROLLBACK_CHOICES: [(usize, &str); 4] = [(10_000, "10k"), (50_000, "50k"), (100_000, "100k"), (500_000, "500k")];
-const AUTO_LOCK_CHOICES: [(u32, &str); 5] = [(0, "Off"), (5, "5 min"), (15, "15 min"), (30, "30 min"), (60, "1 h")];
+/// Idle time before the vault locks, in minutes; 0 keeps it unlocked until Komando closes.
+const AUTO_LOCK_CHOICES: [(u32, &str); 8] = [
+    (5, "5 min"),
+    (15, "15 min"),
+    (30, "30 min"),
+    (60, "1 h"),
+    (8 * 60, "8 h"),
+    (24 * 60, "1 day"),
+    (7 * 24 * 60, "7 days"),
+    (0, "Until restart"),
+];
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -645,10 +655,10 @@ impl Workspace {
             p,
             vec![
                 setting_row(p, "Vault", state, action),
-                setting_row(
+                setting_row_below(
                     p,
                     "Auto-lock",
-                    "Lock the vault after this much inactivity. Open sessions stay connected.",
+                    "Lock the vault after this much inactivity, or keep it unlocked until Komando closes. Open sessions stay connected.",
                     auto_lock,
                 ),
                 setting_row(
@@ -1297,6 +1307,24 @@ fn group(p: AppPalette, rows: Vec<AnyElement>) -> AnyElement {
                 .when(i + 1 < count, |el| el.border_b_1().border_color(p.border))
                 .child(row)
         }))
+        .into_any_element()
+}
+
+/// Label and explanation above, the control below: for a control too wide to sit beside them.
+fn setting_row_below(p: AppPalette, label: &str, hint: &str, control: AnyElement) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()))
+                .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(hint.to_string())),
+        )
+        .child(div().flex().child(control))
         .into_any_element()
 }
 

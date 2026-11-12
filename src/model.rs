@@ -526,7 +526,8 @@ pub struct Settings {
     pub font_size: f32,
     /// Lines of Scrollback each Session keeps.
     pub scrollback_lines: usize,
-    /// Minutes of inactivity before the Vault locks. 0 disables auto-lock.
+    /// Minutes of inactivity before the Vault locks, up to 7 days. 0 means it stays unlocked
+    /// until Komando closes (it is never kept unlocked across a restart).
     pub auto_lock_minutes: u32,
     /// PuTTY-style: selecting copies, right-click pastes.
     pub putty_clipboard: bool,
@@ -562,7 +563,7 @@ impl Default for Settings {
             font_family: "Cascadia Mono".into(),
             font_size: 14.0,
             scrollback_lines: 100_000,
-            auto_lock_minutes: 30,
+            auto_lock_minutes: 0,
             putty_clipboard: false,
             confirm_multiline_paste: true,
             command_rail: true,

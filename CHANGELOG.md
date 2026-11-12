@@ -30,6 +30,10 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- The vault's auto-lock goes up to 7 days: 5, 15 or 30 minutes, 1 or 8 hours, 1 day, 7 days,
+  or "Until restart", which keeps it unlocked until you close Komando. "Until restart" is the
+  default for new installs; existing installs keep their current setting (30 minutes unless you
+  changed it), which Settings → Security can change.
 - A host or shell with several sessions is now a group in the sidebar: its row shows how many
   sessions it has and folds them away with the chevron. Each session's row shows the title its
   shell set (such as `user@web01: ~`) or "Session 2", with its number, and has its own close
