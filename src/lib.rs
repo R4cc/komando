@@ -29,13 +29,12 @@ use crate::ui::workspace::{
     ToggleSftp, Workspace,
 };
 
-pub const FONTS: [&[u8]; 6] = [
+pub const FONTS: [&[u8]; 5] = [
     include_bytes!("../assets/fonts/CascadiaMono-Regular.ttf"),
     include_bytes!("../assets/fonts/CascadiaMono-Bold.ttf"),
     include_bytes!("../assets/fonts/Inter-Regular.ttf"),
     include_bytes!("../assets/fonts/Inter-Medium.ttf"),
     include_bytes!("../assets/fonts/Inter-SemiBold.ttf"),
-    include_bytes!("../assets/fonts/YoungSerif-Regular.ttf"),
 ];
 
 /// Fonts, component library and key bindings. Shared by the app and the screenshot tool.
@@ -63,6 +62,25 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
+/// The Komando logo (">_Komando."), one shape so it can be drawn in any colour.
+pub const LOGO_SVG: &str = "komando/logo.svg";
+
+/// The bundled icons, plus Komando's own artwork.
+struct Assets;
+
+impl gpui::AssetSource for Assets {
+    fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
+        if path == LOGO_SVG {
+            return Ok(Some(Cow::Borrowed(include_bytes!("../assets/logo.svg"))));
+        }
+        gpui_kit_assets::AllAssets.load(path)
+    }
+
+    fn list(&self, path: &str) -> anyhow::Result<Vec<gpui::SharedString>> {
+        gpui_kit_assets::AllAssets.list(path)
+    }
+}
+
 pub struct Options {
     pub data_dir: PathBuf,
     /// Start without the unlock screen (the Vault stays locked).
@@ -72,7 +90,7 @@ pub struct Options {
 
 pub fn run(options: Options) {
     gpui_platform::application()
-        .with_assets(gpui_kit_assets::AllAssets)
+        .with_assets(Assets)
         .run(move |cx: &mut App| {
             perf::init();
             update::clean_up();
@@ -100,4 +118,16 @@ pub fn run(options: Options) {
             .expect("open window");
             cx.activate(true);
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::AssetSource as _;
+
+    #[test]
+    fn the_logo_is_served_alongside_the_icons() {
+        let logo = super::Assets.load(super::LOGO_SVG).unwrap().expect("logo");
+        assert!(std::str::from_utf8(&logo).unwrap().starts_with("<svg"));
+        assert!(super::Assets.load("icons/server.svg").unwrap().is_some());
+    }
 }

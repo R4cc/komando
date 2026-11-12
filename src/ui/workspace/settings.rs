@@ -633,7 +633,7 @@ impl Workspace {
                             .flex()
                             .flex_col()
                             .gap(px(6.))
-                            .child(wordmark(30., p.text))
+                            .child(wordmark(24., p.text))
                             .child(div().text_size(px(13.)).text_color(p.text_muted).child(format!("Version {VERSION}"))),
                     ),
             )

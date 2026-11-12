@@ -21,7 +21,7 @@ use crate::model::{
     self, AppThemeSetting, CredentialSource, Host, Library, LocalShell, Project, Settings, TerminalThemeSetting,
 };
 use crate::session::{self, Status, ssh};
-use crate::theme::{AppPalette, Appearance, DISPLAY_FONT, TerminalPalette, UI_FONT, alpha, project_color};
+use crate::theme::{AppPalette, Appearance, TerminalPalette, UI_FONT, alpha, project_color};
 use crate::ui::connect_route::RouteCard;
 use crate::ui::file_browser::{BrowserEvent, FavoriteStore, FileBrowser};
 use crate::ui::terminal_view::{TerminalEvent, TerminalView};
@@ -1315,7 +1315,7 @@ impl Workspace {
                 .justify_center()
                 .gap(px(28.))
                 .bg(p.background)
-                .child(wordmark(64., p.text))
+                .child(wordmark(52., p.text))
                 .child(div().w(px(56.)).h(px(3.)).rounded_full().bg(p.brand))
                 .child(
                     div()
@@ -2015,7 +2015,7 @@ impl Workspace {
                     .pl(px(ISLAND_GAP + 18.))
                     .flex()
                     .items_center()
-                    .when(!minimal, |el| el.child(wordmark(15., p.text))),
+                    .when(!minimal, |el| el.child(wordmark(16., p.text))),
             )
             .child(div().flex_1().min_w_0().h_full().flex().items_center().children(strip))
             .child(window_controls(p, window))
@@ -2108,7 +2108,7 @@ impl Workspace {
             .justify_center()
             .gap(px(18.))
             .bg(p.background)
-            .child(wordmark(40., p.text.opacity(0.12)))
+            .child(wordmark(34., p.text.opacity(0.12)))
             .child(div().text_size(px(13.)).text_color(p.text_muted).child("No open sessions."))
             .child(
                 div()
@@ -2159,14 +2159,7 @@ impl Workspace {
             .items_center()
             .justify_center()
             .bg(p.background)
-            .child(
-                div()
-                    .font_family(DISPLAY_FONT)
-                    .text_size(px(64.))
-                    .line_height(px(72.))
-                    .text_color(p.text)
-                    .child("Komando."),
-            )
+            .child(wordmark(60., p.text))
             .child(
                 div()
                     .mt(px(14.))

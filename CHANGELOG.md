@@ -8,6 +8,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- The new Komando logo (">_Komando.") in the title bar, on the start, unlock and empty
+  screens and in Settings → About, drawn in dark or light to match the theme. The app icon
+  stays the same.
 - The minimap lies over the terminal's right edge, like VS Code's, instead of taking a column of
   its own: the terminal gets its full width back. It is as tall as the output (up to the
   terminal's height) and its width follows the terminal's.

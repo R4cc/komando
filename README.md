@@ -1,6 +1,9 @@
-<img src="assets/icon.svg" width="64" height="64" alt="Komando logo">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+  <img src="assets/logo-light.svg" width="292" height="42" alt="Komando">
+</picture>
 
-# KOMANDO: a fast, Rust-built SSH terminal with project-based server organisation
+# Komando: a fast, Rust-built SSH terminal with project-based server organisation
 
 **Komando is a fast SSH terminal for Windows 11, written in Rust.** It keeps all your Linux servers organised in colour-coded projects, one click away, with passwords and keys in an encrypted vault. Built for sysadmins, DevOps and system engineers who spend their day in SSH sessions.
 

@@ -406,5 +406,3 @@ pub struct Appearance {
 impl gpui::Global for Appearance {}
 
 pub const UI_FONT: &str = "Inter";
-/// Serif used for the KOMANDO wordmark, matching the KO logo.
-pub const DISPLAY_FONT: &str = "Young Serif";

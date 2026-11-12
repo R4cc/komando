@@ -1,7 +1,7 @@
 //! Small building blocks shared by every screen: buttons, icons, elevation, labels.
 //!
 //! Type scale (px): 11 uppercase labels (+tracking), 12 meta, 13 UI text, 14 inputs and
-//! terminal, 15 dialog titles, 40+ the wordmark. Radii are concentric: an inner element's
+//! terminal, 15 dialog titles. The logo is drawn, not set in a font. Radii are concentric: an inner element's
 //! radius is the outer radius minus the padding between them.
 
 use gpui::prelude::FluentBuilder as _;
@@ -10,7 +10,7 @@ use gpui::{
     Styled, div, point, prelude::*, px, svg,
 };
 
-use crate::theme::{AppPalette, DISPLAY_FONT, UI_FONT, alpha};
+use crate::theme::{AppPalette, UI_FONT, alpha};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {
@@ -129,10 +129,18 @@ pub fn section_label(text: &str, p: AppPalette) -> impl IntoElement {
     tracked(&text.to_uppercase(), 10.5, FontWeight::SEMIBOLD, 0.6, p.text_faint, UI_FONT)
 }
 
-/// The KOMANDO wordmark, in the serif of the KO logo. gpui has no letter-spacing, so
-/// letters are laid out one by one.
-pub fn wordmark(size: f32, color: Hsla) -> impl IntoElement {
-    tracked("KOMANDO", size, FontWeight::NORMAL, size * 0.07, color, DISPLAY_FONT)
+/// Width of the logo per pixel of height.
+const LOGO_ASPECT: f32 = 1168. / 167.;
+
+/// The Komando logo (">_Komando."), `height` pixels tall, in `color`: the theme's text colour
+/// makes it dark in light mode and light in dark mode.
+pub fn wordmark(height: f32, color: Hsla) -> impl IntoElement {
+    svg()
+        .path(crate::LOGO_SVG)
+        .h(px(height))
+        .w(px((height * LOGO_ASPECT).round()))
+        .flex_shrink_0()
+        .text_color(color)
 }
 
 fn tracked(text: &str, size: f32, weight: FontWeight, tracking: f32, color: Hsla, family: &'static str) -> gpui::Div {
