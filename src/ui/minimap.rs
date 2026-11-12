@@ -1,7 +1,11 @@
-//! The minimap: a narrow strip on the right of the terminal showing the Scrollback in
-//! miniature, like the minimap in VS Code. Each terminal line is 2px high and each character a
-//! sliver, coloured like the text (Highlight Rules included), so errors and long blocks of
-//! output stand out. A box marks the lines on screen; click or drag to scroll there.
+//! The minimap: the Scrollback in miniature, laid over the terminal's right edge like the
+//! minimap in VS Code. Each terminal line is 2px high and each character a sliver, coloured like
+//! the text (Highlight Rules included), so errors and long blocks of output stand out. A box
+//! marks the lines on screen; click or drag to scroll there.
+//!
+//! It takes no columns from the terminal. Its width follows the terminal's, its height the
+//! output's (up to the terminal's), and it only shows once there is Scrollback to move through:
+//! with everything on screen there is nothing to scroll.
 //!
 //! When the Scrollback is taller than the strip, the strip scrolls with the terminal, the same
 //! way VS Code's minimap does: its position follows the viewport proportionally.
@@ -26,7 +30,11 @@ use crate::session::SharedTerm;
 use crate::theme::{AppPalette, TerminalPalette, rgb_to_hsla};
 use crate::ui::terminal_view::TerminalView;
 
-pub const WIDTH: f32 = 100.;
+/// Narrowest and widest the minimap gets; in between it is a tenth of the terminal's width.
+const MIN_WIDTH: f32 = 56.;
+const MAX_WIDTH: f32 = 110.;
+/// Space above and below the lines.
+const PAD_Y: f32 = 8.;
 /// Height of one terminal line on the minimap.
 const LINE_H: f32 = 2.;
 /// Width of one character.
@@ -85,6 +93,27 @@ fn scroll_to(term: &SharedTerm, state: &MinimapState, y: Pixels) {
     }
 }
 
+/// The minimap's width for a terminal `width` pixels wide.
+pub fn width_for(width: f32) -> f32 {
+    (width * 0.1).clamp(MIN_WIDTH, MAX_WIDTH)
+}
+
+/// Lines with output: the Scrollback plus the screen down to its last written line (or the
+/// cursor), not the blank rows below it.
+fn content_lines<T>(term: &Term<T>) -> usize {
+    let grid = term.grid();
+    let cols = grid.columns();
+    let mut used = grid.cursor.point.line.0.max(0) as usize + 1;
+    for row in (used..grid.screen_lines()).rev() {
+        let line = &grid[Line(row as i32)];
+        if (0..cols).any(|c| line[Column(c)].c != ' ') {
+            used = row + 1;
+            break;
+        }
+    }
+    grid.history_size() + used.min(grid.screen_lines())
+}
+
 /// What the minimap shows for `bounds`: where it starts in the Scrollback, one rectangle per
 /// run of characters, and the box over the lines on screen.
 fn layout<T>(
@@ -98,7 +127,7 @@ fn layout<T>(
     let history = grid.history_size();
     let screen = grid.screen_lines();
     let cols = grid.columns();
-    let total = history + screen;
+    let total = content_lines(term);
     let offset = grid.display_offset();
     let viewport_top = history - offset;
 
@@ -106,7 +135,7 @@ fn layout<T>(
     let start = if total <= capacity {
         0
     } else {
-        let scrollable = (total - screen).max(1) as f32;
+        let scrollable = history.max(1) as f32;
         ((viewport_top as f32 / scrollable) * (total - capacity) as f32).round() as usize
     };
     let geometry = Geometry { top: f32::from(bounds.origin.y), start, history, screen };
@@ -176,10 +205,13 @@ fn layout<T>(
         }
     }
 
-    // The box over the lines that are on screen.
+    // The box over the lines that are on screen, cut off where the output ends.
+    let box_top = (viewport_top as f32 - start as f32) * LINE_H;
+    let box_bottom = ((viewport_top + screen).min(total) as f32 - start as f32) * LINE_H;
+    let box_bottom = box_bottom.min(f32::from(bounds.size.height)).max(box_top);
     let viewport = Bounds::new(
-        point(bounds.origin.x, bounds.origin.y + px((viewport_top as f32 - start as f32) * LINE_H)),
-        size(bounds.size.width, px(screen as f32 * LINE_H)),
+        point(bounds.origin.x, bounds.origin.y + px(box_top)),
+        size(bounds.size.width, px(box_bottom - box_top)),
     );
     (geometry, rects, viewport)
 }
@@ -230,14 +262,24 @@ fn line_runs(cells: &[(usize, char, Rgb)], palette: &TerminalPalette, highlighte
     runs.into()
 }
 
+/// The minimap for a terminal `width` pixels wide, laid over its right edge. `None` while there
+/// is no Scrollback: everything is on screen and there is nothing to scroll.
 pub fn minimap(
     term: SharedTerm,
     state: Rc<MinimapState>,
     palette: TerminalPalette,
     app: AppPalette,
     highlighter: Arc<Highlighter>,
+    width: f32,
     cx: &mut Context<TerminalView>,
-) -> AnyElement {
+) -> Option<AnyElement> {
+    let lines = {
+        let term = term.lock();
+        (term.grid().history_size() > 0).then(|| content_lines(&term))?
+    };
+    // As tall as the output, up to the terminal's height.
+    let height = lines as f32 * LINE_H + PAD_Y * 2.;
+    let backdrop = palette.background_hsla();
     let paint_state = state.clone();
     let paint_box_state = state.clone();
     let paint_term = term.clone();
@@ -268,14 +310,19 @@ pub fn minimap(
 
     let (down_term, move_term) = (term.clone(), term);
     let (down_state, move_state, up_state) = (state.clone(), state.clone(), state);
-    div()
+    let element = div()
         .id("minimap")
-        .w(px(WIDTH))
-        .h_full()
-        .flex_shrink_0()
-        .py(px(8.))
-        .border_l_1()
-        .border_color(app.border)
+        .absolute()
+        .top_0()
+        .right_0()
+        .w(px(width))
+        .h(px(height))
+        .max_h_full()
+        .py(px(PAD_Y))
+        // Over the text: the terminal's own colour, mostly opaque, so the miniature reads and the
+        // text underneath still shows through faintly.
+        .bg(backdrop.opacity(0.82))
+        .rounded_bl(px(8.))
         .cursor_default()
         // Clicks here scroll; they must not start a text selection in the terminal.
         .on_mouse_down(
@@ -299,7 +346,8 @@ pub fn minimap(
             cx.listener(move |_, _: &MouseUpEvent, _, _| up_state.dragging.set(false)),
         )
         .child(strip)
-        .into_any_element()
+        .into_any_element();
+    Some(element)
 }
 
 #[cfg(test)]
@@ -343,7 +391,45 @@ mod tests {
     }
 
     fn strip() -> Bounds<Pixels> {
-        Bounds::new(point(px(0.), px(0.)), size(px(WIDTH), px(800.)))
+        Bounds::new(point(px(0.), px(0.)), size(px(MAX_WIDTH), px(800.)))
+    }
+
+    #[test]
+    fn only_lines_with_output_count() {
+        let config = Config { scrolling_history: 100, ..Config::default() };
+        let mut term = Term::new(config, &TermSize::new(80, 24), VoidListener);
+        let mut parser: Processor = Processor::new();
+        // A fresh session: one prompt line, no Scrollback.
+        parser.advance(&mut term, b"user@web01:~$ ");
+        assert_eq!(content_lines(&term), 1);
+        assert_eq!(term.grid().history_size(), 0);
+        // Blank rows below the cursor don't count; the cursor's row does.
+        parser.advance(&mut term, b"ls\r\na b c\r\n");
+        assert_eq!(content_lines(&term), 3);
+        // Once output scrolls off, the Scrollback counts too.
+        for i in 0..40 {
+            parser.advance(&mut term, format!("line {i}\r\n").as_bytes());
+        }
+        // 42 written rows plus the cursor's: 19 scrolled off a 24-row screen.
+        assert_eq!(term.grid().history_size(), 43 - 24);
+        assert_eq!(content_lines(&term), 43);
+    }
+
+    #[test]
+    fn the_box_stops_where_the_output_ends() {
+        let term = busy_log(30);
+        let (_, _, viewport) = layout(&term, &mut LineCache::default(), &TerminalPalette::dark(), &bundled_rules(), strip());
+        // 30 lines + the empty prompt row, of a 50-row screen: the box covers what's there.
+        let lines = content_lines(&term);
+        assert_eq!(f32::from(viewport.size.height), (lines as f32 * LINE_H).min(800.));
+        assert_eq!(term.grid().display_offset(), 0);
+    }
+
+    #[test]
+    fn width_follows_the_terminal() {
+        assert_eq!(width_for(300.), MIN_WIDTH);
+        assert_eq!(width_for(800.), 80.);
+        assert_eq!(width_for(3000.), MAX_WIDTH);
     }
 
     #[test]

@@ -6,6 +6,18 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The minimap lies over the terminal's right edge, like VS Code's, instead of taking a column of
+  its own: the terminal gets its full width back. It is as tall as the output (up to the
+  terminal's height) and its width follows the terminal's.
+
+### Fixed
+
+- The minimap no longer shows a box you can drag when there is nothing to scroll, such as a new
+  session with just its prompt. It appears once output has scrolled off the screen, and stays
+  out of the way of full-screen programs such as vim and htop.
+
 ## [0.2.1] - 2026-11-12
 
 ### Changed

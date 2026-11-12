@@ -1478,16 +1478,22 @@ impl Render for TerminalView {
         let glyph_cache = self.glyph_cache.clone();
         let highlighter = cx.try_global::<ActiveHighlights>().map(|h| h.0.clone()).unwrap_or_default();
         let (rail, flash_row) = crate::perf::time("command rail", || self.render_rail(cx));
-        let minimap = self.minimap.then(|| {
-            crate::ui::minimap::minimap(
-                self.term.clone(),
-                self.minimap_state.clone(),
-                palette.clone(),
-                cx.global::<Appearance>().app,
-                highlighter.clone(),
-                cx,
-            )
-        });
+        // Laid over the terminal's right edge, sized from the last layout's width.
+        let text_width = self.grid.get().map_or(800., |g| g.cols as f32 * g.cell_width as f32) + PADDING_X * 2.;
+        let minimap = self
+            .minimap
+            .then(|| {
+                crate::ui::minimap::minimap(
+                    self.term.clone(),
+                    self.minimap_state.clone(),
+                    palette.clone(),
+                    cx.global::<Appearance>().app,
+                    highlighter.clone(),
+                    crate::ui::minimap::width_for(text_width),
+                    cx,
+                )
+            })
+            .flatten();
         let flash_color = Hsla { a: palette.selection.a * 0.7, ..palette.selection };
 
         let surface = canvas(
@@ -1698,13 +1704,8 @@ impl Render for TerminalView {
             .bg(term_bg)
             // A program that takes the mouse gets an arrow, as in xterm; shift still selects.
             .map(|el| if mouse_reporting { el.cursor_default() } else { el.cursor_text() })
-            .child(
-                div()
-                    .size_full()
-                    .flex()
-                    .child(div().flex_1().min_w_0().h_full().px(px(PADDING_X)).py(px(PADDING_Y)).child(surface))
-                    .children(minimap),
-            )
+            .child(div().size_full().px(px(PADDING_X)).py(px(PADDING_Y)).child(surface))
+            .children(minimap)
             .children(rail)
             .children(self.render_disconnected(cx))
             .children(self.render_route(cx))
