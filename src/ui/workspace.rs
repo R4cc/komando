@@ -21,11 +21,11 @@ use crate::model::{
     self, AppThemeSetting, CredentialSource, Host, Library, LocalShell, Project, Settings, TerminalThemeSetting,
 };
 use crate::session::{self, Status, ssh};
-use crate::theme::{AppPalette, Appearance, PROJECT_COLORS, TerminalPalette, UI_FONT, alpha, project_color};
+use crate::theme::{AppPalette, Appearance, DISPLAY_FONT, PROJECT_COLORS, TerminalPalette, UI_FONT, alpha, project_color};
 use crate::ui::terminal_view::{TerminalEvent, TerminalView};
 use crate::ui::widgets::{
-    ButtonKind, ISLAND_GAP, ISLAND_RADIUS, badge, button, elevation, icon_button, icon_el, island, section_label, status_dot,
-    wordmark,
+    ButtonKind, ISLAND_GAP, ISLAND_RADIUS, badge, button, elevation, icon_button, icon_el, icon_text_button, island,
+    section_label, status_dot, wordmark,
 };
 use crate::vault::{Credential, Secret, Vault};
 
@@ -1186,8 +1186,19 @@ impl Workspace {
                 icon: Some(icon),
             };
             let project_id = project_id.clone();
-            if let Some(project) = self.library.projects.iter_mut().find(|p| p.id == project_id) {
-                project.hosts.push(host.id.clone());
+            match self.library.projects.iter_mut().find(|p| p.id == project_id) {
+                Some(project) => project.hosts.push(host.id.clone()),
+                // The first connection, added from the start screen: give it a project.
+                None => self.library.projects.push(Project {
+                    id: model::new_id(),
+                    name: FIRST_PROJECT_NAME.into(),
+                    color: FIRST_PROJECT_COLOR.into(),
+                    icon: "folder".into(),
+                    default_user: None,
+                    credential: None,
+                    hosts: vec![host.id.clone()],
+                    shells: vec![],
+                }),
             }
             self.library.hosts.push(host);
         }
@@ -1338,6 +1349,29 @@ impl Workspace {
     }
 }
 
+
+/// The project the first connection goes into when it is added before any project exists.
+const FIRST_PROJECT_NAME: &str = "My servers";
+const FIRST_PROJECT_COLOR: &str = "blue";
+
+/// The local shells offered on the start screen, with short labels: one per kind
+/// (PowerShell 7 wins over Windows PowerShell), at most three.
+fn welcome_shells(shells: Vec<LocalShell>) -> Vec<(String, LocalShell)> {
+    let mut picked: Vec<(String, LocalShell)> = vec![];
+    for shell in shells {
+        let label = if shell.name.contains("PowerShell") {
+            "PowerShell".to_string()
+        } else if shell.name == "Command Prompt" {
+            "CMD".to_string()
+        } else {
+            shell.name.clone()
+        };
+        if picked.len() < 3 && !picked.iter().any(|(l, _)| *l == label) {
+            picked.push((label, shell));
+        }
+    }
+    picked
+}
 
 fn sanitize(s: &str) -> String {
     s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect()
@@ -2066,6 +2100,9 @@ impl Workspace {
     }
 
     fn render_empty(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        if self.library.projects.is_empty() && self.library.hosts.is_empty() {
+            return self.render_welcome(p, cx);
+        }
         island(p)
             .flex_1()
             .h_full()
@@ -2090,6 +2127,59 @@ impl Workspace {
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_new_project(window, cx))),
                     ),
             )
+            .into_any_element()
+    }
+
+    /// The start screen, shown until the first project or connection exists: what Komando is,
+    /// and one click to add a server or open a local shell.
+    fn render_welcome(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let shells = welcome_shells(self.library.standalone_shells());
+        let hero = |id: SharedString, icon: &str, label: String, kind: ButtonKind| {
+            icon_text_button(id, icon, label, kind, p).h(px(44.)).px(px(20.)).gap(px(10.)).rounded(px(10.)).text_size(px(14.))
+        };
+        let mut actions = vec![
+            hero("welcome-add".into(), "plus", "Add connection".into(), ButtonKind::Primary)
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_new_host(String::new(), window, cx)))
+                .into_any_element(),
+            hero("welcome-project".into(), "folder-plus", "New project".into(), ButtonKind::Secondary)
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_new_project(window, cx)))
+                .into_any_element(),
+        ];
+        for (label, shell) in shells {
+            actions.push(
+                hero(SharedString::from(format!("welcome-shell-{label}")), "square-terminal", label, ButtonKind::Secondary)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.activate_item(SidebarItem::Shell { project: None, shell: shell.clone() }, false, window, cx)
+                    }))
+                    .into_any_element(),
+            );
+        }
+        island(p)
+            .flex_1()
+            .h_full()
+            .px(px(32.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .bg(p.background)
+            .child(
+                div()
+                    .font_family(DISPLAY_FONT)
+                    .text_size(px(64.))
+                    .line_height(px(72.))
+                    .text_color(p.text)
+                    .child("Komando."),
+            )
+            .child(
+                div()
+                    .mt(px(14.))
+                    .text_size(px(16.))
+                    .text_color(p.text_muted)
+                    .text_center()
+                    .child("A fast terminal for local and remote work."),
+            )
+            .child(div().mt(px(40.)).flex().flex_wrap().justify_center().gap(px(12.)).children(actions))
             .into_any_element()
     }
 
@@ -2166,10 +2256,12 @@ impl Workspace {
             }
             Overlay::NewHost { project_id, editing, fields, icon, icon_query, auth, error } => {
                 let project = self.library.project(project_id);
-                let project_name = project.map(|pr| pr.name.clone()).unwrap_or_default();
+                // No project yet (the first connection, from the start screen): the host goes
+                // into a new one, created when it is saved.
+                let project_name = project.map(|pr| pr.name.clone()).unwrap_or_else(|| FIRST_PROJECT_NAME.into());
                 let project_icon = project.map(|pr| pr.icon.clone()).unwrap_or_else(|| "folder".into());
                 let project_has_credential = project.is_some_and(|pr| pr.credential.is_some());
-                let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.brand);
+                let color = project_color(project.map(|pr| pr.color.as_str()).unwrap_or(FIRST_PROJECT_COLOR));
                 let host = editing.as_deref().and_then(|id| self.library.host(id));
                 let has_saved = host.is_some_and(|h| h.credential.is_some());
                 let title = match host {
@@ -2888,6 +2980,30 @@ impl Render for Workspace {
             .children(self.unlock.as_ref().map(|s| self.render_unlock(s, p, cx)))
             .children(toast)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod welcome_tests {
+    use super::*;
+
+    fn shell(name: &str) -> LocalShell {
+        LocalShell { name: name.into(), program: String::new(), args: vec![] }
+    }
+
+    #[test]
+    fn start_screen_offers_one_shell_of_each_kind() {
+        let shells = vec![shell("PowerShell 7"), shell("Windows PowerShell"), shell("Command Prompt")];
+        let picked = welcome_shells(shells);
+        let labels: Vec<&str> = picked.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["PowerShell", "CMD"]);
+        assert_eq!(picked[0].1.name, "PowerShell 7");
+    }
+
+    #[test]
+    fn start_screen_keeps_other_shell_names() {
+        let picked = welcome_shells(vec![shell("bash")]);
+        assert_eq!(picked[0].0, "bash");
     }
 }
 

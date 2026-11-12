@@ -22,6 +22,23 @@ pub enum ButtonKind {
 
 /// A 32px-high text button. Hit area is the full pill.
 pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: ButtonKind, p: AppPalette) -> Stateful<gpui::Div> {
+    button_shell(id, kind, p).0.child(label.into())
+}
+
+/// A text button with a leading icon, drawn in the label's colour.
+pub fn icon_text_button(
+    id: impl Into<ElementId>,
+    icon: &str,
+    label: impl Into<SharedString>,
+    kind: ButtonKind,
+    p: AppPalette,
+) -> Stateful<gpui::Div> {
+    let (el, fg) = button_shell(id, kind, p);
+    el.gap(px(8.)).child(icon_el(icon, 15., fg)).child(label.into())
+}
+
+/// A button's pill without its content, and the colour its content is drawn in.
+fn button_shell(id: impl Into<ElementId>, kind: ButtonKind, p: AppPalette) -> (Stateful<gpui::Div>, Hsla) {
     let (bg, fg, hover, border) = match kind {
         // Near-black on orange: white would read at only about 3:1.
         ButtonKind::Primary => (p.brand, p.on_brand, p.brand.opacity(0.88), None),
@@ -33,7 +50,7 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Bu
             (red, gpui::white(), red.opacity(0.88), None)
         }
     };
-    div()
+    let el = div()
         .id(id)
         .h(px(32.))
         .px(px(14.))
@@ -49,8 +66,8 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: Bu
         .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
         .cursor_pointer()
-        .hover(move |s| s.bg(hover))
-        .child(label.into())
+        .hover(move |s| s.bg(hover));
+    (el, fg)
 }
 
 /// A square icon-only button with a tooltip-free label for accessibility tooling.

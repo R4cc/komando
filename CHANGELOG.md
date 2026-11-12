@@ -6,6 +6,14 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-11-12
+
+### Changed
+
+- A new start screen for when you haven't added anything yet: what Komando is, and one click
+  to add a connection, create a project or open PowerShell, Command Prompt or your local shell.
+  A connection added there goes into a new project, "My servers", which you can rename later.
+
 ## [0.1.15] - 2026-11-11
 
 ### Added
@@ -300,7 +308,9 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/R4cc/komando/compare/v0.1.9...v0.1.16
+[0.1.9]: https://github.com/R4cc/komando/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/R4cc/komando/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/R4cc/komando/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/R4cc/komando/compare/v0.1.5...v0.1.6
