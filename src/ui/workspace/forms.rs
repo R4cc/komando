@@ -161,7 +161,18 @@ impl Workspace {
         field
     }
 
-    fn submit_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn submit_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A key file goes into the Vault: ask for the master password first, then save.
+        let (sign_in, key_path) = match &self.overlay {
+            Some(Overlay::HostForm(form)) => (form.sign_in, form.key_path.clone()),
+            Some(Overlay::ProjectForm(form)) => (form.sign_in, form.key_path.clone()),
+            _ => return,
+        };
+        if sign_in == SignIn::KeyFile && self.vault.is_none() && !key_path.read(cx).value().trim().is_empty() {
+            self.pending.push(super::Pending::Form);
+            self.show_unlock("The key file is copied into your vault, encrypted.", window, cx);
+            return;
+        }
         match &self.overlay {
             Some(Overlay::HostForm(_)) => self.submit_host_form(window, cx),
             Some(Overlay::ProjectForm(_)) => self.submit_project_form(window, cx),
@@ -240,6 +251,16 @@ impl Workspace {
     fn submit_host_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.save_host_form(cx);
         self.finish_form(result, window, cx);
+    }
+
+    /// Show `message` on the open host or project form.
+    pub(super) fn show_form_error(&mut self, message: &str, cx: &mut Context<Self>) {
+        match self.overlay.as_mut() {
+            Some(Overlay::HostForm(form)) => form.error = Some(message.to_string()),
+            Some(Overlay::ProjectForm(form)) => form.error = Some(message.to_string()),
+            _ => {}
+        }
+        cx.notify();
     }
 
     fn finish_form(&mut self, result: Result<(), String>, window: &mut Window, cx: &mut Context<Self>) {

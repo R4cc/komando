@@ -74,7 +74,7 @@ The encrypted store that holds every Credential. It is locked until the Master P
 _Avoid_: Keychain, keystore, password manager
 
 **Master Password**:
-The single password that unlocks the Vault when Komando starts.
+The single password that unlocks the Vault. Komando asks for it only when something needs the Vault, never just to start.
 
 **Credential**:
 A secret in the Vault used to authenticate: a password, or a private key with its optional passphrase. One Credential can be shared by many Hosts.

@@ -129,7 +129,6 @@ fn main() {
 
     komando::run(komando::Options {
         data_dir: dir,
-        skip_unlock: true,
         startup: Startup {
             master_password: Some(MASTER.into()),
             open,

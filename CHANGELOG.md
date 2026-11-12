@@ -6,6 +6,24 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-11-12
+
+### Changed
+
+- Komando no longer asks for the master password when it starts. It asks only when something
+  needs the vault: connecting to a host that signs in with a saved password or key, saving a
+  password, importing a key file, or unlocking from Settings → Security. Several hosts opened
+  at once share one prompt.
+- The master password dialog is easy to tell apart from a server's password question: it
+  carries the vault badge and an orange top edge, says why it is asking, and notes that this is
+  your Komando password, not the server's. When connecting, "Type the server password instead"
+  skips the vault for that connection; Escape does the same.
+
+### Removed
+
+- The `--locked` start option, which skipped the startup unlock screen. There is no such screen
+  any more.
+
 ## [0.2.7] - 2026-11-12
 
 ### Fixed

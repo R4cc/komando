@@ -607,7 +607,7 @@ impl Workspace {
             (
                 "Locked. Connections that need a saved password ask you to unlock first.",
                 button("vault-unlock", "Unlock", ButtonKind::Primary, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.show_unlock(false, window, cx)))
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.show_unlock("Unlock to connect with your saved passwords and keys and see them here.", window, cx)))
                     .into_any_element(),
             )
         };

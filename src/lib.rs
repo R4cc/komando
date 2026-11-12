@@ -83,8 +83,6 @@ impl gpui::AssetSource for Assets {
 
 pub struct Options {
     pub data_dir: PathBuf,
-    /// Start without the unlock screen (the Vault stays locked).
-    pub skip_unlock: bool,
     pub startup: ui::workspace::Startup,
 }
 
@@ -111,7 +109,7 @@ pub fn run(options: Options) {
                 },
                 |window, cx| {
                     let workspace =
-                        cx.new(|cx| Workspace::new(options.data_dir.clone(), options.skip_unlock, options.startup.clone(), window, cx));
+                        cx.new(|cx| Workspace::new(options.data_dir.clone(), options.startup.clone(), window, cx));
                     cx.new(|cx| gpui_component::Root::new(workspace, window, cx))
                 },
             )

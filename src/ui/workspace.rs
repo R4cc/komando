@@ -179,9 +179,12 @@ enum ConfirmAction {
     DeleteProject(String),
 }
 
+/// What waits for the Vault: done once the master password is entered.
 enum Pending {
     Open { project_id: String, host_id: String },
     Save { session: usize, hop: usize, password: String },
+    /// Save the open host or project form, which imports a key file into the Vault.
+    Form,
 }
 
 /// Things to do right after launch. Used by development tooling (screenshots, demos);
@@ -220,7 +223,8 @@ pub struct Workspace {
     vault: Option<Vault>,
     /// Shown full-window at launch; as a dialog when a locked Vault is needed later.
     unlock: Option<UnlockState>,
-    pending: Option<Pending>,
+    /// What waits for the master password, in the order it was asked for.
+    pending: Vec<Pending>,
     sessions: Vec<SessionEntry>,
     active: Option<usize>,
     /// The Session last shown for each item, so a click returns to it.
@@ -239,12 +243,15 @@ pub struct Workspace {
     _subscriptions: Vec<Subscription>,
 }
 
+/// The master password dialog. It opens only when something needs the Vault (connecting
+/// with a saved password, saving one, importing a key), never at startup.
 struct UnlockState {
     creating: bool,
     password: Entity<InputState>,
     confirm: Entity<InputState>,
     error: Option<String>,
-    full_screen: bool,
+    /// Why it's asked, in a sentence: "web01 signs in with a password saved in your vault."
+    reason: String,
 }
 
 impl Focusable for Workspace {
@@ -254,7 +261,7 @@ impl Focusable for Workspace {
 }
 
 impl Workspace {
-    pub fn new(data_dir: PathBuf, skip_unlock: bool, startup: Startup, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(data_dir: PathBuf, startup: Startup, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = Settings::load(&data_dir);
         // A fresh install has no Projects; the detected local shells stand alone.
         let library = Library::load(&data_dir).unwrap_or_else(|err| {
@@ -283,7 +290,7 @@ impl Workspace {
             font_input: None,
             vault: None,
             unlock: None,
-            pending: None,
+            pending: vec![],
             sessions: vec![],
             active: None,
             last_active: Default::default(),
@@ -303,13 +310,12 @@ impl Workspace {
         this.apply_highlights(cx);
         let sub = cx.observe_window_appearance(window, |this, window, cx| this.apply_appearance(window, cx));
         this._subscriptions.push(sub);
+        // The Vault stays locked until something needs it; then the master password is asked.
         if let Some(password) = &startup.master_password {
             match Vault::unlock(&this.data_dir, password) {
                 Ok(vault) => this.vault = Some(vault),
                 Err(err) => log::error!("startup unlock: {err:#}"),
             }
-        } else if !skip_unlock {
-            this.show_unlock(true, window, cx);
         }
         this.start_auto_lock(window, cx);
         // Look for a new version shortly after start, without getting in the way of it.
@@ -556,7 +562,18 @@ impl Workspace {
 
     // ---- vault ------------------------------------------------------------------------
 
-    fn show_unlock(&mut self, full_screen: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// Ask for the master password, saying why (`reason`). What waits for it is in `pending`.
+    /// Asked again while the dialog is open (two hosts opened at once), it stays as it is.
+    fn show_unlock(&mut self, reason: impl Into<String>, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(state) = self.unlock.as_mut() {
+            if self.pending.len() > 1 {
+                state.reason = "The hosts you're opening sign in with passwords or keys saved in your vault.".into();
+            }
+            let password = state.password.clone();
+            password.update(cx, |input, cx| input.focus(window, cx));
+            cx.notify();
+            return;
+        }
         let creating = !Vault::exists(&self.data_dir);
         let password = cx.new(|cx| {
             InputState::new(window, cx)
@@ -573,7 +590,7 @@ impl Workspace {
             self._subscriptions.push(sub);
         }
         password.update(cx, |state, cx| state.focus(window, cx));
-        self.unlock = Some(UnlockState { creating, password, confirm, error: None, full_screen });
+        self.unlock = Some(UnlockState { creating, password, confirm, error: None, reason: reason.into() });
         cx.notify();
     }
 
@@ -595,10 +612,16 @@ impl Workspace {
                 self.vault = Some(vault);
                 self.unlock = None;
                 self.last_activity = Instant::now();
-                match self.pending.take() {
-                    Some(Pending::Open { project_id, host_id }) => self.open_host(&project_id, &host_id, window, cx),
-                    Some(Pending::Save { session, hop, password }) => self.save_password(session, hop, password, cx),
-                    None => self.focus_active(window, cx),
+                let pending = std::mem::take(&mut self.pending);
+                if pending.is_empty() {
+                    self.focus_active(window, cx);
+                }
+                for job in pending {
+                    match job {
+                        Pending::Open { project_id, host_id } => self.open_host(&project_id, &host_id, window, cx),
+                        Pending::Save { session, hop, password } => self.save_password(session, hop, password, cx),
+                        Pending::Form => self.submit_form(window, cx),
+                    }
                 }
             }
             Err(err) => state.error = Some(err.to_string()),
@@ -606,12 +629,20 @@ impl Workspace {
         cx.notify();
     }
 
+    /// "Not now" (or Escape) on the master password dialog. A connection still goes ahead
+    /// and asks for the server's password instead; anything else is dropped.
     fn skip_unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.unlock = None;
-        if let Some(Pending::Open { project_id, host_id }) = self.pending.take() {
-            self.open_host_session(&project_id, &host_id, window, cx);
+        for job in std::mem::take(&mut self.pending) {
+            match job {
+                Pending::Open { project_id, host_id } => self.open_host_session(&project_id, &host_id, window, cx),
+                Pending::Form => self.show_form_error("The key file goes into the vault: unlock it, or pick another sign-in.", cx),
+                Pending::Save { .. } => {}
+            }
         }
-        self.focus_active(window, cx);
+        if self.overlay.is_none() {
+            self.focus_active(window, cx);
+        }
         cx.notify();
     }
 
@@ -758,8 +789,13 @@ impl Workspace {
                     if this.vault.is_some() {
                         this.save_password(id, *hop, password.clone(), cx);
                     } else {
-                        this.pending = Some(Pending::Save { session: id, hop: *hop, password: password.clone() });
-                        this.show_unlock(false, window, cx);
+                        this.pending.push(Pending::Save { session: id, hop: *hop, password: password.clone() });
+                        let host = this.hop_host(id, *hop).and_then(|(_, host_id)| this.library.host(&host_id).map(|h| h.name.clone()));
+                        let reason = match host {
+                            Some(name) => format!("To remember the password for {name}, Komando saves it in your vault."),
+                            None => "To remember this password, Komando saves it in your vault.".to_string(),
+                        };
+                        this.show_unlock(reason, window, cx);
                     }
                 }
             },
@@ -805,8 +841,9 @@ impl Workspace {
             .route(project_id, host_id)
             .is_ok_and(|route| route.iter().any(|hop| hop.credential.is_some()));
         if needs_vault && self.vault.is_none() {
-            self.pending = Some(Pending::Open { project_id: project_id.into(), host_id: host_id.into() });
-            self.show_unlock(false, window, cx);
+            self.pending.push(Pending::Open { project_id: project_id.into(), host_id: host_id.into() });
+            let name = self.library.host(host_id).map(|h| h.name.clone()).unwrap_or_else(|| "This host".into());
+            self.show_unlock(format!("{name} signs in with a password or key saved in your vault."), window, cx);
             return;
         }
         self.open_host_session(project_id, host_id, window, cx);
@@ -970,7 +1007,10 @@ impl Workspace {
     }
 
     fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(entry) = self.active_entry() {
+        // The master password dialog sits over everything: it keeps the keyboard.
+        if let Some(unlock) = &self.unlock {
+            unlock.password.update(cx, |input, cx| input.focus(window, cx));
+        } else if let Some(entry) = self.active_entry() {
             // The open question's field if it has one, else the terminal.
             entry.view.update(cx, |view, cx| view.focus_prompt(window, cx));
         } else {
@@ -982,10 +1022,11 @@ impl Workspace {
         self.sessions.iter().find(|s| Some(s.id) == self.active)
     }
 
-    /// Whether the active Session has a question open (a password, a host key…). It is a modal:
-    /// nothing else in the window can be used, and no other dialog opens, until it is answered.
+    /// Whether a question is open: the active Session's (a password, a host key…) or the
+    /// master password. It is a modal: nothing else in the window can be used, and no other
+    /// dialog opens, until it is answered.
     fn prompt_open(&self, cx: &App) -> bool {
-        self.active_entry().is_some_and(|entry| entry.view.read(cx).has_prompt())
+        self.unlock.is_some() || self.active_entry().is_some_and(|entry| entry.view.read(cx).has_prompt())
     }
 
     /// Whether a dialog is up, so the window's shortcuts and other dialogs must wait.
@@ -1306,83 +1347,102 @@ fn sanitize(s: &str) -> String {
 // ---- rendering -------------------------------------------------------------------------
 
 impl Workspace {
+    /// The master password dialog. It must not be mistaken for a server's password question
+    /// (a plain card titled "Password for …"): it carries the vault badge, names Komando's
+    /// vault, and says in a highlighted note that this is not the server's password.
     fn render_unlock(&self, state: &UnlockState, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let creating = state.creating;
+        let skip_label = if self.pending.iter().any(|job| matches!(job, Pending::Open { .. })) {
+            "Type the server password instead"
+        } else {
+            "Not now"
+        };
         let form = div()
-            .w(px(360.))
             .flex()
             .flex_col()
-            .gap(px(12.))
+            .gap(px(10.))
             .child(Input::new(&state.password))
-            .when(state.creating, |el| el.child(Input::new(&state.confirm)))
-            .when_some(state.error.clone(), |el, e| el.child(div().text_size(px(12.)).text_color(p.danger).child(e)))
-            .child(
-                button("unlock", if state.creating { "Create vault" } else { "Unlock" }, ButtonKind::Primary, p)
-                    .w_full()
-                    .h(px(36.))
-                    .on_click(cx.listener(|this, _, window, cx| this.submit_unlock(window, cx))),
-            )
+            .when(creating, |el| el.child(Input::new(&state.confirm)))
+            .when_some(state.error.clone(), |el, e| el.child(div().text_size(px(12.)).text_color(p.danger).child(e)));
+        let header = div()
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .child(badge("lock-keyhole", p.brand, 38.))
             .child(
                 div()
                     .flex()
-                    .justify_center()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(div().text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(p.brand).child("KOMANDO VAULT"))
                     .child(
-                        button("skip", if state.creating { "Set up later" } else { "Continue without unlocking" }, ButtonKind::Ghost, p)
-                            .on_click(cx.listener(|this, _, window, cx| this.skip_unlock(window, cx))),
+                        div()
+                            .text_size(px(16.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.text)
+                            .child(if creating { "Create a master password" } else { "Enter your master password" }),
                     ),
             );
-        let note = if state.creating {
-            "This password encrypts your saved passwords and keys."
-        } else {
-            "Unlock to connect with saved passwords and keys."
-        };
-        // The one sentence on this screen that must not be skimmed past.
-        let warning = state.creating.then(|| {
+        let note = div()
+            .flex()
+            .items_start()
+            .gap(px(10.))
+            .px(px(12.))
+            .py(px(10.))
+            .rounded(px(8.))
+            .bg(p.brand_soft)
+            .border_1()
+            .border_color(p.brand.opacity(0.35))
+            .child(div().flex_shrink_0().pt(px(2.)).child(icon_el("key-round", 15., p.brand)))
+            .child(
+                div().flex_1().min_w_0().text_size(px(12.5)).line_height(px(18.)).text_color(p.text).child(if creating {
+                    "This password protects the passwords and keys Komando saves for you. It is not a server's password, and Komando asks for it only when it needs the vault."
+                } else {
+                    "This is the password you chose for Komando's vault, not the password of the server."
+                }),
+            );
+        // The one sentence that must not be skimmed past.
+        let warning = creating.then(|| {
             div()
-                .text_size(px(13.))
-                .line_height(px(20.))
+                .text_size(px(12.5))
+                .line_height(px(18.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(p.warning)
                 .child("There is no recovery: if you forget it, saved passwords are lost. Projects and hosts are kept.")
         });
-        if state.full_screen {
+        let actions = div()
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(px(8.))
+            .child(
+                button("unlock-skip", skip_label, ButtonKind::Ghost, p)
+                    .on_click(cx.listener(|this, _, window, cx| this.skip_unlock(window, cx))),
+            )
+            .child(
+                button("unlock", if creating { "Create vault" } else { "Unlock" }, ButtonKind::Primary, p)
+                    .on_click(cx.listener(|this, _, window, cx| this.submit_unlock(window, cx))),
+            );
+        modal(
+            p,
             div()
-                .size_full()
+                .w(px(440.))
+                .p(px(24.))
                 .flex()
                 .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(28.))
-                .bg(p.background)
-                .child(wordmark(52., p.text))
-                .child(div().w(px(56.)).h(px(3.)).rounded_full().bg(p.brand))
-                .child(
-                    div()
-                        .w(px(360.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.))
-                        .text_center()
-                        .child(div().text_size(px(13.)).line_height(px(20.)).text_color(p.text_muted).child(note))
-                        .children(warning),
-                )
+                .gap(px(16.))
+                // A brand-coloured top edge, which the plain server questions don't have.
+                .border_t_4()
+                .border_color(p.brand)
+                .rounded(px(14.))
+                .child(header)
+                .child(div().text_size(px(13.)).line_height(px(20.)).text_color(p.text_muted).child(state.reason.clone()))
+                .child(note)
+                .children(warning)
                 .child(form)
-                .into_any_element()
-        } else {
-            modal(
-                p,
-                div()
-                    .w(px(400.))
-                    .p(px(24.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(16.))
-                    .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Unlock vault"))
-                    .child(div().text_size(px(13.)).text_color(p.text_muted).child(note))
-                    .children(warning)
-                    .child(form)
-                    .into_any_element(),
-            )
-        }
+                .child(actions)
+                .into_any_element(),
+        )
     }
 
     /// The sidebar's rows, in order. Kept small (indices, counts) so working it out on every
@@ -2819,7 +2879,10 @@ impl Render for Workspace {
             .text_color(p.text)
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.last_activity = Instant::now();
-                if event.keystroke.key == "escape" && this.overlay.is_some() {
+                if event.keystroke.key == "escape" && this.unlock.is_some() {
+                    this.skip_unlock(window, cx);
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.overlay.is_some() {
                     this.close_overlay(window, cx);
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.prompt_open(cx) {
@@ -2827,7 +2890,7 @@ impl Render for Workspace {
                         entry.view.clone().update(cx, |view, cx| view.cancel_prompt(window, cx));
                     }
                     cx.stop_propagation();
-                } else if event.keystroke.key == "escape" && matches!(this.page, Page::Settings(_)) && this.unlock.is_none() {
+                } else if event.keystroke.key == "escape" && matches!(this.page, Page::Settings(_)) {
                     this.close_settings(window, cx);
                     cx.stop_propagation();
                 }
@@ -2885,14 +2948,6 @@ impl Render for Workspace {
                     this.open_settings(SettingsSection::Appearance, window, cx);
                 }
             }));
-
-        if let Some(state) = self.unlock.as_ref().filter(|s| s.full_screen) {
-            return root
-                .bg(p.canvas)
-                .child(self.render_title_bar(true, p, window, cx))
-                .child(div().flex_1().min_h_0().child(self.render_unlock(state, p, cx)))
-                .into_any_element();
-        }
 
         let toast = self.toast.as_ref().map(|(msg, _)| {
             div()
