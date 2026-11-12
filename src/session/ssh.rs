@@ -50,6 +50,55 @@ pub struct Hop {
     pub secret: Option<Secret>,
 }
 
+/// What a connection log line reports, which sets its colour.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum LogKind {
+    Step,
+    Good,
+    Warn,
+    Fail,
+}
+
+/// The connection's progress, written into the terminal above where the shell will start
+/// (and kept in its Scrollback): where it is connecting, the Host Key, how it signs in.
+#[derive(Clone)]
+pub(crate) struct ConnectLog {
+    term: SharedTerm,
+    proxy: EventProxy,
+}
+
+impl ConnectLog {
+    pub(crate) fn new(term: SharedTerm, proxy: EventProxy) -> Self {
+        Self { term, proxy }
+    }
+
+    pub(crate) fn line(&self, kind: LogKind, text: &str) {
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut *self.term.lock(), log_line(kind, text).as_bytes());
+        self.proxy.send_event(Event::Wakeup);
+    }
+}
+
+/// One log line as terminal output: an inverted " SSH " tag, a marker coloured by `kind`, and
+/// the text. Plain ANSI colours, so it follows the terminal theme.
+fn log_line(kind: LogKind, text: &str) -> String {
+    let (color, mark) = match kind {
+        LogKind::Step => ("2", "·"),
+        LogKind::Good => ("32", "✓"),
+        LogKind::Warn => ("33", "!"),
+        LogKind::Fail => ("31", "✕"),
+    };
+    // Control characters from a server or a Host's name must not drive the terminal.
+    let text: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    format!("\x1b[0m\x1b[7m SSH \x1b[0m \x1b[{color}m{mark}\x1b[0m {text}\x1b[0m\r\n")
+}
+
+/// `name (address:port)`, or just `address:port` when the name is the address.
+fn describe(hop: &Hop) -> String {
+    let at = format!("{}:{}", hop.address, hop.port);
+    if hop.name.is_empty() || hop.name == hop.address { at } else { format!("{} ({at})", hop.name) }
+}
+
 /// How long reaching one hop may take, Host Key questions aside.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -71,9 +120,14 @@ pub fn spawn(target: Target, size: GridSize, term: SharedTerm, proxy: EventProxy
     proxy.set_responder(sink.clone());
     runtime().spawn(async move {
         proxy.send(SessionEvent::Status(Status::Connecting));
-        let reason = match run(target, size, term, proxy.clone(), rx).await {
+        let log = ConnectLog::new(term.clone(), proxy.clone());
+        let reason = match run(target, size, term, proxy.clone(), log.clone(), rx).await {
             Ok(reason) => reason,
-            Err(err) => format!("{err:#}"),
+            Err(err) => {
+                let reason = format!("{err:#}");
+                log.line(LogKind::Fail, &reason);
+                reason
+            }
         };
         proxy.send(SessionEvent::Status(Status::Disconnected(reason)));
     });
@@ -85,6 +139,7 @@ pub(crate) struct Client {
     port: u16,
     known_hosts: PathBuf,
     proxy: EventProxy,
+    log: ConnectLog,
     /// Which hop this connection is, for progress events.
     hop: usize,
 }
@@ -101,6 +156,7 @@ impl client::Handler for Client {
         };
         let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
         self.proxy.send(SessionEvent::Hop { index: self.hop, step: HopStep::CheckingKey });
+        self.log.line(LogKind::Step, &format!("Host key {} {fingerprint}", key.algorithm()));
 
         // Komando's own list first, then the user's OpenSSH known_hosts (read-only import).
         let mut sources = vec![self.known_hosts.clone()];
@@ -113,6 +169,7 @@ impl client::Handler for Client {
             }
             match russh::keys::check_known_hosts_path(&self.host, self.port, key, path) {
                 Ok(true) => {
+                    self.log.line(LogKind::Good, "Host key matches the trusted one");
                     if path != &self.known_hosts {
                         let _ = russh::keys::known_hosts::learn_known_hosts_path(&self.host, self.port, key, &self.known_hosts);
                     }
@@ -120,6 +177,7 @@ impl client::Handler for Client {
                 }
                 Ok(false) => {}
                 Err(russh::keys::Error::KeyChanged { .. }) => {
+                    self.log.line(LogKind::Fail, "Host key changed since you trusted it");
                     self.proxy.send(SessionEvent::Prompt(Prompt::HostKeyChanged { fingerprint }));
                     return Err(anyhow!(
                         "The host key of {} has changed. Connection blocked: this can mean someone is intercepting the connection.",
@@ -130,6 +188,7 @@ impl client::Handler for Client {
             }
         }
 
+        self.log.line(LogKind::Warn, "First connection to this host: waiting for you to trust its key");
         let (reply, answer) = oneshot::channel();
         self.proxy.send(SessionEvent::Prompt(Prompt::HostKey {
             fingerprint,
@@ -141,6 +200,7 @@ impl client::Handler for Client {
                 std::fs::create_dir_all(dir)?;
             }
             russh::keys::known_hosts::learn_known_hosts_path(&self.host, self.port, key, &self.known_hosts)?;
+            self.log.line(LogKind::Good, "Host key trusted");
             Ok(true)
         } else {
             Err(anyhow!("Host key not trusted."))
@@ -159,6 +219,7 @@ async fn run(
     mut size: GridSize,
     term: SharedTerm,
     proxy: EventProxy,
+    log: ConnectLog,
     mut commands: mpsc::UnboundedReceiver<Command>,
 ) -> Result<String> {
     let config = Arc::new(client::Config {
@@ -172,11 +233,16 @@ async fn run(
     let mut handles: Vec<Handle<Client>> = Vec::with_capacity(target.hops.len());
     for (index, hop) in target.hops.iter().enumerate() {
         proxy.send(SessionEvent::Hop { index, step: HopStep::Reaching });
+        match index {
+            0 => log.line(LogKind::Step, &format!("Connecting to {}", describe(hop))),
+            _ => log.line(LogKind::Step, &format!("Opening a tunnel to {} through {}", describe(hop), target.hops[index - 1].name)),
+        }
         let handler = Client {
             host: hop.address.clone(),
             port: hop.port,
             known_hosts: target.known_hosts.clone(),
             proxy: proxy.clone(),
+            log: log.clone(),
             hop: index,
         };
         let timed_out = || anyhow!("Timed out connecting to {}:{}.", hop.address, hop.port);
@@ -200,12 +266,16 @@ async fn run(
         };
         let user = match hop.user.clone() {
             Some(user) => user,
-            None => ask(&proxy, &format!("User name for {}", hop.name), false, None)
-                .await
-                .ok_or_else(|| anyhow!("Cancelled."))?,
+            None => {
+                log.line(LogKind::Step, "No user name saved for this host: waiting for one");
+                ask(&proxy, &format!("User name for {}", hop.name), false, None)
+                    .await
+                    .ok_or_else(|| anyhow!("Cancelled."))?
+            }
         };
         proxy.send(SessionEvent::Hop { index, step: HopStep::SigningIn });
-        authenticate(&mut handle, &user, hop.secret.as_ref(), &proxy, index).await?;
+        authenticate(&mut handle, &user, hop.secret.as_ref(), &proxy, &log, index).await?;
+        log.line(LogKind::Good, &format!("Signed in to {} as {user}", hop.name));
         proxy.send(SessionEvent::Hop { index, step: HopStep::Done });
         handles.push(handle);
     }
@@ -360,10 +430,18 @@ impl Output {
     }
 }
 
-async fn authenticate(handle: &mut Handle<Client>, user: &str, secret: Option<&Secret>, proxy: &EventProxy, hop: usize) -> Result<()> {
+async fn authenticate(
+    handle: &mut Handle<Client>,
+    user: &str,
+    secret: Option<&Secret>,
+    proxy: &EventProxy,
+    log: &ConnectLog,
+    hop: usize,
+) -> Result<()> {
     let mut last_error = None;
     match secret {
         Some(Secret::PrivateKey { key, passphrase }) => {
+            log.line(LogKind::Step, &format!("Signing in as {user} with the saved key"));
             let decoded = match russh::keys::decode_secret_key(key, passphrase.as_deref()) {
                 Ok(decoded) => Ok(decoded),
                 Err(_) if passphrase.is_none() => {
@@ -387,6 +465,7 @@ async fn authenticate(handle: &mut Handle<Client>, user: &str, secret: Option<&S
             }
         }
         Some(Secret::Password { password }) => {
+            log.line(LogKind::Step, &format!("Signing in as {user} with the saved password"));
             if matches!(handle.authenticate_password(user, password.as_str()).await?, AuthResult::Success) {
                 return Ok(());
             }
@@ -394,6 +473,10 @@ async fn authenticate(handle: &mut Handle<Client>, user: &str, secret: Option<&S
         }
         None => {}
     }
+    if let Some(error) = &last_error {
+        log.line(LogKind::Warn, error);
+    }
+    log.line(LogKind::Step, &format!("Signing in as {user} with a password: waiting for it"));
 
     // Fall back to asking. A typed password that works is offered for saving.
     for _ in 0..3 {
@@ -405,7 +488,29 @@ async fn authenticate(handle: &mut Handle<Client>, user: &str, secret: Option<&S
             proxy.send(SessionEvent::OfferSave { password, hop });
             return Ok(());
         }
+        log.line(LogKind::Warn, "Wrong password");
         last_error = Some("Wrong password. Try again.".to_string());
     }
     Err(anyhow!("Authentication failed."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LogKind, log_line};
+
+    #[test]
+    fn log_lines_are_tagged_and_end_the_line() {
+        let line = log_line(LogKind::Good, "Signed in to web01 as ana");
+        assert!(line.contains(" SSH "));
+        assert!(line.contains("✓"));
+        assert!(line.ends_with("Signed in to web01 as ana\x1b[0m\r\n"));
+    }
+
+    #[test]
+    fn log_lines_cannot_carry_escape_sequences() {
+        // A Host named with an escape sequence must not clear the screen or retitle the tab.
+        let line = log_line(LogKind::Step, "Connecting to \x1b[2Jevil\x07");
+        assert!(line.contains("Connecting to  [2Jevil "));
+        assert_eq!(line.matches('\x1b').count(), 6, "only the log's own colour codes: {line:?}");
+    }
 }

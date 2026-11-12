@@ -472,6 +472,9 @@ fn compat_ssh_session_against_a_local_sshd() {
     let size = GridSize { cols: 100, rows: 30, cell_width: 9, cell_height: 18 };
     let mut r = sshd.connect(vec![sshd.hop("local", "127.0.0.1")], size);
     r.settle();
+    // The connection log sits above the shell.
+    r.wait_text("Connecting to local (127.0.0.1:");
+    r.wait_text("Signed in to local as");
     r.text("stty -a | tr ' ;' '\\n\\n' | grep -xE -- '-?iutf8' ; stty size; echo \"T=$TERM\"\r");
     r.wait_text("T=xterm-256color");
     let screen = r.screen();

@@ -8,6 +8,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- Local shells show their own icons, as in Windows Terminal: PowerShell 7, Windows PowerShell
+  and Command Prompt each have theirs, and WSL and Linux shells show Tux. In the sidebar, quick
+  connect and on the start screen.
 - The new Komando logo (">_Komando.") in the title bar, on the start, unlock and empty
   screens and in Settings → About, drawn in dark or light to match the theme. The app icon
   stays the same.

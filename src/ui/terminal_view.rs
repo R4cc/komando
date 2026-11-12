@@ -881,7 +881,9 @@ impl TerminalView {
             && matches!(self.prompt, Some(ActivePrompt::HostKey { .. } | ActivePrompt::HostKeyChanged { .. } | ActivePrompt::Input { .. }))
     }
 
-    /// The open question as a dimmed overlay over the terminal, unless the route page shows it.
+    /// The open question as a card docked at the bottom of the terminal, unless the route page
+    /// shows it. The terminal stays readable behind a light dim: while connecting, it shows the
+    /// connection log the question belongs to.
     fn render_prompt(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         if self.prompt_on_route() {
             return None;
@@ -897,9 +899,10 @@ impl TerminalView {
                 .occlude()
                 .rounded(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
                 .flex()
-                .items_center()
+                .items_end()
                 .justify_center()
-                .bg(alpha(0x000000, if p.dark { 0.45 } else { 0.18 }))
+                .p(px(24.))
+                .bg(alpha(0x000000, if p.dark { 0.28 } else { 0.10 }))
                 .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, window, cx| this.focus_prompt(window, cx)))
                 .child(element)
                 .into_any_element(),

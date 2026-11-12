@@ -85,8 +85,49 @@ pub fn icon_button(id: impl Into<ElementId>, icon: &str, p: AppPalette) -> State
         .child(icon_el(icon, 16., p.text_muted))
 }
 
-/// A Lucide icon by name (e.g. "server"), drawn in `color`.
+/// The icon for a Local Shell's program: PowerShell 7, Windows PowerShell, Command Prompt, or
+/// Tux for WSL and Unix shells. `None` for anything else, which gets the generic terminal icon.
+pub fn shell_icon(program: &str) -> Option<&'static str> {
+    let file = program.rsplit(['\\', '/']).next().unwrap_or(program).to_lowercase();
+    let name = file.strip_suffix(".exe").unwrap_or(&file);
+    match name {
+        "pwsh" | "pwsh-preview" => Some("shell:pwsh"),
+        "powershell" => Some("shell:powershell"),
+        "cmd" => Some("shell:cmd"),
+        "wsl" => Some("shell:linux"),
+        // Git Bash and friends on Windows are not Linux; elsewhere these are the system's shell.
+        "bash" | "zsh" | "fish" | "sh" | "dash" | "ksh" if !file.ends_with(".exe") => Some("shell:linux"),
+        _ => None,
+    }
+}
+
+/// The full-colour artwork behind a `shell:` icon name (from Windows Terminal's profile icons).
+fn shell_image(name: &str) -> Option<std::sync::Arc<gpui::Image>> {
+    use std::sync::{Arc, OnceLock};
+    static IMAGES: OnceLock<Vec<(&'static str, Arc<gpui::Image>)>> = OnceLock::new();
+    let images = IMAGES.get_or_init(|| {
+        let png = |bytes: &[u8]| Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes.to_vec()));
+        vec![
+            ("shell:pwsh", png(include_bytes!("../../assets/shells/pwsh.png"))),
+            ("shell:powershell", png(include_bytes!("../../assets/shells/powershell.png"))),
+            ("shell:cmd", png(include_bytes!("../../assets/shells/cmd.png"))),
+            ("shell:linux", png(include_bytes!("../../assets/shells/linux.png"))),
+        ]
+    });
+    images.iter().find(|(n, _)| *n == name).map(|(_, image)| image.clone())
+}
+
+/// Whether an icon name is full-colour artwork rather than a Lucide icon drawn in one colour.
+pub fn is_artwork(name: &str) -> bool {
+    name.starts_with("shell:")
+}
+
+/// A Lucide icon by name (e.g. "server"), drawn in `color`. `shell:` names are a shell's own
+/// full-colour icon instead, which ignores `color`.
 pub fn icon_el(name: &str, size: f32, color: Hsla) -> AnyElement {
+    if let Some(image) = shell_image(name) {
+        return gpui::img(image).size(px(size)).flex_shrink_0().into_any_element();
+    }
     svg()
         .path(SharedString::from(format!("icons/{name}.svg")))
         .size(px(size))
@@ -168,7 +209,10 @@ pub fn badge(icon: &str, color: Hsla, size: f32) -> impl IntoElement {
         .rounded(px((size * 0.28).round()))
         .bg(color.opacity(0.16))
         .text_color(color)
+        // A shell's own icon is coloured already: shown as it is, without the tinted square.
+        .when(is_artwork(icon), |el| el.bg(gpui::transparent_black()))
         .map(|el| match letter {
+            None if is_artwork(icon) => el.child(icon_el(icon, (size * 0.85).round(), color)),
             Some(letter) => el
                 .font_family(UI_FONT)
                 .text_size(px(size * 0.5))
@@ -181,4 +225,29 @@ pub fn badge(icon: &str, color: Hsla, size: f32) -> impl IntoElement {
 /// A small status dot: green connected, amber connecting, grey disconnected.
 pub fn status_dot(color: Hsla) -> impl IntoElement {
     div().size(px(7.)).rounded_full().flex_shrink_0().bg(color)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shells_get_their_own_icons() {
+        assert_eq!(shell_icon("pwsh.exe"), Some("shell:pwsh"));
+        assert_eq!(shell_icon(r"C:\Program Files\PowerShell\7\pwsh.exe"), Some("shell:pwsh"));
+        assert_eq!(shell_icon("powershell.exe"), Some("shell:powershell"));
+        assert_eq!(shell_icon("CMD.EXE"), Some("shell:cmd"));
+        assert_eq!(shell_icon("wsl.exe"), Some("shell:linux"));
+        assert_eq!(shell_icon("/bin/bash"), Some("shell:linux"));
+        // Git Bash on Windows isn't Linux.
+        assert_eq!(shell_icon(r"C:\Program Files\Git\bin\bash.exe"), None);
+        assert_eq!(shell_icon("nu.exe"), None);
+        for name in ["shell:pwsh", "shell:powershell", "shell:cmd", "shell:linux"] {
+            assert!(shell_image(name).is_some(), "{name}");
+        }
+        // Every default shell on this platform has one.
+        for shell in crate::model::default_shells() {
+            assert!(shell_icon(&shell.program).is_some(), "{}", shell.program);
+        }
+    }
 }

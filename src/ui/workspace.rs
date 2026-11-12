@@ -28,7 +28,7 @@ use crate::ui::terminal_view::{TerminalEvent, TerminalView};
 use crate::ui::transfers::{Transfers, TransfersChanged};
 use crate::ui::widgets::{
     ButtonKind, ISLAND_GAP, ISLAND_RADIUS, badge, button, elevation, icon_button, icon_el, icon_text_button, island,
-    section_label, status_dot, wordmark,
+    is_artwork, section_label, shell_icon, status_dot, wordmark,
 };
 use crate::vault::{Credential, Secret, Vault};
 
@@ -127,7 +127,7 @@ impl SidebarItem {
     fn icon(&self) -> String {
         match self {
             Self::Host { host, .. } => host.icon.clone().unwrap_or_else(|| "server".into()),
-            Self::Shell { .. } => "square-terminal".into(),
+            Self::Shell { shell, .. } => shell_icon(&shell.program).unwrap_or("square-terminal").into(),
         }
     }
 }
@@ -1803,7 +1803,14 @@ impl Workspace {
                     _ => this.activate_item(item.clone(), event.modifiers().control, window, cx),
                 }))
                 .when(!nested, |el| {
-                    el.child(icon_el(&icon, 15., if active || live { color } else { p.text_faint }))
+                    // A shell's coloured icon is dimmed like the tinted ones when it's idle.
+                    let dim = !(active || live) && is_artwork(&icon);
+                    el.child(
+                        div()
+                            .flex_shrink_0()
+                            .when(dim, |el| el.opacity(0.55))
+                            .child(icon_el(&icon, 15., if active || live { color } else { p.text_faint })),
+                    )
                 })
                 .child(
                     div()
@@ -2173,8 +2180,9 @@ impl Workspace {
                 .into_any_element(),
         ];
         for (label, shell) in shells {
+            let icon = shell_icon(&shell.program).unwrap_or("square-terminal");
             actions.push(
-                hero(SharedString::from(format!("welcome-shell-{label}")), "square-terminal", label, ButtonKind::Secondary)
+                hero(SharedString::from(format!("welcome-shell-{label}")), icon, label, ButtonKind::Secondary)
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.activate_item(SidebarItem::Shell { project: None, shell: shell.clone() }, false, window, cx)
                     }))
@@ -2229,7 +2237,7 @@ impl Workspace {
                             (r.icon.clone(), project_color(&r.color), host.name.clone(), format!("{user}{}{via} · {}", host.address, project.name))
                         }
                         SidebarItem::Shell { project, shell } => (
-                            "square-terminal".to_string(),
+                            shell_icon(&shell.program).unwrap_or("square-terminal").to_string(),
                             project.as_ref().map(|p| project_color(&p.color)).unwrap_or(p.brand),
                             shell.name.clone(),
                             match project {
