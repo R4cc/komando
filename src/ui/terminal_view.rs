@@ -81,6 +81,8 @@ pub enum TerminalEvent {
     Reconnect,
     /// Open the host form for the Host of hop `hop`.
     EditHost { hop: usize },
+    /// The pane's grid size is known or changed (see [`TerminalView::measured_size`]).
+    Sized,
 }
 
 enum ActivePrompt {
@@ -220,6 +222,21 @@ impl TerminalView {
     }
 
     /// The grid size last laid out, or a sensible default before the first paint.
+    /// The grid size from the pane's layout; `None` before it was first painted.
+    pub fn measured_size(&self) -> Option<GridSize> {
+        self.grid.get()
+    }
+
+    /// Take `size` (another pane's) before this pane is first painted, so a backend started
+    /// now opens the shell at about the right size. The first paint corrects it if it differs.
+    pub fn assume_size(&mut self, size: GridSize) {
+        if self.grid.get().is_none() {
+            self.grid.set(Some(size));
+            self.term.lock().resize(size.term_size());
+            self.proxy.set_size(size);
+        }
+    }
+
     pub fn grid_size(&self) -> GridSize {
         self.grid.get().unwrap_or(GridSize { cols: 120, rows: 36, cell_width: 8, cell_height: 18 })
     }
@@ -272,6 +289,8 @@ impl TerminalView {
                 self.proxy.clear_dirty();
                 if self.marks.is_pending() {
                     self.marks.output(&mut *self.term.lock());
+                } else {
+                    crate::session::drop_blank_scrollback(&mut *self.term.lock());
                 }
                 if self.startup.waiting() && !self.is_disconnected() && self.status == Status::Connected {
                     self.schedule_startup(STARTUP_QUIET, window, cx);
@@ -1518,6 +1537,7 @@ impl Render for TerminalView {
         let sink = self.sink.clone();
         let proxy = self.proxy.clone();
         let grid = self.grid.clone();
+        let this = cx.entity().downgrade();
         let origin_cell = self.origin.clone();
         let cell_cell = self.cell.clone();
         let glyph_cache = self.glyph_cache.clone();
@@ -1542,7 +1562,7 @@ impl Render for TerminalView {
         let flash_color = Hsla { a: palette.selection.a * 0.7, ..palette.selection };
 
         let surface = canvas(
-            move |bounds, window, _cx| crate::perf::time("terminal grid prepaint", || {
+            move |bounds, window, cx| crate::perf::time("terminal grid prepaint", || {
                 let text_system = window.text_system().clone();
                 let mut regular = gpui::font(family.clone());
                 regular.features = gpui::FontFeatures::disable_ligatures();
@@ -1562,11 +1582,20 @@ impl Render for TerminalView {
                 let new_size = GridSize { cols, rows, cell_width: cw.round() as u16, cell_height: lh as u16 };
                 if grid.get() != Some(new_size) {
                     grid.set(Some(new_size));
-                    term.lock().resize(new_size.term_size());
+                    {
+                        let mut term = term.lock();
+                        term.resize(new_size.term_size());
+                        // Fewer rows push lines into the Scrollback; blank ones are dead space.
+                        crate::session::drop_blank_scrollback(&mut *term);
+                    }
                     proxy.set_size(new_size);
                     if let Some(sink) = &sink {
                         sink.resize(new_size);
                     }
+                    let this = this.clone();
+                    cx.defer(move |cx| {
+                        let _ = this.update(cx, |_, cx| cx.emit(TerminalEvent::Sized));
+                    });
                 }
 
                 // Copy what is on screen and let go of the terminal before laying out text.

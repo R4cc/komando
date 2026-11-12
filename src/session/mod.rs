@@ -226,6 +226,11 @@ impl EventProxy {
         self.reports.lock().unwrap().size = Some(size);
     }
 
+    /// The last size the view laid the grid out at, if it has been laid out.
+    pub fn size(&self) -> Option<GridSize> {
+        self.reports.lock().unwrap().size
+    }
+
     /// Called by the UI once it has picked up a Wakeup, re-arming the next one.
     pub fn clear_dirty(&self) {
         self.dirty.store(false, Ordering::Release);
@@ -315,6 +320,28 @@ pub fn new_term(size: GridSize, scrollback_lines: usize, proxy: EventProxy) -> S
     Arc::new(FairMutex::new(Term::new(config, &size.term_size(), proxy)))
 }
 
+/// Drop the Scrollback when it holds nothing but blank lines, so there is no empty space to
+/// scroll up into (and no minimap) before real output scrolls off. Such lines come from a shell
+/// repainting after a resize: Windows' pseudo-console scrolls blank rows up when it does.
+/// Only looked at while the Scrollback is at most a screen tall, which keeps it cheap. Returns
+/// whether it dropped anything.
+pub fn drop_blank_scrollback<T>(term: &mut Term<T>) -> bool {
+    let grid = term.grid();
+    let history = grid.history_size();
+    if history == 0 || history > grid.screen_lines() {
+        return false;
+    }
+    let cols = grid.columns();
+    let blank = (1..=history as i32).all(|row| {
+        let line = &grid[Line(-row)];
+        (0..cols).all(|col| matches!(line[Column(col)].c, ' ' | '\t'))
+    });
+    if blank {
+        term.grid_mut().clear_history();
+    }
+    blank
+}
+
 /// The whole Scrollback plus screen as plain text: colours dropped, trailing blanks trimmed.
 pub fn scrollback_text<T>(term: &Term<T>) -> String {
     let grid = term.grid();
@@ -345,6 +372,28 @@ mod tests {
     fn export_trims_and_uses_crlf() {
         assert_eq!(tidy_export("a  \nb\n\n\n"), "a\r\nb\r\n");
         assert_eq!(tidy_export("\n\n"), "");
+    }
+
+    #[test]
+    fn blank_scrollback_is_dropped_but_output_is_kept() {
+        let (tx, _rx) = mpsc::unbounded();
+        let size = GridSize { cols: 20, rows: 4, cell_width: 8, cell_height: 18 };
+        let term = new_term(size, 100, EventProxy::new(tx));
+        let mut parser: Processor = Processor::new();
+        let mut t = term.lock();
+        assert!(!drop_blank_scrollback(&mut *t), "nothing to drop");
+        // A repaint that scrolls blank rows up, then the prompt.
+        parser.advance(&mut *t, b"\x1b[4;1H\n\n\n\x1b[Hprompt> ");
+        assert_eq!(t.grid().history_size(), 3);
+        assert!(drop_blank_scrollback(&mut *t));
+        assert_eq!(t.grid().history_size(), 0);
+        assert_eq!(scrollback_text(&*t), "prompt>\r\n");
+
+        // Real output in the Scrollback stays, blank lines and all.
+        parser.advance(&mut *t, b"\r\n\r\none\r\ntwo\r\nthree\r\n");
+        assert!(t.grid().history_size() > 0);
+        assert!(!drop_blank_scrollback(&mut *t));
+        assert!(scrollback_text(&*t).starts_with("prompt>\r\n"));
     }
 
     #[test]

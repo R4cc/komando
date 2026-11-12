@@ -321,6 +321,12 @@ async fn shell(
     mut sudo: Option<SudoPassword>,
 ) -> Result<String> {
     let mut channel = handle.channel_open_session().await?;
+    // Signing in took a while: the pane has been laid out since the connection started, so
+    // open the shell at its size rather than resize it straight after (a shell that starts at
+    // one size and is resized at once can leave blank lines behind).
+    if let Some(latest) = proxy.size() {
+        *size = latest;
+    }
     channel
         .request_pty(
             false,

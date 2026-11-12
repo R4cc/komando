@@ -153,6 +153,8 @@ struct SessionEntry {
     /// opens again where it was.
     browser: Option<Entity<FileBrowser>>,
     sftp_open: bool,
+    /// Opened before any terminal pane was laid out: the shell starts once one is, at its size.
+    waiting_for_size: bool,
     _subscription: Subscription,
     _browser_subscription: Option<Subscription>,
 }
@@ -230,6 +232,9 @@ pub struct Workspace {
     /// The Session last shown for each item, so a click returns to it.
     last_active: std::collections::HashMap<ItemKey, usize>,
     next_id: usize,
+    /// The terminal pane's size, as last laid out. A new Session's shell starts at this size
+    /// instead of a guess, so it isn't resized (and repainted) straight after it starts.
+    pane_size: Option<session::GridSize>,
     collapsed: HashSet<String>,
     overlay: Option<Overlay>,
     toast: Option<(SharedString, Instant)>,
@@ -295,6 +300,7 @@ impl Workspace {
             active: None,
             last_active: Default::default(),
             next_id: 1,
+            pane_size: None,
             collapsed: HashSet::new(),
             overlay: None,
             toast: None,
@@ -800,6 +806,10 @@ impl Workspace {
                 }
             },
             TerminalEvent::Reconnect => this.reconnect(id, window, cx),
+            TerminalEvent::Sized => {
+                this.pane_size = view.read(cx).measured_size().or(this.pane_size);
+                this.start_waiting(cx);
+            }
             TerminalEvent::EditHost { hop } => {
                 if let Some((project_id, host_id)) = this.hop_host(id, *hop) {
                     this.open_edit_host(project_id, host_id, window, cx);
@@ -819,6 +829,7 @@ impl Workspace {
             status: Status::Connecting,
             browser: None,
             sftp_open: false,
+            waiting_for_size: false,
             _subscription: sub,
             _browser_subscription: None,
         });
@@ -830,7 +841,7 @@ impl Workspace {
         let item = ItemKey::Shell { project: project_id.clone(), name: shell.name.clone() };
         let kind = SessionKind::Local { shell: shell.clone() };
         let view = self.add_session(item, project_id.clone(), kind.clone(), &shell.name, window, cx);
-        self.start_backend(&view, &kind, project_id.as_deref(), cx);
+        self.start_when_sized(&view, cx);
     }
 
     /// Open a new Session for a Host. If any Host on the way has a saved Credential, the
@@ -854,7 +865,47 @@ impl Workspace {
         let item = ItemKey::Host { project: project_id.to_string(), host: host_id.to_string() };
         let kind = SessionKind::Ssh { host_id: host_id.to_string() };
         let view = self.add_session(item, Some(project_id.to_string()), kind.clone(), &resolved.name, window, cx);
-        self.start_backend(&view, &kind, Some(project_id), cx);
+        self.start_when_sized(&view, cx);
+    }
+
+    /// Start a new Session's backend at the terminal pane's size: the size of the pane last
+    /// laid out, or, before any was, once this one is. A shell started at a guessed size and
+    /// resized as soon as the pane appears repaints, and Windows' pseudo-console leaves blank
+    /// lines above the prompt when it does.
+    fn start_when_sized(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
+        let Some(entry) = self.sessions.iter_mut().find(|s| &s.view == view) else { return };
+        let size = view.read(cx).measured_size().or(self.pane_size);
+        match size {
+            Some(size) => {
+                view.update(cx, |v, _| v.assume_size(size));
+                let (kind, project_id) = (entry.kind.clone(), entry.project_id.clone());
+                self.start_backend(view, &kind, project_id.as_deref(), cx);
+            }
+            None => {
+                entry.waiting_for_size = true;
+                // In case no pane gets laid out (the window is hidden): start at a guess.
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(Duration::from_millis(500)).await;
+                    let _ = this.update(cx, |this, cx| this.start_waiting(cx));
+                })
+                .detach();
+            }
+        }
+    }
+
+    /// Start the Sessions that were waiting for a terminal pane to be laid out.
+    fn start_waiting(&mut self, cx: &mut Context<Self>) {
+        let waiting: Vec<_> = self
+            .sessions
+            .iter_mut()
+            .filter_map(|s| std::mem::take(&mut s.waiting_for_size).then(|| (s.view.clone(), s.kind.clone(), s.project_id.clone())))
+            .collect();
+        for (view, kind, project_id) in waiting {
+            if let Some(size) = self.pane_size {
+                view.update(cx, |v, _| v.assume_size(size));
+            }
+            self.start_backend(&view, &kind, project_id.as_deref(), cx);
+        }
     }
 
     fn start_backend(&mut self, view: &Entity<TerminalView>, kind: &SessionKind, project_id: Option<&str>, cx: &mut Context<Self>) {

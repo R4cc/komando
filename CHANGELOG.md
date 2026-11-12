@@ -14,6 +14,13 @@ All notable changes to Komando are listed here. The format follows
   sudo asks for the user you signed in as, and not again right after it was rejected. Sessions
   that sign in with a key have no password to offer.
 
+### Fixed
+
+- A new terminal no longer lets you scroll up into a few empty lines above the first output,
+  and the minimap stays hidden until there is output to scroll back to. The shell now starts
+  at the terminal's real size instead of being resized right after it starts, and empty lines
+  a shell leaves above the prompt when the window is resized are dropped.
+
 ## [0.2.8] - 2026-11-12
 
 ### Changed
