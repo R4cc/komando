@@ -6,8 +6,18 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-11-12
+
 ### Changed
 
+- Komando no longer asks for the master password when it starts. It asks only when something
+  needs the vault: connecting to a host that signs in with a saved password or key, saving a
+  password, importing a key file, or unlocking from Settings → Security. Several hosts opened
+  at once share one prompt.
+- The master password dialog is easy to tell apart from a server's password question: it
+  carries the vault badge and an orange top edge, says why it is asking, and notes that this is
+  your Komando password, not the server's. When connecting, "Type the server password instead"
+  skips the vault for that connection; Escape does the same.
 - File transfers are much faster to servers that are far away. A folder of many small files
   transfers several files at once instead of one after another (about 30 times faster with
   50 ms between you and the server), large downloads are about 3.5 times faster, and large
@@ -28,19 +38,6 @@ All notable changes to Komando are listed here. The format follows
   reported a failure" (the server's limit on open files).
 - Uploading a folder with very many files no longer freezes the terminals while Komando looks
   through the folder.
-
-## [0.2.8] - 2026-11-12
-
-### Changed
-
-- Komando no longer asks for the master password when it starts. It asks only when something
-  needs the vault: connecting to a host that signs in with a saved password or key, saving a
-  password, importing a key file, or unlocking from Settings → Security. Several hosts opened
-  at once share one prompt.
-- The master password dialog is easy to tell apart from a server's password question: it
-  carries the vault badge and an orange top edge, says why it is asking, and notes that this is
-  your Komando password, not the server's. When connecting, "Type the server password instead"
-  skips the vault for that connection; Escape does the same.
 
 ### Removed
 
