@@ -27,6 +27,8 @@ use crate::vault::Secret;
 pub enum Command {
     Input(Vec<u8>),
     Resize(GridSize),
+    /// Open an SFTP channel on this Session's connection (no second sign-in).
+    OpenSftp(oneshot::Sender<Result<crate::sftp::Remote>>),
     Close,
 }
 
@@ -51,7 +53,7 @@ pub struct Hop {
 /// How long reaching one hop may take, Host Key questions aside.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-fn runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -78,7 +80,7 @@ pub fn spawn(target: Target, size: GridSize, term: SharedTerm, proxy: EventProxy
     sink
 }
 
-struct Client {
+pub(crate) struct Client {
     host: String,
     port: u16,
     known_hosts: PathBuf,
@@ -207,8 +209,25 @@ async fn run(
         proxy.send(SessionEvent::Hop { index, step: HopStep::Done });
         handles.push(handle);
     }
-    let handle = handles.pop().ok_or_else(|| anyhow!("Nothing to connect to."))?;
+    // Shared with SFTP channels opened on the same connection.
+    let handle = Arc::new(handles.pop().ok_or_else(|| anyhow!("Nothing to connect to."))?);
+    let result = shell(&handle, &mut size, &term, &proxy, &mut commands).await;
+    // Always end the connection with the terminal, so SFTP channels opened on it end too.
+    let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
+    // The Jump Hosts' connections, innermost first.
+    for jump in handles.iter().rev() {
+        let _ = jump.disconnect(Disconnect::ByApplication, "", "en").await;
+    }
+    result
+}
 
+async fn shell(
+    handle: &Arc<Handle<Client>>,
+    size: &mut GridSize,
+    term: &SharedTerm,
+    proxy: &EventProxy,
+    commands: &mut mpsc::UnboundedReceiver<Command>,
+) -> Result<String> {
     let mut channel = handle.channel_open_session().await?;
     channel
         .request_pty(
@@ -234,13 +253,13 @@ async fn run(
         tokio::select! {
             msg = channel.wait() => match msg {
                 Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                    output.feed(&term, &proxy, &data);
+                    output.feed(term, proxy, &data);
                 }
                 Some(ChannelMsg::ExitStatus { exit_status: code }) => exit_status = Some(code),
                 // The exit status may still follow the end of output; wait for Close.
                 Some(ChannelMsg::Eof) => {}
                 Some(ChannelMsg::Close) | None => {
-                    output.flush(&term, &proxy);
+                    output.flush(term, proxy);
                     break match exit_status {
                         Some(0) | None => "Connection closed.".to_string(),
                         Some(code) => format!("Remote shell exited with code {code}."),
@@ -251,27 +270,26 @@ async fn run(
             command = commands.recv() => match command {
                 Some(Command::Input(bytes)) => channel.data_bytes(bytes).await?,
                 Some(Command::Resize(new_size)) => {
-                    if new_size != size {
-                        size = new_size;
+                    if new_size != *size {
+                        *size = new_size;
                         channel
                             .window_change(size.cols as u32, size.rows as u32, size.pixel_width(), size.pixel_height())
                             .await?;
                     }
                 }
-                Some(Command::Close) | None => {
-                    let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
-                    break "Session closed.".to_string();
+                Some(Command::OpenSftp(reply)) => {
+                    let handle = handle.clone();
+                    tokio::spawn(async move {
+                        let _ = reply.send(crate::sftp::Remote::open(handle).await);
+                    });
                 }
+                Some(Command::Close) | None => break "Session closed.".to_string(),
             },
             // A program began a synchronized update (DECSET 2026) and did not finish it in
             // time: show what it drew so far rather than freezing the screen.
-            _ = sleep_until(sync_deadline), if sync_deadline.is_some() => output.flush(&term, &proxy),
+            _ = sleep_until(sync_deadline), if sync_deadline.is_some() => output.flush(term, proxy),
         }
     };
-    // The Jump Hosts' connections, innermost first.
-    for jump in handles.iter().rev() {
-        let _ = jump.disconnect(Disconnect::ByApplication, "", "en").await;
-    }
     Ok(reason)
 }
 

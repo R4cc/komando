@@ -37,6 +37,13 @@
 - **Import SSH keys.** OpenSSH and PuTTY `.ppk` keys are supported.
 - **Server fingerprint checks.** New servers ask for your trust on first connect, and a changed key blocks the connection. Hosts you already trust in your OpenSSH `known_hosts` are recognised.
 
+### Files over SFTP
+
+- **A file browser beside the terminal.** Click **SFTP** above any SSH session: the server's files open on the right, over the connection you already have, with no second login. Drag the divider to size it.
+- **Everything a quick file job needs.** Upload and download files and whole folders (or drop them in from Explorer), create, rename, copy, move and delete, sort by name, size or date, and see each file's permissions.
+- **Favorite folders.** Star `/var/log` once and it's there on every server, or keep a favorite to one host.
+- **Honest about access.** Files you can't read show a lock, and a download that fails never leaves an empty file behind. The Downloads list in the sidebar shows every transfer, with retry for the ones that failed.
+
 ### Read logs faster
 
 <img src="assets/screenshot-highlights.png" alt="Komando settings: a rule set of 69 highlight rules, each shown in its own colour with regex and case badges and an on/off switch" width="720">
@@ -66,6 +73,7 @@ All app shortcuts use Ctrl+Shift, so plain Ctrl keys (Ctrl+W, Ctrl+R, …) still
 | Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
 | Copy whole output as text / as .txt file | Ctrl+Shift+A / Ctrl+Shift+S |
 | Lock vault | Ctrl+Shift+L |
+| Show / hide the SFTP file browser | Ctrl+Shift+E |
 | Settings | Ctrl+, |
 
 ## Install

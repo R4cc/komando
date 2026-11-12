@@ -1,6 +1,6 @@
 [package]
 name = "komando"
-version = "0.1.17"
+version = "0.2.0"
 edition = "2024"
 description = "A fast terminal for system engineers who SSH into Linux machines."
 publish = false
@@ -12,7 +12,8 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12" }
 gpui-kit-assets = "=0.9.1"
 alacritty_terminal = "0.26"
 russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "fs", "io-util"] }
+russh-sftp = "3.0.1"
 argon2 = "0.5"
 chacha20poly1305 = "0.10"
 rand = "0.8"

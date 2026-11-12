@@ -23,7 +23,9 @@ use crate::model::{
 use crate::session::{self, Status, ssh};
 use crate::theme::{AppPalette, Appearance, DISPLAY_FONT, TerminalPalette, UI_FONT, alpha, project_color};
 use crate::ui::connect_route::RouteCard;
+use crate::ui::file_browser::{BrowserEvent, FavoriteStore, FileBrowser};
 use crate::ui::terminal_view::{TerminalEvent, TerminalView};
+use crate::ui::transfers::{Transfers, TransfersChanged};
 use crate::ui::widgets::{
     ButtonKind, ISLAND_GAP, ISLAND_RADIUS, badge, button, elevation, icon_button, icon_el, icon_text_button, island,
     section_label, status_dot, wordmark,
@@ -38,7 +40,18 @@ use updates::UpdateState;
 
 actions!(
     komando,
-    [QuickConnect, NewSession, CloseSession, NextSession, PrevSession, CopyOutputText, CopyOutputFile, LockVault, OpenSettings]
+    [
+        QuickConnect,
+        NewSession,
+        CloseSession,
+        NextSession,
+        PrevSession,
+        CopyOutputText,
+        CopyOutputFile,
+        LockVault,
+        OpenSettings,
+        ToggleSftp
+    ]
 );
 
 /// What fills the window: the sessions, or the full-window Settings page.
@@ -49,6 +62,15 @@ enum Page {
 }
 
 const SIDEBAR_WIDTH: f32 = 264.;
+
+/// What is dragged while resizing the file browser (drawn as nothing).
+struct SftpDivider;
+
+impl Render for SftpDivider {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
 /// Height of Komando's own title bar (and of its window buttons).
 const TITLE_BAR_HEIGHT: f32 = 36.;
 
@@ -123,7 +145,12 @@ struct SessionEntry {
     /// the terminal: reading a terminal while rendering makes gpui redraw the whole window on
     /// every bit of output it gets, even when it isn't on screen.
     status: Status,
+    /// The SFTP file browser beside the terminal (SSH Sessions). Kept while hidden, so it
+    /// opens again where it was.
+    browser: Option<Entity<FileBrowser>>,
+    sftp_open: bool,
     _subscription: Subscription,
+    _browser_subscription: Option<Subscription>,
 }
 
 impl SessionEntry {
@@ -198,6 +225,11 @@ pub struct Workspace {
     toast: Option<(SharedString, Instant)>,
     last_activity: Instant,
     focus: FocusHandle,
+    /// Downloads and uploads from every file browser (the sidebar's Downloads entry).
+    transfers: Entity<Transfers>,
+    favorites: Entity<FavoriteStore>,
+    /// The divider between terminal and file browser is being dragged.
+    sftp_resizing: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -224,6 +256,9 @@ impl Workspace {
             Library::default()
         });
         let highlights = highlight::load(&data_dir);
+        let transfers = cx.new(|_| Transfers::new());
+        let favorites = cx.new(|_| FavoriteStore::new(data_dir.clone()));
+        let transfers_sub = cx.subscribe(&transfers, |_, _, _: &TransfersChanged, cx| cx.notify());
         let mut this = Self {
             data_dir,
             library,
@@ -251,7 +286,10 @@ impl Workspace {
             last_activity: Instant::now(),
             focus: cx.focus_handle(),
             update: UpdateState::Idle,
-            _subscriptions: vec![],
+            transfers,
+            favorites,
+            sftp_resizing: false,
+            _subscriptions: vec![transfers_sub],
         };
         this.apply_appearance(window, cx);
         this.apply_highlights(cx);
@@ -684,7 +722,19 @@ impl Workspace {
             TerminalEvent::Changed => {
                 let status = view.read(cx).status.clone();
                 if let Some(entry) = this.sessions.iter_mut().find(|s| s.id == id) {
-                    entry.status = status;
+                    let changed = entry.status != status;
+                    entry.status = status.clone();
+                    // The file browser follows its terminal's connection.
+                    if changed && let Some(browser) = entry.browser.clone() {
+                        match status {
+                            Status::Connected if entry.sftp_open => {
+                                let sink = view.read(cx).sink();
+                                browser.update(cx, |b, cx| b.connect(sink, cx));
+                            }
+                            Status::Disconnected(_) => browser.update(cx, |b, cx| b.disconnected(cx)),
+                            _ => {}
+                        }
+                    }
                 }
                 cx.notify();
             }
@@ -714,7 +764,10 @@ impl Workspace {
             label,
             view: view.clone(),
             status: Status::Connecting,
+            browser: None,
+            sftp_open: false,
             _subscription: sub,
+            _browser_subscription: None,
         });
         self.activate(id, window, cx);
         view
@@ -832,6 +885,68 @@ impl Workspace {
         }
         self.focus_active(window, cx);
         cx.notify();
+    }
+
+    /// Show or hide the SFTP file browser beside an SSH Session's terminal.
+    fn toggle_sftp(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.sessions.iter().position(|s| s.id == id) else { return };
+        let SessionKind::Ssh { host_id } = self.sessions[index].kind.clone() else { return };
+        if self.sessions[index].sftp_open {
+            self.sessions[index].sftp_open = false;
+            self.focus_active(window, cx);
+            cx.notify();
+            return;
+        }
+        if self.sessions[index].browser.is_none() {
+            let entry = &self.sessions[index];
+            let (label, target) = match entry.project_id.as_deref().and_then(|p| self.library.resolve(p, &host_id)) {
+                Some(r) => {
+                    let user = r.user.clone().map(|u| format!("{u}@")).unwrap_or_default();
+                    (r.name.clone(), format!("{user}{}:{}", r.address, r.port))
+                }
+                None => (entry.label.to_string(), String::new()),
+            };
+            let (favorites, transfers, show_hidden) = (self.favorites.clone(), self.transfers.clone(), self.settings.sftp_show_hidden);
+            let browser = cx.new(|cx| {
+                FileBrowser::new(host_id.clone(), label.into(), target.into(), favorites, transfers, show_hidden, window, cx)
+            });
+            let sub = cx.subscribe_in(&browser, window, move |this, browser, event: &BrowserEvent, window, cx| match event {
+                BrowserEvent::Close => this.toggle_sftp(id, window, cx),
+                BrowserEvent::ShowHidden(show) => {
+                    this.settings.sftp_show_hidden = *show;
+                    let _ = this.settings.save(&this.data_dir);
+                }
+                BrowserEvent::Retry => {
+                    let sink = this.sessions.iter().find(|s| s.id == id).and_then(|s| s.view.read(cx).sink());
+                    browser.update(cx, |b, cx| b.connect(sink, cx));
+                }
+            });
+            self.sessions[index].browser = Some(browser);
+            self.sessions[index]._browser_subscription = Some(sub);
+        }
+        let entry = &mut self.sessions[index];
+        entry.sftp_open = true;
+        let browser = entry.browser.clone().expect("browser");
+        if matches!(entry.status, Status::Connected) && !browser.read(cx).is_connected() {
+            let sink = entry.view.read(cx).sink();
+            browser.update(cx, |b, cx| b.connect(sink, cx));
+        }
+        let handle = browser.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+        cx.notify();
+    }
+
+    /// Drag the divider between terminal and file browser: the browser takes what is right
+    /// of the pointer.
+    fn resize_sftp(&mut self, x: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let window_width = f32::from(window.bounds().size.width);
+        let right_edge = window_width - ISLAND_GAP - 8.;
+        let max = (window_width - SIDEBAR_WIDTH - ISLAND_GAP * 3. - 300.).max(320.);
+        let width = (right_edge - x).clamp(320., max);
+        if (width - self.settings.sftp_width).abs() >= 1. {
+            self.settings.sftp_width = width;
+            cx.notify();
+        }
     }
 
     fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1443,6 +1558,10 @@ impl Workspace {
             .min_h_0();
 
         let update_ready = self.update_available();
+        let (show_downloads, attention, downloads_open) = {
+            let t = self.transfers.read(cx);
+            (t.any(), t.attention(), t.is_open())
+        };
         let footer_row = |id: &'static str, icon: &str, label: String| {
             div()
                 .id(id)
@@ -1508,6 +1627,35 @@ impl Workspace {
                     .p(px(8.))
                     .flex()
                     .flex_col()
+                    .gap(px(2.))
+                    // Appears with the first transfer; the number is what needs a look.
+                    .when(show_downloads, |el| {
+                        el.child(
+                            footer_row("downloads", "download", "Downloads".into())
+                                .when(downloads_open, |el| el.bg(p.active).text_color(p.text))
+                                .child(div().flex_1())
+                                .when(attention > 0, |el| {
+                                    el.child(
+                                        div()
+                                            .min_w(px(18.))
+                                            .h(px(18.))
+                                            .px(px(5.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .rounded_full()
+                                            .bg(p.brand_soft)
+                                            .text_size(px(11.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(p.brand)
+                                            .child(attention.to_string()),
+                                    )
+                                })
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    this.transfers.update(cx, |t, cx| t.toggle(cx));
+                                })),
+                        )
+                    })
                     .child(
                         footer_row("settings", "settings", "Settings".into())
                             .child(div().flex_1())
@@ -1751,6 +1899,9 @@ impl Workspace {
             Status::Disconnected(_) => ("Disconnected", p.text_faint),
         };
         let id = entry.id;
+        let is_ssh = matches!(entry.kind, SessionKind::Ssh { .. });
+        let sftp_open = entry.sftp_open;
+        let sftp_color = if sftp_open { p.brand } else { p.text_muted };
         Some(
             div()
                 .id("session-strip")
@@ -1784,6 +1935,34 @@ impl Workspace {
                 )
                 // The empty middle stays draggable: only the controls above catch the mouse.
                 .child(div().flex_1())
+                .when(is_ssh, |el| {
+                    el.child(
+                        div()
+                            .id("sftp-toggle")
+                            .h(px(24.))
+                            .px(px(9.))
+                            .mr(px(6.))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .rounded(px(7.))
+                            .border_1()
+                            .border_color(if sftp_open { p.brand.opacity(0.7) } else { p.border })
+                            .when(sftp_open, |el| el.bg(p.brand_soft))
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(sftp_color)
+                            .cursor_pointer()
+                            .hover(|s| s.bg(p.hover))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(if sftp_open { "Close file browser (Ctrl+Shift+E)" } else { "Browse files over SFTP (Ctrl+Shift+E)" })
+                                    .build(window, cx)
+                            })
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.toggle_sftp(id, window, cx)))
+                            .child(icon_el("folder-open", 13., sftp_color))
+                            .child("SFTP"),
+                    )
+                })
                 .child(
                     strip_action("copy-text", "copy", "Copy output", false, p)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_text(cx))),
@@ -1843,13 +2022,21 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_main(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_main(&self, p: AppPalette, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(entry) = self.active_entry() else {
             return self.render_empty(p, cx);
         };
         let project = entry.project_id.as_deref().and_then(|id| self.library.project(id));
         let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.text_faint);
         let term_bg = cx.global::<Appearance>().term.background_hsla();
+        let browser = entry.browser.clone().filter(|_| entry.sftp_open);
+        // The browser keeps at least 300px for the terminal when the window is narrow.
+        let window_width = f32::from(window.bounds().size.width);
+        let max = (window_width - SIDEBAR_WIDTH - ISLAND_GAP * 3. - 300.).max(280.);
+        let width = self.settings.sftp_width.min(max).max(280.);
+        if let Some(browser) = &browser {
+            browser.update(cx, |b, _| b.width = width);
+        }
         island(p)
             .relative()
             .flex_1()
@@ -1857,7 +2044,43 @@ impl Workspace {
             .h_full()
             .bg(term_bg)
             .overflow_hidden()
-            .child(entry.view.clone())
+            .flex()
+            .child(div().flex_1().min_w_0().h_full().child(entry.view.clone()))
+            .when_some(browser, |el, browser| {
+                el.child(
+                    div()
+                        .id("sftp-divider")
+                        .group("sftp-divider")
+                        .w(px(9.))
+                        .h_full()
+                        .flex_shrink_0()
+                        .flex()
+                        .justify_center()
+                        .py(px(14.))
+                        .cursor_col_resize()
+                        .on_drag(SftpDivider, |_, _, _, cx| cx.new(|_| SftpDivider))
+                        .child(
+                            div()
+                                .w(px(2.))
+                                .h_full()
+                                .rounded_full()
+                                .when(self.sftp_resizing, |el| el.bg(p.brand))
+                                .group_hover("sftp-divider", |s| s.bg(p.brand.opacity(0.6))),
+                        ),
+                )
+                .child(
+                    div().w(px(width)).flex_shrink_0().h_full().pt(px(10.)).pr(px(8.)).pb(px(8.)).child(
+                        div()
+                            .size_full()
+                            .rounded(px(12.))
+                            .border_1()
+                            .border_color(p.border)
+                            .bg(p.sidebar)
+                            .overflow_hidden()
+                            .child(browser),
+                    ),
+                )
+            })
             // Project colour accent: you always see which Project you are typing into. It is
             // the top edge of the island itself, so it follows the rounded corners and tapers
             // off down their curve.
@@ -2483,6 +2706,20 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &CopyOutputText, _, cx| this.copy_output_text(cx)))
             .on_action(cx.listener(|this, _: &CopyOutputFile, _, cx| this.copy_output_file(cx)))
             .on_action(cx.listener(|this, _: &LockVault, _, cx| this.lock_vault(cx)))
+            .on_action(cx.listener(|this, _: &ToggleSftp, window, cx| {
+                if let Some(id) = this.active {
+                    this.toggle_sftp(id, window, cx);
+                }
+            }))
+            .on_drag_move(cx.listener(|this, event: &gpui::DragMoveEvent<SftpDivider>, window, cx| {
+                this.sftp_resizing = true;
+                this.resize_sftp(f32::from(event.event.position.x), window, cx);
+            }))
+            .on_drop(cx.listener(|this, _: &SftpDivider, _, cx| {
+                this.sftp_resizing = false;
+                let _ = this.settings.save(&this.data_dir);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 if matches!(this.page, Page::Settings(_)) {
                     this.close_settings(window, cx);
@@ -2529,12 +2766,23 @@ impl Render for Workspace {
                 .pb(px(ISLAND_GAP))
                 .bg(p.canvas)
                 .child(self.render_sidebar(p, cx))
-                .child(self.render_main(p, cx))
+                .child(self.render_main(p, window, cx))
                 .into_any_element()),
         };
+        // Downloads: floats above the sidebar's footer, from any page.
+        let downloads = self.transfers.read(cx).is_open().then(|| {
+            let footer_rows = 1. + self.transfers.read(cx).any() as u8 as f32;
+            div()
+                .absolute()
+                .left(px(ISLAND_GAP))
+                .bottom(px(ISLAND_GAP + 16. + footer_rows * 34. + 6.))
+                .w(px(SIDEBAR_WIDTH))
+                .child(self.transfers.clone())
+        });
         root.bg(p.canvas)
             .child(title_bar)
             .child(page)
+            .children(downloads)
             .children(self.render_overlay(p, cx))
             .children(self.unlock.as_ref().map(|s| self.render_unlock(s, p, cx)))
             .children(toast)

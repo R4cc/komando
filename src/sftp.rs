@@ -1,0 +1,1141 @@
+//! SFTP on an SSH Session's connection: listing, file operations and transfers.
+//!
+//! A file browser opens an SFTP channel on the connection its terminal already has, so
+//! nothing signs in twice (see `ssh::Command::OpenSftp`). Everything here runs on the SSH
+//! runtime; the UI awaits the handles [`spawn`] returns.
+//!
+//! Transfers never leave a misleading file behind. A download is written to a partial file
+//! next to its destination and only renamed into place once every byte has arrived; on any
+//! failure the partial file is removed. The remote file is opened before anything is created
+//! locally, so a permission error never produces an empty file. Uploads work the same way on
+//! the server.
+
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
+
+use anyhow::{Result, anyhow};
+use futures::StreamExt as _;
+use russh::ChannelMsg;
+use russh::client::Handle;
+use russh_sftp::client::SftpSession;
+use russh_sftp::client::error::Error as SftpError;
+use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+use crate::session::ssh::{self, Client};
+
+/// Suffix of files and folders still being transferred.
+pub const PARTIAL_SUFFIX: &str = ".komando-part";
+const CHUNK: usize = 256 * 1024;
+
+/// Run `future` on the SSH runtime. The handle can be awaited from any executor.
+pub fn spawn<F>(future: F) -> impl Future<Output = Result<F::Output, OpError>>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let handle = ssh::runtime().spawn(future);
+    async move { handle.await.map_err(|err| OpError::new(ErrorKind::Other, format!("Stopped unexpectedly: {err}"))) }
+}
+
+// ---- errors ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorKind {
+    PermissionDenied,
+    NotFound,
+    Exists,
+    /// The connection dropped or the server stopped answering.
+    Connection,
+    Cancelled,
+    /// The server doesn't support what was asked.
+    Unsupported,
+    /// Reading or writing on this PC failed.
+    Local,
+    Other,
+}
+
+/// Why an operation failed, worded for the user.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpError {
+    pub kind: ErrorKind,
+    pub message: String,
+}
+
+impl OpError {
+    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+        Self { kind, message: message.into() }
+    }
+
+    fn denied() -> Self {
+        Self::new(ErrorKind::PermissionDenied, "Permission denied (EACCES)")
+    }
+
+    fn not_found() -> Self {
+        Self::new(ErrorKind::NotFound, "No such file or directory (ENOENT)")
+    }
+
+    pub fn cancelled() -> Self {
+        Self::new(ErrorKind::Cancelled, "Cancelled")
+    }
+
+    fn connection() -> Self {
+        Self::new(ErrorKind::Connection, "Connection lost")
+    }
+
+    /// The same error, naming the path it happened on.
+    fn at(mut self, path: &str) -> Self {
+        if !matches!(self.kind, ErrorKind::Cancelled | ErrorKind::Connection) && !self.message.contains(path) {
+            self.message = format!("{}: {path}", self.message);
+        }
+        self
+    }
+
+    /// From an error message only (write errors and shell commands give nothing more).
+    fn from_message(message: &str) -> Self {
+        let lower = message.to_lowercase();
+        if lower.contains("permission denied") || lower.contains("operation not permitted") {
+            Self::denied()
+        } else if lower.contains("no such file") {
+            Self::not_found()
+        } else if lower.contains("no space") || lower.contains("quota") {
+            Self::new(ErrorKind::Other, "No space left on the server")
+        } else if message.trim().is_empty() || message.trim() == "Failure" {
+            Self::new(ErrorKind::Other, "The server reported a failure")
+        } else {
+            Self::new(ErrorKind::Other, message.trim().to_string())
+        }
+    }
+
+    fn local(err: &std::io::Error, path: &Path) -> Self {
+        let what = match err.kind() {
+            std::io::ErrorKind::PermissionDenied => "Access denied".to_string(),
+            std::io::ErrorKind::NotFound => "Not found".to_string(),
+            std::io::ErrorKind::StorageFull => "The disk is full".to_string(),
+            _ => err.to_string(),
+        };
+        Self::new(ErrorKind::Local, format!("{what}: {}", path.display()))
+    }
+
+    /// An I/O error from a remote file (reads and writes surface SFTP errors this way).
+    fn remote_io(err: &std::io::Error) -> Self {
+        if let Some(inner) = err.get_ref().and_then(|e| e.downcast_ref::<SftpError>()) {
+            return Self::from(inner.clone());
+        }
+        match err.kind() {
+            std::io::ErrorKind::TimedOut => Self::new(ErrorKind::Connection, "The server stopped responding"),
+            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::UnexpectedEof => {
+                Self::connection()
+            }
+            _ => Self::from_message(&err.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for OpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for OpError {}
+
+impl From<SftpError> for OpError {
+    fn from(err: SftpError) -> Self {
+        match err {
+            SftpError::Status(status) => match status.status_code {
+                StatusCode::PermissionDenied => Self::denied(),
+                StatusCode::NoSuchFile => Self::not_found(),
+                StatusCode::NoConnection | StatusCode::ConnectionLost => Self::connection(),
+                StatusCode::OpUnsupported => Self::new(ErrorKind::Unsupported, "The server doesn't support this"),
+                StatusCode::Eof => Self::new(ErrorKind::Other, "Unexpected end of file"),
+                _ => Self::from_message(&status.error_message),
+            },
+            SftpError::Timeout => Self::new(ErrorKind::Connection, "The server stopped responding"),
+            SftpError::IO(_) => Self::connection(),
+            SftpError::Limited(message) => Self::new(ErrorKind::Other, message),
+            other => Self::new(ErrorKind::Other, other.to_string()),
+        }
+    }
+}
+
+// ---- who we are, and what we may do -------------------------------------------------
+
+/// The signed-in user on the server, from `id`. Unknown when `id` couldn't run.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Identity {
+    pub uid: Option<u32>,
+    pub name: Option<String>,
+    /// Every group the user is in, primary group first, with names where known.
+    pub groups: Vec<(u32, Option<String>)>,
+}
+
+impl Identity {
+    /// Parse `id`'s output: `uid=1000(codex) gid=1000(codex) groups=1000(codex),27(sudo)`.
+    pub fn parse_id(output: &str) -> Self {
+        fn id_and_name(s: &str) -> Option<(u32, Option<String>)> {
+            let (num, rest) = match s.find('(') {
+                Some(i) => (&s[..i], Some(&s[i + 1..])),
+                None => (s, None),
+            };
+            let name = rest.and_then(|r| r.strip_suffix(')')).map(str::to_string);
+            Some((num.trim().parse().ok()?, name))
+        }
+        let mut identity = Identity::default();
+        for field in output.split_whitespace() {
+            let Some((key, value)) = field.split_once('=') else { continue };
+            match key {
+                "uid" => {
+                    if let Some((uid, name)) = id_and_name(value) {
+                        identity.uid = Some(uid);
+                        identity.name = name;
+                    }
+                }
+                "gid" => {
+                    if let Some(group) = id_and_name(value) {
+                        identity.groups.retain(|(g, _)| *g != group.0);
+                        identity.groups.insert(0, group);
+                    }
+                }
+                "groups" => {
+                    for group in value.split(',').filter_map(id_and_name) {
+                        if !identity.groups.iter().any(|(g, _)| *g == group.0) {
+                            identity.groups.push(group);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        identity
+    }
+
+    pub fn group_name(&self, gid: u32) -> Option<&str> {
+        self.groups.iter().find(|(g, _)| *g == gid).and_then(|(_, n)| n.as_deref())
+    }
+}
+
+/// Whether the user may do something: definitely yes, definitely no, or can't tell (no
+/// permission bits, or `id` didn't run). Only `No` greys anything out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Allowed {
+    Yes,
+    No,
+    Unknown,
+}
+
+impl Allowed {
+    fn from(bit: bool) -> Self {
+        if bit { Allowed::Yes } else { Allowed::No }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Access {
+    pub read: Allowed,
+    pub write: Allowed,
+    pub exec: Allowed,
+}
+
+impl Access {
+    pub const UNKNOWN: Access = Access { read: Allowed::Unknown, write: Allowed::Unknown, exec: Allowed::Unknown };
+}
+
+/// What `identity` may do with a file of this mode and owner, by the Unix permission bits.
+/// ACLs and similar can grant more, so a "no" here means "appears not to".
+pub fn access(identity: &Identity, mode: Option<u32>, uid: Option<u32>, gid: Option<u32>, is_dir: bool) -> Access {
+    let (Some(me), Some(mode)) = (identity.uid, mode) else { return Access::UNKNOWN };
+    if me == 0 {
+        // root reads and writes anything; it may execute a file only if some x bit is set.
+        let exec = if is_dir { Allowed::Yes } else { Allowed::from(mode & 0o111 != 0) };
+        return Access { read: Allowed::Yes, write: Allowed::Yes, exec };
+    }
+    let Some(owner) = uid else { return Access::UNKNOWN };
+    let bits = if owner == me {
+        (mode >> 6) & 0o7
+    } else {
+        match gid {
+            Some(gid) if identity.groups.iter().any(|(g, _)| *g == gid) => (mode >> 3) & 0o7,
+            Some(_) => mode & 0o7,
+            None => return Access::UNKNOWN,
+        }
+    };
+    Access { read: Allowed::from(bits & 0o4 != 0), write: Allowed::from(bits & 0o2 != 0), exec: Allowed::from(bits & 0o1 != 0) }
+}
+
+// ---- entries --------------------------------------------------------------------------
+
+const S_IFMT: u32 = 0o170000;
+const S_IFDIR: u32 = 0o040000;
+const S_IFLNK: u32 = 0o120000;
+const S_IFREG: u32 = 0o100000;
+
+fn is_dir_mode(mode: Option<u32>) -> bool {
+    mode.is_some_and(|m| m & S_IFMT == S_IFDIR)
+}
+
+fn is_link_mode(mode: Option<u32>) -> bool {
+    mode.is_some_and(|m| m & S_IFMT == S_IFLNK)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+    /// Devices, sockets, pipes: listed, not transferred.
+    Other,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Entry {
+    pub name: String,
+    pub path: String,
+    /// What it is, following a symlink.
+    pub kind: Kind,
+    pub link: bool,
+    /// A symlink whose target can't be read (missing, or no permission).
+    pub broken_link: bool,
+    pub size: Option<u64>,
+    /// Seconds since the Unix epoch.
+    pub mtime: Option<u32>,
+    /// Mode bits as listed (a symlink shows as `l`).
+    pub mode: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    /// What the signed-in user may do with it (with the link's target).
+    pub access: Access,
+}
+
+impl Entry {
+    fn from_attrs(dir: &str, name: String, attrs: &FileAttributes, target: Option<&FileAttributes>, identity: &Identity) -> Self {
+        let link = is_link_mode(attrs.permissions);
+        let effective = target.unwrap_or(attrs);
+        let kind = if link && target.is_none() {
+            Kind::Other
+        } else if is_dir_mode(effective.permissions) {
+            Kind::Dir
+        } else if effective.permissions.is_none_or(|m| m & S_IFMT == S_IFREG) {
+            Kind::File
+        } else {
+            Kind::Other
+        };
+        let access = if link && target.is_none() {
+            Access::UNKNOWN
+        } else {
+            access(identity, effective.permissions, effective.uid, effective.gid, kind == Kind::Dir)
+        };
+        Entry {
+            path: join(dir, &name),
+            name,
+            kind,
+            link,
+            broken_link: link && target.is_none(),
+            size: if kind == Kind::Dir { None } else { effective.size },
+            mtime: effective.mtime,
+            mode: attrs.permissions,
+            uid: effective.uid,
+            gid: effective.gid,
+            access,
+        }
+    }
+
+    pub fn is_dir(&self) -> bool {
+        self.kind == Kind::Dir
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        self.name.starts_with('.')
+    }
+
+    /// The main action is definitely denied: listing a folder, reading a file.
+    pub fn locked(&self) -> bool {
+        match self.kind {
+            Kind::Dir => self.access.read == Allowed::No || self.access.exec == Allowed::No,
+            Kind::File => self.access.read == Allowed::No,
+            Kind::Other => false,
+        }
+    }
+
+    pub fn mode_string(&self) -> String {
+        self.mode.map(mode_string).unwrap_or_else(|| "?".into())
+    }
+}
+
+/// `drwxr-xr-x`, as `ls -l` shows it.
+pub fn mode_string(mode: u32) -> String {
+    let kind = match mode & S_IFMT {
+        S_IFDIR => 'd',
+        S_IFLNK => 'l',
+        0o020000 => 'c',
+        0o060000 => 'b',
+        0o010000 => 'p',
+        0o140000 => 's',
+        _ => '-',
+    };
+    let mut s = String::with_capacity(10);
+    s.push(kind);
+    for (shift, special, special_char) in [(6, 0o4000, 's'), (3, 0o2000, 's'), (0, 0o1000, 't')] {
+        let bits = (mode >> shift) & 0o7;
+        s.push(if bits & 0o4 != 0 { 'r' } else { '-' });
+        s.push(if bits & 0o2 != 0 { 'w' } else { '-' });
+        let x = bits & 0o1 != 0;
+        s.push(match (mode & special != 0, x) {
+            (true, true) => special_char,
+            (true, false) => special_char.to_ascii_uppercase(),
+            (false, true) => 'x',
+            (false, false) => '-',
+        });
+    }
+    s
+}
+
+/// A folder's contents, and what the user may do in the folder itself.
+#[derive(Clone, Debug)]
+pub struct Listing {
+    /// The canonical path (symlinks and `..` resolved).
+    pub path: String,
+    pub entries: Vec<Entry>,
+    pub access: Access,
+}
+
+// ---- remote paths ---------------------------------------------------------------------
+
+pub fn join(dir: &str, name: &str) -> String {
+    if dir.is_empty() {
+        name.to_string()
+    } else if dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// The folder containing `path`; `None` for the root.
+pub fn parent(path: &str) -> Option<String> {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.rfind('/') {
+        Some(0) => Some("/".into()),
+        Some(i) => Some(trimmed[..i].to_string()),
+        None => None,
+    }
+}
+
+pub fn file_name(path: &str) -> &str {
+    let trimmed = path.trim_end_matches('/');
+    trimmed.rsplit('/').next().unwrap_or(trimmed)
+}
+
+/// Breadcrumb segments: (name, full path), starting with the root ("/", "/").
+pub fn segments(path: &str) -> Vec<(String, String)> {
+    let mut out = vec![("/".to_string(), "/".to_string())];
+    let mut full = String::new();
+    for part in path.split('/').filter(|p| !p.is_empty()) {
+        full.push('/');
+        full.push_str(part);
+        out.push((part.to_string(), full.clone()));
+    }
+    out
+}
+
+/// Quote for a POSIX shell.
+pub fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// "name (2).ext": a name not in `taken`, keeping the extension.
+pub fn unique_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
+    if !taken(name) {
+        return name.to_string();
+    }
+    // Hidden files (".bashrc") and names without a dot have no extension.
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    (1..).map(|n| format!("{stem} ({n}){ext}")).find(|candidate| !taken(candidate)).expect("some name is free")
+}
+
+/// A local path in `dir` that doesn't exist yet, nor as a partial download.
+pub fn unique_local_path(dir: &Path, name: &str) -> PathBuf {
+    let name = unique_name(name, |n| {
+        dir.join(n).exists() || dir.join(format!("{n}{PARTIAL_SUFFIX}")).exists()
+    });
+    dir.join(name)
+}
+
+/// Make a remote name safe as a Windows file name.
+pub fn local_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control() { '_' } else { c })
+        .collect();
+    let trimmed = cleaned.trim_end_matches(['.', ' ']).to_string();
+    if trimmed.is_empty() { "_".into() } else { trimmed }
+}
+
+// ---- progress -------------------------------------------------------------------------
+
+/// Shared between a running transfer and the UI that shows it.
+#[derive(Default, Debug)]
+pub struct Progress {
+    pub done: AtomicU64,
+    pub total: AtomicU64,
+    pub cancel: AtomicBool,
+}
+
+impl Progress {
+    fn check(&self) -> Result<(), OpError> {
+        if self.cancel.load(Ordering::Relaxed) { Err(OpError::cancelled()) } else { Ok(()) }
+    }
+
+    fn add(&self, n: u64) {
+        self.done.fetch_add(n, Ordering::Relaxed);
+    }
+}
+
+// ---- the connection -------------------------------------------------------------------
+
+/// An SFTP channel on a Session's connection, plus who is signed in.
+pub struct Remote {
+    sftp: SftpSession,
+    handle: Arc<Handle<Client>>,
+    pub identity: Identity,
+    /// The folder SFTP starts in (the user's home).
+    pub home: String,
+}
+
+pub struct ExecOutput {
+    pub code: Option<u32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl Remote {
+    pub(crate) async fn open(handle: Arc<Handle<Client>>) -> Result<Remote> {
+        let channel = handle.channel_open_session().await.map_err(|e| anyhow!("Could not open a channel: {e}"))?;
+        channel.request_subsystem(true, "sftp").await.map_err(|e| anyhow!("Could not start SFTP: {e}"))?;
+        let config = russh_sftp::client::Config { request_timeout_secs: 30, ..Default::default() };
+        let sftp = tokio::time::timeout(Duration::from_secs(20), SftpSession::new_with_config(channel.into_stream(), config))
+            .await
+            .map_err(|_| anyhow!("The server did not start SFTP. It may not offer it."))?
+            .map_err(|e| anyhow!("Could not start SFTP: {e}"))?;
+        let home = sftp.canonicalize(".").await.unwrap_or_else(|_| "/".into());
+        let mut remote = Remote { sftp, handle, identity: Identity::default(), home };
+        // Who we are decides which files look inaccessible. Without it nothing is marked.
+        if let Ok(Ok(out)) = tokio::time::timeout(Duration::from_secs(10), remote.exec("id")).await
+            && out.code == Some(0)
+        {
+            remote.identity = Identity::parse_id(&out.stdout);
+        }
+        Ok(remote)
+    }
+
+    /// Run a command on the server (for what SFTP can't do: copying).
+    pub async fn exec(&self, command: &str) -> Result<ExecOutput, OpError> {
+        let mut channel = self.handle.channel_open_session().await.map_err(|_| OpError::connection())?;
+        channel.exec(true, command).await.map_err(|_| OpError::connection())?;
+        let (mut stdout, mut stderr, mut code) = (Vec::new(), Vec::new(), None);
+        loop {
+            match channel.wait().await {
+                Some(ChannelMsg::Data { data }) => stdout.extend_from_slice(&data),
+                Some(ChannelMsg::ExtendedData { data, .. }) => stderr.extend_from_slice(&data),
+                Some(ChannelMsg::ExitStatus { exit_status }) => code = Some(exit_status),
+                Some(ChannelMsg::Failure) => {
+                    return Err(OpError::new(ErrorKind::Unsupported, "The server doesn't allow running commands"));
+                }
+                Some(ChannelMsg::Close) | None => break,
+                Some(_) => {}
+            }
+        }
+        Ok(ExecOutput {
+            code,
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        })
+    }
+
+    pub async fn canonicalize(&self, path: &str) -> Result<String, OpError> {
+        self.sftp.canonicalize(path).await.map_err(|e| OpError::from(e).at(path))
+    }
+
+    pub async fn exists(&self, path: &str) -> Result<bool, OpError> {
+        match self.sftp.symlink_metadata(path).await {
+            Ok(_) => Ok(true),
+            Err(SftpError::Status(s)) if s.status_code == StatusCode::NoSuchFile => Ok(false),
+            Err(e) => Err(OpError::from(e).at(path)),
+        }
+    }
+
+    /// List a folder. Symlinks are followed to show what they point at.
+    pub async fn list(&self, path: &str) -> Result<Listing, OpError> {
+        let path = self.canonicalize(path).await?;
+        let attrs = self.sftp.metadata(path.as_str()).await.map_err(|e| OpError::from(e).at(&path))?;
+        if !is_dir_mode(attrs.permissions) && attrs.permissions.is_some() {
+            return Err(OpError::new(ErrorKind::Other, format!("Not a folder: {path}")));
+        }
+        let dir_access = access(&self.identity, attrs.permissions, attrs.uid, attrs.gid, true);
+        let read = self.sftp.read_dir(path.as_str()).await.map_err(|e| OpError::from(e).at(&path))?;
+        let raw: Vec<(String, FileAttributes)> =
+            read.filter(|e| e.file_name() != "." && e.file_name() != "..").map(|e| (e.file_name(), e.metadata())).collect();
+        // Look up where symlinks lead, a few at a time.
+        let lookups: Vec<(String, bool)> =
+            raw.iter().map(|(name, attrs)| (join(&path, name), is_link_mode(attrs.permissions))).collect();
+        let session = &self.sftp;
+        let targets: Vec<Option<FileAttributes>> = futures::stream::iter(lookups)
+            .map(|(full, link)| async move { if link { session.metadata(full).await.ok() } else { None } })
+            .buffered(32)
+        .collect()
+        .await;
+        let entries = raw
+            .into_iter()
+            .zip(targets)
+            .map(|((name, attrs), target)| Entry::from_attrs(&path, name, &attrs, target.as_ref(), &self.identity))
+            .collect();
+        Ok(Listing { path, entries, access: dir_access })
+    }
+
+    pub async fn mkdir(&self, path: &str) -> Result<(), OpError> {
+        if self.exists(path).await? {
+            return Err(OpError::new(ErrorKind::Exists, format!("\"{}\" already exists", file_name(path))));
+        }
+        self.sftp.create_dir(path).await.map_err(|e| OpError::from(e).at(path))
+    }
+
+    /// Rename or move. Fails rather than replace an existing file.
+    pub async fn rename(&self, from: &str, to: &str) -> Result<(), OpError> {
+        if from == to {
+            return Ok(());
+        }
+        if self.exists(to).await? {
+            return Err(OpError::new(ErrorKind::Exists, format!("\"{}\" already exists in {}", file_name(to), parent(to).unwrap_or_default())));
+        }
+        match self.sftp.rename(from, to).await {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                let err = OpError::from(err);
+                // Across file systems the server can't rename; `mv` copies instead.
+                if err.kind == ErrorKind::Other {
+                    let out = self.exec(&format!("mv -- {} {}", shell_quote(from), shell_quote(to))).await?;
+                    if out.code == Some(0) {
+                        return Ok(());
+                    }
+                    return Err(OpError::from_message(&out.stderr).at(from));
+                }
+                Err(err.at(from))
+            }
+        }
+    }
+
+    /// Delete a file, or a folder with everything in it. Symlinks are removed, never followed.
+    pub async fn remove(&self, path: &str) -> Result<(), OpError> {
+        let mut stack = vec![(path.to_string(), false)];
+        while let Some((current, children_done)) = stack.pop() {
+            if children_done {
+                self.sftp.remove_dir(current.as_str()).await.map_err(|e| OpError::from(e).at(&current))?;
+                continue;
+            }
+            let attrs = self.sftp.symlink_metadata(current.as_str()).await.map_err(|e| OpError::from(e).at(&current))?;
+            if is_dir_mode(attrs.permissions) {
+                stack.push((current.clone(), true));
+                let read = self.sftp.read_dir(current.as_str()).await.map_err(|e| OpError::from(e).at(&current))?;
+                for entry in read {
+                    let name = entry.file_name();
+                    if name == "." || name == ".." {
+                        continue;
+                    }
+                    let child = join(&current, &name);
+                    if is_dir_mode(entry.metadata().permissions) {
+                        stack.push((child, false));
+                    } else {
+                        self.sftp.remove_file(child.as_str()).await.map_err(|e| OpError::from(e).at(&child))?;
+                    }
+                }
+            } else {
+                self.sftp.remove_file(current.as_str()).await.map_err(|e| OpError::from(e).at(&current))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Copy a file or folder to `to` on the server. Uses `cp` there; without a shell, the data
+    /// goes through this connection instead.
+    pub async fn copy(&self, from: &str, to: &str) -> Result<(), OpError> {
+        if self.exists(to).await? {
+            return Err(OpError::new(ErrorKind::Exists, format!("\"{}\" already exists in {}", file_name(to), parent(to).unwrap_or_default())));
+        }
+        match self.exec(&format!("cp -Rp -- {} {}", shell_quote(from), shell_quote(to))).await {
+            Ok(out) if out.code == Some(0) => Ok(()),
+            // No cp on the server.
+            Ok(out) if out.code == Some(127) => self.copy_through(from, to).await,
+            Ok(out) => Err(OpError::from_message(out.stderr.lines().next().unwrap_or_default()).at(from)),
+            Err(err) if err.kind == ErrorKind::Unsupported => self.copy_through(from, to).await,
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn copy_through(&self, from: &str, to: &str) -> Result<(), OpError> {
+        let mut stack = vec![(from.to_string(), to.to_string())];
+        while let Some((src, dst)) = stack.pop() {
+            let attrs = self.sftp.metadata(src.as_str()).await.map_err(|e| OpError::from(e).at(&src))?;
+            if is_dir_mode(attrs.permissions) {
+                self.sftp.create_dir(dst.as_str()).await.map_err(|e| OpError::from(e).at(&dst))?;
+                let read = self.sftp.read_dir(src.as_str()).await.map_err(|e| OpError::from(e).at(&src))?;
+                for entry in read {
+                    let name = entry.file_name();
+                    if name != "." && name != ".." {
+                        stack.push((join(&src, &name), join(&dst, &name)));
+                    }
+                }
+            } else {
+                let mut input = self.sftp.open(src.as_str()).await.map_err(|e| OpError::from(e).at(&src))?;
+                let mut output = self.create_file(&dst).await?;
+                let mut buf = vec![0u8; CHUNK];
+                loop {
+                    let n = input.read(&mut buf).await.map_err(|e| OpError::remote_io(&e).at(&src))?;
+                    if n == 0 {
+                        break;
+                    }
+                    output.write_all(&buf[..n]).await.map_err(|e| OpError::remote_io(&e).at(&dst))?;
+                }
+                output.shutdown().await.map_err(|e| OpError::remote_io(&e).at(&dst))?;
+                if let Some(mode) = attrs.permissions {
+                    let _ = self.set_mode(&dst, mode).await;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn create_file(&self, path: &str) -> Result<russh_sftp::client::fs::File, OpError> {
+        self.sftp
+            .open_with_flags(path, OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE)
+            .await
+            .map_err(|e| OpError::from(e).at(path))
+    }
+
+    async fn set_mode(&self, path: &str, mode: u32) -> Result<(), OpError> {
+        let mut attrs = FileAttributes::empty();
+        attrs.permissions = Some(mode & 0o7777);
+        self.sftp.set_metadata(path, attrs).await.map_err(OpError::from)
+    }
+
+    // ---- downloads ----------------------------------------------------------------
+
+    /// Download a file or folder into `local_dir`. Returns where it was saved: under its own
+    /// name, or "name (1)" when that is taken, so nothing local is overwritten.
+    pub async fn download(&self, remote_path: &str, local_dir: &Path, progress: &Progress) -> Result<PathBuf, OpError> {
+        let attrs = self.sftp.metadata(remote_path).await.map_err(|e| OpError::from(e).at(remote_path))?;
+        let name = local_file_name(file_name(remote_path));
+        if is_dir_mode(attrs.permissions) {
+            return self.download_dir(remote_path, local_dir, &name, progress).await;
+        }
+        // Open the remote file before creating anything here: no access, no file.
+        let mut input = self.sftp.open(remote_path).await.map_err(|e| OpError::from(e).at(remote_path))?;
+        progress.total.store(attrs.size.unwrap_or(0), Ordering::Relaxed);
+        tokio::fs::create_dir_all(local_dir).await.map_err(|e| OpError::local(&e, local_dir))?;
+        let target = unique_local_path(local_dir, &name);
+        let partial = partial_path(&target);
+        let result = async {
+            let mut output = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&partial)
+                .await
+                .map_err(|e| OpError::local(&e, &partial))?;
+            copy_down(&mut input, &mut output, remote_path, &partial, progress).await?;
+            output.sync_all().await.map_err(|e| OpError::local(&e, &partial))?;
+            drop(output);
+            finish_local(&partial, &target).await
+        }
+        .await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(&partial).await;
+        }
+        result
+    }
+
+    async fn download_dir(&self, remote_path: &str, local_dir: &Path, name: &str, progress: &Progress) -> Result<PathBuf, OpError> {
+        // Walk first: an unreadable folder fails before anything is written, and the
+        // progress bar knows the total.
+        let mut files = vec![];
+        let mut dirs = vec![String::new()];
+        let mut queue = vec![String::new()];
+        while let Some(rel) = queue.pop() {
+            progress.check()?;
+            let dir = if rel.is_empty() { remote_path.to_string() } else { join(remote_path, &rel) };
+            let read = self.sftp.read_dir(dir.as_str()).await.map_err(|e| OpError::from(e).at(&dir))?;
+            for entry in read {
+                let child_name = entry.file_name();
+                if child_name == "." || child_name == ".." {
+                    continue;
+                }
+                let child_rel = if rel.is_empty() { child_name.clone() } else { format!("{rel}/{child_name}") };
+                let mut attrs = entry.metadata();
+                if is_link_mode(attrs.permissions) {
+                    // Follow links to files; links to folders are skipped (they can loop).
+                    match self.sftp.metadata(join(&dir, &child_name)).await {
+                        Ok(target) if !is_dir_mode(target.permissions) => attrs = target,
+                        _ => continue,
+                    }
+                }
+                if is_dir_mode(attrs.permissions) {
+                    dirs.push(child_rel.clone());
+                    queue.push(child_rel);
+                } else if attrs.permissions.is_none_or(|m| m & S_IFMT == S_IFREG) {
+                    files.push((child_rel, attrs.size.unwrap_or(0)));
+                }
+            }
+        }
+        progress.total.store(files.iter().map(|(_, s)| s).sum(), Ordering::Relaxed);
+        tokio::fs::create_dir_all(local_dir).await.map_err(|e| OpError::local(&e, local_dir))?;
+        let target = unique_local_path(local_dir, name);
+        let partial = partial_path(&target);
+        let result = async {
+            for rel in &dirs {
+                let dir = local_rel(&partial, rel);
+                tokio::fs::create_dir_all(&dir).await.map_err(|e| OpError::local(&e, &dir))?;
+            }
+            for (rel, _) in &files {
+                let remote = join(remote_path, rel);
+                let local = local_rel(&partial, rel);
+                let mut input = self.sftp.open(remote.as_str()).await.map_err(|e| OpError::from(e).at(&remote))?;
+                let mut output = tokio::fs::File::create(&local).await.map_err(|e| OpError::local(&e, &local))?;
+                copy_down(&mut input, &mut output, &remote, &local, progress).await?;
+                output.sync_all().await.map_err(|e| OpError::local(&e, &local))?;
+            }
+            finish_local(&partial, &target).await
+        }
+        .await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_dir_all(&partial).await;
+        }
+        result
+    }
+
+    // ---- uploads ------------------------------------------------------------------
+
+    /// Upload a local file or folder into `remote_dir` as `name`. With `replace`, an existing
+    /// file or folder of that name is replaced once the upload is complete; otherwise an
+    /// existing one fails the upload.
+    pub async fn upload(&self, local: &Path, remote_dir: &str, name: &str, replace: bool, progress: &Progress) -> Result<String, OpError> {
+        let plan = plan_local(local)?;
+        progress.total.store(plan.iter().map(|(_, size)| size.unwrap_or(0)).sum(), Ordering::Relaxed);
+        let target = join(remote_dir, name);
+        let existing = match self.sftp.symlink_metadata(target.as_str()).await {
+            Ok(attrs) => Some(attrs),
+            Err(SftpError::Status(s)) if s.status_code == StatusCode::NoSuchFile => None,
+            Err(e) => return Err(OpError::from(e).at(&target)),
+        };
+        if existing.is_some() && !replace {
+            return Err(OpError::new(ErrorKind::Exists, format!("\"{name}\" already exists in {remote_dir}")));
+        }
+        let partial = join(remote_dir, &format!(".{name}{PARTIAL_SUFFIX}"));
+        if self.exists(&partial).await? {
+            self.remove(&partial).await?;
+        }
+        let result = async {
+            for (rel, size) in &plan {
+                progress.check()?;
+                let remote = if rel.is_empty() { partial.clone() } else { join(&partial, rel) };
+                let local_path = local_rel(local, rel);
+                match size {
+                    None => self.sftp.create_dir(remote.as_str()).await.map_err(|e| OpError::from(e).at(remote_dir))?,
+                    Some(_) => {
+                        let mut input = tokio::fs::File::open(&local_path).await.map_err(|e| OpError::local(&e, &local_path))?;
+                        let mut output = self.create_file(&remote).await.map_err(|e| e.at(remote_dir))?;
+                        copy_up(&mut input, &mut output, &local_path, progress).await?;
+                        output.shutdown().await.map_err(|e| OpError::remote_io(&e))?;
+                    }
+                }
+            }
+            progress.check()?;
+            // A replaced file keeps its permissions (an executable script stays executable).
+            if let Some(attrs) = &existing {
+                if !is_dir_mode(attrs.permissions) && !is_link_mode(attrs.permissions) && plan.len() == 1 {
+                    if let Some(mode) = attrs.permissions {
+                        let _ = self.set_mode(&partial, mode).await;
+                    }
+                }
+                self.remove(&target).await?;
+            }
+            self.sftp.rename(partial.as_str(), target.as_str()).await.map_err(|e| OpError::from(e).at(&target))?;
+            Ok(target.clone())
+        }
+        .await;
+        if result.is_err() {
+            let _ = self.remove(&partial).await;
+        }
+        result
+    }
+}
+
+/// The partial file a download is written to: "name.ext.komando-part" next to `target`.
+fn partial_path(target: &Path) -> PathBuf {
+    let mut name = target.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(PARTIAL_SUFFIX);
+    target.with_file_name(name)
+}
+
+fn local_rel(base: &Path, rel: &str) -> PathBuf {
+    let mut path = base.to_path_buf();
+    for part in rel.split('/').filter(|p| !p.is_empty()) {
+        path.push(local_file_name(part));
+    }
+    path
+}
+
+/// Move a finished partial file or folder into place, under a free name if `target` was
+/// taken meanwhile.
+async fn finish_local(partial: &Path, target: &Path) -> Result<PathBuf, OpError> {
+    let mut target = target.to_path_buf();
+    if target.exists() {
+        let dir = target.parent().map(Path::to_path_buf).unwrap_or_default();
+        let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        target = dir.join(unique_name(&name, |n| dir.join(n).exists()));
+    }
+    tokio::fs::rename(partial, &target).await.map_err(|e| OpError::local(&e, &target))?;
+    Ok(target)
+}
+
+async fn copy_down(
+    input: &mut russh_sftp::client::fs::File,
+    output: &mut tokio::fs::File,
+    remote: &str,
+    local: &Path,
+    progress: &Progress,
+) -> Result<(), OpError> {
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        progress.check()?;
+        let n = input.read(&mut buf).await.map_err(|e| OpError::remote_io(&e).at(remote))?;
+        if n == 0 {
+            return Ok(());
+        }
+        output.write_all(&buf[..n]).await.map_err(|e| OpError::local(&e, local))?;
+        progress.add(n as u64);
+    }
+}
+
+async fn copy_up(
+    input: &mut tokio::fs::File,
+    output: &mut russh_sftp::client::fs::File,
+    local: &Path,
+    progress: &Progress,
+) -> Result<(), OpError> {
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        progress.check()?;
+        let n = input.read(&mut buf).await.map_err(|e| OpError::local(&e, local))?;
+        if n == 0 {
+            return Ok(());
+        }
+        output.write_all(&buf[..n]).await.map_err(|e| OpError::remote_io(&e))?;
+        progress.add(n as u64);
+    }
+}
+
+/// What an upload of `local` consists of: ("" for the top, relative paths below it), with
+/// `None` for folders and the size for files. Folders come before their contents.
+fn plan_local(local: &Path) -> Result<Vec<(String, Option<u64>)>, OpError> {
+    let meta = std::fs::metadata(local).map_err(|e| OpError::local(&e, local))?;
+    if !meta.is_dir() {
+        return Ok(vec![(String::new(), Some(meta.len()))]);
+    }
+    let mut plan = vec![(String::new(), None)];
+    let mut queue = vec![String::new()];
+    while let Some(rel) = queue.pop() {
+        let dir = local_rel(local, &rel);
+        let mut children: Vec<_> = std::fs::read_dir(&dir)
+            .map_err(|e| OpError::local(&e, &dir))?
+            .collect::<Result<_, _>>()
+            .map_err(|e| OpError::local(&e, &dir))?;
+        children.sort_by_key(|e| e.file_name());
+        for child in children {
+            let name = child.file_name().to_string_lossy().into_owned();
+            let child_rel = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+            let meta = std::fs::metadata(child.path()).map_err(|e| OpError::local(&e, &child.path()))?;
+            if meta.is_dir() {
+                plan.push((child_rel.clone(), None));
+                queue.push(child_rel);
+            } else if meta.is_file() {
+                plan.push((child_rel, Some(meta.len())));
+            }
+        }
+    }
+    Ok(plan)
+}
+
+/// "2.1 KB": sizes as file managers show them (1 KB = 1024 bytes).
+pub fn format_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024. && unit < UNITS.len() - 1 {
+        value /= 1024.;
+        unit += 1;
+    }
+    if value < 10. { format!("{value:.1} {}", UNITS[unit]) } else { format!("{value:.0} {}", UNITS[unit]) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn id_output_is_parsed() {
+        let id = Identity::parse_id("uid=1000(codex) gid=1000(codex) groups=1000(codex),27(sudo),998(docker)\n");
+        assert_eq!(id.uid, Some(1000));
+        assert_eq!(id.name.as_deref(), Some("codex"));
+        assert_eq!(id.groups.iter().map(|(g, _)| *g).collect::<Vec<_>>(), [1000, 27, 998]);
+        assert_eq!(id.group_name(27), Some("sudo"));
+        // busybox and some systems print no names.
+        let id = Identity::parse_id("uid=0 gid=0 groups=0,10");
+        assert_eq!(id.uid, Some(0));
+        assert_eq!(id.groups.len(), 2);
+        assert_eq!(Identity::parse_id("garbage").uid, None);
+    }
+
+    fn user() -> Identity {
+        Identity::parse_id("uid=1000(codex) gid=1000(codex) groups=1000(codex),27(sudo)")
+    }
+
+    #[test]
+    fn access_follows_the_class_that_applies() {
+        let me = user();
+        // Owner: owner bits only.
+        let a = access(&me, Some(0o100600), Some(1000), Some(0), false);
+        assert_eq!((a.read, a.write, a.exec), (Allowed::Yes, Allowed::Yes, Allowed::No));
+        // Group member: group bits.
+        let a = access(&me, Some(0o100640), Some(0), Some(27), false);
+        assert_eq!((a.read, a.write), (Allowed::Yes, Allowed::No));
+        // Others: other bits, even when the group bits would allow it.
+        let a = access(&me, Some(0o040770), Some(0), Some(0), true);
+        assert_eq!((a.read, a.exec), (Allowed::No, Allowed::No));
+        // root may do anything but execute a file without x bits.
+        let root = Identity::parse_id("uid=0(root) gid=0(root) groups=0(root)");
+        let a = access(&root, Some(0o100600), Some(1000), Some(1000), false);
+        assert_eq!((a.read, a.write, a.exec), (Allowed::Yes, Allowed::Yes, Allowed::No));
+    }
+
+    #[test]
+    fn unknown_permissions_never_lock() {
+        assert_eq!(access(&Identity::default(), Some(0o100000), Some(0), Some(0), false), Access::UNKNOWN);
+        assert_eq!(access(&user(), None, Some(0), Some(0), false), Access::UNKNOWN);
+        assert_eq!(access(&user(), Some(0o100000), None, None, false), Access::UNKNOWN);
+        let mut attrs = FileAttributes::empty();
+        attrs.permissions = Some(0o100000);
+        attrs.uid = Some(0);
+        attrs.gid = Some(0);
+        let entry = Entry::from_attrs("/", "x".into(), &attrs, None, &Identity::default());
+        assert!(!entry.locked());
+        let entry = Entry::from_attrs("/", "x".into(), &attrs, None, &user());
+        assert!(entry.locked());
+    }
+
+    #[test]
+    fn folders_need_read_and_search() {
+        let mut attrs = FileAttributes::empty();
+        attrs.permissions = Some(0o040751);
+        attrs.uid = Some(0);
+        attrs.gid = Some(0);
+        // Others get --x: can pass through, not list.
+        let entry = Entry::from_attrs("/srv", "storage".into(), &attrs, None, &user());
+        assert!(entry.is_dir());
+        assert!(entry.locked());
+        assert_eq!(entry.path, "/srv/storage");
+        attrs.permissions = Some(0o040755);
+        assert!(!Entry::from_attrs("/srv", "storage".into(), &attrs, None, &user()).locked());
+    }
+
+    #[test]
+    fn symlinks_take_their_targets_kind() {
+        let mut link = FileAttributes::empty();
+        link.permissions = Some(0o120777);
+        let mut target = FileAttributes::empty();
+        target.permissions = Some(0o040755);
+        target.uid = Some(0);
+        target.gid = Some(0);
+        let entry = Entry::from_attrs("/", "logs".into(), &link, Some(&target), &user());
+        assert!(entry.is_dir() && entry.link && !entry.broken_link);
+        assert_eq!(entry.mode_string(), "lrwxrwxrwx");
+        let entry = Entry::from_attrs("/", "gone".into(), &link, None, &user());
+        assert!(entry.broken_link && !entry.locked());
+    }
+
+    #[test]
+    fn modes_print_like_ls() {
+        assert_eq!(mode_string(0o040755), "drwxr-xr-x");
+        assert_eq!(mode_string(0o100644), "-rw-r--r--");
+        assert_eq!(mode_string(0o104755), "-rwsr-xr-x");
+        assert_eq!(mode_string(0o041777), "drwxrwxrwt");
+        assert_eq!(mode_string(0o100600), "-rw-------");
+    }
+
+    #[test]
+    fn remote_paths() {
+        assert_eq!(join("/", "etc"), "/etc");
+        assert_eq!(join("/var/www", "app"), "/var/www/app");
+        assert_eq!(parent("/var/www/app").as_deref(), Some("/var/www"));
+        assert_eq!(parent("/var").as_deref(), Some("/"));
+        assert_eq!(parent("/"), None);
+        assert_eq!(file_name("/var/log/"), "log");
+        let segs = segments("/var/www");
+        assert_eq!(segs, vec![("/".into(), "/".into()), ("var".into(), "/var".into()), ("www".into(), "/var/www".into())]);
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn unique_names_keep_the_extension() {
+        let taken = ["app.conf", "app (1).conf", "logs", ".env"];
+        let is_taken = |n: &str| taken.contains(&n);
+        assert_eq!(unique_name("new.txt", is_taken), "new.txt");
+        assert_eq!(unique_name("app.conf", is_taken), "app (2).conf");
+        assert_eq!(unique_name("logs", is_taken), "logs (1)");
+        assert_eq!(unique_name(".env", is_taken), ".env (1)");
+        assert_eq!(local_file_name("a:b?.txt"), "a_b_.txt");
+        assert_eq!(local_file_name("trailing. "), "trailing");
+    }
+
+    #[test]
+    fn sizes() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(836), "836 B");
+        assert_eq!(format_size(2150), "2.1 KB");
+        assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
+        assert_eq!(format_size(300 * 1024 * 1024), "300 MB");
+    }
+
+    #[test]
+    fn local_names_avoid_partial_downloads() {
+        let dir = std::env::temp_dir().join(format!("komando-sftp-{}", crate::model::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("a.txt{PARTIAL_SUFFIX}")), b"").unwrap();
+        assert_eq!(unique_local_path(&dir, "a.txt"), dir.join("a (1).txt"));
+        assert_eq!(partial_path(&dir.join("a.txt")), dir.join(format!("a.txt{PARTIAL_SUFFIX}")));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn errors_are_worded_for_people() {
+        let denied = SftpError::Status(russh_sftp::protocol::Status {
+            id: 1,
+            status_code: StatusCode::PermissionDenied,
+            error_message: "Permission denied".into(),
+            language_tag: "en".into(),
+        });
+        let err = OpError::from(denied).at("/srv/storage/app.log");
+        assert_eq!(err.kind, ErrorKind::PermissionDenied);
+        assert_eq!(err.message, "Permission denied (EACCES): /srv/storage/app.log");
+        assert_eq!(OpError::from(SftpError::Timeout).kind, ErrorKind::Connection);
+        assert_eq!(OpError::from_message("cp: cannot open 'x': Permission denied").kind, ErrorKind::PermissionDenied);
+    }
+}

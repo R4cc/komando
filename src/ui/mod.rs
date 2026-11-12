@@ -1,6 +1,9 @@
 pub mod box_drawing;
 pub mod connect_route;
+pub mod file_browser;
 pub mod minimap;
+pub mod popup;
 pub mod terminal_view;
+pub mod transfers;
 pub mod widgets;
 pub mod workspace;

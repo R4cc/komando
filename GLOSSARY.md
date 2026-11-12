@@ -55,6 +55,18 @@ _Avoid_: History, buffer, log
 A line the user entered in a Session (prompt and command), remembered so the command rail can list it and jump back to it. It lasts as long as the line is in the Scrollback.
 _Avoid_: Bookmark, history entry
 
+**File Browser**:
+The SFTP panel beside an SSH Session's terminal, browsing that Host's files over the Session's own connection. Each Session has its own.
+_Avoid_: File manager, explorer, SFTP window
+
+**Favorite**:
+A saved remote folder in the File Browser, either for every Host or for one Host only.
+_Avoid_: Bookmark (that is a Command Mark's old name), shortcut
+
+**Transfer**:
+A download or upload started from a File Browser, listed under Downloads in the sidebar with its outcome.
+_Avoid_: Job, task
+
 ## Secrets
 
 **Vault**:

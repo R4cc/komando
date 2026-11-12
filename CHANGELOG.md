@@ -6,6 +6,38 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-12
+
+### Added
+
+- An SFTP file browser beside the terminal. Click **SFTP** above an SSH session (or press
+  Ctrl+Shift+E) and the server's files open on the right, over the session's own connection:
+  no second login. Drag the divider to give it more or less room; each session keeps its own
+  folder and history.
+- Browse with back, forward and parent folder, click a folder in the path to go there, or click
+  the path to type one. Sort by name, size, date or permissions; hidden files can be shown or
+  hidden.
+- Upload and download files and whole folders, from the toolbar or by dropping files from
+  Explorer onto the list (or onto a folder in it). Create folders, rename, copy, move and delete,
+  for one item or a whole selection, from the right-click menu or each row's ⋯ button. Drag
+  files onto a folder to move them there.
+- Favorite folders behind the star next to the path. A favorite can be for all hosts (handy for
+  `/var/log` or `/etc/nginx`) or for one host only, and can be renamed and reordered.
+- Files and folders you can't open show a lock; hover it, or the permissions, to see who owns
+  them and what you may do. Actions you aren't allowed to take are greyed out, and permission
+  errors say so plainly.
+- A Downloads entry in the sidebar, once you have transferred something. It lists every
+  download and upload from every host, with progress, and a number for transfers that are
+  running or failed. Open a downloaded file, show it in its folder, copy the file itself to
+  paste elsewhere, or copy its path. Failed transfers say why and can be retried.
+
+### Fixed
+
+- Downloads never leave a misleading file behind: a file you aren't allowed to read is not
+  saved as an empty file, and a download that fails or is cancelled midway is removed instead
+  of being left half-written. Existing files in Downloads are never overwritten; a second copy
+  gets a name like "app (1).conf". Genuinely empty files still download.
+
 ## [0.1.17] - 2026-11-12
 
 ### Added

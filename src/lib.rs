@@ -4,6 +4,7 @@
 #[cfg(all(test, unix))]
 mod compat_tests;
 pub mod export;
+pub mod favorites;
 pub mod highlight;
 pub mod keys;
 pub mod marks;
@@ -11,6 +12,7 @@ pub mod model;
 pub mod perf;
 pub mod platform;
 pub mod session;
+pub mod sftp;
 pub mod theme;
 pub mod ui;
 pub mod update;
@@ -24,7 +26,7 @@ use gpui::{App, AppContext as _, Bounds, KeyBinding, WindowBounds, WindowOptions
 use crate::ui::terminal_view::{self, Copy, Paste, ScrollPageDown, ScrollPageUp};
 use crate::ui::workspace::{
     CloseSession, CopyOutputFile, CopyOutputText, LockVault, NewSession, NextSession, OpenSettings, PrevSession, QuickConnect,
-    Workspace,
+    ToggleSftp, Workspace,
 };
 
 pub const FONTS: [&[u8]; 6] = [
@@ -57,6 +59,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-shift-s", CopyOutputFile, None),
         KeyBinding::new("ctrl-shift-l", LockVault, None),
         KeyBinding::new("ctrl-,", OpenSettings, None),
+        KeyBinding::new("ctrl-shift-e", ToggleSftp, None),
     ]);
 }
 

@@ -233,6 +233,11 @@ impl TerminalView {
         self.sink = Some(sink);
     }
 
+    /// Where input goes, while a backend is attached.
+    pub fn sink(&self) -> Option<InputSink> {
+        self.sink.clone()
+    }
+
     pub fn close(&mut self) {
         if let Some(sink) = self.sink.take() {
             sink.close();

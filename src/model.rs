@@ -483,6 +483,10 @@ pub struct Settings {
     pub background_blur_intensity: u8,
     /// Look for a newer release on GitHub when Komando starts.
     pub check_for_updates: bool,
+    /// Width of the SFTP file browser beside the terminal, in pixels.
+    pub sftp_width: f32,
+    /// The SFTP browser lists files starting with a dot.
+    pub sftp_show_hidden: bool,
 }
 
 impl Default for Settings {
@@ -504,6 +508,8 @@ impl Default for Settings {
             background_blur: true,
             background_blur_intensity: 60,
             check_for_updates: true,
+            sftp_width: 540.,
+            sftp_show_hidden: true,
         }
     }
 }

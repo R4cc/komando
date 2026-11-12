@@ -23,7 +23,7 @@ pub fn write_and_copy_file(name: &str, text: &str) -> Result<String> {
 }
 
 #[cfg(windows)]
-fn copy_file_to_clipboard(path: &std::path::Path) -> Result<String> {
+pub fn copy_file_to_clipboard(path: &std::path::Path) -> Result<String> {
     let path = path.to_string_lossy().to_string();
     let _clipboard = clipboard_win::Clipboard::new_attempts(10)
         .map_err(|e| anyhow::anyhow!("clipboard busy: {e}"))?;
@@ -33,7 +33,7 @@ fn copy_file_to_clipboard(path: &std::path::Path) -> Result<String> {
 }
 
 #[cfg(not(windows))]
-fn copy_file_to_clipboard(_path: &std::path::Path) -> Result<String> {
+pub fn copy_file_to_clipboard(_path: &std::path::Path) -> Result<String> {
     // Komando ships for Windows; on dev hosts the caller puts the path on the clipboard.
     Ok(" (path copied).".into())
 }

@@ -414,7 +414,8 @@ impl LocalSshd {
         let port = 20000 + port_offset + (std::process::id() % 20000) as u16;
         let config = format!(
             "Port {port}\nListenAddress 127.0.0.1\nHostKey {host}\nAuthorizedKeysFile {keys}\nPidFile {pid}\n\
-             UsePAM no\nStrictModes no\nPasswordAuthentication no\nPrintMotd no\nPrintLastLog no\nAllowTcpForwarding yes\n",
+             UsePAM no\nStrictModes no\nPasswordAuthentication no\nPrintMotd no\nPrintLastLog no\nAllowTcpForwarding yes\n\
+             Subsystem sftp internal-sftp\n",
             host = dir.join("host").display(),
             keys = dir.join("authorized_keys").display(),
             pid = dir.join("sshd.pid").display(),
@@ -501,6 +502,114 @@ fn compat_ssh_session_through_a_jump_host() {
     let done: Vec<usize> = r.hops.iter().filter(|(_, step)| *step == HopStep::Done).map(|(i, _)| *i).collect();
     assert_eq!(done, [0, 1], "both hops signed in, in order: {:?}", r.hops);
     assert_eq!(r.hops.first(), Some(&(0, HopStep::Reaching)));
+    r.text("exit\r");
+    r.wait("the session to end", |r| r.ended);
+}
+
+/// The SFTP browser's backend against a throwaway sshd: SFTP opens on the terminal's own
+/// connection, permissions are read for the signed-in user, and transfers never leave a
+/// misleading file behind.
+#[test]
+#[ignore]
+fn compat_sftp_on_the_sessions_connection() {
+    use crate::sftp::{self, ErrorKind, PARTIAL_SUFFIX, Progress};
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
+
+    let Some(sshd) = LocalSshd::start("sftp", 2) else { return };
+    let size = GridSize { cols: 100, rows: 30, cell_width: 9, cell_height: 18 };
+    let mut r = sshd.connect(vec![sshd.hop("local", "127.0.0.1")], size);
+    r.settle();
+    r.text("echo sftp-ready\r");
+    r.wait_text("sftp-ready");
+    let answer = r.sink.open_sftp().expect("an SSH session opens SFTP");
+    let remote = Arc::new(futures::executor::block_on(answer).expect("reply").expect("SFTP starts"));
+    let root = remote.identity.uid == Some(0);
+    assert!(remote.identity.uid.is_some(), "id ran on the server");
+    let run = |f: futures::future::BoxFuture<'static, ()>| futures::executor::block_on(sftp::spawn(f)).unwrap();
+
+    // Files on "the server" (this machine).
+    let base = sshd.dir.join("files");
+    std::fs::create_dir_all(base.join("logs")).unwrap();
+    std::fs::create_dir_all(base.join("storage")).unwrap();
+    std::fs::write(base.join("app.conf"), b"listen 80;\n").unwrap();
+    std::fs::write(base.join("empty.txt"), b"").unwrap();
+    std::fs::write(base.join("secret.log"), b"top secret").unwrap();
+    std::fs::write(base.join("logs/a.log"), vec![b'x'; 300_000]).unwrap();
+    std::fs::write(base.join("storage/app.log"), b"hidden").unwrap();
+    std::fs::set_permissions(base.join("secret.log"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    std::fs::set_permissions(base.join("storage"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let base_s = base.display().to_string();
+    let local = sshd.dir.join("downloads");
+    std::fs::create_dir_all(&local).unwrap();
+
+    let (rm, b, l) = (remote.clone(), base_s.clone(), local.clone());
+    run(Box::pin(async move {
+        let listing = rm.list(&b).await.unwrap();
+        let get = |n: &str| listing.entries.iter().find(|e| e.name == n).unwrap().clone();
+        assert!(get("logs").is_dir() && !get("logs").locked());
+        assert!(!get("app.conf").locked());
+        if !root {
+            assert!(get("secret.log").locked(), "{:?}", get("secret.log"));
+            assert!(get("storage").locked());
+        }
+        let p = Progress::default();
+
+        // A file the user can't read: an error, and nothing on disk.
+        if !root {
+            let err = rm.download(&format!("{b}/secret.log"), &l, &p).await.unwrap_err();
+            assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err}");
+            let err = rm.download(&format!("{b}/storage/app.log"), &l, &p).await.unwrap_err();
+            assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err}");
+            assert_eq!(std::fs::read_dir(&l).unwrap().count(), 0, "no file left behind");
+        }
+
+        // A genuinely empty file downloads, as an empty file.
+        let empty = rm.download(&format!("{b}/empty.txt"), &l, &p).await.unwrap();
+        assert_eq!(std::fs::metadata(&empty).unwrap().len(), 0);
+
+        // A second download doesn't overwrite the first.
+        let first = rm.download(&format!("{b}/app.conf"), &l, &p).await.unwrap();
+        let second = rm.download(&format!("{b}/app.conf"), &l, &p).await.unwrap();
+        assert_eq!(first.file_name().unwrap(), "app.conf");
+        assert_eq!(second.file_name().unwrap(), "app (1).conf");
+        assert_eq!(std::fs::read(&second).unwrap(), b"listen 80;\n");
+
+        // Folders, with progress.
+        let p = Progress::default();
+        let logs = rm.download(&format!("{b}/logs"), &l, &p).await.unwrap();
+        assert_eq!(std::fs::metadata(logs.join("a.log")).unwrap().len(), 300_000);
+        assert_eq!(p.done.load(std::sync::atomic::Ordering::Relaxed), 300_000);
+
+        // Uploads: a name that's taken fails unless replacing.
+        let up = l.join("app (1).conf");
+        std::fs::write(&up, b"listen 8080;\n").unwrap();
+        let err = rm.upload(&up, &b, "app.conf", false, &p).await.unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Exists);
+        rm.upload(&up, &b, "app.conf", true, &p).await.unwrap();
+        assert_eq!(std::fs::read(format!("{b}/app.conf")).unwrap(), b"listen 8080;\n");
+        rm.upload(&logs, &b, "logs-copy", false, &p).await.unwrap();
+        assert!(std::path::Path::new(&format!("{b}/logs-copy/a.log")).exists());
+
+        // Folder operations.
+        rm.mkdir(&format!("{b}/new")).await.unwrap();
+        assert_eq!(rm.mkdir(&format!("{b}/new")).await.unwrap_err().kind, ErrorKind::Exists);
+        rm.rename(&format!("{b}/new"), &format!("{b}/renamed")).await.unwrap();
+        rm.copy(&format!("{b}/logs"), &format!("{b}/renamed/logs")).await.unwrap();
+        assert!(std::path::Path::new(&format!("{b}/renamed/logs/a.log")).exists());
+        rm.remove(&format!("{b}/renamed")).await.unwrap();
+        assert!(!rm.exists(&format!("{b}/renamed")).await.unwrap());
+        assert!(rm.list(&format!("{b}/nope")).await.unwrap_err().kind == ErrorKind::NotFound);
+    }));
+
+    // Nothing half-transferred anywhere.
+    for dir in [&base, &local] {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            assert!(!name.ends_with(PARTIAL_SUFFIX), "left behind: {name}");
+        }
+    }
+    std::fs::set_permissions(base.join("storage"), std::fs::Permissions::from_mode(0o755)).unwrap();
     r.text("exit\r");
     r.wait("the session to end", |r| r.ended);
 }

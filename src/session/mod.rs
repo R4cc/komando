@@ -99,6 +99,19 @@ impl InputSink {
         }
     }
 
+    /// Ask an SSH Session for an SFTP channel on its connection. `None` for Local Sessions
+    /// and for a Session whose connection has already ended.
+    pub fn open_sftp(&self) -> Option<oneshot::Receiver<anyhow::Result<crate::sftp::Remote>>> {
+        match self {
+            InputSink::Local(_) => None,
+            InputSink::Ssh(sender) => {
+                let (reply, answer) = oneshot::channel();
+                sender.send(ssh::Command::OpenSftp(reply)).ok()?;
+                Some(answer)
+            }
+        }
+    }
+
     pub fn close(&self) {
         match self {
             InputSink::Local(sender) => {
