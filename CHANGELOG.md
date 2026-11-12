@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-11-12
+
 ### Added
 
 - Windows minimizes to the notification area by default, keeping Sessions running. Click the
@@ -29,6 +31,8 @@ All notable changes to Komando are listed here. The format follows
 
 - Terminal text aligns vertically with the cursor on Windows, including when starting a new console.
 - Window buttons no longer show ghosted icons behind them when the Mica background is enabled.
+- The SFTP file list keeps its Size, Modified and Perms columns lined up under their headings,
+  however long the file names are.
 
 ## [0.2.4] - 2026-11-12
 

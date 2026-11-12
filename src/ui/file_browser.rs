@@ -1734,7 +1734,9 @@ impl FileBrowser {
                 .id(("sftp-row", ix))
                 .group("sftp-row")
                 .h(px(ROW_HEIGHT))
-                .mx(px(4.))
+                // A list item is as wide as its content unless told otherwise; full width
+                // keeps the Size, Modified and Perms columns under their headers.
+                .w_full()
                 .px(px(10.))
                 .flex()
                 .items_center()
@@ -1850,7 +1852,7 @@ impl FileBrowser {
         div()
             .id("sftp-parent")
             .h(px(ROW_HEIGHT))
-            .mx(px(4.))
+            .w_full()
             .px(px(10.))
             .flex()
             .items_center()
@@ -1875,7 +1877,7 @@ impl FileBrowser {
                 }
             }))
             .child(icon_el("folder", 16., p.warning))
-            .child(div().flex_1().child(".."))
+            .child(div().flex_1().min_w_0().child(".."))
             .child(div().w(px(70.)).text_right().text_size(px(12.)).text_color(p.text_faint).child("—"))
             .when(show_modified, |el| el.child(div().w(px(118.)).text_size(px(12.)).text_color(p.text_faint).child("—")))
             .when(show_perms, |el| el.child(div().w(px(92.)).text_size(px(12.)).text_color(p.text_faint).child("—")))
@@ -2551,6 +2553,8 @@ impl Render for FileBrowser {
                 .track_scroll(&self.scroll)
                 .flex_1()
                 .min_h_0()
+                // The rows' side margin, matching the column header's.
+                .px(px(4.))
                 .pt(px(4.))
                 .pb(px(8.))
                 .into_any_element()
