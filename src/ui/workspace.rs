@@ -148,6 +148,8 @@ struct SessionEntry {
     number: usize,
     /// The terminal's title (set by the shell), copied here like `status`.
     title: SharedString,
+    /// Output is streaming in (a command at work), copied here like `status`.
+    busy: bool,
     view: Entity<TerminalView>,
     /// The terminal's status, copied here when it changes. The sidebar reads this rather than
     /// the terminal: reading a terminal while rendering makes gpui redraw the whole window on
@@ -828,6 +830,7 @@ impl Workspace {
                 let status = view.read(cx).status.clone();
                 if let Some(entry) = this.sessions.iter_mut().find(|s| s.id == id) {
                     entry.title = view.read(cx).title.clone();
+                    entry.busy = view.read(cx).busy;
                     let changed = entry.status != status;
                     entry.status = status.clone();
                     // The file browser follows its terminal's connection.
@@ -882,6 +885,7 @@ impl Workspace {
             label: label.clone(),
             number,
             title: label,
+            busy: false,
             view: view.clone(),
             status: Status::Connecting,
             browser: None,
@@ -1678,11 +1682,9 @@ impl Workspace {
             let color = project_color(&project.color);
             let collapsed = self.collapsed.contains(&project.id);
             let items = self.project_items(project);
-            let live = items
-                .iter()
-                .flat_map(|item| self.sessions_of(&item.key()).collect::<Vec<_>>())
-                .filter(|s| s.is_live())
-                .count();
+            let sessions: Vec<&SessionEntry> = items.iter().flat_map(|item| self.sessions_of(&item.key()).collect::<Vec<_>>()).collect();
+            let live = sessions.iter().filter(|s| s.is_live()).count();
+            let busy = sessions.iter().any(|s| s.busy);
             let pid = project.id.clone();
             let pid_host = project.id.clone();
             let ws = cx.entity().downgrade();
@@ -1738,9 +1740,13 @@ impl Workspace {
                         el.child(
                             div()
                                 .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .gap(px(5.))
                                 .text_size(px(11.5))
                                 .text_color(p.text_faint)
                                 .group_hover("project-row", |s| s.invisible())
+                                .when(busy, |el| el.child(activity_icon(p)))
                                 .child(format!("{live} live")),
                         )
                     })
@@ -1943,6 +1949,7 @@ impl Workspace {
             main.map(|s| s.status.clone())
         };
         let live = matches!(status, Some(Status::Connected | Status::Connecting));
+        let busy = if grouped { sessions.iter().any(|s| s.busy) } else { main.is_some_and(|s| s.busy) };
         // With the Sessions listed below, the active one is marked there instead.
         let active = holds_active && !expanded;
         let any_live = sessions.iter().any(|s| s.is_live());
@@ -2046,7 +2053,7 @@ impl Workspace {
                         .items_center()
                         .gap(px(6.))
                         .group_hover("item-row", |s| s.invisible())
-                        .child(status_indicator(status.as_ref(), p))
+                        .child(status_indicator(status.as_ref(), busy, p))
                         .when(grouped, |el| {
                             el.child(div().text_size(px(11.5)).text_color(p.text_faint).child(count.to_string()))
                         }),
@@ -2151,12 +2158,12 @@ impl Workspace {
             .text_size(px(12.5))
             .relative()
             .h(px(30.))
-            // The status dot sits under the item's icon, the title under its name.
-            .pl(px(indent + 4.))
+            // The status sits under the item's icon, the title under its name.
+            .pl(px(indent + 2.))
             .pr(px(10.))
             .flex()
             .items_center()
-            .gap(px(14.))
+            .gap(px(11.))
             .rounded(px(8.))
             .cursor_pointer()
             .when(active, |el| el.bg(p.active))
@@ -2168,7 +2175,14 @@ impl Workspace {
                     this.reconnect(id, window, cx);
                 }
             }))
-            .child(div().w(px(7.)).flex_shrink_0().child(status_indicator(Some(&session.status), p)))
+            .child(
+                div()
+                    .w(px(12.))
+                    .flex_shrink_0()
+                    .flex()
+                    .justify_center()
+                    .child(status_indicator(Some(&session.status), session.busy, p)),
+            )
             .child(
                 div()
                     .flex_1()
@@ -2720,11 +2734,18 @@ impl Workspace {
     }
 }
 
-/// A segmented control: one choice of several.
+/// The sign that output is streaming in.
+fn activity_icon(p: AppPalette) -> AnyElement {
+    div().flex_shrink_0().child(icon_el("activity", 12., p.success)).into_any_element()
+}
+
 /// A Session's state in the sidebar: a dot while live (green) or connecting (amber), a hollow
-/// ring once it dropped.
-fn status_indicator(status: Option<&Status>, p: AppPalette) -> AnyElement {
+/// ring once it dropped, and a pulse line while output is streaming in (a command at work).
+/// The pulse line doesn't move: an animation would redraw the whole window every frame for as
+/// long as `tail -f` runs.
+fn status_indicator(status: Option<&Status>, busy: bool, p: AppPalette) -> AnyElement {
     match status {
+        Some(Status::Connected) if busy => activity_icon(p),
         Some(Status::Connected) => status_dot(p.success).into_any_element(),
         Some(Status::Connecting) => status_dot(p.warning).into_any_element(),
         Some(Status::Disconnected(_)) => {
@@ -2743,6 +2764,7 @@ fn session_title(session: &SessionEntry) -> SharedString {
     if useless { format!("Session {}", session.number).into() } else { title.to_string().into() }
 }
 
+/// A segmented control: one choice of several.
 fn segmented<L: Into<SharedString> + Clone>(
     id: &'static str,
     options: &[(L, bool)],

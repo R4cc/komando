@@ -18,6 +18,10 @@ All notable changes to Komando are listed here. The format follows
   sidebar" for the ones you don't use (Command Prompt, say), remove them, or add your own with a
   name, program and arguments, such as WSL or Git Bash. Hidden shells are still found by quick
   connect. "Restore detected shells" brings back the ones found on this PC.
+- The sidebar shows which sessions have a command at work: while output keeps coming in, such
+  as from `tree /`, `tail -f`, a build or `top`, the session's dot turns into a green pulse
+  line, on its group and on a folded project too. It goes back to a dot a few seconds after the
+  output stops. Typing and quick commands like `ls` don't trigger it.
 - Right-click in the terminal for a menu: Copy, Paste, Paste selection (types the selected
   text at the prompt), Select all, and Copy output or Copy as .txt for the whole output. With
   the PuTTY-style clipboard on, right-click still pastes and Ctrl+right-click opens the menu.

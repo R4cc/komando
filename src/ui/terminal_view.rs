@@ -3,7 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::grid::{Dimensions as _, Scroll};
 use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
@@ -45,6 +45,61 @@ const PADDING_Y: f32 = 8.0;
 const RAIL_STEP: f32 = 8.0;
 /// How long a row stays lit after jumping to it.
 const FLASH: Duration = Duration::from_millis(1400);
+/// Output this soon after a key press is its echo (or the prompt it brings back), not a command
+/// at work.
+const ECHO: Duration = Duration::from_millis(500);
+/// Output that pauses longer than this has stopped. Long enough for programs that redraw
+/// every few seconds (`top` every 3, `watch` every 2) to count as running throughout.
+const ACTIVITY_GAP: Duration = Duration::from_secs(4);
+/// Output has to keep coming this long before the Session counts as busy, so a quick `ls`
+/// doesn't flash the sidebar.
+const ACTIVITY_SUSTAIN: Duration = Duration::from_secs(1);
+const ACTIVITY_CHECK: Duration = Duration::from_millis(250);
+
+/// When output came in, and when the user last typed, to tell a command at work from echo.
+#[derive(Default)]
+struct Activity {
+    last_input: Option<Instant>,
+    /// When the current stretch of output began.
+    since: Option<Instant>,
+    last_output: Option<Instant>,
+}
+
+impl Activity {
+    /// The user typed. Unless a command is already at work, what came before belongs to the
+    /// last command: count afresh, so two quick commands in a row don't add up to one busy one.
+    fn input(&mut self, now: Instant) {
+        self.last_input = Some(now);
+        if !self.busy(now) {
+            self.since = None;
+            self.last_output = None;
+        }
+    }
+
+    fn output(&mut self, now: Instant) {
+        if self.last_input.is_some_and(|t| now.duration_since(t) < ECHO) {
+            return;
+        }
+        if self.settled(now) {
+            self.since = Some(now);
+        }
+        self.last_output = Some(now);
+    }
+
+    /// No output for a while: nothing is going on.
+    fn settled(&self, now: Instant) -> bool {
+        !self.last_output.is_some_and(|t| now.duration_since(t) < ACTIVITY_GAP)
+    }
+
+    /// Output has kept coming for a while (not one burst) and hasn't stopped.
+    fn busy(&self, now: Instant) -> bool {
+        let lasted = match (self.since, self.last_output) {
+            (Some(since), Some(last)) => last.duration_since(since),
+            _ => Duration::ZERO,
+        };
+        !self.settled(now) && lasted >= ACTIVITY_SUSTAIN
+    }
+}
 /// How often the Scrollback moves while a selection is held above or below the terminal.
 const AUTOSCROLL_TICK: Duration = Duration::from_millis(40);
 /// Most lines it moves per tick, when the pointer is far from the terminal.
@@ -107,6 +162,12 @@ enum ActivePrompt {
 
 pub struct TerminalView {
     pub title: SharedString,
+    /// Output keeps coming in without anyone typing: a command at work (`tree /`, `tail -f`,
+    /// a build). Shown in the sidebar.
+    pub busy: bool,
+    activity: Activity,
+    /// A task is checking `activity` until the output settles.
+    activity_watch: bool,
     /// The name the tab started with; programs that reset their title get it back.
     base_title: SharedString,
     pub status: Status,
@@ -191,6 +252,9 @@ impl TerminalView {
             origin: Rc::new(Cell::new(point(px(0.), px(0.)))),
             cell: Rc::new(Cell::new((8.0, 18.0))),
             prompt: None,
+            busy: false,
+            activity: Activity::default(),
+            activity_watch: false,
             selecting: false,
             drag_at: None,
             autoscrolling: false,
@@ -299,6 +363,9 @@ impl TerminalView {
             SessionEvent::Wakeup => {
                 crate::perf::count("session wakeup");
                 self.proxy.clear_dirty();
+                if self.status == Status::Connected {
+                    self.note_output(cx);
+                }
                 if self.marks.is_pending() {
                     self.marks.output(&mut *self.term.lock());
                 } else {
@@ -488,8 +555,42 @@ impl TerminalView {
 
     fn write(&mut self, bytes: Vec<u8>) {
         if let Some(sink) = &self.sink {
+            self.activity.input(Instant::now());
             sink.write(bytes);
         }
+    }
+
+    /// Output arrived: note it, and keep `busy` up to date until the output settles.
+    fn note_output(&mut self, cx: &mut Context<Self>) {
+        self.activity.output(Instant::now());
+        if self.activity_watch {
+            return;
+        }
+        self.activity_watch = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(ACTIVITY_CHECK).await;
+                let go_on = this
+                    .update(cx, |this, cx| {
+                        let now = Instant::now();
+                        let busy = this.activity.busy(now) && this.status == Status::Connected;
+                        if busy != this.busy {
+                            this.busy = busy;
+                            cx.emit(TerminalEvent::Changed);
+                        }
+                        let settled = this.activity.settled(now);
+                        if settled {
+                            this.activity_watch = false;
+                        }
+                        !settled
+                    })
+                    .unwrap_or(false);
+                if !go_on {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn scroll_to_bottom(&self) {
@@ -1967,8 +2068,76 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::{RowTextMetrics, asks_for_secret};
+    use super::{Activity, RowTextMetrics, asks_for_secret};
     use gpui::px;
+    use std::time::{Duration, Instant};
+
+    /// Output every `every` ms from `from` to `to` (ms after `t0`).
+    fn stream(a: &mut Activity, t0: Instant, from: u64, to: u64, every: u64) {
+        for ms in (from..=to).step_by(every as usize) {
+            a.output(t0 + Duration::from_millis(ms));
+        }
+    }
+
+    #[test]
+    fn steady_output_is_busy_after_a_second_and_stops_after_a_pause() {
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        let mut a = Activity::default();
+        a.input(t0); // Enter on `tree /`
+        stream(&mut a, t0, 20, 1400, 20);
+        // Output in the first half second is the command's echo; the stretch starts after it.
+        assert!(!a.busy(at(1400)));
+        stream(&mut a, t0, 1420, 3000, 20);
+        assert!(a.busy(at(1600)));
+        assert!(a.busy(at(3000)));
+        // The output ends: still busy across a short pause, not after a long one.
+        assert!(a.busy(at(6500)));
+        assert!(!a.busy(at(7100)));
+        assert!(a.settled(at(7100)));
+    }
+
+    #[test]
+    fn a_quick_command_and_typing_are_not_activity() {
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        let mut a = Activity::default();
+        // `ls`: Enter, then a burst of output within a fraction of a second.
+        a.input(t0);
+        stream(&mut a, t0, 600, 700, 10);
+        assert!(!a.busy(at(800)) && !a.busy(at(1500)) && !a.busy(at(3000)));
+        // Typing: each key's echo comes right after it.
+        let mut a = Activity::default();
+        for ms in (0..5000).step_by(150) {
+            a.input(at(ms));
+            a.output(at(ms + 40));
+        }
+        assert!(!a.busy(at(5000)));
+        assert!(a.settled(at(5000)));
+    }
+
+    #[test]
+    fn a_followed_log_stays_busy_while_lines_keep_coming() {
+        let t0 = Instant::now();
+        // Two quick commands, each output arriving a little after its Enter (a slow server).
+        let mut a = Activity::default();
+        a.input(t0);
+        stream(&mut a, t0, 600, 700, 50);
+        a.input(t0 + Duration::from_millis(2000));
+        stream(&mut a, t0, 2600, 2700, 50);
+        assert!(!a.busy(t0 + Duration::from_millis(2800)));
+        // A busy session stays busy while the user types.
+        let mut a = Activity::default();
+        stream(&mut a, t0, 0, 3000, 100);
+        a.input(t0 + Duration::from_millis(3000));
+        assert!(a.busy(t0 + Duration::from_millis(3100)));
+
+        let mut a = Activity::default();
+        // `top`: a redraw every 3 s.
+        stream(&mut a, t0, 0, 9000, 3000);
+        assert!(a.busy(t0 + Duration::from_millis(9500)));
+        assert!(a.busy(t0 + Duration::from_millis(11500)));
+    }
 
     #[test]
     fn terminal_text_stays_centered_in_cursor_row_with_signed_descent() {
