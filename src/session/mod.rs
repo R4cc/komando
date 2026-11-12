@@ -35,8 +35,9 @@ pub enum SessionEvent {
     Prompt(Prompt),
     /// Progress on the way to the Host: `index` is the hop (Jump Hosts first, the Host last).
     Hop { index: usize, step: HopStep },
-    /// Authentication with a typed-in password worked; offer to save it for that hop's Host.
-    OfferSave { password: String, hop: usize },
+    /// Signed in to hop `hop` with something typed in and ticked "Remember": save it for
+    /// that hop's Host.
+    Remember { hop: usize, what: Remembered },
     /// A program asked to put text on the clipboard (OSC 52).
     ClipboardStore(String),
 }
@@ -66,7 +67,27 @@ pub enum Prompt {
     /// The Host Key differs from the trusted one. Shown as a blocking warning.
     HostKeyChanged { fingerprint: String },
     /// Ask for text (user name) or a secret (password, key passphrase). `None` cancels.
-    Input { label: String, secret: bool, error: Option<String>, reply: oneshot::Sender<Option<String>> },
+    /// `remember` shows a "Remember for this host" checkbox, ticked or not; `None` hides it.
+    Input {
+        label: String,
+        secret: bool,
+        remember: Option<bool>,
+        error: Option<String>,
+        reply: oneshot::Sender<Option<Answer>>,
+    },
+}
+
+/// What was typed into an Input prompt, and whether to remember it for the Host.
+pub struct Answer {
+    pub value: String,
+    pub remember: bool,
+}
+
+/// A typed-in sign-in detail to save for a Host.
+#[derive(Clone)]
+pub enum Remembered {
+    User(String),
+    Password(String),
 }
 
 /// Where keyboard input for a Session goes.

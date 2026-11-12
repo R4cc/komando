@@ -27,11 +27,12 @@ use crate::keys::{self, MouseAction, MouseMode, Mods};
 use crate::marks::Marks;
 use crate::ui::connect_route::{self, ConnectRoute, RouteCard};
 use crate::session::{
-    EventProxy, GridSize, InputSink, Prompt, SessionEvent, SharedTerm, Status, new_term, scrollback_text,
+    Answer, EventProxy, GridSize, InputSink, Prompt, Remembered, SessionEvent, SharedTerm, Status, new_term,
+    scrollback_text,
 };
 use crate::theme::{Appearance, UI_FONT, alpha, rgb_to_hsla};
 use crate::ui::box_drawing::{self, Prim};
-use crate::ui::widgets::{button, ButtonKind};
+use crate::ui::widgets::{button, icon_el, ButtonKind};
 
 actions!(terminal, [Copy, Paste, ScrollPageUp, ScrollPageDown]);
 
@@ -74,9 +75,9 @@ fn asks_for_secret(line: &str) -> bool {
 pub enum TerminalEvent {
     /// Status or title changed: refresh the sidebar.
     Changed,
-    /// Save a typed password for the Host of hop `hop` (0 is the first Jump Host, or the Host
-    /// itself when there are none), or for its Project.
-    SavePassword { password: String, as_project: bool, hop: usize },
+    /// Save a typed user name or password for the Host of hop `hop` (0 is the first Jump
+    /// Host, or the Host itself when there are none).
+    Remember { hop: usize, what: Remembered },
     Reconnect,
     /// Open the host form for the Host of hop `hop`.
     EditHost { hop: usize },
@@ -85,8 +86,14 @@ pub enum TerminalEvent {
 enum ActivePrompt {
     HostKey { fingerprint: String, algorithm: String, reply: Option<oneshot::Sender<bool>> },
     HostKeyChanged { fingerprint: String },
-    Input { label: String, error: Option<String>, input: Entity<InputState>, reply: Option<oneshot::Sender<Option<String>>> },
-    OfferSave { password: String, hop: usize },
+    Input {
+        label: String,
+        error: Option<String>,
+        input: Entity<InputState>,
+        /// The "Remember for this host" checkbox, when shown.
+        remember: Option<bool>,
+        reply: Option<oneshot::Sender<Option<Answer>>>,
+    },
     ConfirmPaste { text: String, lines: usize },
 }
 
@@ -112,8 +119,6 @@ pub struct TerminalView {
     scroll_remainder: f32,
     /// Focus as last reported to the program (DECSET 1004).
     focus_reported: Option<bool>,
-    /// Per hop: whether a typed password can be saved as its Project's password.
-    save_as_project: Vec<bool>,
     /// While connecting through Jump Hosts: the route page.
     route: Option<ConnectRoute>,
     startup: StartupCommands,
@@ -179,7 +184,6 @@ impl TerminalView {
             mouse_cell: None,
             scroll_remainder: 0.,
             focus_reported: None,
-            save_as_project: vec![],
             route: None,
             startup: StartupCommands::default(),
             confirm_multiline_paste: true,
@@ -220,12 +224,10 @@ impl TerminalView {
         self.grid.get().unwrap_or(GridSize { cols: 120, rows: 36, cell_width: 8, cell_height: 18 })
     }
 
-    /// Get ready for a new connection: the route page if it goes through Jump Hosts, which
-    /// hops may save a typed password for their Project, and the Startup Commands to type
-    /// once the shell is open.
-    pub fn begin_connect(&mut self, route: Option<Vec<RouteCard>>, save_as_project: Vec<bool>, startup: Vec<String>) {
+    /// Get ready for a new connection: the route page if it goes through Jump Hosts, and the
+    /// Startup Commands to type once the shell is open.
+    pub fn begin_connect(&mut self, route: Option<Vec<RouteCard>>, startup: Vec<String>) {
         self.route = route.map(ConnectRoute::new);
-        self.save_as_project = save_as_project;
         self.startup = StartupCommands { queue: startup.into(), ..StartupCommands::default() };
     }
 
@@ -330,10 +332,7 @@ impl TerminalView {
                 }
             }
             SessionEvent::Prompt(prompt) => self.show_prompt(prompt, window, cx),
-            SessionEvent::OfferSave { password, hop } => {
-                self.prompt = Some(ActivePrompt::OfferSave { password, hop });
-                cx.notify();
-            }
+            SessionEvent::Remember { hop, what } => cx.emit(TerminalEvent::Remember { hop, what }),
             SessionEvent::ClipboardStore(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
         }
     }
@@ -344,7 +343,7 @@ impl TerminalView {
                 ActivePrompt::HostKey { fingerprint, algorithm, reply: Some(reply) }
             }
             Prompt::HostKeyChanged { fingerprint } => ActivePrompt::HostKeyChanged { fingerprint },
-            Prompt::Input { label, secret, error, reply } => {
+            Prompt::Input { label, secret, remember, error, reply } => {
                 let input = cx.new(|cx| InputState::new(window, cx).masked(secret).placeholder(label.clone()));
                 let sub = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
                     if let InputEvent::PressEnter { .. } = event {
@@ -353,7 +352,7 @@ impl TerminalView {
                 });
                 self._subscriptions.push(sub);
                 input.update(cx, |state, cx| state.focus(window, cx));
-                ActivePrompt::Input { label, error, input, reply: Some(reply) }
+                ActivePrompt::Input { label, error, input, remember, reply: Some(reply) }
             }
         });
         cx.notify();
@@ -372,13 +371,23 @@ impl TerminalView {
     }
 
     fn answer_input(&mut self, submit: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ActivePrompt::Input { input, reply, .. }) = self.prompt.as_mut() {
+        if let Some(ActivePrompt::Input { input, remember, reply, .. }) = self.prompt.as_mut() {
             let value = input.read(cx).value().to_string();
+            let remember = remember.unwrap_or(false);
             if let Some(reply) = reply.take() {
-                let _ = reply.send(submit.then_some(value));
+                let _ = reply.send(submit.then_some(Answer { value, remember }));
             }
             self.prompt = None;
             window.focus(&self.focus, cx);
+            cx.notify();
+        }
+    }
+
+    fn toggle_remember(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ActivePrompt::Input { input, remember: Some(remember), .. }) = self.prompt.as_mut() {
+            *remember = !*remember;
+            // Keep typing in the field after ticking the box.
+            input.update(cx, |state, cx| state.focus(window, cx));
             cx.notify();
         }
     }
@@ -899,7 +908,7 @@ impl TerminalView {
                 .occlude()
                 .rounded(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
                 .flex()
-                .items_end()
+                .items_center()
                 .justify_center()
                 .p(px(24.))
                 .bg(alpha(0x000000, if p.dark { 0.28 } else { 0.10 }))
@@ -999,7 +1008,7 @@ impl TerminalView {
                     .on_click(cx.listener(|this, _, window, cx| this.dismiss(window, cx)))
                     .into_any_element()],
             ),
-            ActivePrompt::Input { label, error, input, .. } => card(
+            ActivePrompt::Input { label, error, input, remember, .. } => card(
                 label,
                 div()
                     .flex()
@@ -1008,6 +1017,31 @@ impl TerminalView {
                     .child(Input::new(input))
                     .when_some(error.clone(), |el, error| {
                         el.child(div().text_size(px(12.)).text_color(p.danger).child(error))
+                    })
+                    .when_some(*remember, |el, ticked| {
+                        el.child(
+                            div()
+                                .id("in-remember")
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .mt(px(2.))
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, window, cx| this.toggle_remember(window, cx)))
+                                .child(
+                                    div()
+                                        .size(px(16.))
+                                        .rounded(px(4.))
+                                        .border_1()
+                                        .border_color(if ticked { p.brand } else { p.border })
+                                        .when(ticked, |el| el.bg(p.brand))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .when(ticked, |el| el.child(icon_el("check", 11., p.on_brand))),
+                                )
+                                .child(div().text_size(px(13.)).text_color(p.text).child("Remember for this host")),
+                        )
                     })
                     .into_any_element(),
                 vec![
@@ -1019,34 +1053,6 @@ impl TerminalView {
                         .into_any_element(),
                 ],
             ),
-            ActivePrompt::OfferSave { hop, .. } => {
-                let mut actions = vec![
-                    button("sv-no", "Not now", ButtonKind::Ghost, p)
-                        .on_click(cx.listener(|this, _, window, cx| this.dismiss(window, cx)))
-                        .into_any_element(),
-                ];
-                if self.save_as_project.get(*hop).copied().unwrap_or(false) {
-                    actions.push(
-                        button("sv-project", "As project password", ButtonKind::Secondary, p)
-                            .on_click(cx.listener(|this, _, window, cx| this.save_password(true, window, cx)))
-                            .into_any_element(),
-                    );
-                }
-                actions.push(
-                    button("sv-host", "Save for this host", ButtonKind::Primary, p)
-                        .on_click(cx.listener(|this, _, window, cx| this.save_password(false, window, cx)))
-                        .into_any_element(),
-                );
-                let title = match self.route.as_ref().and_then(|r| r.hop_name(*hop)) {
-                    Some(name) => format!("Save the password for {name}?"),
-                    None => "Save this password?".to_string(),
-                };
-                card(
-                    &title,
-                    text("It is stored encrypted in your vault and filled in automatically next time.".into()),
-                    actions,
-                )
-            }
             ActivePrompt::ConfirmPaste { lines, .. } => card(
                 &format!("Paste {lines} lines?"),
                 text("Each line may run as a separate command on this machine.".into()),
@@ -1066,13 +1072,6 @@ impl TerminalView {
             ),
         };
         Some(element)
-    }
-
-    fn save_password(&mut self, as_project: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ActivePrompt::OfferSave { password, hop }) = self.prompt.take() {
-            cx.emit(TerminalEvent::SavePassword { password, as_project, hop });
-        }
-        self.dismiss(window, cx);
     }
 
     fn render_disconnected(&self, cx: &Context<Self>) -> Option<gpui::AnyElement> {
@@ -1144,6 +1143,28 @@ struct CursorSnap {
     shape: CursorShape,
     wide: bool,
     color: Rgb,
+}
+
+/// Vertical text positions within a terminal row, shared by glyphs and decorations.
+struct RowTextMetrics {
+    baseline: Pixels,
+    underline_y: Pixels,
+    strike_y: Pixels,
+}
+
+impl RowTextMetrics {
+    fn new(line_h: Pixels, ascent: Pixels, descent: Pixels) -> Self {
+        // GPUI's Windows backend returns a signed descent below the baseline.
+        // Row layout needs its magnitude, otherwise text shifts down relative
+        // to the cell backgrounds and cursor, and underlines move above it.
+        let descent = descent.abs();
+        let padding_top = (line_h - ascent - descent) / 2.;
+        Self {
+            baseline: padding_top + ascent,
+            underline_y: padding_top + ascent + descent * 0.618,
+            strike_y: padding_top + ascent * 0.65,
+        }
+    }
 }
 
 /// Everything a row needs to be laid out, shared by all rows of a frame.
@@ -1599,7 +1620,7 @@ impl Render for TerminalView {
 
                 let ascent = text_system.ascent(font_id, font_size);
                 let descent = text_system.descent(font_id, font_size);
-                let padding_top = (line_h - ascent - descent) / 2.;
+                let metrics = RowTextMetrics::new(line_h, ascent, descent);
                 let bold = |mut f: gpui::Font| {
                     f.weight = FontWeight::BOLD;
                     f
@@ -1618,9 +1639,9 @@ impl Render for TerminalView {
                     cell_w,
                     line_h,
                     scale: window.scale_factor(),
-                    baseline: padding_top + ascent,
-                    underline_y: padding_top + ascent + descent * 0.618,
-                    strike_y: padding_top + ascent * 0.65,
+                    baseline: metrics.baseline,
+                    underline_y: metrics.underline_y,
+                    strike_y: metrics.strike_y,
                     highlighter: highlight.then_some(&*highlighter),
                     dark: palette.dark,
                     default_bg: palette.background,
@@ -1740,7 +1761,31 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::asks_for_secret;
+    use super::{RowTextMetrics, asks_for_secret};
+    use gpui::px;
+
+    #[test]
+    fn terminal_text_stays_centered_in_cursor_row_with_signed_descent() {
+        // Windows DirectWrite reports a negative descent. Other backends may
+        // report a positive distance. Both must place text in the same row.
+        for line_h in [18., 24., 36.] {
+            let ascent = px(line_h * 0.7);
+            let depth = px(line_h * 0.2);
+            for descent in [depth, -depth] {
+                let metrics = RowTextMetrics::new(px(line_h), ascent, descent);
+                let top_gap = metrics.baseline - ascent;
+                let bottom_gap = px(line_h) - metrics.baseline - depth;
+                assert!(
+                    f32::from(top_gap - bottom_gap).abs() < 0.001,
+                    "text must be centered within the cursor row: top={top_gap:?}, bottom={bottom_gap:?}, descent={descent:?}"
+                );
+                assert!(metrics.underline_y > metrics.baseline);
+                assert!(metrics.underline_y < px(line_h));
+                assert!(metrics.strike_y > top_gap);
+                assert!(metrics.strike_y < metrics.baseline);
+            }
+        }
+    }
 
     #[test]
     fn startup_commands_wait_at_password_questions() {

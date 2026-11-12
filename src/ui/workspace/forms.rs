@@ -108,10 +108,10 @@ impl Workspace {
         let host = editing.as_deref().and_then(|id| self.library.host(id)).cloned();
         let h = host.clone().unwrap_or_else(|| Host::new("", ""));
         let port = if h.port == 22 { String::new() } else { h.port.to_string() };
-        let name = self.form_input("e.g. web01", &h.name, true, window, cx);
-        let address = self.form_input("e.g. 10.0.4.21 or web01.example.com", &h.address, true, window, cx);
+        let name = self.form_input("", &h.name, true, window, cx);
+        let address = self.form_input("", &h.address, true, window, cx);
         let port = self.form_input("22", &port, true, window, cx);
-        let user = self.form_input("e.g. deploy", h.user.own().map_or("", |u| u.as_str()), true, window, cx);
+        let user = self.form_input("", h.user.own().map_or("", |u| u.as_str()), true, window, cx);
         let key_path = self.form_input(r"C:\Users\you\.ssh\id_ed25519", "", true, window, cx);
         let commands = commands_field(&lines(&h.startup_commands), window, cx);
         name.update(cx, |f, cx| f.focus(window, cx));
@@ -580,8 +580,8 @@ impl Workspace {
     fn open_project_form(&mut self, editing: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let project = editing.as_deref().and_then(|id| self.library.project(id)).cloned();
         let pr = project.clone().unwrap_or_else(|| Project::new("", "blue", "folder"));
-        let name = self.form_input("Project name, e.g. Atlas Production", &pr.name, true, window, cx);
-        let default_user = self.form_input("e.g. deploy", pr.default_user.as_deref().unwrap_or(""), true, window, cx);
+        let name = self.form_input("", &pr.name, true, window, cx);
+        let default_user = self.form_input("", pr.default_user.as_deref().unwrap_or(""), true, window, cx);
         let key_path = self.form_input(r"C:\Users\you\.ssh\id_ed25519", "", true, window, cx);
         let commands = commands_field(&lines(&pr.startup_commands), window, cx);
         name.update(cx, |f, cx| f.focus(window, cx));
@@ -786,7 +786,6 @@ fn commands_field(value: &str, window: &mut Window, cx: &mut Context<Workspace>)
     cx.new(|cx| {
         TextareaState::new(window, cx)
             .auto_grow(2, 8)
-            .placeholder("e.g. cd /srv/app\nsudo -i")
             .default_value(value)
     })
 }

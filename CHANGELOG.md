@@ -6,6 +6,24 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- When connecting asks for a user name or password, the question has a "Remember for this host"
+  checkbox. Tick it and, once you are signed in, Komando saves the user name with the host and
+  the password in your vault. This replaces the "Save the password?" question that came after
+  signing in.
+- Connection questions (user name, password, host key) appear in the middle of the terminal
+  instead of at the bottom.
+- The "SSH" tag in front of each connection-progress line is muted grey text instead of a
+  bright inverted block.
+- The host and project forms no longer fill empty fields with examples ("e.g. deploy",
+  "e.g. web01", …); the field labels say what goes where. The icon search reads "Search icons".
+
+### Fixed
+
+- Terminal text aligns vertically with the cursor on Windows, including when starting a new console.
+- Window buttons no longer show ghosted icons behind them when the Mica background is enabled.
+
 ## [0.2.3] - 2026-11-12
 
 ### Added

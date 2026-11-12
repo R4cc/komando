@@ -181,7 +181,7 @@ enum ConfirmAction {
 
 enum Pending {
     Open { project_id: String, host_id: String },
-    Save { session: usize, hop: usize, password: String, as_project: bool },
+    Save { session: usize, hop: usize, password: String },
 }
 
 /// Things to do right after launch. Used by development tooling (screenshots, demos);
@@ -590,9 +590,7 @@ impl Workspace {
                 self.last_activity = Instant::now();
                 match self.pending.take() {
                     Some(Pending::Open { project_id, host_id }) => self.open_host(&project_id, &host_id, window, cx),
-                    Some(Pending::Save { session, hop, password, as_project }) => {
-                        self.save_password(session, hop, password, as_project, cx)
-                    }
+                    Some(Pending::Save { session, hop, password }) => self.save_password(session, hop, password, cx),
                     None => self.focus_active(window, cx),
                 }
             }
@@ -747,14 +745,17 @@ impl Workspace {
                 }
                 cx.notify();
             }
-            TerminalEvent::SavePassword { password, as_project, hop } => {
-                if this.vault.is_some() {
-                    this.save_password(id, *hop, password.clone(), *as_project, cx);
-                } else {
-                    this.pending = Some(Pending::Save { session: id, hop: *hop, password: password.clone(), as_project: *as_project });
-                    this.show_unlock(false, window, cx);
+            TerminalEvent::Remember { hop, what } => match what {
+                session::Remembered::User(user) => this.save_user(id, *hop, user.clone(), cx),
+                session::Remembered::Password(password) => {
+                    if this.vault.is_some() {
+                        this.save_password(id, *hop, password.clone(), cx);
+                    } else {
+                        this.pending = Some(Pending::Save { session: id, hop: *hop, password: password.clone() });
+                        this.show_unlock(false, window, cx);
+                    }
                 }
-            }
+            },
             TerminalEvent::Reconnect => this.reconnect(id, window, cx),
             TerminalEvent::EditHost { hop } => {
                 if let Some((project_id, host_id)) = this.hop_host(id, *hop) {
@@ -819,7 +820,7 @@ impl Workspace {
         };
         let sink = match kind {
             SessionKind::Local { shell } => {
-                view.update(cx, |v, _| v.begin_connect(None, vec![], vec![]));
+                view.update(cx, |v, _| v.begin_connect(None, vec![]));
                 match session::local::spawn(shell, size, term, proxy.clone()) {
                     Ok(sink) => {
                         proxy.send(session::SessionEvent::Status(Status::Connected));
@@ -841,9 +842,8 @@ impl Workspace {
                     None => return,
                 };
                 let cards = (route.len() > 1).then(|| route.iter().map(route_card).collect());
-                let save_as_project = route.iter().map(|hop| hop.credential_source != CredentialSource::Off).collect();
                 let startup = route.last().map(|target| target.startup_commands.clone()).unwrap_or_default();
-                view.update(cx, |v, _| v.begin_connect(cards, save_as_project, startup));
+                view.update(cx, |v, _| v.begin_connect(cards, startup));
                 let hops = route
                     .into_iter()
                     .map(|hop| ssh::Hop {
@@ -1019,28 +1019,30 @@ impl Workspace {
 
     // ---- passwords & output -----------------------------------------------------------
 
-    /// Save a password typed for one hop of a Session: for that hop's Host, or its Project.
-    fn save_password(&mut self, session_id: usize, hop: usize, password: String, as_project: bool, cx: &mut Context<Self>) {
+    /// Save a user name typed for one hop of a Session as that hop's Host's own.
+    fn save_user(&mut self, session_id: usize, hop: usize, user: String, cx: &mut Context<Self>) {
+        let Some((_, host_id)) = self.hop_host(session_id, hop) else { return };
+        let Some(host) = self.library.hosts.iter_mut().find(|h| h.id == host_id) else { return };
+        host.user = model::Inherited::Own(user);
+        match self.library.save(&self.data_dir) {
+            Ok(_) => self.show_toast("User name saved for this host.", cx),
+            Err(err) => self.show_toast(format!("Could not save: {err}"), cx),
+        }
+    }
+
+    /// Save a password typed for one hop of a Session for that hop's Host.
+    fn save_password(&mut self, session_id: usize, hop: usize, password: String, cx: &mut Context<Self>) {
         let Some((project_id, host_id)) = self.hop_host(session_id, hop) else { return };
         let Some(resolved) = self.library.resolve(&project_id, &host_id) else { return };
         let Some(vault) = self.vault.as_mut() else { return };
-        let project_name = self.library.project(&project_id).map(|p| p.name.clone()).unwrap_or_default();
-        let label = if as_project {
-            format!("{project_name} project password")
-        } else {
-            format!("{}@{}", resolved.user.clone().unwrap_or_default(), resolved.name)
-        };
+        let label = format!("{}@{}", resolved.user.clone().unwrap_or_default(), resolved.name);
         let credential = Credential { label, secret: Secret::Password { password } };
 
-        // Replace the secret in place when the target already has a Credential, so every
+        // Replace the secret in place when the Host already has its own Credential, so every
         // Host sharing it picks up the new password.
-        let existing = if as_project {
-            self.library.project(&project_id).and_then(|p| p.credential.clone())
-        } else {
-            match resolved.credential_source {
-                CredentialSource::Host => resolved.credential.clone(),
-                _ => None,
-            }
+        let existing = match resolved.credential_source {
+            CredentialSource::Host => resolved.credential.clone(),
+            _ => None,
         };
         let result = match existing {
             Some(id) => vault.replace(&id, credential).map(|_| id),
@@ -1048,11 +1050,7 @@ impl Workspace {
         };
         match result {
             Ok(cred_id) => {
-                if as_project {
-                    if let Some(p) = self.library.projects.iter_mut().find(|p| p.id == project_id) {
-                        p.credential = Some(cred_id);
-                    }
-                } else if let Some(h) = self.library.hosts.iter_mut().find(|h| h.id == host_id) {
+                if let Some(h) = self.library.hosts.iter_mut().find(|h| h.id == host_id) {
                     h.credential = model::Inherited::Own(cred_id);
                 }
                 let _ = self.library.save(&self.data_dir);
@@ -1141,7 +1139,7 @@ impl Workspace {
 
     /// The search box of a form's icon picker.
     fn new_icon_query(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
-        let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search icons, e.g. database, cloud, git"));
+        let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search icons"));
         let sub = cx.subscribe_in(&query, window, |_, _, event: &InputEvent, _, cx| {
             if let InputEvent::Change = event {
                 cx.notify();
@@ -2673,6 +2671,10 @@ fn window_controls(p: AppPalette, window: &Window) -> impl IntoElement {
         .flex()
         .h_full()
         .flex_shrink_0()
+        // DWM also draws native caption glyphs beneath our controls when Mica's
+        // glass frame is extended into the client area. Cover them completely;
+        // the translucent canvas would otherwise show a second set of icons.
+        .when(cfg!(windows), |el| el.bg(Hsla { a: 1., ..p.canvas }))
         .child(button("window-minimize", "window-minimize", WindowControlArea::Min, false))
         .child(if maximized {
             button("window-restore", "window-restore", WindowControlArea::Max, false)

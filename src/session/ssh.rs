@@ -21,7 +21,7 @@ use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertific
 use russh::{ChannelMsg, Disconnect, Pty};
 use tokio::sync::mpsc;
 
-use super::{EventProxy, GridSize, HopStep, InputSink, Prompt, SessionEvent, SharedTerm, Status};
+use super::{Answer, EventProxy, GridSize, HopStep, InputSink, Prompt, Remembered, SessionEvent, SharedTerm, Status};
 use crate::vault::Secret;
 
 pub enum Command {
@@ -79,8 +79,8 @@ impl ConnectLog {
     }
 }
 
-/// One log line as terminal output: an inverted " SSH " tag, a marker coloured by `kind`, and
-/// the text. Plain ANSI colours, so it follows the terminal theme.
+/// One log line as terminal output: a muted "SSH" tag, a marker coloured by `kind`, and the
+/// text. Plain ANSI colours, so it follows the terminal theme.
 fn log_line(kind: LogKind, text: &str) -> String {
     let (color, mark) = match kind {
         LogKind::Step => ("2", "·"),
@@ -90,7 +90,7 @@ fn log_line(kind: LogKind, text: &str) -> String {
     };
     // Control characters from a server or a Host's name must not drive the terminal.
     let text: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-    format!("\x1b[0m\x1b[7m SSH \x1b[0m \x1b[{color}m{mark}\x1b[0m {text}\x1b[0m\r\n")
+    format!("\x1b[0m\x1b[90mSSH\x1b[0m \x1b[{color}m{mark}\x1b[0m {text}\x1b[0m\r\n")
 }
 
 /// `name (address:port)`, or just `address:port` when the name is the address.
@@ -208,9 +208,9 @@ impl client::Handler for Client {
     }
 }
 
-async fn ask(proxy: &EventProxy, label: &str, secret: bool, error: Option<String>) -> Option<String> {
+async fn ask(proxy: &EventProxy, label: &str, secret: bool, remember: Option<bool>, error: Option<String>) -> Option<Answer> {
     let (reply, answer) = oneshot::channel();
-    proxy.send(SessionEvent::Prompt(Prompt::Input { label: label.into(), secret, error, reply }));
+    proxy.send(SessionEvent::Prompt(Prompt::Input { label: label.into(), secret, remember, error, reply }));
     answer.await.ok().flatten()
 }
 
@@ -264,18 +264,27 @@ async fn run(
                     .map_err(|_| timed_out())??
             }
         };
-        let user = match hop.user.clone() {
-            Some(user) => user,
+        let (user, remember_user) = match hop.user.clone() {
+            Some(user) => (user, false),
             None => {
                 log.line(LogKind::Step, "No user name saved for this host: waiting for one");
-                ask(&proxy, &format!("User name for {}", hop.name), false, None)
+                let answer = ask(&proxy, &format!("User name for {}", hop.name), false, Some(false), None)
                     .await
-                    .ok_or_else(|| anyhow!("Cancelled."))?
+                    .ok_or_else(|| anyhow!("Cancelled."))?;
+                (answer.value, answer.remember)
             }
         };
         proxy.send(SessionEvent::Hop { index, step: HopStep::SigningIn });
-        authenticate(&mut handle, &user, hop.secret.as_ref(), &proxy, &log, index).await?;
+        // Saved only once it signed in, so a mistyped user name is not remembered. Before the
+        // password, so the password's vault entry is labelled with it.
+        let remember_password = authenticate(&mut handle, &user, hop.secret.as_ref(), &proxy, &log).await?;
         log.line(LogKind::Good, &format!("Signed in to {} as {user}", hop.name));
+        if remember_user {
+            proxy.send(SessionEvent::Remember { hop: index, what: Remembered::User(user.clone()) });
+        }
+        if let Some(password) = remember_password {
+            proxy.send(SessionEvent::Remember { hop: index, what: Remembered::Password(password) });
+        }
         proxy.send(SessionEvent::Hop { index, step: HopStep::Done });
         handles.push(handle);
     }
@@ -436,8 +445,7 @@ async fn authenticate(
     secret: Option<&Secret>,
     proxy: &EventProxy,
     log: &ConnectLog,
-    hop: usize,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let mut last_error = None;
     match secret {
         Some(Secret::PrivateKey { key, passphrase }) => {
@@ -445,8 +453,8 @@ async fn authenticate(
             let decoded = match russh::keys::decode_secret_key(key, passphrase.as_deref()) {
                 Ok(decoded) => Ok(decoded),
                 Err(_) if passphrase.is_none() => {
-                    let pass = ask(proxy, "Key passphrase", true, None).await.ok_or_else(|| anyhow!("Cancelled."))?;
-                    russh::keys::decode_secret_key(key, Some(&pass))
+                    let pass = ask(proxy, "Key passphrase", true, None, None).await.ok_or_else(|| anyhow!("Cancelled."))?;
+                    russh::keys::decode_secret_key(key, Some(&pass.value))
                 }
                 Err(err) => Err(err),
             };
@@ -457,7 +465,7 @@ async fn authenticate(
                         .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(private_key), hash))
                         .await?;
                     if matches!(result, AuthResult::Success) {
-                        return Ok(());
+                        return Ok(None);
                     }
                     last_error = Some("The server rejected the saved key.".to_string());
                 }
@@ -467,7 +475,7 @@ async fn authenticate(
         Some(Secret::Password { password }) => {
             log.line(LogKind::Step, &format!("Signing in as {user} with the saved password"));
             if matches!(handle.authenticate_password(user, password.as_str()).await?, AuthResult::Success) {
-                return Ok(());
+                return Ok(None);
             }
             last_error = Some("The saved password was rejected.".to_string());
         }
@@ -478,15 +486,17 @@ async fn authenticate(
     }
     log.line(LogKind::Step, &format!("Signing in as {user} with a password: waiting for it"));
 
-    // Fall back to asking. A typed password that works is offered for saving.
+    // Fall back to asking. A typed password that works is returned when "Remember" was
+    // ticked, for saving; the tick carries over to the next try.
+    let mut remember = false;
     for _ in 0..3 {
         let label = format!("Password for {user}");
-        let Some(password) = ask(proxy, &label, true, last_error.take()).await else {
+        let Some(answer) = ask(proxy, &label, true, Some(remember), last_error.take()).await else {
             return Err(anyhow!("Cancelled."));
         };
-        if matches!(handle.authenticate_password(user, password.as_str()).await?, AuthResult::Success) {
-            proxy.send(SessionEvent::OfferSave { password, hop });
-            return Ok(());
+        remember = answer.remember;
+        if matches!(handle.authenticate_password(user, answer.value.as_str()).await?, AuthResult::Success) {
+            return Ok(remember.then_some(answer.value));
         }
         log.line(LogKind::Warn, "Wrong password");
         last_error = Some("Wrong password. Try again.".to_string());
@@ -501,7 +511,7 @@ mod tests {
     #[test]
     fn log_lines_are_tagged_and_end_the_line() {
         let line = log_line(LogKind::Good, "Signed in to web01 as ana");
-        assert!(line.contains(" SSH "));
+        assert!(line.starts_with("\x1b[0m\x1b[90mSSH\x1b[0m "));
         assert!(line.contains("✓"));
         assert!(line.ends_with("Signed in to web01 as ana\x1b[0m\r\n"));
     }
