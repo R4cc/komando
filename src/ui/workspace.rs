@@ -72,7 +72,11 @@ impl Render for SftpDivider {
     }
 }
 /// Height of Komando's own title bar (and of its window buttons).
-const TITLE_BAR_HEIGHT: f32 = 36.;
+const TITLE_BAR_HEIGHT: f32 = 40.;
+/// The window buttons' rounded shapes, and the room between them.
+const WINDOW_BUTTON_WIDTH: f32 = 36.;
+const WINDOW_BUTTON_HEIGHT: f32 = 28.;
+const WINDOW_BUTTON_GAP: f32 = 2.;
 
 /// Window width from which the host and project forms use two columns side by side: the
 /// wide form plus a margin each side. Narrower, they stack in one.
@@ -2371,7 +2375,7 @@ impl Workspace {
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.close_session(id, window, cx))),
                 )
                 // Room between the session's actions and the window buttons.
-                .child(div().w(px(16.)).h(px(16.)).mr(px(8.)).border_r_1().border_color(p.border))
+                .child(div().w(px(12.)).h(px(16.)).mr(px(6.)).border_r_1().border_color(p.border))
                 .into_any_element(),
         )
     }
@@ -3039,22 +3043,35 @@ fn modal(p: AppPalette, body: AnyElement) -> AnyElement {
         .into_any_element()
 }
 
-/// Minimise, maximise/restore and close, in the size and order Windows uses. On Windows the
-/// buttons are hit-tested by the system (snap layouts on maximise work); elsewhere (Linux dev
-/// builds) they act on click.
+/// Minimise, maximise/restore and close, in the order Windows uses, drawn like the rest of
+/// Komando: rounded buttons that sit inside the title bar with room around them, instead of
+/// squares that fill it and run into the terminal's coloured edge below. The close button's
+/// right edge lines up with the terminal island's.
+///
+/// Each button's hit area is still the full height of the bar, and the close button's reaches
+/// the window's corner, so flicking the pointer to the top-right corner of a maximised window
+/// still hits it. On Windows the buttons are hit-tested by the system (snap layouts on
+/// maximise work); elsewhere (Linux dev builds) they act on click.
 fn window_controls(p: AppPalette, window: &Window) -> impl IntoElement {
     let maximized = window.is_maximized();
-    let button = |id: &'static str, icon: &'static str, area: WindowControlArea, close: bool| {
-        let (hover_bg, hover_fg) = if close { (crate::theme::hex(0xc42b1c), gpui::white()) } else { (p.hover, p.text) };
+    let button = |id: &'static str, icon: &'static str, area: WindowControlArea, label: &'static str| {
+        let close = area == WindowControlArea::Close;
+        let (hover_bg, hover_fg, press_bg) = if close {
+            (crate::theme::hex(0xc42b1c), gpui::white(), crate::theme::hex(0xa82518))
+        } else {
+            (p.hover, p.text, p.active)
+        };
         div()
             .id(id)
             .group(id)
-            .w(px(46.))
+            .role(gpui::Role::Button)
+            .aria_label(label)
             .h_full()
             .flex()
             .items_center()
-            .justify_center()
-            .hover(move |s| s.bg(hover_bg))
+            .pl(px(WINDOW_BUTTON_GAP))
+            // The last button's hit area runs on to the window's edge.
+            .when(close, |el| el.pr(px(ISLAND_GAP)))
             // The button's hitbox hides the title bar's drag area behind it. Without this the
             // system hit test can answer "caption" for a button (seen after maximising with a
             // dialog open): a click then does nothing and only a double click acts.
@@ -3068,11 +3085,23 @@ fn window_controls(p: AppPalette, window: &Window) -> impl IntoElement {
                 })
             })
             .child(
-                gpui::svg()
-                    .path(SharedString::from(format!("icons/{icon}.svg")))
-                    .size(px(14.))
-                    .text_color(p.text_muted)
-                    .group_hover(id, move |s| s.text_color(hover_fg)),
+                div()
+                    .id("shape")
+                    .w(px(WINDOW_BUTTON_WIDTH))
+                    .h(px(WINDOW_BUTTON_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(8.))
+                    .group_hover(id, move |s| s.bg(hover_bg))
+                    .group_active(id, move |s| s.bg(press_bg))
+                    .child(
+                        gpui::svg()
+                            .path(SharedString::from(format!("icons/{icon}.svg")))
+                            .size(px(13.))
+                            .text_color(p.text_muted)
+                            .group_hover(id, move |s| s.text_color(hover_fg)),
+                    ),
             )
     };
     div()
@@ -3083,13 +3112,13 @@ fn window_controls(p: AppPalette, window: &Window) -> impl IntoElement {
         // glass frame is extended into the client area. Cover them completely;
         // the translucent canvas would otherwise show a second set of icons.
         .when(cfg!(windows), |el| el.bg(Hsla { a: 1., ..p.canvas }))
-        .child(button("window-minimize", "window-minimize", WindowControlArea::Min, false))
+        .child(button("window-minimize", "window-minimize", WindowControlArea::Min, "Minimize"))
         .child(if maximized {
-            button("window-restore", "window-restore", WindowControlArea::Max, false)
+            button("window-restore", "window-restore", WindowControlArea::Max, "Restore")
         } else {
-            button("window-maximize", "window-maximize", WindowControlArea::Max, false)
+            button("window-maximize", "window-maximize", WindowControlArea::Max, "Maximize")
         })
-        .child(button("window-close", "window-close", WindowControlArea::Close, true))
+        .child(button("window-close", "window-close", WindowControlArea::Close, "Close"))
 }
 
 /// A context-menu entry that runs `run` on the Workspace.
@@ -3116,11 +3145,11 @@ fn strip_action(id: &'static str, icon: &str, label: &'static str, danger: bool,
         .aria_label(label)
         .tab_index(0)
         .focus_visible(move |s| s.border_2().border_color(p.brand))
-        .size(px(22.))
+        .size(px(26.))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(6.))
+        .rounded(px(7.))
         .cursor_pointer()
         .hover(move |s| s.bg(hover_bg))
         .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))

@@ -30,6 +30,10 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- The window buttons (minimize, maximize, close) are rounded like the rest of Komando and sit
+  inside a slightly taller title bar, with room between them and the terminal's coloured top
+  edge; the close button's red no longer runs into it. The close button lines up with the
+  terminal's right edge, and the window's top-right corner still closes a maximized window.
 - The vault's auto-lock goes up to 7 days: 5, 15 or 30 minutes, 1 or 8 hours, 1 day, 7 days,
   or "Until restart", which keeps it unlocked until you close Komando. "Until restart" is the
   default for new installs; existing installs keep their current setting (30 minutes unless you
