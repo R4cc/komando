@@ -6,6 +6,19 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A download icon beside Settings at the bottom of the sidebar appears when an update is
+  available. Hover for the new version and release highlights; click to download, install
+  and restart Komando. The icon shows download progress and keeps update errors in reach.
+
+### Changed
+
+- In-app updates reopen Komando automatically after installation, for portable copies and
+  MSI installs. Installed copies keep their per-user or all-users scope; Windows asks for
+  administrator approval when needed. If installation fails or is cancelled, Komando reopens
+  with an explanation. Updating closes open sessions.
+
 ### Fixed
 
 - Update downloads use a fresh installer filename for each attempt, avoiding "Access is

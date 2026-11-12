@@ -38,6 +38,9 @@ jobs:
         run: cargo build --locked
       - name: Test
         run: cargo test --lib --locked
+      - name: Test update handoff
+        shell: powershell
+        run: ./packaging/test-update.ps1
       # The installer is otherwise only built for a release; building it from the debug program
       # here catches mistakes in packaging/ before then.
       - name: Install WiX

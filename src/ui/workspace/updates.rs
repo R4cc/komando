@@ -1,4 +1,4 @@
-//! Updates in Settings → About: check GitHub for a newer release, download it and install it.
+//! Updates in the sidebar footer and Settings → About.
 //! The work itself is in `crate::update`; this is the state the page shows.
 
 use std::sync::Arc;
@@ -44,8 +44,8 @@ impl Workspace {
         .detach();
     }
 
-    /// Download the available release and install it: swap the program file of a portable
-    /// copy (then offer a restart), or run the installer and quit so it can replace us.
+    /// Download, install and restart from one click. A Windows helper finishes an MSI
+    /// installation after this process has exited, then reopens the program.
     pub(super) fn install_update(&mut self, cx: &mut Context<Self>) {
         let UpdateState::Available(release) = &self.update else { return };
         let release = release.clone();
@@ -69,11 +69,13 @@ impl Workspace {
         cx.notify();
 
         let progress = done.clone();
+        let data_dir = self.data_dir.clone();
         let task = cx.background_spawn(async move {
             update::download(&asset, &dest, progress)?;
             match &kind {
                 InstallKind::Portable { exe } => update::replace_exe(exe, &dest)?,
-                _ => update::run_installer(&dest)?,
+                InstallKind::Installer { all_users } => update::run_installer(&dest, *all_users, &data_dir)?,
+                InstallKind::Unsupported => anyhow::bail!("Updates install on Windows only."),
             }
             anyhow::Ok(kind)
         });
@@ -98,9 +100,9 @@ impl Workspace {
             let _ = this.update(cx, |this, cx| match result {
                 Ok(InstallKind::Portable { .. }) => {
                     this.update = UpdateState::Ready(release);
-                    cx.notify();
+                    this.restart_for_update(cx);
                 }
-                // The installer is running and needs our files: quit.
+                // The helper is ready and waiting for this process to quit.
                 Ok(_) => cx.quit(),
                 Err(err) => {
                     this.update = UpdateState::Failed(format!("{err:#}"));
@@ -123,8 +125,153 @@ impl Workspace {
         }
     }
 
-    pub(super) fn update_available(&self) -> bool {
-        matches!(self.update, UpdateState::Available(_) | UpdateState::Ready(_))
+    /// A compact update action beside Settings. The footprint stays fixed while downloading.
+    pub(super) fn render_update_button(&self, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (icon, label, downloading) = match &self.update {
+            UpdateState::Available(release) => ("download", format!("Update to Komando {} and restart", release.version_text()), false),
+            UpdateState::Downloading { .. } => ("download", "Downloading update".into(), true),
+            UpdateState::Ready(_) => ("rotate-cw", "Restart to finish updating Komando".into(), false),
+            UpdateState::Failed(_) => ("circle-alert", "Update failed. Open update settings".into(), false),
+            _ => return None,
+        };
+        let color = if matches!(self.update, UpdateState::Failed(_)) { p.danger } else { p.brand };
+        let owner = cx.entity().downgrade();
+        Some(
+            div()
+                .id("sidebar-update")
+                .role(gpui::Role::Button)
+                .aria_label(label)
+                .tab_index(if downloading { -1 } else { 0 })
+                .focus_visible(move |s| s.border_2().border_color(p.brand))
+                .relative()
+                .size(px(32.))
+                .flex_shrink_0()
+                .rounded(px(8.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(if matches!(self.update, UpdateState::Failed(_)) { p.danger.opacity(0.10) } else { p.brand_soft })
+                .when(!downloading, |el| el.cursor_pointer().hover(|s| s.bg(p.active)))
+                .child(icon_el(icon, 16., color))
+                .when_some(self.download_fraction(), |el, fraction| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .bottom(px(3.))
+                            .left(px(5.))
+                            .w(px(22.))
+                            .h(px(2.))
+                            .rounded_full()
+                            .bg(p.active)
+                            .child(div().h_full().rounded_full().bg(p.brand).w(gpui::relative(fraction))),
+                    )
+                })
+                .tooltip(move |window, cx| {
+                    let owner = owner.clone();
+                    Tooltip::element(move |_, cx| {
+                        owner.upgrade().map(|this| this.read(cx).render_update_tooltip(p)).unwrap_or_else(|| div().into_any_element())
+                    })
+                    .bg(p.surface)
+                    .border_color(p.border)
+                    .p(px(14.))
+                    .rounded(px(12.))
+                    .build(window, cx)
+                })
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.activate_update_button(window, cx)))
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                        this.activate_update_button(window, cx);
+                    }
+                }))
+                .into_any_element(),
+        )
+    }
+
+    fn activate_update_button(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match &self.update {
+            UpdateState::Available(release) if update::install_kind() == InstallKind::Unsupported => cx.open_url(&release.url),
+            UpdateState::Available(_) => self.install_update(cx),
+            UpdateState::Ready(_) => self.restart_for_update(cx),
+            UpdateState::Failed(_) => self.open_settings(SettingsSection::About, window, cx),
+            _ => {}
+        }
+    }
+
+    fn download_fraction(&self) -> Option<f32> {
+        match &self.update {
+            UpdateState::Downloading { done, total, .. } if *total > 0 => {
+                Some(done.load(Ordering::Relaxed).min(*total) as f32 / *total as f32)
+            }
+            _ => None,
+        }
+    }
+
+    fn render_update_tooltip(&self, p: AppPalette) -> AnyElement {
+        let (major, minor, patch) = update::current_version();
+        let (title, detail, action, release) = match &self.update {
+            UpdateState::Available(release) => (
+                format!("Komando {} is available", release.version_text()),
+                format!("You have {major}.{minor}.{patch}"),
+                "Click to update and restart. Open sessions will close.",
+                Some(release),
+            ),
+            UpdateState::Downloading { release, .. } => (
+                format!("Downloading Komando {}", release.version_text()),
+                format!("{}% downloaded", (self.download_fraction().unwrap_or(0.) * 100.).round() as u32),
+                "Komando will install the update and restart automatically.",
+                None,
+            ),
+            UpdateState::Ready(release) => (
+                format!("Komando {} is ready", release.version_text()),
+                "The download has been checked and installed.".into(),
+                "Click to restart Komando. Open sessions will close.",
+                None,
+            ),
+            UpdateState::Failed(message) => {
+                ("The update didn't finish".into(), message.clone(), "Click to review the error and try again.", None)
+            }
+            _ => return div().into_any_element(),
+        };
+        div()
+            .w(px(300.))
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .font_family(UI_FONT)
+            .text_size(px(12.))
+            .line_height(px(17.))
+            .text_color(p.text_muted)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
+                    .child(div().child(detail)),
+            )
+            .when_some(release, |el, release| {
+                let notes = release.highlights();
+                el.when(!notes.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.))
+                            .child(div().text_color(p.text).font_weight(FontWeight::MEDIUM).child("What's new"))
+                            .children(notes.into_iter().map(|note| {
+                                div()
+                                    .flex()
+                                    .gap(px(8.))
+                                    .child(div().flex_shrink_0().text_color(p.text_faint).child("•"))
+                                    .child(div().flex_1().min_w_0().line_clamp(3).text_ellipsis().child(note))
+                            }))
+                            .child(div().text_size(px(11.)).text_color(p.text_faint).child("Full release notes in Settings → About.")),
+                    )
+                })
+            })
+            .child(div().pt(px(10.)).border_t_1().border_color(p.border).text_size(px(11.)).child(action))
+            .into_any_element()
     }
 
     /// The Updates group on the About page.
@@ -156,12 +303,14 @@ impl Workspace {
             UpdateState::Available(release) => {
                 let kind = update::install_kind();
                 let how = match kind {
-                    InstallKind::Portable { .. } => "Komando downloads it, checks it and swaps it in; a restart finishes the update.",
+                    InstallKind::Portable { .. } => {
+                        "Komando downloads and checks the update, installs it and restarts automatically. Open sessions close."
+                    }
                     InstallKind::Installer { all_users: true } => {
-                        "Komando downloads the installer and starts it. Windows asks for administrator rights, then the installer replaces this version and Komando closes."
+                        "Windows asks for administrator rights. Komando closes, installs the update and reopens automatically. Open sessions close."
                     }
                     InstallKind::Installer { all_users: false } => {
-                        "Komando downloads the installer and starts it. The installer replaces this version and Komando closes."
+                        "Komando downloads and checks the update, closes to install it and reopens automatically. Open sessions close."
                     }
                     InstallKind::Unsupported => "Updates install on Windows only.",
                 };
@@ -171,7 +320,7 @@ impl Workspace {
                         .on_click(move |_, _, cx| cx.open_url(&url))
                         .into_any_element()
                 } else {
-                    button("update-install", "Download and install", ButtonKind::Primary, p)
+                    button("update-install", "Update and restart", ButtonKind::Primary, p)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.install_update(cx)))
                         .into_any_element()
                 };

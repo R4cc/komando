@@ -71,6 +71,8 @@ pub struct Release {
     pub tag: String,
     /// The release page, for "What's new".
     pub url: String,
+    /// Release notes as published on GitHub. Displayed as plain text in the update tooltip.
+    pub notes: String,
     /// The portable program.
     pub exe: Option<Asset>,
     /// The installer.
@@ -86,12 +88,52 @@ impl Release {
         let (a, b, c) = self.version;
         format!("{a}.{b}.{c}")
     }
+
+    /// A few bounded, plain-text highlights for the sidebar tooltip. Wrapped Markdown
+    /// bullets are joined; headings and GitHub's comparison-link preamble are omitted.
+    pub fn highlights(&self) -> Vec<String> {
+        let mut bullets: Vec<String> = Vec::new();
+        let mut in_bullet = false;
+        for line in self.notes.lines() {
+            let line = line.trim();
+            if let Some(item) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")).or_else(|| line.strip_prefix("+ ")) {
+                bullets.push(item.to_string());
+                in_bullet = true;
+            } else if line.is_empty() || line.starts_with('#') {
+                in_bullet = false;
+            } else if in_bullet && let Some(last) = bullets.last_mut() {
+                last.push(' ');
+                last.push_str(line);
+            }
+        }
+        // Some releases have prose instead of a list.
+        if bullets.is_empty() {
+            bullets.extend(self.notes.lines().map(str::trim).filter(|s| !s.is_empty() && !s.starts_with('#')).take(2).map(str::to_owned));
+        }
+        static LINKS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let links = LINKS.get_or_init(|| regex::Regex::new(r"\[([^\]]+)\]\([^)]+\)").unwrap());
+        bullets
+            .into_iter()
+            .take(3)
+            .map(|text| {
+                let text = links.replace_all(&text, "$1").replace(['`', '*'], "");
+                let mut chars = text.chars().filter(|c| !c.is_control());
+                let mut short: String = chars.by_ref().take(180).collect();
+                if chars.next().is_some() {
+                    short.push('…');
+                }
+                short
+            })
+            .collect()
+    }
 }
 
 #[derive(Deserialize)]
 struct ApiRelease {
     tag_name: String,
     html_url: String,
+    #[serde(default)]
+    body: Option<String>,
     #[serde(default)]
     draft: bool,
     #[serde(default)]
@@ -145,7 +187,14 @@ fn parse_release(release: ApiRelease) -> Result<Release> {
             .or_else(|| release.assets.iter().find(|asset| asset.name == plain))
             .cloned()
     };
-    Ok(Release { version, tag: release.tag_name.clone(), url: release.html_url.clone(), exe: pick("exe"), msi: pick("msi") })
+    Ok(Release {
+        version,
+        tag: release.tag_name.clone(),
+        url: release.html_url.clone(),
+        notes: release.body.clone().unwrap_or_default(),
+        exe: pick("exe"),
+        msi: pick("msi"),
+    })
 }
 
 /// Download `asset` to `dest`, counting bytes into `progress`. The file is written next to
@@ -292,7 +341,7 @@ fn remove_installers(dir: &Path) {
         let name = entry.file_name().to_string_lossy().to_string();
         let stale_file =
             entry.metadata().ok().is_some_and(|meta| meta.is_file() && meta.modified().ok().is_some_and(|modified| modified < cutoff));
-        if stale_file && name.starts_with("Komando-") && (name.ends_with(".msi") || name.ends_with(".part")) {
+        if stale_file && name.starts_with("Komando-") && (name.ends_with(".msi") || name.ends_with(".part") || name.ends_with(".ready")) {
             let _ = fs::remove_file(entry.path());
         }
     }
@@ -317,11 +366,64 @@ pub fn download_path(kind: &InstallKind, release: &Release) -> PathBuf {
     }
 }
 
-/// Start the installer for `msi`. Komando should quit right after, so the installer can
-/// replace its files.
-pub fn run_installer(msi: &Path) -> Result<()> {
-    std::process::Command::new("msiexec").arg("/i").arg(msi).spawn().context("Couldn't start the installer")?;
-    Ok(())
+/// Hand installation to an unelevated helper which waits for us to exit, runs the MSI
+/// (elevating only that process when necessary), then reopens Komando as the original user.
+pub fn run_installer(msi: &Path, all_users: bool, data_dir: &Path) -> Result<()> {
+    #[cfg(windows)]
+    {
+        use base64::Engine as _;
+        use std::os::windows::process::CommandExt;
+        use std::time::Instant;
+
+        let exe = std::env::current_exe().context("Couldn't find Komando to restart it")?;
+        let system_root = std::env::var_os("SystemRoot").context("Couldn't locate Windows")?;
+        let powershell = PathBuf::from(system_root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        let script = include_str!("update-install.ps1");
+        let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let ready = msi.with_extension("ready");
+        let _ = fs::remove_file(&ready);
+        fs::create_dir_all(data_dir).context("Couldn't prepare the update status file")?;
+        let mut child = std::process::Command::new(powershell)
+            .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", &encoded])
+            .env("KOMANDO_UPDATE_MSI", msi)
+            .env("KOMANDO_UPDATE_EXE", exe)
+            .env("KOMANDO_UPDATE_PARENT", std::process::id().to_string())
+            .env("KOMANDO_UPDATE_ALL_USERS", if all_users { "1" } else { "0" })
+            .env("KOMANDO_UPDATE_READY", &ready)
+            .env("KOMANDO_UPDATE_ERROR", data_dir.join("update-error.txt"))
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .spawn()
+            .context("Couldn't start the update helper")?;
+        let started = Instant::now();
+        loop {
+            if ready.is_file() {
+                return Ok(());
+            }
+            if let Some(status) = child.try_wait()? {
+                bail!("The update helper stopped before installation could start ({status}). Komando is still open.");
+            }
+            if started.elapsed() >= Duration::from_secs(15) {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("The update helper did not start in time. Komando is still open; please try again.");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (msi, all_users, data_dir);
+        bail!("Updates install on Windows only.")
+    }
+}
+
+/// An unsuccessful installer handoff reopens the app and leaves its explanation here.
+pub fn take_install_error(data_dir: &Path) -> Option<String> {
+    let path = data_dir.join("update-error.txt");
+    let message = fs::read_to_string(&path).ok()?;
+    let _ = fs::remove_file(path);
+    Some(message)
 }
 
 /// Start the (new) program again. The caller quits.
@@ -426,10 +528,42 @@ mod tests {
         assert!((0, 2, 0) > (0, 1, 99));
     }
 
+    #[test]
+    fn release_notes_preview_joins_wrapped_bullets_and_removes_inline_markdown() {
+        let mut api = api("v9.0.1", &[]);
+        api.body = Some("Changes since 9.0.0.\n\n### Added\n\n- A **sidebar update button**\n  with `progress`.\n- Read the [release notes](https://example.invalid).\n- Third change.\n- Fourth change.\n".into());
+        let release = parse_release(api).unwrap();
+        assert_eq!(release.highlights(), ["A sidebar update button with progress.", "Read the release notes.", "Third change."]);
+    }
+
+    #[test]
+    fn release_notes_preview_handles_null_prose_and_long_unicode() {
+        let mut release = parse_release(api("v9.0.1", &[])).unwrap();
+        assert!(release.highlights().is_empty());
+        release.notes = "## Release\n\nA useful update.".into();
+        assert_eq!(release.highlights(), ["A useful update."]);
+        release.notes = format!("- {}", "界".repeat(300));
+        let preview = release.highlights();
+        assert_eq!(preview[0].chars().count(), 181);
+        assert!(preview[0].ends_with('…'));
+        let api: ApiRelease = serde_json::from_str(r#"{"tag_name":"v9.0.1","html_url":"https://example.invalid","body":null}"#).unwrap();
+        assert!(parse_release(api).unwrap().highlights().is_empty());
+    }
+
+    #[test]
+    fn installer_failures_are_reported_once_on_restart() {
+        let dir = TestDir::new();
+        assert!(take_install_error(&dir.0).is_none());
+        fs::write(dir.0.join("update-error.txt"), "The update was cancelled.").unwrap();
+        assert_eq!(take_install_error(&dir.0).as_deref(), Some("The update was cancelled."));
+        assert!(take_install_error(&dir.0).is_none());
+    }
+
     fn api(tag: &str, assets: &[&str]) -> ApiRelease {
         ApiRelease {
             tag_name: tag.into(),
             html_url: format!("https://github.com/{REPO}/releases/tag/{tag}"),
+            body: None,
             draft: false,
             prerelease: false,
             assets: assets
@@ -476,19 +610,21 @@ mod tests {
     fn cleanup_removes_only_stale_installers_and_keeps_active_downloads() {
         let dir = TestDir::new();
         let old = std::time::SystemTime::now() - Duration::from_secs(8 * 24 * 60 * 60);
-        for name in
-            ["Komando-0.3.0-x64.msi", "Komando-0.3.1-x64-1a2b3c4d.msi", "Komando-0.3.1-x64-1a2b3c4d.part", "other.msi", "Komando.txt"]
-        {
+        for name in [
+            "Komando-0.3.0-x64.msi", "Komando-0.3.1-x64-1a2b3c4d.msi", "Komando-0.3.1-x64-1a2b3c4d.part",
+            "Komando-0.3.1-x64-1a2b3c4d.ready", "other.msi", "Komando.txt",
+        ] {
             fs::File::create(dir.0.join(name)).unwrap().set_modified(old).unwrap();
         }
         // A recently downloaded MSI may be waiting on its setup window, and another
         // running Komando can be writing a .part file when cleanup runs.
         fs::write(dir.0.join("Komando-recent.msi"), "x").unwrap();
         fs::write(dir.0.join("Komando-active.part"), "x").unwrap();
+        fs::write(dir.0.join("Komando-active.ready"), "ready").unwrap();
         remove_installers(&dir.0);
         let mut left: Vec<String> = fs::read_dir(&dir.0).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
         left.sort();
-        assert_eq!(left, ["Komando-active.part", "Komando-recent.msi", "Komando.txt", "other.msi"]);
+        assert_eq!(left, ["Komando-active.part", "Komando-active.ready", "Komando-recent.msi", "Komando.txt", "other.msi"]);
     }
 
     #[test]

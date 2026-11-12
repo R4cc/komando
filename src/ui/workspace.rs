@@ -223,7 +223,7 @@ pub struct Workspace {
     highlight_skipped: Vec<(String, String)>,
     page: Page,
     highlights_expanded: Option<String>,
-    /// Updates from GitHub (Settings → About).
+    /// Updates from GitHub (sidebar footer and Settings → About).
     update: UpdateState,
     /// The sidebar list (virtual: only rows in view are built) and the rows it was built for.
     sidebar_list: ListState,
@@ -294,6 +294,7 @@ impl Workspace {
         let transfers = cx.new(|_| Transfers::new());
         let favorites = cx.new(|_| FavoriteStore::new(data_dir.clone()));
         let transfers_sub = cx.subscribe(&transfers, |_, _, _: &TransfersChanged, cx| cx.notify());
+        let update = crate::update::take_install_error(&data_dir).map(UpdateState::Failed).unwrap_or(UpdateState::Idle);
         let mut this = Self {
             data_dir,
             library,
@@ -326,7 +327,7 @@ impl Workspace {
             toast: None,
             last_activity: Instant::now(),
             focus: cx.focus_handle(),
-            update: UpdateState::Idle,
+            update,
             transfers,
             favorites,
             sftp_resizing: false,
@@ -345,7 +346,7 @@ impl Workspace {
         }
         this.start_auto_lock(window, cx);
         // Look for a new version shortly after start, without getting in the way of it.
-        if this.settings.check_for_updates {
+        if this.settings.check_for_updates && !matches!(this.update, UpdateState::Failed(_)) {
             cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(Duration::from_secs(3)).await;
                 let _ = this.update(cx, |this, cx| this.check_for_updates(true, cx));
@@ -1789,7 +1790,6 @@ impl Workspace {
             .flex_1()
             .min_h_0();
 
-        let update_ready = self.update_available();
         let (show_downloads, attention, downloads_open) = {
             let t = self.transfers.read(cx);
             (t.any(), t.attention(), t.is_open())
@@ -1897,29 +1897,17 @@ impl Workspace {
                         )
                     })
                     .child(
-                        footer_row("settings", "settings", "Settings".into())
-                            .child(div().flex_1())
-                            // A new version: say so here, and open the page that installs it.
-                            .when(update_ready, |el| {
-                                el.child(
-                                    div()
-                                        .px(px(7.))
-                                        .h(px(18.))
-                                        .flex()
-                                        .items_center()
-                                        .rounded_full()
-                                        .bg(p.brand_soft)
-                                        .text_size(px(11.))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(p.brand)
-                                        .child("Update"),
-                                )
-                            })
-                            .when(!update_ready, |el| el.child(kbd("Ctrl ,", p)))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                let section = if update_ready { SettingsSection::About } else { SettingsSection::Appearance };
-                                this.open_settings(section, window, cx)
-                            })),
+                        div().flex().items_center().gap(px(4.))
+                            .child(
+                                footer_row("settings", "settings", "Settings".into())
+                                    .flex_1().min_w_0()
+                                    .child(div().flex_1())
+                                    .child(kbd("Ctrl ,", p))
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                        this.open_settings(SettingsSection::Appearance, window, cx)
+                                    })),
+                            )
+                            .children(self.render_update_button(p, cx)),
                     ),
             )
             .into_any_element()

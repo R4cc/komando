@@ -65,6 +65,9 @@
 - **Themes for dark and light.** Pick a theme for each mode (Ember, Midnight, Forest, Paper, …); the terminal can follow the app or keep its own mode.
 - **Windows 11 Mica blur.** Your blurred wallpaper shows through the window, with the terminal kept readable. Adjustable or off in Settings.
 - **Slim, distraction-free layout.** Just your sidebar, the terminal, and a thin status line.
+- **Updates in one click.** A download icon beside Settings appears when a new version is
+  available. Hover for the version and release highlights; click to download, install and
+  restart. Open sessions close, and Windows asks for admin approval for an all-users install.
 
 ## Keyboard shortcuts
 

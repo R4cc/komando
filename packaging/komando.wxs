@@ -55,6 +55,8 @@
     <!-- Which scope to preselect: the one Komando is already installed in, else "for me only".
          Up to 0.2.2 every install was for all users and left only the HKCU shortcut value. -->
     <Property Id="KOMANDO_SCOPE" Value="perUser" Secure="yes" />
+    <!-- In-app updates pass their existing scope explicitly and skip the setup pages. -->
+    <Property Id="KOMANDO_UPDATING" Secure="yes" />
     <Property Id="KOMANDO_FOUND_MACHINE">
       <RegistrySearch Id="FindMachineInstall" Root="HKLM" Key="Software\Komando" Name="Installed" Type="raw" />
     </Property>
@@ -65,7 +67,7 @@
       <RegistrySearch Id="FindOldInstall" Root="HKCU" Key="Software\Komando" Name="StartMenuShortcut" Type="raw" />
     </Property>
     <SetProperty Id="KOMANDO_SCOPE" Action="KomandoPreselectAllUsers" Value="perMachine" After="AppSearch" Sequence="first"
-                 Condition="KOMANDO_FOUND_MACHINE OR (KOMANDO_FOUND_OLD AND NOT KOMANDO_FOUND_USER)" />
+                 Condition="NOT KOMANDO_UPDATING AND (KOMANDO_FOUND_MACHINE OR (KOMANDO_FOUND_OLD AND NOT KOMANDO_FOUND_USER))" />
     <!-- Also without the setup window (msiexec /qn), so a quiet update stays for all users. -->
     <SetProperty Id="ALLUSERS" Action="KomandoInstallForAllUsers" Value="1" After="KomandoPreselectAllUsers" Sequence="first"
                  Condition="KOMANDO_SCOPE = &quot;perMachine&quot;" />
