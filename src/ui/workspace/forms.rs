@@ -355,7 +355,7 @@ impl Workspace {
                         .items_center()
                         .gap(px(10.))
                         .child(
-                            switch("hf-project-commands".into(), form.run_project_commands, p).on_click(cx.listener(
+                            switch("hf-project-commands".into(), "Run the project's commands first", form.run_project_commands, p).on_click(cx.listener(
                                 |this, _: &ClickEvent, _, cx| {
                                     if let Some(form) = this.host_form() {
                                         form.run_project_commands = !form.run_project_commands;
@@ -387,7 +387,6 @@ impl Workspace {
             wide,
             vec![connection.into_any_element(), sign_in.into_any_element(), icon.into_any_element()],
             vec![route.into_any_element(), commands.into_any_element()],
-            form.error.clone().map(|e| form_error(e, p)),
         );
 
         let ok_label = if form.editing.is_some() { "Save" } else { "Add host" };
@@ -396,7 +395,7 @@ impl Workspace {
             wide,
             form_header(badge(&project_icon, color, 34.).into_any_element(), title, format!("SSH host in {project_name}"), p),
             body,
-            form_footer("hf", ok_label, p, cx),
+            form_footer("hf", ok_label, form.error.as_deref(), p, cx),
         )
     }
 
@@ -658,6 +657,11 @@ impl Workspace {
             let c = project_color(&cname);
             div()
                 .id(SharedString::from(format!("swatch-{cname}")))
+                .role(gpui::Role::RadioButton)
+                .aria_label(format!("Project color: {cname}"))
+                .aria_toggled(if selected { gpui::Toggled::True } else { gpui::Toggled::False })
+                .tab_index(0)
+                .focus_visible(move |s| s.border_2().border_color(p.brand))
                 .size(px(26.))
                 .rounded_full()
                 .p(px(3.))
@@ -763,7 +767,7 @@ impl Workspace {
         } else {
             (vec![project.into_any_element(), defaults.into_any_element(), commands.into_any_element(), icon.into_any_element()], vec![])
         };
-        let body = form_body(wide, left, right, form.error.clone().map(|e| form_error(e, p)));
+        let body = form_body(wide, left, right);
 
         let subtitle = if form.editing.is_some() { "Its settings apply to all its hosts" } else { "A group of hosts that belong together" };
         form_shell(
@@ -771,7 +775,7 @@ impl Workspace {
             wide,
             form_header(badge(&form.icon, color, 34.).into_any_element(), title.into(), subtitle.into(), p),
             body,
-            form_footer("pf", ok_label, p, cx),
+            form_footer("pf", ok_label, form.error.as_deref(), p, cx),
         )
     }
 }
@@ -848,6 +852,9 @@ fn hint_text(text: String, p: AppPalette) -> AnyElement {
 
 fn form_error(message: String, p: AppPalette) -> AnyElement {
     div()
+        .id("form-error")
+        .role(gpui::Role::Alert)
+        .aria_label(message.clone())
         .flex()
         .items_center()
         .gap(px(8.))
@@ -864,6 +871,7 @@ fn form_error(message: String, p: AppPalette) -> AnyElement {
 
 fn form_header(badge: AnyElement, title: String, subtitle: String, p: AppPalette) -> AnyElement {
     div()
+        .flex_shrink_0()
         .px(px(24.))
         .pt(px(22.))
         .pb(px(18.))
@@ -882,15 +890,11 @@ fn form_header(badge: AnyElement, title: String, subtitle: String, p: AppPalette
         .into_any_element()
 }
 
-fn form_footer(id: &'static str, ok_label: &'static str, p: AppPalette, cx: &mut Context<Workspace>) -> AnyElement {
-    div()
-        .px(px(24.))
-        .py(px(14.))
+fn form_footer(id: &'static str, ok_label: &'static str, error: Option<&str>, p: AppPalette, cx: &mut Context<Workspace>) -> AnyElement {
+    let actions = div()
         .flex()
         .items_center()
         .gap(px(8.))
-        .border_t_1()
-        .border_color(p.border)
         .child(div().flex_1().text_size(px(11.5)).text_color(p.text_faint).child("Enter to save · Esc to cancel"))
         .child(
             button((id, 1usize), "Cancel", ButtonKind::Ghost, p)
@@ -899,7 +903,18 @@ fn form_footer(id: &'static str, ok_label: &'static str, p: AppPalette, cx: &mut
         .child(
             button((id, 2usize), ok_label, ButtonKind::Primary, p)
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.submit_form(window, cx))),
-        )
+        );
+    div()
+        .flex_shrink_0()
+        .px(px(24.))
+        .py(px(14.))
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .border_t_1()
+        .border_color(p.border)
+        .children(error.map(|message| form_error(message.to_string(), p)))
+        .child(actions)
         .into_any_element()
 }
 
@@ -908,8 +923,8 @@ pub(super) const WIDE_FORM_WIDTH: f32 = 880.;
 const NARROW_FORM_WIDTH: f32 = 520.;
 
 /// A form's sections: in two columns side by side when `wide`, else `left` then `right` in
-/// one. The error, if any, goes below everything, across the full width.
-fn form_body(wide: bool, left: Vec<AnyElement>, right: Vec<AnyElement>, error: Option<AnyElement>) -> AnyElement {
+/// one. Validation feedback lives in the fixed footer.
+fn form_body(wide: bool, left: Vec<AnyElement>, right: Vec<AnyElement>) -> AnyElement {
     let column = || div().flex().flex_col().gap(px(20.));
     let sections = if wide {
         div()
@@ -921,12 +936,16 @@ fn form_body(wide: bool, left: Vec<AnyElement>, right: Vec<AnyElement>, error: O
     } else {
         column().children(left).children(right)
     };
-    div().flex().flex_col().gap(px(20.)).child(sections).children(error).into_any_element()
+    div().flex().flex_col().gap(px(20.)).child(sections).into_any_element()
 }
 
 /// A form's layout: header and footer stay put, the middle scrolls.
 fn form_shell(id: &'static str, wide: bool, header: AnyElement, body: AnyElement, footer: AnyElement) -> AnyElement {
     div()
+        .id(SharedString::from(format!("{id}-dialog")))
+        .role(gpui::Role::Dialog)
+        .aria_label(if id == "host-form-body" { "Host" } else { "Project" })
+        .tab_group()
         .w(px(if wide { WIDE_FORM_WIDTH } else { NARROW_FORM_WIDTH }))
         .flex_1()
         .min_h_0()

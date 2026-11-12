@@ -6,6 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Validation errors in the Project and Host dialogs stay visible above the action buttons,
+  even when the form needs scrolling.
+- Settings navigation, themes, switches and shared buttons expose their names and states to
+  Windows accessibility tools and can be reached and activated with the keyboard.
+
 ## [0.2.2] - 2026-11-12
 
 ### Changed

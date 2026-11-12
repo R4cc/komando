@@ -150,6 +150,9 @@ impl Workspace {
 
     pub(super) fn render_settings(&self, section: SettingsSection, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let nav = island(p)
+            .id("settings-navigation")
+            .role(gpui::Role::TabList)
+            .aria_label("Settings")
             .w(px(SIDEBAR_WIDTH))
             .h_full()
             .flex_shrink_0()
@@ -160,6 +163,10 @@ impl Workspace {
             .child(
                 div()
                     .id("settings-back")
+                    .role(gpui::Role::Button)
+                    .aria_label("Back to sessions")
+                    .tab_index(0)
+                    .focus_visible(move |s| s.border_2().border_color(p.brand))
                     .h(px(36.))
                     .px(px(8.))
                     .mb(px(6.))
@@ -181,6 +188,11 @@ impl Workspace {
                 let active = s == section;
                 div()
                     .id(SharedString::from(format!("settings-{}", s.label())))
+                    .role(gpui::Role::Tab)
+                    .aria_label(s.label())
+                    .aria_selected(active)
+                    .tab_index(0)
+                    .focus_visible(move |st| st.border_2().border_color(p.brand))
                     .h(px(36.))
                     .px(px(8.))
                     .flex()
@@ -217,6 +229,8 @@ impl Workspace {
         };
         let content = island(p)
             .id("settings-content")
+            .role(gpui::Role::TabPanel)
+            .aria_label(section.label())
             .flex_1()
             .min_w_0()
             .h_full()
@@ -249,6 +263,8 @@ impl Workspace {
             );
 
         div()
+            .id("settings-page")
+            .tab_group()
             .flex_1()
             .min_h_0()
             .w_full()
@@ -320,7 +336,7 @@ impl Workspace {
                         p,
                         "Background blur",
                         blur_hint,
-                        switch("blur-toggle".into(), blur, p)
+                        switch("blur-toggle".into(), "Background blur", blur, p)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_background_blur(!blur, window, cx)))
                             .into_any_element(),
                     ),
@@ -380,6 +396,11 @@ impl Workspace {
                 );
             div()
                 .id(SharedString::from(format!("theme-{}-{id}", if dark { "dark" } else { "light" })))
+                .role(gpui::Role::RadioButton)
+                .aria_label(format!("{} theme: {}", if dark { "Dark" } else { "Light" }, t.name))
+                .aria_toggled(if selected { gpui::Toggled::True } else { gpui::Toggled::False })
+                .tab_index(0)
+                .focus_visible(move |s| s.border_2().border_color(p.brand))
                 .w(px(72.))
                 .flex()
                 .flex_col()
@@ -405,6 +426,9 @@ impl Workspace {
                 )
         });
         div()
+            .id(if dark { "dark-theme-picker" } else { "light-theme-picker" })
+            .role(gpui::Role::RadioGroup)
+            .aria_label(if dark { "Dark theme" } else { "Light theme" })
             .flex()
             .flex_col()
             .gap(px(14.))
@@ -500,7 +524,7 @@ impl Workspace {
                     p,
                     "Confirm multi-line paste",
                     "Ask before pasting more than one line, since each line may run as a command.",
-                    switch("paste-confirm".into(), paste, p)
+                    switch("paste-confirm".into(), "Confirm multi-line paste", paste, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.confirm_multiline_paste = !paste;
                             this.apply_terminal_settings(cx);
@@ -511,7 +535,7 @@ impl Workspace {
                     p,
                     "PuTTY-style clipboard",
                     "Selecting text copies it, right-click pastes.",
-                    switch("putty".into(), putty, p)
+                    switch("putty".into(), "PuTTY-style clipboard", putty, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.putty_clipboard = !putty;
                             this.apply_terminal_settings(cx);
@@ -522,7 +546,7 @@ impl Workspace {
                     p,
                     "Command rail",
                     "A short line at the left edge for each command you entered. Hover one to see the command, click to jump back to it.",
-                    switch("command-rail".into(), rail, p)
+                    switch("command-rail".into(), "Command rail", rail, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.command_rail = !rail;
                             this.apply_terminal_settings(cx);
@@ -533,7 +557,7 @@ impl Workspace {
                     p,
                     "Minimap",
                     "The whole output in miniature on the right edge, coloured like the text. Click or drag it to scroll.",
-                    switch("minimap".into(), minimap, p)
+                    switch("minimap".into(), "Minimap", minimap, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.minimap = !minimap;
                             this.apply_terminal_settings(cx);
@@ -706,6 +730,11 @@ impl Workspace {
             list = list.child(
                 div()
                     .id(SharedString::from(format!("hl-set-{}", set.id)))
+                    .role(gpui::Role::Button)
+                    .aria_label(format!("Highlight set: {}", set.name))
+                    .aria_expanded(open)
+                    .tab_index(0)
+                    .focus_visible(move |s| s.border_2().border_color(p.brand))
                     .h(px(48.))
                     .px(px(10.))
                     .flex()
@@ -736,7 +765,8 @@ impl Workspace {
                             ),
                     )
                     .child(
-                        icon_button(SharedString::from(format!("hl-export-{}", set.id)), "download", p).on_click(cx.listener(
+                        icon_button(SharedString::from(format!("hl-export-{}", set.id)), "download", p)
+                            .aria_label(format!("Export highlight set: {}", set.name)).on_click(cx.listener(
                             move |this, _: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
                                 this.confirm_delete_set = None;
@@ -763,6 +793,7 @@ impl Workspace {
                             .into_any_element()
                     } else {
                         icon_button(SharedString::from(format!("hl-delete-{}", set.id)), "trash", p)
+                            .aria_label(format!("Delete highlight set: {}", set.name))
                             .tooltip(|window, cx| Tooltip::new("Delete set").build(window, cx))
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 cx.stop_propagation();
@@ -771,7 +802,7 @@ impl Workspace {
                             }))
                             .into_any_element()
                     })
-                    .child(switch(SharedString::from(format!("hl-toggle-{}", set.id)), on, p).on_click(cx.listener(
+                    .child(switch(SharedString::from(format!("hl-toggle-{}", set.id)), format!("Enable highlight set: {}", set.name), on, p).on_click(cx.listener(
                         move |this, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
                             this.confirm_delete_set = None;
@@ -839,7 +870,7 @@ impl Workspace {
                                 .child(f)
                         })))
                         .child(
-                            small_switch(SharedString::from(format!("hl-rule-toggle-{}-{index}", set.id)), rule.enabled, p).on_click(
+                            small_switch(SharedString::from(format!("hl-rule-toggle-{}-{index}", set.id)), format!("Enable highlight rule: {}", rule.text), rule.enabled, p).on_click(
                                 cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_highlight_rule(&set_id, index, cx)),
                             ),
                         ),

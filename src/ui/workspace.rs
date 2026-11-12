@@ -1419,6 +1419,7 @@ impl Workspace {
                 .child(section_label("Projects", p))
                 .child(
                     icon_button("new-project", "folder-plus", p)
+                        .aria_label("New project")
                         .size(px(24.))
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_new_project(window, cx))),
                 )
@@ -1578,6 +1579,10 @@ impl Workspace {
         let footer_row = |id: &'static str, icon: &str, label: String| {
             div()
                 .id(id)
+                .role(gpui::Role::Button)
+                .aria_label(label.clone())
+                .tab_index(0)
+                .focus_visible(move |s| s.border_2().border_color(p.brand))
                 .h(px(32.))
                 .px(px(8.))
                 .flex()
@@ -1606,6 +1611,10 @@ impl Workspace {
                     .child(
                         div()
                             .id("quick-connect")
+                            .role(gpui::Role::Button)
+                            .aria_label("Quick connect")
+                            .tab_index(0)
+                            .focus_visible(move |s| s.border_2().border_color(p.brand))
                             .h(px(34.))
                             .px(px(10.))
                             .flex()
@@ -2359,8 +2368,14 @@ fn segmented<L: Into<SharedString> + Clone>(
 ) -> AnyElement {
     let items: Vec<_> = options.iter().enumerate().map(|(i, (label, selected))| {
             let pick = pick.clone();
+            let label: SharedString = label.clone().into();
             div()
                 .id((id, i))
+                .role(gpui::Role::RadioButton)
+                .aria_label(label.clone())
+                .aria_toggled(if *selected { gpui::Toggled::True } else { gpui::Toggled::False })
+                .tab_index(0)
+                .focus_visible(move |s| s.border_2().border_color(p.brand))
                 .h(px(26.))
                 .px(px(10.))
                 .flex()
@@ -2373,10 +2388,13 @@ fn segmented<L: Into<SharedString> + Clone>(
                 .when(*selected, |el| el.bg(p.brand_soft).text_color(p.brand))
                 .when(!*selected, |el| el.hover(|s| s.text_color(p.text)))
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| pick(this, i, window, cx)))
-                .child(label.clone().into())
+                .child(label)
         })
         .collect();
     div()
+        .id(id)
+        .role(gpui::Role::RadioGroup)
+        .aria_label(id.replace('-', " "))
         .flex()
         .flex_shrink_0()
         .p(px(3.))
@@ -2390,23 +2408,28 @@ fn segmented<L: Into<SharedString> + Clone>(
 }
 
 /// An on/off switch, 32×18.
-fn switch(id: SharedString, on: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
-    switch_with(id, on, false, p)
+fn switch(id: SharedString, label: impl Into<SharedString>, on: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+    switch_with(id, label.into(), on, false, p)
 }
 
 /// A smaller, neutral switch for long lists (single highlight rules), so the brand-coloured
 /// switches of the settings that matter more stand out.
-fn small_switch(id: SharedString, on: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
-    switch_with(id, on, true, p)
+fn small_switch(id: SharedString, label: impl Into<SharedString>, on: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+    switch_with(id, label.into(), on, true, p)
 }
 
-fn switch_with(id: SharedString, on: bool, small: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+fn switch_with(id: SharedString, label: SharedString, on: bool, small: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
     let (w, h, knob) = if small { (26., 14., 10.) } else { (32., 18., 14.) };
     // The off track has to be visible on its own, not only through the knob's position.
     let off = if p.dark { alpha(0xffffff, 0.16) } else { alpha(0x000000, 0.2) };
     let on_color = if small { p.text_muted.opacity(0.6) } else { p.brand };
     div()
         .id(id)
+        .role(gpui::Role::Switch)
+        .aria_label(label)
+        .aria_toggled(if on { gpui::Toggled::True } else { gpui::Toggled::False })
+        .tab_index(0)
+        .focus_visible(move |s| s.border_2().border_color(p.brand))
         .w(px(w))
         .h(px(h))
         .flex_shrink_0()
@@ -2522,6 +2545,11 @@ fn icon_picker(
         let tip: SharedString = name.into();
         div()
             .id(SharedString::from(format!("icon-{name}")))
+            .role(gpui::Role::RadioButton)
+            .aria_label(format!("Icon: {name}"))
+            .aria_toggled(if is_selected { gpui::Toggled::True } else { gpui::Toggled::False })
+            .tab_index(0)
+            .focus_visible(move |s| s.border_2().border_color(p.brand))
             .size(px(36.))
             .flex()
             .items_center()
@@ -2674,6 +2702,10 @@ fn strip_action(id: &'static str, icon: &str, label: &'static str, danger: bool,
     div()
         .id(id)
         .group(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .tab_index(0)
+        .focus_visible(move |s| s.border_2().border_color(p.brand))
         .size(px(22.))
         .flex()
         .items_center()

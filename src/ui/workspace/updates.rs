@@ -267,7 +267,7 @@ impl Workspace {
                             .child("Look for a new version when Komando starts. Nothing is downloaded without asking."),
                     ),
             )
-            .child(switch("update-auto".into(), auto, p).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            .child(switch("update-auto".into(), "Check for updates automatically", auto, p).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.settings.check_for_updates = !auto;
                 let _ = this.settings.save(&this.data_dir);
                 cx.notify();

@@ -22,7 +22,8 @@ pub enum ButtonKind {
 
 /// A 32px-high text button. Hit area is the full pill.
 pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: ButtonKind, p: AppPalette) -> Stateful<gpui::Div> {
-    button_shell(id, kind, p).0.child(label.into())
+    let label = label.into();
+    button_shell(id, kind, p).0.aria_label(label.clone()).child(label)
 }
 
 /// A text button with a leading icon, drawn in the label's colour.
@@ -34,7 +35,8 @@ pub fn icon_text_button(
     p: AppPalette,
 ) -> Stateful<gpui::Div> {
     let (el, fg) = button_shell(id, kind, p);
-    el.gap(px(8.)).child(icon_el(icon, 15., fg)).child(label.into())
+    let label = label.into();
+    el.aria_label(label.clone()).gap(px(8.)).child(icon_el(icon, 15., fg)).child(label)
 }
 
 /// A button's pill without its content, and the colour its content is drawn in.
@@ -52,6 +54,9 @@ fn button_shell(id: impl Into<ElementId>, kind: ButtonKind, p: AppPalette) -> (S
     };
     let el = div()
         .id(id)
+        .role(gpui::Role::Button)
+        .tab_index(0)
+        .focus_visible(move |s| s.border_2().border_color(p.brand))
         .h(px(32.))
         .px(px(14.))
         .flex()
@@ -74,6 +79,10 @@ fn button_shell(id: impl Into<ElementId>, kind: ButtonKind, p: AppPalette) -> (S
 pub fn icon_button(id: impl Into<ElementId>, icon: &str, p: AppPalette) -> Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(icon.replace('-', " "))
+        .tab_index(0)
+        .focus_visible(move |s| s.border_2().border_color(p.brand))
         .size(px(30.))
         .flex()
         .items_center()
