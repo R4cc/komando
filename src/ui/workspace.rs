@@ -2384,7 +2384,11 @@ impl Workspace {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .bg(p.canvas)
+            // Mica extends DWM's native caption glyphs into our client area. Cover the
+            // entire title bar uniformly, including glyphs outside our custom hitboxes
+            // at different DPI settings. A cover just behind the buttons leaves a dark
+            // rectangular patch and can expose part of a native glyph beside it.
+            .bg(if cfg!(windows) { p.canvas.opacity(1.) } else { p.canvas })
             // Windows: the bar is the window's caption, so dragging, double-click to maximise
             // and snapping work as with any window. Buttons inside take their clicks.
             .window_control_area(WindowControlArea::Drag)
@@ -3096,10 +3100,6 @@ fn window_controls(p: AppPalette, window: &Window) -> impl IntoElement {
         .flex()
         .h_full()
         .flex_shrink_0()
-        // DWM also draws native caption glyphs beneath our controls when Mica's
-        // glass frame is extended into the client area. Cover them completely;
-        // the translucent canvas would otherwise show a second set of icons.
-        .when(cfg!(windows), |el| el.bg(Hsla { a: 1., ..p.canvas }))
         .child(button("window-minimize", "window-minimize", WindowControlArea::Min, "Minimize"))
         .child(if maximized {
             button("window-restore", "window-restore", WindowControlArea::Max, "Restore")

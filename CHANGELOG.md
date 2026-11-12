@@ -21,10 +21,22 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- The Windows title bar uses one consistent background with Mica enabled, removing the
+  dark rectangle behind the window buttons and covering stray native caption pixels beside
+  them. The rounded hover effects and window actions are unchanged.
 - Update downloads use a fresh installer filename for each attempt, avoiding "Access is
   denied" when Windows still has an earlier installer open. Brief Windows file locks are
   retried, and download errors now name the file operation that failed. Old downloads are
   cleaned up after a week without removing recent downloads another Komando window may need.
+
+## [0.3.1] - 2026-11-12
+
+### Changed
+
+- The minimap stays hidden until you hover at the window's far-right edge for a third of a
+  second. Click or drag it to scroll, then move away to hide it. Selecting text does not
+  open it. Its background hides the output underneath while it is open; terminal columns
+  and line wrapping stay unchanged, even while new output arrives.
 
 ## [0.3.0] - 2026-11-12
 
