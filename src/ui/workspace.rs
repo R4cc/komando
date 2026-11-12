@@ -1732,9 +1732,17 @@ impl Workspace {
                             .text_color(p.text)
                             .child(project.name.clone()),
                     )
-                    // When collapsed, show how many Sessions are live inside.
+                    // When collapsed, show how many Sessions are live inside. It gives way to the
+                    // row's add button while hovered, so the two never sit on top of each other.
                     .when(collapsed && live > 0, |el| {
-                        el.child(div().text_size(px(11.5)).text_color(p.text_faint).child(format!("{live} live")))
+                        el.child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(px(11.5))
+                                .text_color(p.text_faint)
+                                .group_hover("project-row", |s| s.invisible())
+                                .child(format!("{live} live")),
+                        )
                     })
                     .child(
                         div()

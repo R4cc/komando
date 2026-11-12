@@ -31,6 +31,8 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- Hovering a folded project no longer puts its add button on top of the "1 live" count; the
+  count makes way while the pointer is over the row.
 - A new terminal no longer lets you scroll up into a few empty lines above the first output,
   and the minimap stays hidden until there is output to scroll back to. The shell now starts
   at the terminal's real size instead of being resized right after it starts, and empty lines
