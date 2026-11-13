@@ -116,6 +116,21 @@ pub fn download_dir() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
+/// Tag a file as coming from the Internet zone (Mark of the Web) so SmartScreen and Office
+/// treat it like a browser download. Used only for files fetched to be opened directly.
+/// Failing (FAT32, network shares) is not fatal: the file still opens.
+#[cfg(windows)]
+fn mark_from_internet(path: &std::path::Path) {
+    let mut stream = path.as_os_str().to_owned();
+    stream.push(":Zone.Identifier");
+    if let Err(e) = std::fs::write(&stream, "[ZoneTransfer]\r\nZoneId=3\r\n") {
+        log::warn!("could not mark {} as downloaded from the internet: {e}", path.display());
+    }
+}
+
+#[cfg(not(windows))]
+fn mark_from_internet(_path: &std::path::Path) {}
+
 impl Transfers {
     pub fn new() -> Self {
         Self { items: vec![], next_id: 1, open: false, closed_at: None, filter: Filter::All, ticking: false, popup: Popup::default() }
@@ -234,8 +249,13 @@ impl Transfers {
         let job = t.job.clone();
         let task = sftp::spawn(async move {
             match job {
-                Job::Download { remote_path, dir, .. } => {
-                    remote.download(&remote_path, &dir, &progress).await.map(|p| (Some(p), None))
+                Job::Download { remote_path, dir, open_after } => {
+                    let path = remote.download(&remote_path, &dir, &progress).await?;
+                    if open_after {
+                        // Before the file is handed to the system, so Windows warns like a browser download.
+                        mark_from_internet(&path);
+                    }
+                    Ok((Some(path), None))
                 }
                 Job::Upload { local, remote_dir, name, replace } => {
                     remote.upload(&local, &remote_dir, &name, replace, &progress).await.map(|p| (None, Some(p)))
@@ -709,6 +729,21 @@ impl Render for Transfers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn opened_files_get_a_mark_of_the_web() {
+        let dir = std::env::temp_dir().join(format!("komando-motw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("tool.exe");
+        std::fs::write(&file, b"MZ").unwrap();
+        mark_from_internet(&file);
+        let mut stream = file.as_os_str().to_owned();
+        stream.push(":Zone.Identifier");
+        let text = std::fs::read_to_string(&stream).expect("zone stream is readable");
+        assert!(text.contains("[ZoneTransfer]") && text.contains("ZoneId=3"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn progress_combines_the_bytes_of_every_transfer() {
