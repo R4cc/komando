@@ -10,6 +10,11 @@ All notable changes to Komando are listed here. The format follows
 
 - The interface now uses the bundled Geist Sans font, including menus and overlays.
 
+### Fixed
+
+- The logo on the empty-session screen now uses the full theme text color, staying readable
+  on light and dark backgrounds and updating when the theme changes.
+
 ## [0.3.5] - 2026-11-13
 
 ### Added
