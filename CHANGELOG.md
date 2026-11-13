@@ -31,6 +31,23 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- Failed Vault saves leave Credentials as they were before the attempted edit, so an
+  unsuccessful addition, password change or removal cannot take effect in memory or be
+  written by a later save.
+- Folder downloads stop safely when different remote names become the same Windows file
+  or folder name, instead of overwriting a file or merging folders silently.
+- In split view, dragging files from one File Browser into the other no longer moves
+  files with matching paths on the wrong Host.
+- "Keep both" works when uploading into a folder other than the one shown, including
+  files dropped onto a folder row, and avoids numbered filenames already in that folder.
+- Copying or moving files to their own folder works when its path has a trailing slash
+  or `.`. Copies get a numbered name; moves leave the files where they are.
+- Password, Host and Project saves report write failures. Failed Host or Project edits
+  leave the library unchanged, and failed deletions keep the item and its Sessions open.
+- Keys imported by a Host or Project form are cleaned up if the form cannot be saved,
+  so retrying does not leave unused copies in the Vault.
+- Starting a Session uses the last full-width terminal size, avoiding a half-width start
+  after split view or the File Browser has narrowed another terminal.
 - Keyboard shortcut labels (Quick connect, Settings, Back to sessions) sit in the middle
   of their outline instead of touching its top edge.
 - The SFTP, copy and close-session buttons in the title bar respond to every click on

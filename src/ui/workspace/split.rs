@@ -333,7 +333,7 @@ impl Workspace {
         }
         let name = self.library.host(host_id).map(|h| h.name.clone()).unwrap_or_default();
         if let Err(err) = self.commit_library(library) {
-            self.show_toast(format!("Could not move {name}: {err}"), cx);
+            self.show_toast(format!("Could not move {name}. {err}"), cx);
             return;
         }
         let old = ItemKey::Host { project: from.to_string(), host: host_id.to_string() };

@@ -114,7 +114,7 @@ impl Workspace {
         let Some(copy) = library.duplicate_host(&project_id, &host_id) else { return };
         match self.commit_library(library) {
             Ok(()) => self.open_edit_host(project_id, copy, window, cx),
-            Err(err) => self.show_toast(format!("Could not duplicate: {err}"), cx),
+            Err(err) => self.show_toast(format!("Could not duplicate. {err}"), cx),
         }
         cx.notify();
     }
@@ -255,12 +255,21 @@ impl Workspace {
             .map_err(|err| format!("Could not store the key: {err}"))
     }
 
-    /// Save a changed copy of the Library, unless a Host could no longer be reached.
+    /// Save a changed copy of the Library, unless a Host could no longer be reached. It is
+    /// taken only once it is on disk, so a failed write changes nothing.
     pub(super) fn commit_library(&mut self, library: Library) -> Result<(), String> {
         library.check_routes().map_err(|err| err.to_string())?;
+        library.save(&self.data_dir).map_err(|err| format!("Could not save: {err:#}"))?;
         self.library = library;
-        let _ = self.library.save(&self.data_dir);
         Ok(())
+    }
+
+    /// A key file imported for a form that then could not be saved: take it out of the Vault
+    /// again, or every retry would leave another copy no Host uses.
+    fn forget_imported_key(&mut self, id: Option<CredentialId>) {
+        if let (Some(id), Some(vault)) = (id, self.vault.as_mut()) {
+            let _ = vault.remove(&id);
+        }
     }
 
     fn submit_host_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -324,11 +333,16 @@ impl Workspace {
             (form.project_id.clone(), form.editing.clone(), form.sign_in, form.run_project_commands, form.icon.clone());
 
         let mut host = editing.as_deref().and_then(|id| self.library.host(id)).cloned().unwrap_or_else(|| Host::new("", ""));
+        let mut imported = None;
         host.credential = match sign_in {
             SignIn::Project => Inherited::Project,
             SignIn::Saved => host.credential.clone(),
             SignIn::Ask => Inherited::Off,
-            SignIn::KeyFile => Inherited::Own(self.import_key(format!("{name} key"), &key_path)?),
+            SignIn::KeyFile => {
+                let id = self.import_key(format!("{name} key"), &key_path)?;
+                imported = Some(id.clone());
+                Inherited::Own(id)
+            }
         };
         host.name = name;
         host.address = address;
@@ -354,7 +368,11 @@ impl Workspace {
                 library.hosts.push(host);
             }
         }
-        self.commit_library(library)
+        let result = self.commit_library(library);
+        if result.is_err() {
+            self.forget_imported_key(imported);
+        }
+        result
     }
 
     pub(super) fn render_host_form(&self, form: &HostForm, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -672,9 +690,14 @@ impl Workspace {
             .and_then(|id| self.library.project(id))
             .cloned()
             .unwrap_or_else(|| Project::new("", "", ""));
+        let mut imported = None;
         project.credential = match sign_in {
             SignIn::Saved => project.credential.clone(),
-            SignIn::KeyFile => Some(self.import_key(format!("{name} project key"), &key_path)?),
+            SignIn::KeyFile => {
+                let id = self.import_key(format!("{name} project key"), &key_path)?;
+                imported = Some(id.clone());
+                Some(id)
+            }
             SignIn::Ask | SignIn::Project => None,
         };
         project.name = name;
@@ -689,7 +712,11 @@ impl Workspace {
             Some(existing) => *existing = project,
             None => library.projects.push(project),
         }
-        self.commit_library(library)
+        let result = self.commit_library(library);
+        if result.is_err() {
+            self.forget_imported_key(imported);
+        }
+        result
     }
 
     pub(super) fn render_project_form(&self, form: &ProjectForm, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {

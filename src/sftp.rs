@@ -906,10 +906,7 @@ impl Remote {
         tokio::fs::create_dir_all(local_dir).await.map_err(|e| OpError::local(&e, local_dir))?;
         let (target, partial, _) = reserve_local(local_dir, name, true).await?;
         let result = async {
-            for rel in &dirs {
-                let dir = local_rel(&partial, rel);
-                tokio::fs::create_dir_all(&dir).await.map_err(|e| OpError::local(&e, &dir))?;
-            }
+            create_download_dirs(&partial, &dirs).await?;
             let partial = &partial;
             let jobs: Vec<_> = files
                 .iter()
@@ -919,7 +916,7 @@ impl Remote {
                     let remote = join(remote_path, rel);
                     let local = local_rel(partial, rel);
                     let mut input = self.sftp.open(remote.as_str()).await.map_err(|e| OpError::from(e).at(&remote))?;
-                    let mut output = tokio::fs::File::create(&local).await.map_err(|e| OpError::local(&e, &local))?;
+                    let mut output = create_download_file(&local).await?;
                     copy_down(&mut input, &mut output, &remote, &local, progress).await?;
                     // Written and closed before the folder is renamed (Windows can't rename a
                     // folder with an open file in it). Not synced to disk one by one: with
@@ -1158,6 +1155,30 @@ fn local_rel(base: &Path, rel: &str) -> PathBuf {
         path.push(local_file_name(part));
     }
     path
+}
+
+async fn create_download_dirs(base: &Path, dirs: &[String]) -> Result<(), OpError> {
+    // The root is already reserved. Every other directory must be new: remote names
+    // such as "a:b" and "a?b" both become "a_b" on Windows and must never be merged.
+    for rel in dirs.iter().filter(|rel| !rel.is_empty()) {
+        let dir = local_rel(base, rel);
+        tokio::fs::create_dir(&dir).await.map_err(|e| download_local_error(&e, &dir))?;
+    }
+    Ok(())
+}
+
+async fn create_download_file(path: &Path) -> Result<tokio::fs::File, OpError> {
+    // Exclusive creation also catches case-only collisions on Windows. Fail the whole
+    // transfer (whose partial is removed) instead of silently truncating a sibling file.
+    tokio::fs::OpenOptions::new().write(true).create_new(true).open(path).await.map_err(|e| download_local_error(&e, path))
+}
+
+fn download_local_error(err: &std::io::Error, path: &Path) -> OpError {
+    if err.kind() == std::io::ErrorKind::AlreadyExists {
+        OpError::new(ErrorKind::Local, format!("Remote names map to the same Windows path; download cancelled: {}", path.display()))
+    } else {
+        OpError::local(err, path)
+    }
 }
 
 /// Move a finished partial file or folder into place, under a free name if `target` was
@@ -1405,6 +1426,33 @@ mod tests {
         assert_eq!(unique_local_path(&dir, "a.txt"), dir.join("a (1).txt"));
         assert_eq!(partial_path(&dir.join("a.txt")), dir.join(format!("a.txt{PARTIAL_SUFFIX}")));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn folder_download_does_not_overwrite_colliding_file_names() {
+        let dir = std::env::temp_dir().join(format!("komando-sftp-{}", crate::model::new_id()));
+        std::fs::create_dir(&dir).unwrap();
+        let first = local_rel(&dir, "a:b.txt");
+        let second = local_rel(&dir, "a?b.txt");
+        assert_eq!(first, second, "both remote names become the same Windows file name");
+        let mut file = create_download_file(&first).await.unwrap();
+        file.write_all(b"first file").await.unwrap();
+        file.flush().await.unwrap();
+        drop(file);
+        assert!(create_download_file(&second).await.is_err());
+        assert_eq!(std::fs::read(&first).unwrap(), b"first file");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn folder_download_does_not_merge_colliding_directory_names() {
+        let dir = std::env::temp_dir().join(format!("komando-sftp-{}", crate::model::new_id()));
+        std::fs::create_dir(&dir).unwrap();
+        // The root has already been reserved, and parents precede their children.
+        create_download_dirs(&dir, &[String::new(), "a:b".into(), "a:b/nested".into()]).await.unwrap();
+        assert!(dir.join("a_b/nested").is_dir());
+        assert!(create_download_dirs(&dir, &["a?b".into()]).await.is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

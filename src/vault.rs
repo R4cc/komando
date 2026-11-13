@@ -165,23 +165,36 @@ impl Vault {
     pub fn add(&mut self, credential: Credential) -> Result<CredentialId> {
         let id = new_id();
         self.contents.credentials.insert(id.clone(), credential);
-        self.save()?;
+        if let Err(err) = self.save() {
+            self.contents.credentials.remove(&id);
+            return Err(err);
+        }
         Ok(id)
     }
 
     /// Replace the secret of an existing Credential (e.g. after a password change).
     /// Every Host that shares it picks up the new secret.
     pub fn replace(&mut self, id: &str, credential: Credential) -> Result<()> {
-        if !self.contents.credentials.contains_key(id) {
+        let Some(previous) = self.contents.credentials.get_mut(id) else {
             bail!("unknown credential");
+        };
+        let previous = std::mem::replace(previous, credential);
+        if let Err(err) = self.save() {
+            self.contents.credentials.insert(id.to_string(), previous);
+            return Err(err);
         }
-        self.contents.credentials.insert(id.to_string(), credential);
-        self.save()
+        Ok(())
     }
 
     pub fn remove(&mut self, id: &str) -> Result<()> {
-        self.contents.credentials.remove(id);
-        self.save()
+        let previous = self.contents.credentials.remove(id);
+        if let Err(err) = self.save() {
+            if let Some(previous) = previous {
+                self.contents.credentials.insert(id.to_string(), previous);
+            }
+            return Err(err);
+        }
+        Ok(())
     }
 }
 
@@ -262,6 +275,53 @@ mod tests {
         v.replace(&id, password("new")).unwrap();
         let v = Vault::unlock(&dir, "correct horse").unwrap();
         assert_eq!(v.get(&id), Some(&password("new")));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn failed_add_does_not_leave_an_unsaved_credential() {
+        let dir = temp_dir();
+        let mut v = Vault::create(&dir, "correct horse").unwrap();
+        let blocked = Vault::path_in(&dir).with_extension("tmp");
+        fs::create_dir(&blocked).unwrap();
+        assert!(v.add(password("not saved")).is_err());
+        assert_eq!(v.list().count(), 0);
+        fs::remove_dir(&blocked).unwrap();
+        v.add(password("saved")).unwrap();
+        let reopened = Vault::unlock(&dir, "correct horse").unwrap();
+        assert_eq!(reopened.list().count(), 1);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn failed_replace_keeps_the_saved_credential() {
+        let dir = temp_dir();
+        let mut v = Vault::create(&dir, "correct horse").unwrap();
+        let id = v.add(password("old")).unwrap();
+        let blocked = Vault::path_in(&dir).with_extension("tmp");
+        fs::create_dir(&blocked).unwrap();
+        assert!(v.replace(&id, password("new")).is_err());
+        assert_eq!(v.get(&id), Some(&password("old")));
+        fs::remove_dir(&blocked).unwrap();
+        v.add(password("another")).unwrap();
+        let reopened = Vault::unlock(&dir, "correct horse").unwrap();
+        assert_eq!(reopened.get(&id), Some(&password("old")));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn failed_remove_keeps_the_saved_credential() {
+        let dir = temp_dir();
+        let mut v = Vault::create(&dir, "correct horse").unwrap();
+        let id = v.add(password("saved")).unwrap();
+        let blocked = Vault::path_in(&dir).with_extension("tmp");
+        fs::create_dir(&blocked).unwrap();
+        assert!(v.remove(&id).is_err());
+        assert_eq!(v.get(&id), Some(&password("saved")));
+        fs::remove_dir(&blocked).unwrap();
+        v.add(password("another")).unwrap();
+        let reopened = Vault::unlock(&dir, "correct horse").unwrap();
+        assert_eq!(reopened.get(&id), Some(&password("saved")));
         fs::remove_dir_all(dir).ok();
     }
 

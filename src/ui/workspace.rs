@@ -879,7 +879,13 @@ impl Workspace {
             },
             TerminalEvent::Reconnect => this.reconnect(id, window, cx),
             TerminalEvent::Sized => {
-                this.pane_size = view.read(cx).measured_size().or(this.pane_size);
+                // A new Session opens alone and without a file browser: only a pane laid out
+                // like that has its size. Half a split would start the next one at half width.
+                let alone = !this.shown_split().is_some_and(|s| s.contains(id))
+                    && this.sessions.iter().find(|s| s.id == id).is_some_and(|s| !s.sftp_open);
+                if alone {
+                    this.pane_size = view.read(cx).measured_size().or(this.pane_size);
+                }
                 this.start_waiting(cx);
             }
             TerminalEvent::EditHost { hop } => {
@@ -1269,19 +1275,34 @@ impl Workspace {
             CredentialSource::Host => resolved.credential.clone(),
             _ => None,
         };
+        let added = existing.is_none();
         let result = match existing {
             Some(id) => vault.replace(&id, credential).map(|_| id),
             None => vault.add(credential),
         };
-        match result {
-            Ok(cred_id) => {
-                if let Some(h) = self.library.hosts.iter_mut().find(|h| h.id == host_id) {
-                    h.credential = model::Inherited::Own(cred_id);
+        let cred_id = match result {
+            Ok(id) => id,
+            Err(err) => return self.show_toast(format!("Could not save: {err}"), cx),
+        };
+        // Replacing an existing Credential changes only the Vault, which is already saved.
+        // The Host still refers to the same id; no Library write or rollback is needed.
+        if !added {
+            self.show_toast("Password saved to the vault.", cx);
+            return;
+        }
+        let Some(index) = self.library.hosts.iter().position(|h| h.id == host_id) else { return };
+        let before = std::mem::replace(&mut self.library.hosts[index].credential, model::Inherited::Own(cred_id.clone()));
+        match self.library.save(&self.data_dir) {
+            Ok(_) => self.show_toast("Password saved to the vault.", cx),
+            Err(err) => {
+                // The Host would lose its new Credential at the next start: undo both, so
+                // what is shown is what is saved.
+                self.library.hosts[index].credential = before;
+                if let Some(vault) = self.vault.as_mut() {
+                    let _ = vault.remove(&cred_id);
                 }
-                let _ = self.library.save(&self.data_dir);
-                self.show_toast("Password saved to the vault.", cx);
+                self.show_toast(format!("Could not save the password: {err:#}"), cx);
             }
-            Err(err) => self.show_toast(format!("Could not save: {err}"), cx),
         }
     }
 
@@ -1426,18 +1447,28 @@ impl Workspace {
 
     fn run_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Overlay::Confirm { action, .. }) = self.overlay.take() else { return };
+        let mut library = self.library.clone();
+        match &action {
+            ConfirmAction::DeleteHost(id) => library.remove_host(id),
+            ConfirmAction::DeleteProject(id) => library.remove_project(id),
+        }
+        // Persist before closing Sessions or removing sidebar state: a failed deletion
+        // should leave the saved library and its running Sessions intact.
+        if let Err(err) = library.save(&self.data_dir) {
+            self.show_toast(format!("Could not delete: {err:#}"), cx);
+            self.focus_active(window, cx);
+            return;
+        }
+        self.library = library;
         match action {
             ConfirmAction::DeleteHost(id) => {
                 self.discard_sessions(|s| matches!(&s.kind, SessionKind::Ssh { host_id } if *host_id == id), cx);
-                self.library.remove_host(&id);
             }
             ConfirmAction::DeleteProject(id) => {
                 self.discard_sessions(|s| s.project_id.as_deref() == Some(id.as_str()), cx);
-                self.library.remove_project(&id);
                 self.collapsed.remove(&id);
             }
         }
-        let _ = self.library.save(&self.data_dir);
         self.focus_active(window, cx);
         cx.notify();
     }

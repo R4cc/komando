@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, FontWeight, Hsla,
+    AnyElement, App, ClickEvent, Context, Entity, EntityId, EventEmitter, ExternalPaths, FocusHandle, Focusable, FontWeight, Hsla,
     KeyDownEvent, MouseButton, MouseDownEvent, ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, WeakEntity,
     Window, div, prelude::*, px, uniform_list,
 };
@@ -117,8 +117,19 @@ enum Dialog {
 /// Rows being dragged inside the browser, to move them into a folder.
 #[derive(Clone)]
 pub struct DraggedFiles {
+    /// The browser they were dragged from.
+    source: EntityId,
     paths: Vec<String>,
     label: SharedString,
+}
+
+impl DraggedFiles {
+    /// The paths to move, if they were dragged inside `browser`. In a split view another
+    /// Session's browser is on screen too: its paths are on another Host (or another
+    /// connection), so dropped here they would move whatever has the same path on this one.
+    fn paths_for(&self, browser: EntityId) -> Option<&[String]> {
+        (self.source == browser).then_some(self.paths.as_slice())
+    }
 }
 
 struct DragGhost {
@@ -328,10 +339,12 @@ impl FileBrowser {
         self.remote().map(|r| r.identity.clone()).unwrap_or_default()
     }
 
-    /// `~` and relative paths are taken from the home folder and the current folder.
+    /// `~` and relative paths are taken from the home folder and the current folder. The
+    /// result has no `.` or trailing slash, so it compares equal to the folder it names.
+    /// Leave `..` for the server: a preceding component might be a symlink.
     fn expand(&self, text: &str) -> String {
         let home = self.remote().map(|r| r.home.clone()).unwrap_or_else(|| "/".into());
-        if text == "~" {
+        let path = if text == "~" {
             home
         } else if let Some(rest) = text.strip_prefix("~/") {
             sftp::join(&home, rest)
@@ -339,7 +352,8 @@ impl FileBrowser {
             text.to_string()
         } else {
             sftp::join(self.cwd.as_deref().unwrap_or(&home), text)
-        }
+        };
+        clean_path(&path)
     }
 
     pub fn navigate(&mut self, path: String, cx: &mut Context<Self>) {
@@ -755,7 +769,7 @@ impl FileBrowser {
         cx.spawn(async move |this, cx| {
             let result = task.await.and_then(|r| r);
             let _ = this.update(cx, |this, cx| match result {
-                Ok(existing) if existing.is_empty() => this.start_uploads(paths, dir, false, false, cx),
+                Ok(existing) if existing.is_empty() => this.start_uploads(paths, dir, false, None, cx),
                 Ok(existing) => {
                     this.dialog = Some(Dialog::Conflict { uploads: paths, dir, existing });
                     cx.notify();
@@ -766,20 +780,37 @@ impl FileBrowser {
         .detach();
     }
 
-    /// `replace` replaces files of the same name; `keep_both` gives the new ones free names.
-    fn start_uploads(&mut self, paths: Vec<PathBuf>, dir: String, replace: bool, keep_both: bool, cx: &mut Context<Self>) {
+    /// "Keep both" on the conflict dialog: upload under free names. `existing` are the names
+    /// found taken in `dir`; when `dir` isn't the folder on screen (the files were dropped on
+    /// a folder row), what else is in it is listed first, so a "name (1)" is free too.
+    fn keep_both(&mut self, paths: Vec<PathBuf>, dir: String, existing: Vec<String>, cx: &mut Context<Self>) {
+        let mut taken = names_in(&dir, self.cwd.as_deref(), &self.entries, &existing);
+        if self.cwd.as_deref() == Some(dir.as_str()) {
+            self.start_uploads(paths, dir, false, Some(taken), cx);
+            return;
+        }
+        let Some(remote) = self.remote() else { return };
+        let list_dir = dir.clone();
+        let task = sftp::spawn(async move { remote.list(&list_dir).await });
+        cx.spawn(async move |this, cx| {
+            // Not listed: the names known to be taken still get free ones.
+            if let Ok(Ok(listing)) = task.await {
+                taken.extend(listing.entries.into_iter().map(|e| e.name));
+            }
+            let _ = this.update(cx, |this, cx| this.start_uploads(paths, dir, false, Some(taken), cx));
+        })
+        .detach();
+    }
+
+    /// `replace` replaces files of the same name; with `taken` (Keep both), a new one whose
+    /// name is in it gets a free name instead.
+    fn start_uploads(&mut self, paths: Vec<PathBuf>, dir: String, replace: bool, taken: Option<HashSet<String>>, cx: &mut Context<Self>) {
         let Some(remote) = self.remote() else { return };
         let source = cx.entity().downgrade();
         let host = self.host_label.clone();
-        let mut taken: HashSet<String> =
-            if self.cwd.as_deref() == Some(dir.as_str()) { self.entries.iter().map(|e| e.name.clone()).collect() } else { HashSet::new() };
+        let names = upload_names(&paths, taken);
         self.transfers.update(cx, |t, cx| {
-            for path in paths {
-                let mut name = upload_name(&path);
-                if keep_both {
-                    name = sftp::unique_name(&name, |n| taken.contains(n));
-                }
-                taken.insert(name.clone());
+            for (path, name) in paths.into_iter().zip(names) {
                 let is_dir = path.is_dir();
                 let job = Job::Upload { local: path, remote_dir: dir.clone(), name: name.clone(), replace };
                 t.start(job, name, is_dir, host.clone(), source.clone(), remote.clone(), cx);
@@ -914,20 +945,7 @@ impl FileBrowser {
         let dest = self.expand(&text);
         let taken: HashSet<String> = self.entries.iter().map(|e| e.name.clone()).collect();
         let in_cwd = self.cwd.as_deref() == Some(dest.trim_end_matches('/')) || self.cwd.as_deref() == Some(dest.as_str());
-        let mut pairs = vec![];
-        for path in paths {
-            let name = sftp::file_name(&path).to_string();
-            let same_dir = sftp::parent(&path).as_deref() == Some(dest.as_str());
-            match (op, same_dir) {
-                (CopyOp::Move, true) => continue,
-                // A copy in the same folder gets a free name: "app (1).conf".
-                (CopyOp::Copy, true) => {
-                    let new = sftp::unique_name(&name, |n| taken.contains(n));
-                    pairs.push((path, sftp::join(&dest, &new)));
-                }
-                _ => pairs.push((path, sftp::join(&dest, &name))),
-            }
-        }
+        let pairs = copy_targets(op, paths, &dest, &taken);
         if pairs.is_empty() {
             return;
         }
@@ -969,6 +987,13 @@ impl FileBrowser {
                 Err(err) => this.notify_error(explain(verb, &err), cx),
             },
         );
+    }
+
+    /// Rows dropped on a folder: move them there, if they are this browser's own.
+    fn drop_files(&mut self, dragged: &DraggedFiles, dest: String, cx: &mut Context<Self>) {
+        if let Some(paths) = dragged.paths_for(cx.entity_id()) {
+            self.move_into(paths.to_vec(), dest, cx);
+        }
     }
 
     /// Move entries dragged onto a folder.
@@ -1240,6 +1265,30 @@ fn upload_name(path: &std::path::Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "upload".into())
 }
 
+/// The names uploads get on the server. With `taken` (Keep both), a name in it, or given to
+/// an earlier upload of the same batch, becomes a free one: "app (1).conf".
+fn upload_names(paths: &[PathBuf], taken: Option<HashSet<String>>) -> Vec<String> {
+    let Some(mut taken) = taken else { return paths.iter().map(|p| upload_name(p)).collect() };
+    paths
+        .iter()
+        .map(|path| {
+            let name = sftp::unique_name(&upload_name(path), |n| taken.contains(n));
+            taken.insert(name.clone());
+            name
+        })
+        .collect()
+}
+
+/// The names known to be taken in `dir`: those found there (`existing`), and everything in
+/// it when it is the folder on screen.
+fn names_in(dir: &str, cwd: Option<&str>, entries: &[Entry], existing: &[String]) -> HashSet<String> {
+    let mut taken: HashSet<String> = existing.iter().cloned().collect();
+    if cwd == Some(dir) {
+        taken.extend(entries.iter().map(|e| e.name.clone()));
+    }
+    taken
+}
+
 /// Case-insensitive, with numbers compared by value ("file2" before "file10").
 fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
@@ -1468,6 +1517,7 @@ impl FileBrowser {
 
     fn render_toolbar(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let connected = self.remote().is_some();
+        let me = cx.entity_id();
         let can_back = self.history_ix > 0;
         let can_forward = self.history_ix + 1 < self.history.len();
         let can_up = self.has_parent();
@@ -1514,10 +1564,10 @@ impl FileBrowser {
                         .cursor_pointer()
                         .text_color(if last { p.text } else { p.text_muted })
                         .hover(|s| s.bg(p.active).text_color(p.text))
-                        .drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(p.brand_soft))
+                        .drag_over::<DraggedFiles>(move |s, d, _, _| if d.source == me { s.bg(p.brand_soft) } else { s })
                         .on_drop(cx.listener({
                             let target = target.clone();
-                            move |this, dragged: &DraggedFiles, _, cx| this.move_into(dragged.paths.clone(), target.clone(), cx)
+                            move |this, dragged: &DraggedFiles, _, cx| this.drop_files(dragged, target.clone(), cx)
                         }))
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
@@ -1678,6 +1728,7 @@ impl FileBrowser {
         let has_parent = self.has_parent();
         let identity = self.identity();
         let view = cx.entity().downgrade();
+        let me = cx.entity_id();
         let mut out = vec![];
         for ix in range {
             if has_parent && ix == 0 {
@@ -1736,7 +1787,7 @@ impl FileBrowser {
             };
             let label: SharedString =
                 if dragged.len() == 1 { entry.name.clone().into() } else { format!("{} items", dragged.len()).into() };
-            let drag = DraggedFiles { paths: dragged, label };
+            let drag = DraggedFiles { source: cx.entity_id(), paths: dragged, label };
             let menu_view = view.clone();
             let click_path = path.clone();
             let right_path = path.clone();
@@ -1767,10 +1818,10 @@ impl FileBrowser {
                     el.on_drag(drag, |drag, _, _, cx| cx.new(|_| DragGhost { label: drag.label.clone() }))
                 })
                 .when(is_dir && !locked, |el| {
-                    el.drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(p.brand_soft))
+                    el.drag_over::<DraggedFiles>(move |s, d, _, _| if d.source == me { s.bg(p.brand_soft) } else { s })
                         .drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(p.brand_soft))
                         .on_drop(cx.listener(move |this, dragged: &DraggedFiles, _, cx| {
-                            this.move_into(dragged.paths.clone(), drop_dir.clone(), cx)
+                            this.drop_files(dragged, drop_dir.clone(), cx)
                         }))
                         .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, cx| {
                             cx.stop_propagation();
@@ -1863,6 +1914,7 @@ impl FileBrowser {
         let parent = self.cwd.as_deref().and_then(sftp::parent).unwrap_or_else(|| "/".into());
         let drop_parent = parent.clone();
         let drop_parent_ext = parent.clone();
+        let me = cx.entity_id();
         div()
             .id("sftp-parent")
             .h(px(ROW_HEIGHT))
@@ -1875,8 +1927,8 @@ impl FileBrowser {
             .text_size(px(13.))
             .text_color(p.text_muted)
             .hover(|s| s.bg(p.hover))
-            .drag_over::<DraggedFiles>(move |s, _, _, _| s.bg(p.brand_soft))
-            .on_drop(cx.listener(move |this, dragged: &DraggedFiles, _, cx| this.move_into(dragged.paths.clone(), drop_parent.clone(), cx)))
+            .drag_over::<DraggedFiles>(move |s, d, _, _| if d.source == me { s.bg(p.brand_soft) } else { s })
+            .on_drop(cx.listener(move |this, dragged: &DraggedFiles, _, cx| this.drop_files(dragged, drop_parent.clone(), cx)))
             .on_drop(cx.listener(move |this, paths: &ExternalPaths, _, cx| {
                 cx.stop_propagation();
                 this.upload(paths.paths().to_vec(), drop_parent_ext.clone(), cx)
@@ -2391,7 +2443,7 @@ impl FileBrowser {
                 )
             }
             Dialog::Conflict { uploads, dir, existing } => {
-                let (u1, u2, d1, d2) = (uploads.clone(), uploads.clone(), dir.clone(), dir.clone());
+                let (u1, u2, d1, d2, e1) = (uploads.clone(), uploads.clone(), dir.clone(), dir.clone(), existing.clone());
                 let names = existing.iter().take(3).map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
                 let more = existing.len().saturating_sub(3);
                 (
@@ -2413,14 +2465,14 @@ impl FileBrowser {
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 this.dialog = None;
                                 window.focus(&this.focus, cx);
-                                this.start_uploads(u1.clone(), d1.clone(), false, true, cx);
+                                this.keep_both(u1.clone(), d1.clone(), e1.clone(), cx);
                             }))
                             .into_any_element(),
                         button("sftp-replace", "Replace", ButtonKind::Danger, p)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 this.dialog = None;
                                 window.focus(&this.focus, cx);
-                                this.start_uploads(u2.clone(), d2.clone(), true, false, cx);
+                                this.start_uploads(u2.clone(), d2.clone(), true, None, cx);
                             }))
                             .into_any_element(),
                     ],
@@ -2460,6 +2512,39 @@ impl FileBrowser {
                 .into_any_element(),
         )
     }
+}
+
+/// Where each of `paths` goes when copied or moved into `dest`. A copy in its own folder gets a
+/// free name ("app (1).conf", `taken` holds the names there); a move there is nothing to do.
+fn copy_targets(op: CopyOp, paths: Vec<String>, dest: &str, taken: &HashSet<String>) -> Vec<(String, String)> {
+    let mut pairs = vec![];
+    for path in paths {
+        let name = sftp::file_name(&path).to_string();
+        let same_dir = sftp::parent(&path).as_deref() == Some(dest);
+        match (op, same_dir) {
+            (CopyOp::Move, true) => continue,
+            (CopyOp::Copy, true) => {
+                let new = sftp::unique_name(&name, |n| taken.contains(n));
+                pairs.push((path, sftp::join(dest, &new)));
+            }
+            _ => pairs.push((path, sftp::join(dest, &name))),
+        }
+    }
+    pairs
+}
+
+/// `path` without empty or `.` segments or a trailing slash: "/srv/app/" is "/srv/app".
+/// Keep `..`: only the server knows the parent of a symlink's target.
+fn clean_path(path: &str) -> String {
+    let mut parts: Vec<&str> = vec![];
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            part => parts.push(part),
+        }
+    }
+    let joined = parts.join("/");
+    if path.starts_with('/') { format!("/{joined}") } else { joined }
 }
 
 /// "app.conf" or "3 items".
@@ -2670,6 +2755,50 @@ mod tests {
             gid: attrs.gid,
             access,
         }
+    }
+
+    #[test]
+    fn rows_dragged_from_another_browser_are_not_moved() {
+        let (here, other) = (EntityId::from(1u64), EntityId::from(2u64));
+        let dragged = DraggedFiles { source: other, paths: vec!["/etc/nginx/nginx.conf".into()], label: "nginx.conf".into() };
+        assert_eq!(dragged.paths_for(here), None);
+        assert_eq!(dragged.paths_for(other), Some(&["/etc/nginx/nginx.conf".to_string()][..]));
+    }
+
+    #[test]
+    fn keep_both_into_another_folder_avoids_the_names_there() {
+        // Dropped on the folder "logs" while /srv is on screen; "app.log" is already in logs.
+        let shown = [sftp_entry("logs", &russh_sftp::protocol::FileAttributes::empty(), &Identity::default())];
+        let taken = names_in("/srv/logs", Some("/srv"), &shown, &["app.log".to_string()]);
+        let uploads = [PathBuf::from("C:/temp/app.log"), PathBuf::from("C:/temp/other.log")];
+        assert_eq!(upload_names(&uploads, Some(taken)), ["app (1).log", "other.log"]);
+        // In the folder on screen, everything listed there counts.
+        let taken = names_in("/logs", Some("/logs"), &shown, &[]);
+        assert_eq!(upload_names(&[PathBuf::from("logs")], Some(taken)), ["logs (1)"]);
+        // Replace or no conflict: names stay as they are.
+        assert_eq!(upload_names(&uploads, None), ["app.log", "other.log"]);
+    }
+
+    #[test]
+    fn copy_or_move_to_its_own_folder_typed_with_a_slash() {
+        let taken = HashSet::from(["app.conf".to_string()]);
+        let paths = || vec!["/srv/app/app.conf".to_string()];
+        for typed in ["/srv/app/", "/srv/app/.", "/srv//app"] {
+            let dest = clean_path(typed);
+            assert_eq!(dest, "/srv/app", "{typed}");
+            assert_eq!(copy_targets(CopyOp::Copy, paths(), &dest, &taken), [("/srv/app/app.conf".to_string(), "/srv/app/app (1).conf".to_string())]);
+            assert!(copy_targets(CopyOp::Move, paths(), &dest, &taken).is_empty(), "{typed}");
+        }
+        assert_eq!(clean_path("/"), "/");
+        assert_eq!(clean_path("/.."), "/..");
+        assert_eq!(clean_path("/var/log/"), "/var/log");
+    }
+
+    #[test]
+    fn remote_parent_paths_are_left_for_the_server_to_resolve() {
+        // /srv/link may point to /data/app: its parent is /data, not /srv.
+        assert_eq!(clean_path("/srv/link/../backup/"), "/srv/link/../backup");
+        assert_eq!(clean_path("/srv/link/./../backup"), "/srv/link/../backup");
     }
 
     #[test]
