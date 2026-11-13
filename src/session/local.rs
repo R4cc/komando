@@ -31,6 +31,10 @@ pub fn spawn(shell: &LocalShell, size: GridSize, term: SharedTerm, proxy: EventP
         #[cfg(windows)]
         escape_args: true,
     };
+    // Closing a tab drops the Pty, which closes the pseudo-console; ConPTY then ends every
+    // console process attached to it (checked with ping -t, cmd, background jobs, nested
+    // PowerShell), like Windows Terminal. GUI apps started from the shell (notepad) survive.
+    // No Job object is needed.
     let pty = tty::new(&options, size.window_size(), 0)
         .with_context(|| format!("Couldn't start {}", shell.program))?;
     let event_loop = EventLoop::new(term, proxy.clone(), pty, true, false)?;
