@@ -7,7 +7,7 @@
 
 **Komando is a fast SSH terminal for Windows 11, written in Rust.** It keeps all your Linux servers organised in colour-coded projects, one click away, with passwords and keys in an encrypted vault. Built for sysadmins, DevOps and system engineers who spend their day in SSH sessions.
 
-**[⬇ Download Komando for Windows (.msi)](https://github.com/R4cc/komando/releases/latest/download/Komando-x64.msi)** · [All releases](https://github.com/R4cc/komando/releases) · [Changelog](CHANGELOG.md)
+**[⬇ Download Komando for Windows (.msi)](https://github.com/R4cc/komando/releases/latest)** · [All releases](https://github.com/R4cc/komando/releases) · [Changelog](CHANGELOG.md)
 
 <img src="assets/screenshot-dark.png" alt="Komando SSH terminal: servers grouped into projects in a sidebar, an SSH session showing systemctl status and a highlighted application log">
 
@@ -87,7 +87,7 @@ All app shortcuts use Ctrl+Shift, so plain Ctrl keys (Ctrl+W, Ctrl+R, …) still
 
 ## Install
 
-1. **[Download the latest Komando-x64.msi](https://github.com/R4cc/komando/releases/latest/download/Komando-x64.msi)** and run it. Choose **Install for me only** (no administrator rights needed) or **Install for all users** of the PC.
+1. **[Open the latest release](https://github.com/R4cc/komando/releases/latest)**, download `Komando-<version>-x64.msi` under **Assets**, and run it. Choose **Install for me only** (no administrator rights needed) or **Install for all users** of the PC.
 2. Start Komando. The first time it saves a password or key, it asks you to set a master password for the vault.
 3. Add your first project and host, and click to connect.
 
@@ -95,8 +95,8 @@ All app shortcuts use Ctrl+Shift, so plain Ctrl keys (Ctrl+W, Ctrl+R, …) still
 
 No installer and no admin rights needed. Komando is a single `.exe` with everything built in.
 
-1. **[Download the latest Komando-x64.exe](https://github.com/R4cc/komando/releases/latest/download/Komando-x64.exe)** and put it anywhere, for example `%LOCALAPPDATA%\Programs\Komando`.
-2. Right-click it → **Properties** → tick **Unblock** → **OK**. Or in PowerShell: `Unblock-File .\Komando-x64.exe`.
+1. **[Open the latest release](https://github.com/R4cc/komando/releases/latest)**, download `Komando-<version>-x64.exe` under **Assets**, and put it anywhere, for example `%LOCALAPPDATA%\Programs\Komando`.
+2. Right-click it → **Properties** → tick **Unblock** → **OK**. Or in PowerShell, from its folder: `Unblock-File .\Komando-*-x64.exe`.
 3. Double-click to start. Pin it to the taskbar if you like.
 
 Unblocking removes the "downloaded from the internet" mark that makes Windows SmartScreen warn about apps without a code-signing certificate. Komando isn't signed yet. If your company blocks unknown programs entirely (AppLocker), this won't help. You can also [build it yourself](docs/development.md#build-it-yourself-on-windows); a build from source never gets a SmartScreen warning.

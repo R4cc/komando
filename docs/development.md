@@ -45,15 +45,15 @@ Follow the [versioning policy in AGENTS.md](../AGENTS.md#versioning).
 
 Publish a GitHub release with a tag that matches `Cargo.toml`, like `v0.2.0`. The
 [release workflow](../.github/workflows/release.yml) builds Komando on Windows and attaches
-`Komando-0.2.0-x64.msi` and `Komando-0.2.0-x64.exe`, plus the same two files as
-`Komando-x64.msi` and `Komando-x64.exe`, which the README's "latest" download links point to. To rebuild an existing release, run the workflow
+`Komando-0.2.0-x64.msi` and `Komando-0.2.0-x64.exe`. Both download filenames include
+the release version; the README links to the latest release's assets. To rebuild an existing release, run the workflow
 manually with its tag.
 
 The installer is built from [packaging/komando.wxs](../packaging/komando.wxs) by
 [packaging/build-msi.ps1](../packaging/build-msi.ps1) (WiX v5). CI builds it on every push, from
 the debug program, so a mistake in the installer shows up before a release. It asks whether to
 install for the current user only (no administrator rights) or for all users; for scripted
-installs, `msiexec /i Komando-x64.msi /qn` installs for the current user and adding `ALLUSERS=1`
+installs, `msiexec /i Komando-0.2.0-x64.msi /qn` installs for the current user and adding `ALLUSERS=1`
 installs for all users.
 
 ## Developing on Linux

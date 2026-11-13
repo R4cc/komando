@@ -6,6 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Release downloads use filenames containing the release version, such as
+  `Komando-0.3.5-x64.msi` and `Komando-0.3.5-x64.exe`, without unversioned copies.
+  README download links open the latest release so you can choose the installer or
+  portable EXE.
+
 ## [0.3.4] - 2026-11-13
 
 ### Added
