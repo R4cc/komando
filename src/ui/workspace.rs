@@ -28,7 +28,7 @@ use crate::ui::terminal_view::{TerminalEvent, TerminalView};
 use crate::ui::transfers::{Transfers, TransfersChanged};
 use crate::ui::widgets::{
     ButtonKind, ISLAND_GAP, ISLAND_RADIUS, badge, button, elevation, icon_button, icon_el, icon_text_button, island,
-    is_artwork, section_label, shell_icon, status_dot, wordmark,
+    is_artwork, section_label, shell_icon, spinner, status_dot, wordmark,
 };
 use crate::vault::{Credential, Secret, Vault};
 
@@ -164,10 +164,14 @@ struct SessionEntry {
     /// opens again where it was.
     browser: Option<Entity<FileBrowser>>,
     sftp_open: bool,
+    /// The browser is starting SFTP or loading a folder: the title bar's SFTP button turns a
+    /// loader. Copied from the browser when it changes, so rendering never reads the browser.
+    sftp_busy: bool,
     /// Opened before any terminal pane was laid out: the shell starts once one is, at its size.
     waiting_for_size: bool,
     _subscription: Subscription,
     _browser_subscription: Option<Subscription>,
+    _browser_observer: Option<Subscription>,
 }
 
 impl SessionEntry {
@@ -889,9 +893,11 @@ impl Workspace {
             status: Status::Connecting,
             browser: None,
             sftp_open: false,
+            sftp_busy: false,
             waiting_for_size: false,
             _subscription: sub,
             _browser_subscription: None,
+            _browser_observer: None,
         });
         self.activate(id, window, cx);
         view
@@ -1089,8 +1095,17 @@ impl Workspace {
                     browser.update(cx, |b, cx| b.connect(sink, cx));
                 }
             });
+            let observer = cx.observe(&browser, move |this, browser, cx| {
+                let busy = browser.read(cx).is_busy();
+                let Some(entry) = this.sessions.iter_mut().find(|s| s.id == id) else { return };
+                if entry.sftp_busy != busy {
+                    entry.sftp_busy = busy;
+                    cx.notify();
+                }
+            });
             self.sessions[index].browser = Some(browser);
             self.sessions[index]._browser_subscription = Some(sub);
+            self.sessions[index]._browser_observer = Some(observer);
         }
         let entry = &mut self.sessions[index];
         entry.sftp_open = true;
@@ -2287,6 +2302,7 @@ impl Workspace {
         let id = entry.id;
         let is_ssh = matches!(entry.kind, SessionKind::Ssh { .. });
         let sftp_open = entry.sftp_open;
+        let sftp_busy = sftp_open && entry.sftp_busy;
         // SFTP runs over the session's connection: until it is connected the button only looks
         // like one. An open browser can still be closed.
         let sftp_ready = matches!(entry.status, Status::Connected);
@@ -2367,7 +2383,9 @@ impl Workspace {
                                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.toggle_sftp(id, window, cx)))
                             })
                             .when(!sftp_enabled, |el| el.cursor_default())
-                            .child(icon_el("folder-open", 13., sftp_color))
+                            // Its hitbox hides the title bar's drag area: see `strip_action`.
+                            .occlude()
+                            .child(if sftp_busy { spinner("sftp-toggle-spinner", 13., sftp_color) } else { icon_el("folder-open", 13., sftp_color) })
                             .child("SFTP"),
                     )
                 })
@@ -3162,6 +3180,10 @@ fn strip_action(id: &'static str, icon: &str, label: &'static str, danger: bool,
         .rounded(px(7.))
         .cursor_pointer()
         .hover(move |s| s.bg(hover_bg))
+        // The strip sits in the title bar, whose drag area is everywhere behind it. Without
+        // this, Windows is told the button is caption: a click starts a window move and is
+        // lost, and a double click maximises the window. Blocking the area keeps it a button.
+        .occlude()
         .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
         .child(
             gpui::svg()

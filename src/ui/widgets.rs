@@ -6,8 +6,8 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, BoxShadow, ElementId, FontWeight, Hsla, IntoElement, ParentElement, SharedString, Stateful,
-    Styled, div, point, prelude::*, px, svg,
+    Animation, AnimationExt as _, AnyElement, BoxShadow, ElementId, FontWeight, Hsla, IntoElement, ParentElement,
+    SharedString, Stateful, Styled, Transformation, div, percentage, point, prelude::*, px, svg,
 };
 
 use crate::theme::{AppPalette, UI_FONT, alpha};
@@ -142,6 +142,19 @@ pub fn icon_el(name: &str, size: f32, color: Hsla) -> AnyElement {
         .size(px(size))
         .flex_shrink_0()
         .text_color(color)
+        .into_any_element()
+}
+
+/// A turning `loader-circle`, for work that is under way (connecting, loading a folder).
+pub fn spinner(id: impl Into<ElementId>, size: f32, color: Hsla) -> AnyElement {
+    svg()
+        .path("icons/loader-circle.svg")
+        .size(px(size))
+        .flex_shrink_0()
+        .text_color(color)
+        .with_animation(id, Animation::new(std::time::Duration::from_millis(900)).repeat(), |icon, delta| {
+            icon.with_transformation(Transformation::rotate(percentage(delta)))
+        })
         .into_any_element()
 }
 

@@ -27,7 +27,7 @@ use crate::sftp::{self, Access, Allowed, Entry, ErrorKind, Identity, Kind, Listi
 use crate::theme::{AppPalette, Appearance};
 use crate::ui::popup::{self, Popup};
 use crate::ui::transfers::{self, Job, Transfers};
-use crate::ui::widgets::{ButtonKind, button, icon_el};
+use crate::ui::widgets::{ButtonKind, button, icon_el, spinner};
 
 const ROW_HEIGHT: f32 = 30.;
 
@@ -276,6 +276,15 @@ impl FileBrowser {
     /// Connected or on its way: nothing to do when the Session (re)connects.
     pub fn is_connected(&self) -> bool {
         matches!(self.conn, Conn::Ready(_) | Conn::Connecting)
+    }
+
+    /// Starting SFTP, or loading a folder (the first one included).
+    pub fn is_busy(&self) -> bool {
+        match self.conn {
+            Conn::Connecting => true,
+            Conn::Ready(_) => self.loading || (self.cwd.is_none() && self.load_error.is_none()),
+            Conn::Waiting(_) | Conn::Failed(_) => false,
+        }
     }
 
     /// Open SFTP on the Session's connection.
@@ -1925,7 +1934,8 @@ impl FileBrowser {
                 .gap(px(8.))
                 .max_w(px(360.))
                 .px(px(20.))
-                .child(icon_el(icon, 22., color))
+                // Connecting and loading turn their loader, so the panel visibly works.
+                .child(if icon == "loader-circle" { spinner("sftp-state-spinner", 22., color) } else { icon_el(icon, 22., color) })
                 .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).text_center().child(title))
                 .when_some(detail, |el, d| {
                     el.child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).text_center().child(d))
@@ -2022,7 +2032,7 @@ impl FileBrowser {
             .text_color(p.text_faint)
             .child(div().flex_1().min_w_0().truncate().child(if self.cwd.is_some() { text } else { String::new() }))
             .when_some(status, |el, status| {
-                el.child(div().flex().items_center().gap(px(5.)).child(icon_el("loader-circle", 12., p.brand)).child(status))
+                el.child(div().flex().items_center().gap(px(5.)).child(spinner("sftp-footer-spinner", 12., p.brand)).child(status))
             })
             .child(
                 div()

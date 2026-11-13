@@ -11,9 +11,14 @@ All notable changes to Komando are listed here. The format follows
 - "Duplicate host…" in a host's right-click menu. It adds a copy with the same settings
   and sign-in below the original, then opens the copy's form so you can rename it or
   change its address.
+- The SFTP button and the file browser show a turning loader while SFTP starts and while a
+  folder loads.
 
 ### Fixed
 
+- The SFTP, copy and close-session buttons in the title bar respond to every click on
+  Windows. Before, a click could be taken as grabbing the title bar and do nothing, and a
+  double click on one of them maximized or restored the window.
 - With background blur on, Windows no longer draws its own minimize, maximize and close
   icons behind Komando's window buttons, so each button shows one icon again.
 
