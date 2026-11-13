@@ -6,6 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-11-13
+
+### Added
+
+- Komando now keeps a log in `%APPDATA%\Komando\logs\komando.log`, including the details of
+  any crash, to help track down problems. Set `KOMANDO_LOG=debug` for more detail.
+
 ### Changed
 
 - The interface now uses the bundled Geist Sans font, including menus and overlays.
@@ -14,6 +21,24 @@ All notable changes to Komando are listed here. The format follows
 
 - The logo on the empty-session screen now uses the full theme text color, staying readable
   on light and dark backgrounds and updating when the theme changes.
+- Accented letters typed with dead keys (´ then e for é on French, Spanish or German
+  keyboards) and text from input methods for Chinese, Japanese or Korean now reach the
+  terminal.
+- Alt+F4 closes Komando and Alt+Space opens the window menu while a terminal has focus,
+  instead of being sent to the shell.
+- Characters typed with AltGr+Shift, such as Ą on a Polish keyboard, are no longer dropped.
+- Downloads, saved settings and updates no longer fail when antivirus briefly holds a newly
+  written file. Komando waits and tries again.
+- Two Komando windows saving at the same time no longer interfere with each other.
+- Folder downloads no longer stop when two remote names differ only in case ("README" and
+  "readme") or by a trailing dot. The second one is saved as "readme (1)". Remote files named
+  like Windows devices, such as `con` or `aux.log`, are saved as `con_` and `aux_.log`.
+- Folder uploads read files under their real names, and skip broken links and unreadable
+  items instead of failing the whole upload.
+- Importing a private key saved by Windows tools as UTF-16 or with a byte order mark now
+  works, and a key path starting with `~\` points to your home folder.
+- A custom local shell whose path contains spaces, such as
+  `C:\Program Files\PowerShell\7\pwsh.exe`, now starts reliably.
 
 ## [0.3.5] - 2026-11-13
 
