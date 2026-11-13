@@ -18,8 +18,13 @@ pub fn spawn(shell: &LocalShell, size: GridSize, term: SharedTerm, proxy: EventP
     env.insert("COLORTERM".to_string(), "truecolor".to_string());
     env.insert("TERM_PROGRAM".to_string(), "Komando".to_string());
 
+    #[cfg(windows)]
+    let program = quote_windows_program(&shell.program);
+    #[cfg(not(windows))]
+    let program = shell.program.clone();
+
     let options = tty::Options {
-        shell: Some(Shell::new(shell.program.clone(), shell.args.clone())),
+        shell: Some(Shell::new(program, shell.args.clone())),
         working_directory: dirs::home_dir(),
         drain_on_exit: true,
         env,
@@ -33,4 +38,37 @@ pub fn spawn(shell: &LocalShell, size: GridSize, term: SharedTerm, proxy: EventP
     proxy.set_responder(sink.clone());
     event_loop.spawn();
     Ok(sink)
+}
+
+/// alacritty_terminal joins the program and its arguments into one command line for
+/// CreateProcessW without quoting the program, so a path with spaces (`C:\Program Files\...`)
+/// is split at the first space. Quote it unless it is quoted already or has no spaces.
+#[cfg(windows)]
+fn quote_windows_program(program: &str) -> String {
+    let quoted = program.len() >= 2 && program.starts_with('"') && program.ends_with('"');
+    if quoted || !program.contains(char::is_whitespace) {
+        program.to_string()
+    } else {
+        format!("\"{program}\"")
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::quote_windows_program;
+
+    #[test]
+    fn quotes_program_paths_with_spaces() {
+        assert_eq!(
+            quote_windows_program(r"C:\Program Files\PowerShell\7\pwsh.exe"),
+            r#""C:\Program Files\PowerShell\7\pwsh.exe""#
+        );
+    }
+
+    #[test]
+    fn leaves_plain_and_already_quoted_programs_alone() {
+        assert_eq!(quote_windows_program("powershell.exe"), "powershell.exe");
+        assert_eq!(quote_windows_program(r"C:\Windows\System32\cmd.exe"), r"C:\Windows\System32\cmd.exe");
+        assert_eq!(quote_windows_program(r#""C:\Program Files\pwsh.exe""#), r#""C:\Program Files\pwsh.exe""#);
+    }
 }

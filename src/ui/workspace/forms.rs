@@ -281,7 +281,10 @@ impl Workspace {
         let Some(vault) = self.vault.as_mut() else {
             return Err("Unlock the vault to import a key.".into());
         };
-        let key = std::fs::read_to_string(path).map_err(|err| format!("Could not read {path}: {err}"))?;
+        let path = expand_home(path, dirs::home_dir().as_deref());
+        let bytes = std::fs::read(&path).map_err(|err| format!("Could not read {}: {err}", path.display()))?;
+        let key = decode_key_text(&bytes)
+            .map_err(|why| format!("Could not read {}: {why}. Save the key as plain text and try again.", path.display()))?;
         vault
             .add(Credential { label, secret: Secret::PrivateKey { key, passphrase: None } })
             .map_err(|err| format!("Could not store the key: {err}"))
@@ -1197,4 +1200,92 @@ fn form_shell(id: &'static str, wide: bool, header: AnyElement, body: AnyElement
         .child(div().id(id).flex_1().min_h_0().overflow_y_scroll().px(px(24.)).pb(px(22.)).child(body))
         .child(footer)
         .into_any_element()
+}
+
+/// A leading `~\` or `~/` means the home folder. Other paths are used as typed.
+fn expand_home(path: &str, home: Option<&std::path::Path>) -> std::path::PathBuf {
+    match (path.strip_prefix("~\\").or_else(|| path.strip_prefix("~/")), home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => std::path::PathBuf::from(path),
+    }
+}
+
+/// Turn the bytes of a key file into text. Windows tools write UTF-16 with a byte order mark
+/// (PowerShell's `>` redirection, old Notepad) and UTF-8 with one (PowerShell 5.1); the
+/// marks are dropped so the key parser sees only the key.
+fn decode_key_text(bytes: &[u8]) -> Result<String, &'static str> {
+    const NOT_TEXT: &str = "it is not a text file";
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return decode_utf16(rest, u16::from_le_bytes);
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return decode_utf16(rest, u16::from_be_bytes);
+    }
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    String::from_utf8(bytes.to_vec()).map_err(|_| NOT_TEXT)
+}
+
+fn decode_utf16(bytes: &[u8], unit: fn([u8; 2]) -> u16) -> Result<String, &'static str> {
+    if bytes.len() % 2 != 0 {
+        return Err("it is not valid UTF-16 text");
+    }
+    let units: Vec<u16> = bytes.chunks_exact(2).map(|pair| unit([pair[0], pair[1]])).collect();
+    String::from_utf16(&units).map_err(|_| "it is not valid UTF-16 text")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_key_text, expand_home};
+    use std::path::{Path, PathBuf};
+
+    const KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n";
+
+    fn utf16le(text: &str) -> Vec<u8> {
+        std::iter::once(0xFF).chain(std::iter::once(0xFE)).chain(text.encode_utf16().flat_map(|u| u.to_le_bytes())).collect()
+    }
+
+    fn utf16be(text: &str) -> Vec<u8> {
+        std::iter::once(0xFE).chain(std::iter::once(0xFF)).chain(text.encode_utf16().flat_map(|u| u.to_be_bytes())).collect()
+    }
+
+    #[test]
+    fn decodes_plain_utf8() {
+        assert_eq!(decode_key_text(KEY.as_bytes()).unwrap(), KEY);
+    }
+
+    #[test]
+    fn strips_utf8_bom() {
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(KEY.as_bytes());
+        assert_eq!(decode_key_text(&bytes).unwrap(), KEY);
+    }
+
+    #[test]
+    fn decodes_utf16_le_with_bom() {
+        assert_eq!(decode_key_text(&utf16le(KEY)).unwrap(), KEY);
+    }
+
+    #[test]
+    fn decodes_utf16_be_with_bom() {
+        assert_eq!(decode_key_text(&utf16be(KEY)).unwrap(), KEY);
+    }
+
+    #[test]
+    fn rejects_invalid_utf8() {
+        assert!(decode_key_text(&[0x2D, 0xFF, 0xFE, 0x41]).is_err());
+    }
+
+    #[test]
+    fn rejects_odd_length_utf16() {
+        assert!(decode_key_text(&[0xFF, 0xFE, 0x41]).is_err());
+    }
+
+    #[test]
+    fn expands_home_prefixes_only() {
+        let home = Path::new(r"C:\Users\me");
+        assert_eq!(expand_home(r"~\.ssh\id_ed25519", Some(home)), home.join(r".ssh\id_ed25519"));
+        assert_eq!(expand_home("~/.ssh/id", Some(home)), home.join(".ssh/id"));
+        assert_eq!(expand_home(r"C:\keys\id", Some(home)), PathBuf::from(r"C:\keys\id"));
+        assert_eq!(expand_home("~/id", None), PathBuf::from("~/id"));
+    }
 }
