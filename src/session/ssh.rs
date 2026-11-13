@@ -151,6 +151,37 @@ fn describe(hop: &Hop) -> String {
 /// How long reaching one hop may take, Host Key questions aside.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// How much of the server's output the operating system may hold for Komando: as much as the
+/// SSH window lets the server send ahead (`window_size` in `run`).
+///
+/// With Windows' default receive buffer, output floods stalled: a server writing faster than the
+/// buffer drained waited about one timer tick (15 ms) every couple of hundred kilobytes. Against
+/// an asyncssh server on the same machine, 1,000,000 log lines took 3.5 s with the default and
+/// 1.1 s with this buffer, with no stalls left.
+const RECEIVE_BUFFER: u32 = 8 * 1024 * 1024;
+
+/// A TCP connection to `address:port`, trying each address it resolves to in turn, with a
+/// receive buffer of [`RECEIVE_BUFFER`].
+async fn open_tcp(address: &str, port: u16) -> std::io::Result<tokio::net::TcpStream> {
+    let mut last_error = None;
+    for addr in tokio::net::lookup_host((address, port)).await? {
+        let socket = if addr.is_ipv4() { tokio::net::TcpSocket::new_v4()? } else { tokio::net::TcpSocket::new_v6()? };
+        // A smaller buffer only costs speed, so a refusal is not an error.
+        if let Err(err) = socket.set_recv_buffer_size(RECEIVE_BUFFER) {
+            log::warn!("setting the TCP receive buffer: {err}");
+        }
+        match socket.connect(addr).await {
+            Ok(stream) => {
+                // Keystrokes go out at once rather than waiting to be batched.
+                stream.set_nodelay(true)?;
+                return Ok(stream);
+            }
+            Err(err) => last_error = Some(err),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("{address} has no address"))))
+}
+
 pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
@@ -275,9 +306,9 @@ async fn run(
         inactivity_timeout: None,
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 4,
-        nodelay: true,
         // How much the server may send before we acknowledge it. The default 2 MiB caps an
         // SFTP download at 2 MiB per round trip (40 MB/s at 50 ms) before anything else does.
+        // `RECEIVE_BUFFER` matches it.
         window_size: 8 * 1024 * 1024,
         ..Default::default()
     });
@@ -301,9 +332,12 @@ async fn run(
         };
         let timed_out = || anyhow!("Timed out connecting to {}:{}.", hop.address, hop.port);
         let mut handle = match handles.last() {
-            None => tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config.clone(), (hop.address.as_str(), hop.port), handler))
-                .await
-                .map_err(|_| timed_out())??,
+            None => tokio::time::timeout(CONNECT_TIMEOUT, async {
+                let stream = open_tcp(&hop.address, hop.port).await?;
+                client::connect_stream(config.clone(), stream, handler).await
+            })
+            .await
+            .map_err(|_| timed_out())??,
             Some(through) => {
                 let via = &target.hops[index - 1].name;
                 let tunnel = tokio::time::timeout(

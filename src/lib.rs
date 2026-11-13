@@ -16,6 +16,8 @@ pub mod platform;
 pub mod session;
 pub mod sftp;
 pub mod theme;
+#[cfg(test)]
+mod throughput_tests;
 pub mod ui;
 pub mod update;
 pub mod vault;

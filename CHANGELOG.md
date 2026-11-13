@@ -11,6 +11,8 @@ All notable changes to Komando are listed here. The format follows
 - Komando opens faster, most noticeably on slower PCs: the graphics driver now loads while the
   rest of startup runs instead of after it. On a slow dual-core the window is ready about 0.2 s
   sooner.
+- Large amounts of SSH output, such as a flood of log lines, come through up to four times
+  faster. A million coloured log lines that took about 4 seconds now take under 1 second.
 
 ## [0.3.6] - 2026-11-13
 

@@ -63,6 +63,29 @@ screenshots. You need the X11 libraries (`libxcb`, `libxkbcommon`, `libxkbcommon
 `RUST_FONTCONFIG_DLOPEN=on` if fontconfig has no pkg-config file. `examples/demo.rs` seeds a
 throwaway data folder and opens a few sessions; it's what produced the README screenshot.
 
+### Output throughput
+
+`src/throughput_tests.rs` measures how fast SSH output gets into the terminal: an SSH server in
+the test process prints 1,000,000 coloured log lines through the real Session path, while a
+stand-in for the UI copies the screen every frame. A second test feeds the same output straight
+into the parser, without SSH. They run on Windows too:
+
+```sh
+cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1
+```
+
+`KOMANDO_THROUGHPUT_LINES` and `KOMANDO_THROUGHPUT_RUNS` change the size and the number of runs.
+`KOMANDO_THROUGHPUT_PORT` uses an SSH server already listening on that port instead.
+
+To include rendering, run the whole app against `examples/logserver.rs`. It writes a key pair
+for `examples/demo.rs`, floods each shell it opens and prints how long the terminal took to take
+in the output:
+
+```sh
+cargo run --release --example logserver -- target/bench 1000000 3
+KOMANDO_DEMO_DIR=target/bench/data KOMANDO_DEMO_KEY=target/bench/client_ed25519   KOMANDO_DEMO_HOST_KEY=target/bench/host_ed25519.pub KOMANDO_DEMO_STRESS=1,1,1   cargo run --release --example demo
+```
+
 ### Terminal compatibility tests
 
 `src/compat_tests.rs` runs real programs (vim, htop, tmux, less, bash, and an SSH session against

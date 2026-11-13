@@ -160,9 +160,11 @@ connected to the same SSH server. Ryzen 7 9800X3D, Windows 11.
 | CPU with 10 idle sessions | 0 % | 0 % | |
 
 Memory is the private working set, the "Memory" column in Task Manager, summed over all
-processes. Windows Terminal is still faster on raw throughput: it takes a million log lines in
-about 1.4 s, where Komando needs about 2.9 s. Method, ranges and caveats are in
-[docs/benchmarks.md](docs/benchmarks.md).
+processes. On raw throughput Windows Terminal was faster in 0.3.6: it took a million log lines in
+about 1.4 s, where Komando needed about 2.9 s. The next version removes the stalls that slowed
+Komando down: on the same kind of test, a million coloured log lines now come through in about
+0.8 s instead of about 4 s. Windows Terminal has not been re-measured against it yet. Method,
+ranges and caveats are in [docs/benchmarks.md](docs/benchmarks.md).
 
 ## Keyboard shortcuts
 
