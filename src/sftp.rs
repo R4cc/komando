@@ -491,14 +491,71 @@ pub fn unique_local_path(dir: &Path, name: &str) -> PathBuf {
     dir.join(name)
 }
 
-/// Make a remote name safe as a Windows file name.
+/// Make a remote name safe as a Windows file name: no forbidden characters, no trailing dots
+/// or spaces, and no device name ("con.log" becomes "con_.log").
 pub fn local_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control() { '_' } else { c })
         .collect();
-    let trimmed = cleaned.trim_end_matches(['.', ' ']).to_string();
-    if trimmed.is_empty() { "_".into() } else { trimmed }
+    let trimmed = cleaned.trim_end_matches(['.', ' ']);
+    if trimmed.is_empty() {
+        return "_".into();
+    }
+    // Windows reads everything before the first dot as the device name, whatever the extension.
+    let (stem, ext) = trimmed.split_at(trimmed.find('.').unwrap_or(trimmed.len()));
+    if is_device_name(stem) { format!("{stem}_{ext}") } else { trimmed.to_string() }
+}
+
+/// Names Windows reserves for devices: CON, PRN, AUX, NUL, COM1-9 and LPT1-9 (also with the
+/// superscript digits), CONIN$ and CONOUT$. Case doesn't matter, and trailing spaces are ignored.
+fn is_device_name(stem: &str) -> bool {
+    let stem = stem.trim_end_matches(' ').to_ascii_uppercase();
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
+        return true;
+    }
+    match stem.strip_prefix("COM").or_else(|| stem.strip_prefix("LPT")) {
+        Some(digit) => matches!(digit, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "\u{b9}" | "\u{b2}" | "\u{b3}"),
+        None => false,
+    }
+}
+
+/// Where a folder download puts each remote entry: local names (relative to the download's
+/// root, "/" separated) for the folders and for the files (remote path, local path, size).
+/// Names that Windows would treat as the same ("README" and "readme", "foo." and "foo") get
+/// "name (1)" like a top-level download does, so nothing is ever written over. Entries are
+/// handled in a fixed order (shallow first, then by name), so the same listing always gives
+/// the same names however it was read.
+fn map_download_names(dirs: &[String], files: &[(String, u64)]) -> (Vec<String>, Vec<(String, String, u64)>) {
+    let mut entries: Vec<(&str, Option<u64>)> = dirs
+        .iter()
+        .filter(|rel| !rel.is_empty())
+        .map(|rel| (rel.as_str(), None))
+        .chain(files.iter().map(|(rel, size)| (rel.as_str(), Some(*size))))
+        .collect();
+    entries.sort_by(|a, b| depth(a.0).cmp(&depth(b.0)).then_with(|| a.0.cmp(b.0)));
+    // NTFS ignores case: names are compared in upper case, as it does.
+    let fold = |name: &str| name.to_uppercase();
+    let mut local_dirs: std::collections::HashMap<&str, String> = std::collections::HashMap::from([("", String::new())]);
+    let mut taken: std::collections::HashMap<String, HashSet<String>> = std::collections::HashMap::new();
+    let (mut out_dirs, mut out_files) = (vec![], vec![]);
+    for (rel, size) in entries {
+        let (parent, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+        // Folders are listed before their contents, and sorted by depth: the parent is mapped.
+        let parent_local = local_dirs.get(parent).cloned().unwrap_or_default();
+        let siblings = taken.entry(parent_local.clone()).or_default();
+        let chosen = unique_name(&local_file_name(name), |n| siblings.contains(&fold(n)));
+        siblings.insert(fold(&chosen));
+        let local = if parent_local.is_empty() { chosen } else { format!("{parent_local}/{chosen}") };
+        match size {
+            Some(size) => out_files.push((rel.to_string(), local, size)),
+            None => {
+                local_dirs.insert(rel, local.clone());
+                out_dirs.push(local);
+            }
+        }
+    }
+    (out_dirs, out_files)
 }
 
 // ---- progress -------------------------------------------------------------------------
@@ -912,17 +969,19 @@ impl Remote {
         }
         progress.total.store(files.iter().map(|(_, s)| s).sum(), Ordering::Relaxed);
         tokio::fs::create_dir_all(local_dir).await.map_err(|e| OpError::local(&e, local_dir))?;
+        // Named up front, not as the files arrive: they download side by side.
+        let (local_dirs, local_files) = map_download_names(&dirs, &files);
         let (target, partial, _) = reserve_local(local_dir, name, true).await?;
         let result = async {
-            create_download_dirs(&partial, &dirs).await?;
+            create_download_dirs(&partial, &local_dirs).await?;
             let partial = &partial;
-            let jobs: Vec<_> = files
+            let jobs: Vec<_> = local_files
                 .iter()
-                .map(|(rel, size)| async move {
+                .map(|(rel, local_rel, size)| async move {
                     let _room = self.take_room(*size, progress).await?;
                     progress.check()?;
                     let remote = join(remote_path, rel);
-                    let local = local_rel(partial, rel);
+                    let local = join_rel(partial, local_rel);
                     let mut input = self.sftp.open(remote.as_str()).await.map_err(|e| OpError::from(e).at(&remote))?;
                     let mut output = create_download_file(&local).await?;
                     copy_down(&mut input, &mut output, &remote, &local, progress).await?;
@@ -1020,7 +1079,8 @@ impl Remote {
                     async move {
                         let _room = self.take_room(size, progress).await?;
                         progress.check()?;
-                        let local_path = local_rel(local, rel);
+                        // The real local name: only download targets get Windows-safe names.
+                        let local_path = join_rel(local, rel);
                         let mut input = tokio::fs::File::open(&local_path).await.map_err(|e| OpError::local(&e, &local_path))?;
                         let mut output = self.create_file(&remote).await.map_err(|e| e.at(remote_dir))?;
                         copy_up(&mut input, &mut output, &local_path, progress).await?;
@@ -1157,26 +1217,26 @@ fn budget_kib(size: u64) -> u32 {
     (size / 1024).clamp(1, in_flight.min(BUDGET_KIB as u64)) as u32
 }
 
-fn local_rel(base: &Path, rel: &str) -> PathBuf {
+/// `rel` ("a/b", or "" for `base` itself) below `base`, with its names as they are: a local
+/// source for an upload, or a download target already named by `map_download_names`.
+fn join_rel(base: &Path, rel: &str) -> PathBuf {
     let mut path = base.to_path_buf();
-    for part in rel.split('/').filter(|p| !p.is_empty()) {
-        path.push(local_file_name(part));
-    }
+    path.extend(rel.split('/').filter(|p| !p.is_empty()));
     path
 }
 
 async fn create_download_dirs(base: &Path, dirs: &[String]) -> Result<(), OpError> {
-    // The root is already reserved. Every other directory must be new: remote names
-    // such as "a:b" and "a?b" both become "a_b" on Windows and must never be merged.
+    // The root is already reserved. Every other directory must be new. The names are made
+    // distinct by `map_download_names`; this is the backstop should that ever miss one.
     for rel in dirs.iter().filter(|rel| !rel.is_empty()) {
-        let dir = local_rel(base, rel);
+        let dir = join_rel(base, rel);
         tokio::fs::create_dir(&dir).await.map_err(|e| download_local_error(&e, &dir))?;
     }
     Ok(())
 }
 
 async fn create_download_file(path: &Path) -> Result<tokio::fs::File, OpError> {
-    // Exclusive creation also catches case-only collisions on Windows. Fail the whole
+    // Exclusive creation is the backstop behind `map_download_names`: fail the whole
     // transfer (whose partial is removed) instead of silently truncating a sibling file.
     tokio::fs::OpenOptions::new().write(true).create_new(true).open(path).await.map_err(|e| download_local_error(&e, path))
 }
@@ -1192,14 +1252,20 @@ fn download_local_error(err: &std::io::Error, path: &Path) -> OpError {
 /// Move a finished partial file or folder into place, under a free name if `target` was
 /// taken meanwhile.
 async fn finish_local(partial: &Path, target: &Path) -> Result<PathBuf, OpError> {
-    let mut target = target.to_path_buf();
-    if target.exists() {
-        let dir = target.parent().map(Path::to_path_buf).unwrap_or_default();
-        let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        target = dir.join(unique_name(&name, |n| dir.join(n).exists()));
-    }
-    tokio::fs::rename(partial, &target).await.map_err(|e| OpError::local(&e, &target))?;
-    Ok(target)
+    let (partial, mut target) = (partial.to_path_buf(), target.to_path_buf());
+    // Blocking: a scanner holding the new file can make the rename retry for a few seconds,
+    // and the download must not be thrown away for that.
+    tokio::task::spawn_blocking(move || {
+        if target.exists() {
+            let dir = target.parent().map(Path::to_path_buf).unwrap_or_default();
+            let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            target = dir.join(unique_name(&name, |n| dir.join(n).exists()));
+        }
+        crate::model::rename_with_retries(&partial, &target).map_err(|e| OpError::local(&e, &target))?;
+        Ok(target)
+    })
+    .await
+    .map_err(|e| OpError::new(ErrorKind::Other, e.to_string()))?
 }
 
 async fn copy_down(
@@ -1249,18 +1315,47 @@ fn plan_local(local: &Path) -> Result<Vec<(String, Option<u64>)>, OpError> {
     let mut plan = vec![(String::new(), None)];
     let mut queue = vec![String::new()];
     while let Some(rel) = queue.pop() {
-        let dir = local_rel(local, &rel);
-        let mut children: Vec<_> = std::fs::read_dir(&dir)
-            .map_err(|e| OpError::local(&e, &dir))?
-            .collect::<Result<_, _>>()
-            .map_err(|e| OpError::local(&e, &dir))?;
+        let dir = join_rel(local, &rel);
+        let read = match std::fs::read_dir(&dir) {
+            Ok(read) => read,
+            // Only the folder itself has to be readable: one that isn't is uploaded empty.
+            Err(e) if !rel.is_empty() => {
+                log::warn!("Not uploading the contents of {}: {e}", dir.display());
+                continue;
+            }
+            Err(e) => return Err(OpError::local(&e, &dir)),
+        };
+        let mut children: Vec<_> = read
+            .filter_map(|child| child.map_err(|e| log::warn!("Skipping an entry of {}: {e}", dir.display())).ok())
+            .collect();
         children.sort_by_key(|e| e.file_name());
         for child in children {
-            let name = child.file_name().to_string_lossy().into_owned();
+            let path = child.path();
+            let Ok(name) = child.file_name().into_string() else {
+                log::warn!("Skipping {}: its name isn't Unicode, which SFTP needs", path.display());
+                continue;
+            };
             let child_rel = if rel.is_empty() { name } else { format!("{rel}/{name}") };
-            let meta = std::fs::metadata(child.path()).map_err(|e| OpError::local(&e, &child.path()))?;
+            // Windows junctions (mount points) are reported as links here, like symlinks: std
+            // counts every reparse tag with the name-surrogate bit, which both have. Other
+            // reparse points (OneDrive placeholders, deduplicated files) are real files.
+            let is_link = match child.file_type() {
+                Ok(kind) => kind.is_symlink(),
+                Err(e) => {
+                    log::warn!("Skipping {}: {e}", path.display());
+                    continue;
+                }
+            };
+            // Followed, so a link to a file uploads the file. A dangling link or an entry
+            // that vanished or can't be read doesn't fail the folder.
+            let meta = match std::fs::metadata(&path) {
+                Ok(meta) => meta,
+                Err(e) => {
+                    log::warn!("Skipping {}: {e}", path.display());
+                    continue;
+                }
+            };
             // Links to folders are skipped (they can loop), as in `download_dir`.
-            let is_link = child.file_type().is_ok_and(|t| t.is_symlink());
             if meta.is_dir() && !is_link {
                 plan.push((child_rel.clone(), None));
                 queue.push(child_rel);
@@ -1438,30 +1533,116 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    #[test]
+    fn windows_device_names_are_made_safe() {
+        assert_eq!(local_file_name("con"), "con_");
+        assert_eq!(local_file_name("aux.log"), "aux_.log");
+        assert_eq!(local_file_name("CON.tar.gz"), "CON_.tar.gz");
+        assert_eq!(local_file_name("Nul."), "Nul_");
+        assert_eq!(local_file_name("com1"), "com1_");
+        assert_eq!(local_file_name("LPT9.txt"), "LPT9_.txt");
+        assert_eq!(local_file_name("com\u{b2}.txt"), "com\u{b2}_.txt");
+        assert_eq!(local_file_name("con .txt"), "con _.txt");
+        assert_eq!(local_file_name("conin$"), "conin$_");
+        // Only a whole device name before the first dot is reserved.
+        for fine in ["console", "com", "com0", "com10", "lpt", "a.con", "my.aux", ".con", "nulls.txt", "con_"] {
+            assert_eq!(local_file_name(fine), fine);
+        }
+    }
+
+    #[test]
+    fn folder_downloads_name_colliding_entries_apart() {
+        let dirs: Vec<String> = ["", "a:b", "a?b", "Docs", "docs", "a:b/nested", "docs/x"].map(String::from).into();
+        let files: Vec<(String, u64)> =
+            [("a:b.txt", 1), ("a?b.txt", 2), ("README", 3), ("readme", 4), ("foo.", 5), ("foo", 6), ("docs/con.log", 7), ("Docs/Y", 8)]
+                .map(|(rel, size)| (rel.to_string(), size))
+                .into();
+        let (local_dirs, local_files) = map_download_names(&dirs, &files);
+        assert_eq!(local_dirs, ["Docs", "a_b", "a_b (1)", "docs (1)", "a_b/nested", "docs (1)/x"]);
+        let local_of = |rel: &str| local_files.iter().find(|(r, _, _)| r == rel).map(|(_, local, _)| local.as_str()).unwrap();
+        assert_eq!(local_of("a:b.txt"), "a_b.txt");
+        assert_eq!(local_of("a?b.txt"), "a_b (1).txt");
+        assert_eq!(local_of("README"), "README");
+        assert_eq!(local_of("readme"), "readme (1)");
+        assert_eq!(local_of("foo"), "foo");
+        assert_eq!(local_of("foo."), "foo (1)");
+        assert_eq!(local_of("docs/con.log"), "docs (1)/con_.log");
+        assert_eq!(local_of("Docs/Y"), "Docs/Y");
+        // Nothing shares a path, ignoring case.
+        let all: Vec<String> = local_dirs.iter().cloned().chain(local_files.iter().map(|(_, local, _)| local.clone())).collect();
+        let distinct: HashSet<_> = all.iter().map(|path| path.to_uppercase()).collect();
+        assert_eq!(distinct.len(), all.len());
+        // However the walk happened to list them.
+        let (mut dirs, mut files) = (dirs, files);
+        dirs.reverse();
+        files.reverse();
+        assert_eq!(map_download_names(&dirs, &files), (local_dirs, local_files));
+    }
+
+    #[test]
+    fn uploads_use_the_real_local_names() {
+        let base = Path::new("base");
+        // A download target is made safe; an upload source is looked up as it is.
+        assert_eq!(join_rel(base, "con.log/a. "), base.join("con.log").join("a. "));
+        assert_eq!(join_rel(base, ""), base);
+        assert_eq!(local_file_name("con.log"), "con_.log");
+        // The plan holds the names the local files really have.
+        let dir = std::env::temp_dir().join(format!("komando-sftp-{}", crate::model::new_id()));
+        std::fs::create_dir_all(dir.join("my docs")).unwrap();
+        std::fs::write(dir.join("my docs").join("aux_.txt"), b"xy").unwrap();
+        let plan = plan_local(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+        let rels: Vec<_> = plan.unwrap().into_iter().map(|(rel, _)| rel).collect();
+        assert!(rels.contains(&"my docs".to_string()) && rels.contains(&"my docs/aux_.txt".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn upload_plans_skip_junctions_and_unreadable_entries() {
+        let dir = std::env::temp_dir().join(format!("komando-sftp-{}", crate::model::new_id()));
+        let (real, junction) = (dir.join("real"), dir.join("junction"));
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("a.txt"), b"abc").unwrap();
+        std::fs::write(dir.join("b.txt"), b"de").unwrap();
+        let made = std::process::Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(&junction).arg(&real).output();
+        let linked = made.is_ok_and(|out| out.status.success());
+        let plan = plan_local(&dir);
+        // The junction's own type, as std reports it: a link, so a loop through it can't happen.
+        let reported_as_link = linked && std::fs::read_dir(&dir).unwrap().flatten().any(|e| {
+            e.file_name() == "junction" && e.file_type().is_ok_and(|t| t.is_symlink())
+        });
+        if linked {
+            std::fs::remove_dir(&junction).unwrap();
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+        let rels: Vec<_> = plan.unwrap().into_iter().map(|(rel, _)| rel).collect();
+        assert_eq!(rels, ["", "b.txt", "real", "real/a.txt"]);
+        assert!(!linked || reported_as_link);
+    }
+
     #[tokio::test]
-    async fn folder_download_does_not_overwrite_colliding_file_names() {
+    async fn folder_download_never_overwrites_a_sibling_file() {
+        // The backstop behind `map_download_names`: even a name it missed isn't truncated.
         let dir = std::env::temp_dir().join(format!("komando-sftp-{}", crate::model::new_id()));
         std::fs::create_dir(&dir).unwrap();
-        let first = local_rel(&dir, "a:b.txt");
-        let second = local_rel(&dir, "a?b.txt");
-        assert_eq!(first, second, "both remote names become the same Windows file name");
-        let mut file = create_download_file(&first).await.unwrap();
+        let path = join_rel(&dir, "a_b.txt");
+        let mut file = create_download_file(&path).await.unwrap();
         file.write_all(b"first file").await.unwrap();
         file.flush().await.unwrap();
         drop(file);
-        assert!(create_download_file(&second).await.is_err());
-        assert_eq!(std::fs::read(&first).unwrap(), b"first file");
+        assert!(create_download_file(&path).await.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"first file");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]
-    async fn folder_download_does_not_merge_colliding_directory_names() {
+    async fn folder_download_does_not_merge_directories() {
         let dir = std::env::temp_dir().join(format!("komando-sftp-{}", crate::model::new_id()));
         std::fs::create_dir(&dir).unwrap();
         // The root has already been reserved, and parents precede their children.
-        create_download_dirs(&dir, &[String::new(), "a:b".into(), "a:b/nested".into()]).await.unwrap();
+        create_download_dirs(&dir, &[String::new(), "a_b".into(), "a_b/nested".into()]).await.unwrap();
         assert!(dir.join("a_b/nested").is_dir());
-        assert!(create_download_dirs(&dir, &["a?b".into()]).await.is_err());
+        assert!(create_download_dirs(&dir, &["a_b".into()]).await.is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
