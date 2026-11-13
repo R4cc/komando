@@ -1,10 +1,11 @@
-//! How much download data a connection keeps on its way at once.
+//! How much transfer data a connection keeps on its way at once, in one direction: downloads
+//! and uploads each have their own [`Flow`].
 //!
-//! Every byte asked for but not yet received sits somewhere between the server and Komando, and
-//! on a slow link mostly in a queue at the slowest hop. Keystroke echoes on the same connection
-//! wait behind that queue: with a fixed 4 MB in flight, a 100 Mbit/s link added a third of a
-//! second to every key. Too little in flight, though, leaves a fast distant link idle between
-//! round trips.
+//! Every byte asked for but not yet received (or sent but not yet confirmed) sits somewhere
+//! between the server and Komando, and on a slow link mostly in a queue at the slowest hop.
+//! Keystrokes and their echoes on the same connection wait behind that queue: with a fixed 4 MB
+//! in flight, a 100 Mbit/s link added a third of a second to every key. Too little in flight,
+//! though, leaves a fast distant link idle between round trips.
 //!
 //! So the amount follows the delay each read sees, in the manner of LEDBAT (RFC 6817): the
 //! lowest round trip seen recently is the link's own delay; anything above it is queueing. While
@@ -16,7 +17,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// The queueing delay downloads may add to everything else on the connection.
+/// The queueing delay transfers may add to everything else on the connection.
 pub(crate) const TARGET: Duration = Duration::from_millis(20);
 /// The largest read: OpenSSH's limit (256 KiB packets, less headers).
 pub(crate) const MAX_REQUEST: u32 = 255 * 1024;
@@ -32,7 +33,7 @@ const START_WINDOW: u64 = 128 * 1024;
 const BASE_INTERVAL: Duration = Duration::from_secs(10);
 const BASE_INTERVALS: usize = 6;
 
-/// One connection's downloads share one of these.
+/// One connection's downloads share one of these, and its uploads another.
 pub(crate) struct Flow {
     state: Mutex<State>,
     room: tokio::sync::Notify,

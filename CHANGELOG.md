@@ -19,6 +19,10 @@ All notable changes to Komando are listed here. The format follows
   to a new width used to take most of every frame; now the text rewraps a few times a second
   while you drag and catches up when you let go. Shorter Scrollbacks still rewrap every frame.
 - Copy output takes about 40% less time with a full Scrollback.
+- Typing stays responsive while files upload in the file browser, as it already did for
+  downloads. On a 10 Mbit/s link with 30 ms latency, keys showed over half a second late
+  during an upload and now show about 25 ms late; on a 100 Mbit/s link with 50 ms latency,
+  about 65 ms late before and 15 ms now. Uploads are about as fast as before.
 
 ### Fixed
 

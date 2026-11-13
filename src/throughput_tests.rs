@@ -214,8 +214,15 @@ fn start_server_with_file(lines: u64, file_size: u64, threads: usize) -> (u16, t
     (port, runtime)
 }
 
+/// What was uploaded to the benchmark server, by path: how far the writes to each file reached.
+/// Uploads go to `/up`; their contents are counted and dropped.
+fn uploaded() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
+    static UPLOADED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> = std::sync::OnceLock::new();
+    UPLOADED.get_or_init(Default::default)
+}
+
 /// The SFTP side of [`LogServer`]: `/big.bin`, and `/many`, a folder of [`MANY_FILES`] files of
-/// [`MANY_SIZE`] bytes. Contents are made up as they are read.
+/// [`MANY_SIZE`] bytes. Contents are made up as they are read. Takes uploads to `/up` too.
 struct BigFile {
     size: u64,
     /// Folder listings already sent, by handle.
@@ -235,7 +242,10 @@ impl BigFile {
             "/big.bin" => (self.size, 0o100644),
             "/many" => (0, 0o040755),
             _ if path.starts_with("/many/") => (MANY_SIZE, 0o100644),
-            _ => return Err(russh_sftp::protocol::StatusCode::NoSuchFile),
+            _ => match uploaded().lock().unwrap().get(path) {
+                Some(&size) => (size, 0o100644),
+                None => return Err(russh_sftp::protocol::StatusCode::NoSuchFile),
+            },
         };
         Ok(russh_sftp::protocol::FileAttributes { size: Some(size), permissions: Some(permissions), ..Default::default() })
     }
@@ -277,11 +287,43 @@ impl russh_sftp::server::Handler for BigFile {
         &mut self,
         id: u32,
         path: String,
-        _: russh_sftp::protocol::OpenFlags,
+        flags: russh_sftp::protocol::OpenFlags,
         _: russh_sftp::protocol::FileAttributes,
     ) -> Result<russh_sftp::protocol::Handle, Self::Error> {
-        self.attrs(&path)?;
+        if flags.contains(russh_sftp::protocol::OpenFlags::WRITE) {
+            if !path.starts_with("/up/") {
+                return Err(russh_sftp::protocol::StatusCode::PermissionDenied);
+            }
+            uploaded().lock().unwrap().insert(path.clone(), 0);
+        } else {
+            self.attrs(&path)?;
+        }
         Ok(russh_sftp::protocol::Handle { id, handle: path })
+    }
+
+    async fn write(&mut self, id: u32, handle: String, offset: u64, data: Vec<u8>) -> Result<russh_sftp::protocol::Status, Self::Error> {
+        let mut uploaded = uploaded().lock().unwrap();
+        let size = uploaded.get_mut(&handle).ok_or(russh_sftp::protocol::StatusCode::Failure)?;
+        *size = (*size).max(offset + data.len() as u64);
+        Ok(Self::ok(id))
+    }
+
+    async fn mkdir(&mut self, id: u32, path: String, _: russh_sftp::protocol::FileAttributes) -> Result<russh_sftp::protocol::Status, Self::Error> {
+        if !path.starts_with("/up/") {
+            return Err(russh_sftp::protocol::StatusCode::PermissionDenied);
+        }
+        Ok(Self::ok(id))
+    }
+
+    async fn rename(&mut self, id: u32, from: String, to: String) -> Result<russh_sftp::protocol::Status, Self::Error> {
+        let mut uploaded = uploaded().lock().unwrap();
+        let moved: Vec<String> =
+            uploaded.keys().filter(|path| **path == from || path.starts_with(&format!("{from}/"))).cloned().collect();
+        for path in moved {
+            let size = uploaded.remove(&path).expect("listed");
+            uploaded.insert(format!("{to}{}", &path[from.len()..]), size);
+        }
+        Ok(Self::ok(id))
     }
 
     async fn read(&mut self, id: u32, handle: String, offset: u64, len: u32) -> Result<russh_sftp::protocol::Data, Self::Error> {
@@ -712,14 +754,29 @@ impl DelayProxy {
     }
 }
 
-/// Typing in a Session while a large file downloads over SFTP on the same connection: how long
-/// a key takes to show, and how fast the download goes. Directly, and through a link with
-/// latency and limited bandwidth, where the download's data queues up ahead of the key's echo.
+/// Type about 20 keys a second in `session` until `done`, from a moment after it starts:
+/// how long each took to show.
+fn type_until(session: &mut Bench, done: &std::sync::atomic::AtomicBool) -> Vec<Duration> {
+    let start = Instant::now();
+    let mut latencies = Vec::new();
+    while !done.load(std::sync::atomic::Ordering::Relaxed) {
+        if start.elapsed() > Duration::from_millis(300) {
+            latencies.push(session.echo());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    latencies
+}
+
+/// Typing in a Session while a large file downloads, then uploads, over SFTP on the same
+/// connection: how long a key takes to show, and how fast the transfer goes. Directly, and
+/// through a link with latency and limited bandwidth, where the transfer's data queues up ahead
+/// of the key (uploads) or its echo (downloads). Then a folder of small files each way.
 ///
 /// `KOMANDO_THROUGHPUT_SFTP_MB` sets the file size for the direct run (default 512 MB).
 #[test]
 #[ignore]
-fn throughput_typing_during_sftp_download() {
+fn throughput_typing_during_sftp_transfers() {
     let mb: u64 = std::env::var("KOMANDO_THROUGHPUT_SFTP_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(512);
     let dir = std::env::temp_dir().join(format!("komando-throughput-sftp-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -768,15 +825,7 @@ fn throughput_typing_during_sftp_download() {
             })
         };
 
-        // Type about 20 keys a second while it downloads, from a moment after it starts.
-        let start = Instant::now();
-        let mut busy = Vec::new();
-        while !done.load(std::sync::atomic::Ordering::Relaxed) {
-            if start.elapsed() > Duration::from_millis(300) {
-                busy.push(quiet.echo());
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        let busy = type_until(&mut quiet, &done);
         let (path, elapsed) = download.join().unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().len(), size, "the whole file arrived");
         let _ = std::fs::remove_dir_all(&local);
@@ -794,6 +843,64 @@ fn throughput_typing_during_sftp_download() {
         assert_eq!(files.len(), MANY_FILES);
         assert!(files.iter().all(|&len| len == MANY_SIZE));
         let _ = std::fs::remove_dir_all(&local);
+
+        // The same size the other way, from a local file.
+        uploaded().lock().unwrap().clear();
+        let source = dir.join("upload.bin");
+        {
+            use std::io::Write;
+            let mut file = std::io::BufWriter::new(std::fs::File::create(&source).unwrap());
+            let block: Vec<u8> = (0..1024 * 1024).map(|i| i as u8).collect();
+            let mut left = size;
+            while left > 0 {
+                let n = left.min(block.len() as u64) as usize;
+                file.write_all(&block[..n]).unwrap();
+                left -= n as u64;
+            }
+        }
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let upload = {
+            let (remote, source, done) = (remote.clone(), source.clone(), done.clone());
+            std::thread::spawn(move || {
+                let start = Instant::now();
+                let progress = crate::sftp::Progress::default();
+                futures::executor::block_on(crate::sftp::spawn(async move {
+                    remote.upload(&source, "/up", "big.bin", false, &progress).await
+                }))
+                .expect("the upload task ran")
+                .expect("the upload succeeded");
+                let elapsed = start.elapsed();
+                done.store(true, std::sync::atomic::Ordering::Relaxed);
+                elapsed
+            })
+        };
+        let busy_up = type_until(&mut quiet, &done);
+        let up_elapsed = upload.join().unwrap();
+        assert_eq!(uploaded().lock().unwrap().get("/up/big.bin"), Some(&size), "the whole file arrived");
+        let _ = std::fs::remove_file(&source);
+
+        // And a folder of small files.
+        let folder = dir.join("many");
+        std::fs::create_dir_all(&folder).unwrap();
+        for i in 0..MANY_FILES {
+            std::fs::write(folder.join(format!("file{i:03}.log")), vec![b'x'; MANY_SIZE as usize]).unwrap();
+        }
+        let start = Instant::now();
+        futures::executor::block_on(crate::sftp::spawn({
+            let (remote, folder) = (remote.clone(), folder.clone());
+            async move { remote.upload(&folder, "/up", "many", false, &crate::sftp::Progress::default()).await }
+        }))
+        .expect("the upload task ran")
+        .expect("the folder uploaded");
+        let up_folder_time = start.elapsed();
+        {
+            let uploaded = uploaded().lock().unwrap();
+            let files: Vec<_> = uploaded.iter().filter(|(path, _)| path.starts_with("/up/many/")).collect();
+            assert_eq!(files.len(), MANY_FILES);
+            assert!(files.iter().all(|(_, len)| **len == MANY_SIZE));
+        }
+        let _ = std::fs::remove_dir_all(&folder);
+
         eprintln!(
             "[{label}] download {:.0} MB in {:.2} s = {:.1} MB/s",
             size as f64 / 1e6,
@@ -810,6 +917,22 @@ fn throughput_typing_during_sftp_download() {
             eprintln!("[{label}] typing, while downloading: the download ended too soon to type");
         } else {
             eprintln!("[{label}] typing, while downloading: {}", percentiles(busy));
+        }
+        eprintln!(
+            "[{label}] upload {:.0} MB in {:.2} s = {:.1} MB/s",
+            size as f64 / 1e6,
+            up_elapsed.as_secs_f64(),
+            size as f64 / 1e6 / up_elapsed.as_secs_f64()
+        );
+        eprintln!(
+            "[{label}] folder of {MANY_FILES} x {} KB uploaded in {:.2} s",
+            MANY_SIZE / 1024,
+            up_folder_time.as_secs_f64()
+        );
+        if busy_up.is_empty() {
+            eprintln!("[{label}] typing, while uploading: the upload ended too soon to type");
+        } else {
+            eprintln!("[{label}] typing, while uploading:   {}", percentiles(busy_up));
         }
         quiet.sink.close();
     }

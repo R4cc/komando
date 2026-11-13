@@ -10,9 +10,9 @@
 //! locally, so a permission error never produces an empty file. Uploads work the same way on
 //! the server.
 //!
-//! Downloads read through a second SFTP channel, issuing the reads themselves so they can keep
-//! as much on its way as the link carries without a queue building up in front of the
-//! terminal's keystrokes (see [`flow`]).
+//! Downloads and uploads go through a second SFTP channel, issuing the reads and writes
+//! themselves so they can keep as much on its way as the link carries without a queue building
+//! up in front of the terminal's keystrokes or their echoes (see [`flow`]).
 
 mod flow;
 
@@ -601,47 +601,61 @@ pub struct Remote {
     budget: tokio::sync::Semaphore,
     /// Files the transfers on this connection may have open together.
     slots: tokio::sync::Semaphore,
-    /// The channel downloads read through; `None` if the server wouldn't open a second one,
-    /// and downloads then read through `sftp`.
-    reader: Option<Reader>,
+    /// The channel transfers read and write through; `None` if the server wouldn't open a
+    /// second one, and transfers then go through `sftp`.
+    paced: Option<PacedChannel>,
 }
 
-/// A second SFTP channel, for downloads whose reads are paced by [`flow::Flow`].
-struct Reader {
+/// A second SFTP channel, for transfers whose reads and writes are paced by [`flow::Flow`].
+struct PacedChannel {
     raw: Arc<RawSftpSession>,
-    flow: Arc<flow::Flow>,
-    /// The largest read the server takes.
+    /// Downloads and uploads are paced apart: a link is often faster one way than the other,
+    /// and each queues in its own direction.
+    down: Arc<flow::Flow>,
+    up: Arc<flow::Flow>,
+    /// The largest read and write the server takes.
     max_read: u32,
+    max_write: u32,
 }
 
-impl Reader {
-    async fn open(handle: &Handle<Client>) -> Result<Reader> {
+impl PacedChannel {
+    async fn open(handle: &Handle<Client>) -> Result<PacedChannel> {
         let channel = handle.channel_open_session().await?;
         channel.request_subsystem(true, "sftp").await?;
         let config = russh_sftp::client::Config { request_timeout_secs: REQUEST_TIMEOUT_SECS, ..Default::default() };
         let mut raw = RawSftpSession::new_with_config(channel.into_stream(), config);
         let version = raw.init().await?;
-        let mut max_read = flow::MAX_REQUEST;
+        let (mut max_read, mut max_write) = (flow::MAX_REQUEST, flow::MAX_REQUEST);
         if version.extensions.get(russh_sftp::extensions::LIMITS).is_some_and(|v| v == "1") {
             let limits = russh_sftp::client::rawsession::Limits::from(raw.limits().await?);
-            if let Some(len) = limits.read_len.filter(|&len| len > 0) {
-                max_read = max_read.min(len.min(u32::MAX as u64) as u32);
-            }
+            let within = |limit: Option<u64>, len: u32| limit.filter(|&l| l > 0).map_or(len, |l| len.min(l.min(u32::MAX as u64) as u32));
+            max_read = within(limits.read_len, max_read);
+            max_write = within(limits.write_len, max_write);
             raw.set_limits(limits);
         }
-        Ok(Reader { raw: Arc::new(raw), flow: Arc::default(), max_read })
+        Ok(PacedChannel { raw: Arc::new(raw), down: Arc::default(), up: Arc::default(), max_read, max_write })
     }
 }
 
-/// A file open on the [`Reader`] channel, closed when dropped.
+/// A file open on the [`PacedChannel`], closed when dropped if not before.
 struct RemoteHandle {
     raw: Arc<RawSftpSession>,
     name: String,
 }
 
+impl RemoteHandle {
+    /// Close the file and wait for the server to confirm: an upload is complete only then.
+    async fn close(mut self) -> Result<(), SftpError> {
+        let name = std::mem::take(&mut self.name);
+        self.raw.close(name).await.map(drop)
+    }
+}
+
 impl Drop for RemoteHandle {
     fn drop(&mut self) {
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        if !self.name.is_empty()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
             let (raw, name) = (self.raw.clone(), std::mem::take(&mut self.name));
             runtime.spawn(async move {
                 let _ = raw.close(name).await;
@@ -668,7 +682,7 @@ impl Download<'_> {
 }
 
 struct PacedFile<'a> {
-    reader: &'a Reader,
+    channel: &'a PacedChannel,
     handle: RemoteHandle,
     /// The size the file had when listed; reading goes on past it if it has grown.
     size: Option<u64>,
@@ -680,7 +694,7 @@ impl PacedFile<'_> {
     /// Read `len` bytes at `offset`, on a task of its own so its round trip is timed as it
     /// happens, not when the download loop gets to it.
     fn read(&self, offset: u64, len: u32) -> ReadReply {
-        let (raw, flow, name) = (self.reader.raw.clone(), self.reader.flow.clone(), self.handle.name.clone());
+        let (raw, flow, name) = (self.channel.raw.clone(), self.channel.down.clone(), self.handle.name.clone());
         tokio::spawn(async move {
             let sent = Instant::now();
             let reply = raw.read(name, offset, len).await;
@@ -690,7 +704,7 @@ impl PacedFile<'_> {
     }
 
     async fn copy_to(&self, output: &mut tokio::fs::File, remote: &str, local: &Path, progress: &Progress) -> Result<(), OpError> {
-        let flow = &self.reader.flow;
+        let flow = &self.channel.down;
         // Reads on their way, oldest first: where each starts, how long, and its reply.
         let mut pending: std::collections::VecDeque<(u64, u32, ReadReply)> = Default::default();
         // Where the next read starts.
@@ -699,8 +713,8 @@ impl PacedFile<'_> {
         // the file has grown), asked for along with the others rather than after them.
         let mut limit = self.size;
         let at_most = |next: u64, limit: Option<u64>| match limit {
-            Some(limit) if next < limit => (limit - next).min(self.reader.max_read as u64) as u32,
-            _ => self.reader.max_read,
+            Some(limit) if next < limit => (limit - next).min(self.channel.max_read as u64) as u32,
+            _ => self.channel.max_read,
         };
         loop {
             progress.check()?;
@@ -736,7 +750,7 @@ impl PacedFile<'_> {
                     // Less than asked for before the end: get the rest before anything after it.
                     let (mut at, end) = (offset + data.len() as u64, offset + len as u64);
                     while at < end {
-                        match self.reader.raw.read(self.handle.name.as_str(), at, (end - at) as u32).await {
+                        match self.channel.raw.read(self.handle.name.as_str(), at, (end - at) as u32).await {
                             Ok(more) if more.data.is_empty() => return Ok(()),
                             Ok(more) => {
                                 output.write_all(&more.data).await.map_err(|e| OpError::local(&e, local))?;
@@ -753,6 +767,112 @@ impl PacedFile<'_> {
             }
         }
     }
+}
+
+/// A remote file created for an upload.
+enum Upload<'a> {
+    Paced(PacedUpload<'a>),
+    /// Written by the SFTP library, a fixed number of writes ahead.
+    Plain(Box<russh_sftp::client::fs::File>),
+}
+
+impl Upload<'_> {
+    /// Write all of `input` to the file and close it, waiting for the server to confirm both.
+    async fn copy_from(self, input: &mut tokio::fs::File, local: &Path, remote: &str, progress: &Progress) -> Result<(), OpError> {
+        match self {
+            Upload::Plain(mut output) => {
+                copy_up(input, &mut output, local, progress).await?;
+                output.shutdown().await.map_err(|e| OpError::remote_io(&e))
+            }
+            Upload::Paced(file) => {
+                file.copy_from(input, local, remote, progress).await?;
+                file.handle.close().await.map_err(|e| OpError::from(e).at(remote))
+            }
+        }
+    }
+}
+
+struct PacedUpload<'a> {
+    channel: &'a PacedChannel,
+    handle: RemoteHandle,
+}
+
+type WriteReply = tokio::task::JoinHandle<Result<(), SftpError>>;
+
+impl PacedUpload<'_> {
+    /// Write `data` at `offset`, on a task of its own so its round trip is timed as it
+    /// happens, not when the upload loop gets to it.
+    fn write(&self, offset: u64, data: Vec<u8>) -> WriteReply {
+        let (raw, flow, name) = (self.channel.raw.clone(), self.channel.up.clone(), self.handle.name.clone());
+        let len = data.len() as u32;
+        tokio::spawn(async move {
+            let sent = Instant::now();
+            let reply = raw.write(name, offset, data).await;
+            flow.done(len, reply.is_ok().then(|| sent.elapsed()));
+            reply.map(drop)
+        })
+    }
+
+    async fn copy_from(&self, input: &mut tokio::fs::File, local: &Path, remote: &str, progress: &Progress) -> Result<(), OpError> {
+        let flow = &self.channel.up;
+        // Writes on their way, oldest first: how long each is, and its reply.
+        let mut pending: std::collections::VecDeque<(u32, WriteReply)> = Default::default();
+        let mut offset = 0u64;
+        let mut read_all = false;
+        loop {
+            progress.check()?;
+            while !read_all {
+                let len = match flow.try_reserve(self.channel.max_write) {
+                    Some(len) => len,
+                    // Other transfers have the room: wait for some.
+                    None if pending.is_empty() => flow.reserve(self.channel.max_write).await,
+                    None => break,
+                };
+                let data = match read_up_to(input, len as usize).await {
+                    Ok(data) => data,
+                    Err(e) => {
+                        flow.done(len, None);
+                        return Err(OpError::local(&e, local));
+                    }
+                };
+                // Room taken but not used (the end of the file) goes back.
+                if data.len() < len as usize {
+                    flow.done(len - data.len() as u32, None);
+                }
+                if data.is_empty() {
+                    read_all = true;
+                    break;
+                }
+                let n = data.len() as u32;
+                pending.push_back((n, self.write(offset, data)));
+                offset += n as u64;
+            }
+            let Some((_, front)) = pending.front_mut() else { return Ok(()) };
+            let reply = tokio::select! {
+                reply = front => reply,
+                // Room for more writes.
+                _ = flow.room(), if !read_all => continue,
+            };
+            let (len, _) = pending.pop_front().expect("not empty");
+            reply.map_err(|_| OpError::connection())?.map_err(|e| OpError::from(e).at(remote))?;
+            progress.add(len as u64);
+        }
+    }
+}
+
+/// Read from `input` until `len` bytes or its end.
+async fn read_up_to(input: &mut tokio::fs::File, len: usize) -> std::io::Result<Vec<u8>> {
+    let mut data = vec![0u8; len];
+    let mut filled = 0;
+    while filled < len {
+        let n = input.read(&mut data[filled..]).await?;
+        if n == 0 {
+            break;
+        }
+        filled += n;
+    }
+    data.truncate(filled);
+    Ok(data)
 }
 
 /// A file's turn among the connection's transfers, until dropped.
@@ -798,23 +918,23 @@ impl Remote {
             .map_err(|_| anyhow!("The server did not start SFTP. It may not offer it."))?
             .map_err(|e| anyhow!("Could not start SFTP: {e}"))?;
         // The download channel opens while the home folder is looked up.
-        let opening_reader = tokio::time::timeout(Duration::from_secs(20), Reader::open(&handle));
-        let (home, reader) = tokio::join!(sftp.canonicalize("."), opening_reader);
+        let opening_paced = tokio::time::timeout(Duration::from_secs(20), PacedChannel::open(&handle));
+        let (home, paced) = tokio::join!(sftp.canonicalize("."), opening_paced);
         let home = home.unwrap_or_else(|_| "/".into());
-        let reader = match reader {
-            Ok(Ok(reader)) => Some(reader),
+        let paced = match paced {
+            Ok(Ok(paced)) => Some(paced),
             Ok(Err(err)) => {
-                log::warn!("Downloads share the SFTP channel: a second one did not open: {err:#}");
+                log::warn!("Transfers share the SFTP channel: a second one did not open: {err:#}");
                 None
             }
             Err(_) => {
-                log::warn!("Downloads share the SFTP channel: a second one did not open in time");
+                log::warn!("Transfers share the SFTP channel: a second one did not open in time");
                 None
             }
         };
         let mut remote = Remote { sftp, handle, identity: Identity::default(), home, uploading: Mutex::default(), budget: tokio::sync::Semaphore::new(BUDGET_KIB as usize),
             slots: tokio::sync::Semaphore::new(PARALLEL),
-            reader,
+            paced,
         };
         // Who we are decides which files look inaccessible. Without it nothing is marked.
         if let Ok(Ok(out)) = tokio::time::timeout(Duration::from_secs(10), remote.exec("id")).await
@@ -1117,14 +1237,25 @@ impl Remote {
         result
     }
 
-    /// Open a remote file to download, on the reader channel if there is one.
+    /// Create (or truncate) a remote file to upload to, on the paced channel if there is one.
+    async fn create_upload(&self, path: &str) -> Result<Upload<'_>, OpError> {
+        let Some(channel) = &self.paced else {
+            return self.create_file(path).await.map(|file| Upload::Plain(Box::new(file)));
+        };
+        let flags = OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE;
+        let handle = channel.raw.open(path, flags, FileAttributes::empty()).await.map_err(|e| OpError::from(e).at(path))?;
+        let handle = RemoteHandle { raw: channel.raw.clone(), name: handle.handle };
+        Ok(Upload::Paced(PacedUpload { channel, handle }))
+    }
+
+    /// Open a remote file to download, on the paced channel if there is one.
     async fn open_download(&self, path: &str, size: Option<u64>) -> Result<Download<'_>, OpError> {
-        let Some(reader) = &self.reader else {
+        let Some(channel) = &self.paced else {
             return self.sftp.open(path).await.map(|file| Download::Plain(Box::new(file))).map_err(|e| OpError::from(e).at(path));
         };
-        let handle = reader.raw.open(path, OpenFlags::READ, FileAttributes::empty()).await.map_err(|e| OpError::from(e).at(path))?;
-        let handle = RemoteHandle { raw: reader.raw.clone(), name: handle.handle };
-        Ok(Download::Paced(PacedFile { reader, handle, size }))
+        let handle = channel.raw.open(path, OpenFlags::READ, FileAttributes::empty()).await.map_err(|e| OpError::from(e).at(path))?;
+        let handle = RemoteHandle { raw: channel.raw.clone(), name: handle.handle };
+        Ok(Download::Paced(PacedFile { channel, handle, size }))
     }
 
     async fn download_dir(&self, remote_path: &str, local_dir: &Path, name: &str, progress: &Progress) -> Result<PathBuf, OpError> {
@@ -1265,10 +1396,8 @@ impl Remote {
                         // The real local name: only download targets get Windows-safe names.
                         let local_path = join_rel(local, rel);
                         let mut input = tokio::fs::File::open(&local_path).await.map_err(|e| OpError::local(&e, &local_path))?;
-                        let mut output = self.create_file(&remote).await.map_err(|e| e.at(remote_dir))?;
-                        copy_up(&mut input, &mut output, &local_path, progress).await?;
-                        output.shutdown().await.map_err(|e| OpError::remote_io(&e))?;
-                        Ok(())
+                        let output = self.create_upload(&remote).await.map_err(|e| e.at(remote_dir))?;
+                        output.copy_from(&mut input, &local_path, &remote, progress).await
                     }
                 })
                 .collect();

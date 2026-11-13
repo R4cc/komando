@@ -71,7 +71,7 @@ stand-in for the UI copies the screen every frame. A second test feeds the same 
 into the parser, without SSH. A third runs several busy Sessions at once while it types in a
 quiet one, and reports how long the output took and how long each typed key took to show
 (`KOMANDO_THROUGHPUT_SESSIONS`, default 8). A fourth types in a Session while a large file and
-a folder of small files download over SFTP on its connection, directly and through simulated
+a folder of small files download, then upload, over SFTP on its connection, directly and through simulated
 links with latency and limited bandwidth (`KOMANDO_THROUGHPUT_SFTP_MB` sets the direct file's
 size, default 512). A fifth fills Scrollbacks of 100,000 and 500,000 lines and times what
 holds the terminal locked: Copy output, resizes, and finding Command Marks. They run on Windows
