@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-11-13
+
 ### Changed
 
 - Appearance now shows fourteen rounded theme thumbnails with matching app and terminal
