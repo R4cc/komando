@@ -3195,10 +3195,17 @@ fn strip_action(id: &'static str, icon: &str, label: &'static str, danger: bool,
         )
 }
 
+/// A keyboard shortcut ("Ctrl ,") in a small outlined chip, the only one in the app.
 fn kbd(keys: &str, p: AppPalette) -> impl IntoElement {
     div()
+        .flex_shrink_0()
         .px(px(5.))
         .h(px(18.))
+        // Centred on its default line, the text rendered about a pixel above the middle of
+        // the chip on Windows, so the capitals touched the top border. Pin the line to the
+        // space inside the border and start it a pixel lower.
+        .pt(px(2.))
+        .line_height(px(14.))
         .flex()
         .items_center()
         .rounded(px(4.))

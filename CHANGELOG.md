@@ -14,8 +14,16 @@ All notable changes to Komando are listed here. The format follows
 - The SFTP button and the file browser show a turning loader while SFTP starts and while a
   folder loads.
 
+### Changed
+
+- Once an SSH connection has signed in, its connection messages (host key check, signing
+  in) are erased, so the shell starts on a clean screen. If connecting fails, they stay so
+  you can see why.
+
 ### Fixed
 
+- Keyboard shortcut labels (Quick connect, Settings, Back to sessions) sit in the middle
+  of their outline instead of touching its top edge.
 - The SFTP, copy and close-session buttons in the title bar respond to every click on
   Windows. Before, a click could be taken as grabbing the title bar and do nothing, and a
   double click on one of them maximized or restored the window.

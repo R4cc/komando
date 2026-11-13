@@ -9,11 +9,15 @@
 //! own Credential, exactly as if it were opened directly.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::Line;
+use alacritty_terminal::term::Term;
+use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::Processor;
 use anyhow::{Result, anyhow};
@@ -63,24 +67,65 @@ pub(crate) enum LogKind {
     Fail,
 }
 
-/// The connection's progress, written into the terminal above where the shell will start
-/// (and kept in its Scrollback): where it is connecting, the Host Key, how it signs in.
+/// The connection's progress, written into the terminal above where the shell will start:
+/// where it is connecting, the Host Key, how it signs in. Once every hop has signed in it is
+/// erased, so the shell starts on a clean screen; a connection that fails keeps it, to show why.
 #[derive(Clone)]
 pub(crate) struct ConnectLog {
     term: SharedTerm,
     proxy: EventProxy,
+    /// Lines written since the last `clear`, shared by the clones every hop holds.
+    lines: Arc<AtomicUsize>,
 }
 
 impl ConnectLog {
     pub(crate) fn new(term: SharedTerm, proxy: EventProxy) -> Self {
-        Self { term, proxy }
+        Self { term, proxy, lines: Arc::default() }
     }
 
     pub(crate) fn line(&self, kind: LogKind, text: &str) {
         let mut parser: Processor = Processor::new();
         parser.advance(&mut *self.term.lock(), log_line(kind, text).as_bytes());
+        self.lines.fetch_add(1, Ordering::Relaxed);
         self.proxy.send_event(Event::Wakeup);
     }
+
+    /// Erase the lines written so far, as far as they are still on screen.
+    pub(crate) fn clear(&self) {
+        let lines = self.lines.swap(0, Ordering::Relaxed);
+        if lines == 0 {
+            return;
+        }
+        let mut term = self.term.lock();
+        let rows = rows_above_cursor(&*term, lines);
+        if rows == 0 {
+            return;
+        }
+        // Back to the first log row, then erase from there to the end of the screen.
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut *term, format!("\r\x1b[{rows}A\x1b[J").as_bytes());
+        drop(term);
+        self.proxy.send_event(Event::Wakeup);
+    }
+}
+
+/// How many screen rows the last `lines` lines above the cursor take up. A line too long for
+/// the terminal wraps onto more than one row; the count stops at the top of the screen, as
+/// rows that have scrolled into the Scrollback can't be erased.
+fn rows_above_cursor<T>(term: &Term<T>, lines: usize) -> usize {
+    let grid = term.grid();
+    let mut left = lines;
+    let mut rows = 0;
+    let mut line = grid.cursor.point.line.0 - 1;
+    while left > 0 && line >= 0 {
+        rows += 1;
+        let continues = line > 0 && grid[Line(line - 1)][grid.last_column()].flags.contains(Flags::WRAPLINE);
+        if !continues {
+            left -= 1;
+        }
+        line -= 1;
+    }
+    rows
 }
 
 /// One log line as terminal output: a muted "SSH" tag, a marker coloured by `kind`, and the
@@ -300,6 +345,8 @@ async fn run(
         proxy.send(SessionEvent::Hop { index, step: HopStep::Done });
         handles.push(handle);
     }
+    // Signed in everywhere: the shell starts where the log began.
+    log.clear();
     // Shared with SFTP channels opened on the same connection.
     let handle = Arc::new(handles.pop().ok_or_else(|| anyhow!("Nothing to connect to."))?);
     let result = shell(&handle, &mut size, &term, &proxy, &mut commands, sudo).await;
@@ -566,7 +613,7 @@ async fn authenticate(
 
 #[cfg(test)]
 mod tests {
-    use super::{LogKind, Output, SudoPassword, log_line, show_watching_sudo};
+    use super::{ConnectLog, LogKind, Output, SudoPassword, log_line, show_watching_sudo};
     use crate::session::{EventProxy, GridSize, new_term, scrollback_text};
 
     #[test]
@@ -596,6 +643,28 @@ mod tests {
         show_watching_sudo(&mut output, &narrow, &proxy, &mut sudo, b"[sudo] password for ana: ");
         assert_eq!(scrollback_text(&*narrow.lock()), "[sudo] password for ana:\r\n");
         assert_eq!(&*sudo.typed(b"\r".to_vec()).send, b"\r");
+    }
+
+    #[test]
+    fn clearing_the_log_erases_its_lines_and_keeps_earlier_output() {
+        let (tx, _rx) = futures::channel::mpsc::unbounded();
+        let proxy = EventProxy::new(tx);
+        let term = new_term(GridSize { cols: 30, rows: 10, cell_width: 9, cell_height: 18 }, 100, proxy.clone());
+        let mut parser: alacritty_terminal::vte::ansi::Processor = alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut *term.lock(), b"earlier output\r\n");
+
+        let log = ConnectLog::new(term.clone(), proxy.clone());
+        log.line(LogKind::Step, "Connecting to web01");
+        // Wider than the terminal: it wraps onto a second row.
+        log.line(LogKind::Step, "Host key ssh-ed25519 SHA256:abcdefghijklmnop");
+        log.line(LogKind::Good, "Signed in to web01 as ana");
+        log.clear();
+
+        assert_eq!(scrollback_text(&*term.lock()), "earlier output\r\n");
+        assert_eq!(term.lock().grid().cursor.point.line.0, 1, "the shell starts where the log began");
+        // Nothing left to erase: clearing again leaves earlier output alone.
+        log.clear();
+        assert_eq!(scrollback_text(&*term.lock()), "earlier output\r\n");
     }
 
     #[test]
