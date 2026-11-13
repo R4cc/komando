@@ -58,6 +58,16 @@ pub enum BrowserEvent {
     ShowHidden(bool),
     /// Try starting SFTP again (it failed).
     Retry,
+    /// "Jump to here": change the terminal's directory to this folder.
+    JumpTo(String),
+}
+
+/// Context-menu entries the user can switch on in Settings (all off by default).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MenuExtras {
+    pub rename: bool,
+    pub copy_to: bool,
+    pub move_to: bool,
 }
 
 enum Conn {
@@ -193,6 +203,8 @@ pub struct FileBrowser {
     pub width: f32,
     /// The path to select once the next listing arrives.
     select_after_load: Option<String>,
+    /// Optional context-menu entries, set by the workspace from Settings.
+    pub menu_extras: MenuExtras,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -271,6 +283,7 @@ impl FileBrowser {
             focus: cx.focus_handle(),
             width: 520.,
             select_after_load: None,
+            menu_extras: MenuExtras::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -1076,12 +1089,24 @@ impl FileBrowser {
         self.notify_info(if n == 1 { "Path copied.".to_string() } else { format!("{n} paths copied.") }, cx);
     }
 
+    /// Take the terminal to `entry`: into it if it is a folder, else into the folder it is in.
+    /// The browser follows to the same folder.
     fn jump_to(&mut self, entry: &Entry, cx: &mut Context<Self>) {
-        if entry.is_dir() {
+        let dir = if entry.is_dir() {
             self.navigate(entry.path.clone(), cx);
+            entry.path.clone()
         } else {
-            self.reveal(&entry.path, cx);
-        }
+            match sftp::parent(&entry.path) {
+                Some(parent) => parent,
+                None => return,
+            }
+        };
+        cx.emit(BrowserEvent::JumpTo(dir));
+    }
+
+    /// The terminal couldn't take the `cd` (see `TerminalView::run_line`).
+    pub fn jump_refused(&mut self, cx: &mut Context<Self>) {
+        self.notify_error("The terminal isn't at a shell prompt (a program is running or the session ended).", cx);
     }
 
     fn add_favorite(&mut self, path: String, host_only: bool, cx: &mut Context<Self>) {
@@ -1890,8 +1915,9 @@ impl FileBrowser {
                             let dir_write = this.dir_access.write;
                             let favorites = this.favorites.read(cx).data.clone();
                             let host = this.host_id.clone();
+                            let extras = this.menu_extras;
                             this.popup = Popup::open(event.position(), |this: &mut Self| &mut this.popup, window, cx, move |menu, _, _| {
-                                entry_menu(menu, &view, targets, dir_write, &favorites, &host)
+                                entry_menu(menu, &view, targets, dir_write, &favorites, &host, extras)
                             });
                             cx.notify();
                         }))
@@ -1904,7 +1930,7 @@ impl FileBrowser {
                     let this = browser.read(cx);
                     let targets = this.selection();
                     let favorites = this.favorites.read(cx).data.clone();
-                    entry_menu(menu, &ctx_view, targets, this.dir_access.write, &favorites, &this.host_id)
+                    entry_menu(menu, &ctx_view, targets, this.dir_access.write, &favorites, &this.host_id, this.menu_extras)
                 })
                 .into_any_element(),
             );
@@ -2535,6 +2561,13 @@ fn copy_targets(op: CopyOp, paths: Vec<String>, dest: &str, taken: &HashSet<Stri
     pairs
 }
 
+/// The shell command that changes to `dir`, quoted for POSIX shells (and fish) when needed.
+pub fn cd_command(dir: &str) -> String {
+    let plain = !dir.is_empty() && dir.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+@%:,=".contains(c));
+    let quoted = if plain { dir.to_string() } else { format!("'{}'", dir.replace('\'', "'\\''")) };
+    if dir.starts_with('-') { format!("cd -- {quoted}") } else { format!("cd {quoted}") }
+}
+
 /// `path` without empty or `.` segments or a trailing slash: "/srv/app/" is "/srv/app".
 /// Keep `..`: only the server knows the parent of a symlink's target.
 fn clean_path(path: &str) -> String {
@@ -2565,6 +2598,7 @@ fn entry_menu(
     dir_write: Allowed,
     favorites: &Favorites,
     host: &str,
+    extras: MenuExtras,
 ) -> PopupMenu {
     let Some(first) = targets.first().cloned() else { return menu };
     let single = targets.len() == 1;
@@ -2587,17 +2621,23 @@ fn entry_menu(
     let t = targets.clone();
     menu = menu.item(item(download_label, "download", readable, Box::new(move |this, _, cx| this.download(t.clone(), false, cx))));
     menu = menu.separator();
-    if single {
+    if single && extras.rename {
         let path = first.path.clone();
         menu = menu.item(item("Rename".into(), "pencil", can_change, Box::new(move |this, window, cx| this.start_rename(path.clone(), window, cx))));
     }
-    let (p1, p2, p3, p4) = (paths.clone(), paths.clone(), paths.clone(), paths.clone());
+    if extras.copy_to {
+        let p = paths.clone();
+        menu = menu.item(item("Copy to…".into(), "copy-plus", readable, Box::new(move |this, window, cx| this.ask_copy_move(CopyOp::Copy, p.clone(), window, cx))));
+    }
+    if extras.move_to {
+        let p = paths.clone();
+        menu = menu.item(item("Move to…".into(), "folder-input", can_change, Box::new(move |this, window, cx| this.ask_copy_move(CopyOp::Move, p.clone(), window, cx))));
+    }
+    let (p3, p4) = (paths.clone(), paths.clone());
     menu = menu
-        .item(item("Copy to…".into(), "copy-plus", readable, Box::new(move |this, window, cx| this.ask_copy_move(CopyOp::Copy, p1.clone(), window, cx))))
-        .item(item("Move to…".into(), "folder-input", can_change, Box::new(move |this, window, cx| this.ask_copy_move(CopyOp::Move, p2.clone(), window, cx))))
         .item(item(if single { "Delete".into() } else { format!("Delete {} items", targets.len()) }, "trash", can_change, Box::new(move |this, _, cx| this.ask_delete(p3.clone(), cx))))
         .separator()
-        .item(item(if single { "Copy full path".into() } else { "Copy full paths".into() }, "clipboard-copy", true, Box::new(move |this, _, cx| this.copy_paths(p4.clone(), cx))));
+        .item(item(if single { "Copy as path".into() } else { "Copy as paths".into() }, "clipboard-copy", true, Box::new(move |this, _, cx| this.copy_paths(p4.clone(), cx))));
     if single {
         let e = first.clone();
         menu = menu.item(item("Jump to here".into(), "corner-down-right", !(first.is_dir() && first.locked()), Box::new(move |this, _, cx| this.jump_to(&e, cx))));
@@ -2716,6 +2756,15 @@ impl Render for FileBrowser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cd_command_quotes_only_when_needed() {
+        assert_eq!(cd_command("/var/log"), "cd /var/log");
+        assert_eq!(cd_command("/home/me/my files"), "cd '/home/me/my files'");
+        assert_eq!(cd_command("/tmp/it's"), "cd '/tmp/it'\\''s'");
+        assert_eq!(cd_command("/tmp/$(rm -rf x)"), "cd '/tmp/$(rm -rf x)'");
+        assert_eq!(cd_command("-odd"), "cd -- -odd");
+    }
 
     #[test]
     fn natural_order() {

@@ -560,6 +560,29 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Type `line` into the shell and run it, replacing anything typed but not yet entered.
+    /// Refuses (false) when there is no shell to type into, or a full-screen program such as
+    /// an editor has the terminal and would take the keys as its own.
+    pub fn run_line(&mut self, line: &str, cx: &mut Context<Self>) -> bool {
+        if self.sink.is_none() || self.status != Status::Connected || self.prompt.is_some() {
+            return false;
+        }
+        {
+            let mut term = self.term.lock();
+            if term.mode().contains(TermMode::ALT_SCREEN) {
+                return false;
+            }
+            if self.command_rail {
+                self.marks.entered(&mut term);
+            }
+        }
+        self.scroll_to_bottom();
+        // Ctrl+U clears a half-typed command so it doesn't run together with `line`.
+        self.write(format!("\x15{line}\r").into_bytes());
+        cx.notify();
+        true
+    }
+
     fn write(&mut self, bytes: Vec<u8>) {
         if let Some(sink) = &self.sink {
             self.activity.input(Instant::now());

@@ -12,6 +12,15 @@ All notable changes to Komando are listed here. The format follows
   `Komando-0.3.5-x64.msi` and `Komando-0.3.5-x64.exe`, without unversioned copies.
   README download links open the latest release so you can choose the installer or
   portable EXE.
+- The SFTP browser's right-click menu is shorter: Rename, Copy to… and Move to… are hidden
+  unless you switch them on in the new Settings → File browser page. F2 still renames.
+- "Copy full path" in the SFTP browser's right-click menu is now called "Copy as path".
+
+### Fixed
+
+- "Jump to here" in the SFTP browser now changes the terminal's directory: to the folder,
+  or for a file to the folder it is in. If a program such as an editor has the terminal,
+  the browser says so instead of typing into it.
 
 ## [0.3.4] - 2026-11-13
 

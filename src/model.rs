@@ -601,6 +601,12 @@ pub struct Settings {
     pub sftp_width: f32,
     /// The SFTP browser lists files starting with a dot.
     pub sftp_show_hidden: bool,
+    /// "Rename" in the SFTP browser's context menu (F2 renames either way).
+    pub sftp_menu_rename: bool,
+    /// "Copy to…" in the SFTP browser's context menu.
+    pub sftp_menu_copy_to: bool,
+    /// "Move to…" in the SFTP browser's context menu.
+    pub sftp_menu_move_to: bool,
 }
 
 impl Default for Settings {
@@ -625,6 +631,9 @@ impl Default for Settings {
             check_for_updates: true,
             sftp_width: 540.,
             sftp_show_hidden: true,
+            sftp_menu_rename: false,
+            sftp_menu_copy_to: false,
+            sftp_menu_move_to: false,
         }
     }
 }

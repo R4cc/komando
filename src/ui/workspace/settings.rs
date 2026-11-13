@@ -9,6 +9,7 @@ use super::*;
 pub enum SettingsSection {
     Appearance,
     Terminal,
+    FileBrowser,
     Shells,
     Highlights,
     Security,
@@ -16,13 +17,14 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 6] =
-        [Self::Appearance, Self::Terminal, Self::Shells, Self::Highlights, Self::Security, Self::About];
+    pub const ALL: [SettingsSection; 7] =
+        [Self::Appearance, Self::Terminal, Self::FileBrowser, Self::Shells, Self::Highlights, Self::Security, Self::About];
 
     fn label(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
             Self::Terminal => "Terminal",
+            Self::FileBrowser => "File browser",
             Self::Shells => "Local shells",
             Self::Highlights => "Highlights",
             Self::Security => "Security",
@@ -34,6 +36,7 @@ impl SettingsSection {
         match self {
             Self::Appearance => "palette",
             Self::Terminal => "square-terminal",
+            Self::FileBrowser => "folder-open",
             Self::Shells => "terminal",
             Self::Highlights => "highlighter",
             Self::Security => "shield",
@@ -45,6 +48,7 @@ impl SettingsSection {
         match self {
             Self::Appearance => "Dark and light mode, a theme for each, and the background blur.",
             Self::Terminal => "Font, scrollback and clipboard behaviour for every session.",
+            Self::FileBrowser => "The SFTP file browser beside SSH sessions.",
             Self::Shells => "The shells on this PC listed at the top of the sidebar. Hide the ones you don't use, remove them, or add your own, such as WSL or Git Bash.",
             Self::Highlights => "Colour matching text in terminal output. Rules apply top to bottom; the first match wins.",
             Self::Security => "The vault that holds your passwords and keys.",
@@ -260,6 +264,7 @@ impl Workspace {
         let body = match section {
             SettingsSection::Appearance => self.settings_appearance(p, cx),
             SettingsSection::Terminal => self.settings_terminal(p, cx),
+            SettingsSection::FileBrowser => self.settings_file_browser(p, cx),
             SettingsSection::Shells => self.settings_shells(p, cx),
             SettingsSection::Highlights => self.settings_highlights(p, cx),
             SettingsSection::Security => self.settings_security(p, cx),
@@ -619,6 +624,58 @@ impl Workspace {
                 ),
             ],
         )
+    }
+
+    fn settings_file_browser(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let (rename, copy_to, move_to) =
+            (self.settings.sftp_menu_rename, self.settings.sftp_menu_copy_to, self.settings.sftp_menu_move_to);
+        group(
+            p,
+            vec![
+                setting_row(
+                    p,
+                    "\"Rename\" in the menu",
+                    "Show Rename when you right-click a file or folder. F2 renames either way.",
+                    switch("sftp-menu-rename".into(), "Rename in the menu", rename, p)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.settings.sftp_menu_rename = !rename;
+                            this.apply_sftp_menu_settings(cx);
+                        }))
+                        .into_any_element(),
+                ),
+                setting_row(
+                    p,
+                    "\"Copy to…\" in the menu",
+                    "Show Copy to… when you right-click files or folders, to copy them to another folder on the server.",
+                    switch("sftp-menu-copy-to".into(), "Copy to in the menu", copy_to, p)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.settings.sftp_menu_copy_to = !copy_to;
+                            this.apply_sftp_menu_settings(cx);
+                        }))
+                        .into_any_element(),
+                ),
+                setting_row(
+                    p,
+                    "\"Move to…\" in the menu",
+                    "Show Move to… when you right-click files or folders, to move them to another folder on the server.",
+                    switch("sftp-menu-move-to".into(), "Move to in the menu", move_to, p)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.settings.sftp_menu_move_to = !move_to;
+                            this.apply_sftp_menu_settings(cx);
+                        }))
+                        .into_any_element(),
+                ),
+            ],
+        )
+    }
+
+    fn apply_sftp_menu_settings(&mut self, cx: &mut Context<Self>) {
+        let extras = self.sftp_menu_extras();
+        for browser in self.sessions.iter().filter_map(|s| s.browser.clone()) {
+            browser.update(cx, |b, _| b.menu_extras = extras);
+        }
+        self.save_settings(cx);
+        cx.notify();
     }
 
     fn settings_security(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {

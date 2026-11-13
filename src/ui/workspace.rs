@@ -23,7 +23,7 @@ use crate::model::{
 use crate::session::{self, Status, ssh};
 use crate::theme::{AppPalette, Appearance, TerminalPalette, UI_FONT, alpha, project_color};
 use crate::ui::connect_route::RouteCard;
-use crate::ui::file_browser::{BrowserEvent, FavoriteStore, FileBrowser};
+use crate::ui::file_browser::{self, BrowserEvent, FavoriteStore, FileBrowser, MenuExtras};
 use crate::ui::terminal_view::{TerminalEvent, TerminalView};
 use crate::ui::transfers::{Transfers, TransfersChanged};
 use crate::ui::widgets::{
@@ -1116,8 +1116,11 @@ impl Workspace {
                 None => (entry.label.to_string(), String::new()),
             };
             let (favorites, transfers, show_hidden) = (self.favorites.clone(), self.transfers.clone(), self.settings.sftp_show_hidden);
+            let extras = self.sftp_menu_extras();
             let browser = cx.new(|cx| {
-                FileBrowser::new(host_id.clone(), label.into(), target.into(), favorites, transfers, show_hidden, window, cx)
+                let mut browser = FileBrowser::new(host_id.clone(), label.into(), target.into(), favorites, transfers, show_hidden, window, cx);
+                browser.menu_extras = extras;
+                browser
             });
             let sub = cx.subscribe_in(&browser, window, move |this, browser, event: &BrowserEvent, window, cx| match event {
                 BrowserEvent::Close => this.toggle_sftp(id, window, cx),
@@ -1128,6 +1131,15 @@ impl Workspace {
                 BrowserEvent::Retry => {
                     let sink = this.sessions.iter().find(|s| s.id == id).and_then(|s| s.view.read(cx).sink());
                     browser.update(cx, |b, cx| b.connect(sink, cx));
+                }
+                BrowserEvent::JumpTo(dir) => {
+                    let Some(view) = this.sessions.iter().find(|s| s.id == id).map(|s| s.view.clone()) else { return };
+                    let line = file_browser::cd_command(dir);
+                    if view.update(cx, |v, cx| v.run_line(&line, cx)) {
+                        view.update(cx, |v, cx| v.focus_prompt(window, cx));
+                    } else {
+                        browser.update(cx, |b, cx| b.jump_refused(cx));
+                    }
                 }
             });
             let observer = cx.observe(&browser, move |this, browser, cx| {
@@ -1163,6 +1175,14 @@ impl Workspace {
         if (width - self.settings.sftp_width).abs() >= 1. {
             self.settings.sftp_width = width;
             cx.notify();
+        }
+    }
+
+    fn sftp_menu_extras(&self) -> MenuExtras {
+        MenuExtras {
+            rename: self.settings.sftp_menu_rename,
+            copy_to: self.settings.sftp_menu_copy_to,
+            move_to: self.settings.sftp_menu_move_to,
         }
     }
 
