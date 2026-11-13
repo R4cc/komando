@@ -286,11 +286,10 @@ mod tests {
     fn failed_add_does_not_leave_an_unsaved_credential() {
         let dir = temp_dir();
         let mut v = Vault::create(&dir, "correct horse").unwrap();
-        let blocked = Vault::path_in(&dir).with_extension("tmp");
-        fs::create_dir(&blocked).unwrap();
+        crate::model::FAIL_WRITES.set(true);
         assert!(v.add(password("not saved")).is_err());
         assert_eq!(v.list().count(), 0);
-        fs::remove_dir(&blocked).unwrap();
+        crate::model::FAIL_WRITES.set(false);
         v.add(password("saved")).unwrap();
         let reopened = Vault::unlock(&dir, "correct horse").unwrap();
         assert_eq!(reopened.list().count(), 1);
@@ -302,11 +301,10 @@ mod tests {
         let dir = temp_dir();
         let mut v = Vault::create(&dir, "correct horse").unwrap();
         let id = v.add(password("old")).unwrap();
-        let blocked = Vault::path_in(&dir).with_extension("tmp");
-        fs::create_dir(&blocked).unwrap();
+        crate::model::FAIL_WRITES.set(true);
         assert!(v.replace(&id, password("new")).is_err());
         assert_eq!(v.get(&id), Some(&password("old")));
-        fs::remove_dir(&blocked).unwrap();
+        crate::model::FAIL_WRITES.set(false);
         v.add(password("another")).unwrap();
         let reopened = Vault::unlock(&dir, "correct horse").unwrap();
         assert_eq!(reopened.get(&id), Some(&password("old")));
@@ -318,11 +316,10 @@ mod tests {
         let dir = temp_dir();
         let mut v = Vault::create(&dir, "correct horse").unwrap();
         let id = v.add(password("saved")).unwrap();
-        let blocked = Vault::path_in(&dir).with_extension("tmp");
-        fs::create_dir(&blocked).unwrap();
+        crate::model::FAIL_WRITES.set(true);
         assert!(v.remove(&id).is_err());
         assert_eq!(v.get(&id), Some(&password("saved")));
-        fs::remove_dir(&blocked).unwrap();
+        crate::model::FAIL_WRITES.set(false);
         v.add(password("another")).unwrap();
         let reopened = Vault::unlock(&dir, "correct horse").unwrap();
         assert_eq!(reopened.get(&id), Some(&password("saved")));

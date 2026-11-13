@@ -765,10 +765,41 @@ fn which(exe: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// A scanner can temporarily hold a downloaded file open without allowing a rename on
+/// Windows. Retry access-denied, sharing and lock violations for up to three seconds.
+pub fn rename_with_retries(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(err) if cfg!(windows) && matches!(err.raw_os_error(), Some(5 | 32 | 33)) && tries < 10 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Makes `write_atomic` fail on this thread, so tests can check what a failed save leaves.
+    pub(crate) static FAIL_WRITES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Write via a temporary file and rename, so a crash never leaves a half-written file.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
-    let tmp = path.with_extension("tmp");
+    #[cfg(test)]
+    if FAIL_WRITES.with(std::cell::Cell::get) {
+        anyhow::bail!("writing {} failed for a test", path.display());
+    }
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    // Unique per write and per process, so two windows saving the same file never share a temp.
+    let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(format!(".{}.{unique}.tmp", std::process::id()));
+    let tmp = path.with_file_name(tmp_name);
     let written = (|| {
         let mut file = fs::File::create(&tmp)?;
         file.write_all(bytes)?;
@@ -776,7 +807,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         file.sync_all()
     })()
     .with_context(|| format!("writing {}", tmp.display()))
-    .and_then(|()| fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display())));
+    .and_then(|()| rename_with_retries(&tmp, path).with_context(|| format!("replacing {}", path.display())));
     if written.is_err() {
         let _ = fs::remove_file(&tmp);
     }

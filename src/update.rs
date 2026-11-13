@@ -248,27 +248,11 @@ pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<
         let _ = fs::remove_file(&partial);
         return Err(err);
     }
-    if let Err(err) = rename_with_retries(&partial, dest) {
+    if let Err(err) = crate::model::rename_with_retries(&partial, dest) {
         let _ = fs::remove_file(&partial);
         return Err(err).with_context(|| format!("Couldn't put the download at {}", dest.display()));
     }
     Ok(())
-}
-
-/// A scanner can temporarily hold a downloaded file open without allowing a rename on
-/// Windows. Retry access-denied, sharing and lock violations for up to three seconds.
-fn rename_with_retries(from: &Path, to: &Path) -> std::io::Result<()> {
-    let mut tries = 0;
-    loop {
-        match fs::rename(from, to) {
-            Ok(()) => return Ok(()),
-            Err(err) if cfg!(windows) && matches!(err.raw_os_error(), Some(5 | 32 | 33)) && tries < 10 => {
-                tries += 1;
-                std::thread::sleep(Duration::from_millis(300));
-            }
-            Err(err) => return Err(err),
-        }
-    }
 }
 
 /// How this copy of Komando gets updated.
@@ -318,20 +302,22 @@ fn old_exe(exe: &Path) -> PathBuf {
 }
 
 /// Put the downloaded program in place of the running one. The running file is renamed
-/// aside (Windows allows that) and removed at the next start.
+/// aside (Windows allows that) and removed at a later start, once nothing runs from it.
 pub fn replace_exe(exe: &Path, new_exe: &Path) -> Result<()> {
     let old = old_exe(exe);
     let _ = fs::remove_file(&old);
-    fs::rename(exe, &old).with_context(|| format!("Couldn't move {} aside", exe.display()))?;
-    if let Err(err) = fs::rename(new_exe, exe) {
+    crate::model::rename_with_retries(exe, &old).with_context(|| format!("Couldn't move {} aside", exe.display()))?;
+    if let Err(err) = crate::model::rename_with_retries(new_exe, exe) {
         // Put the old one back so Komando still starts.
-        let _ = fs::rename(&old, exe);
+        let _ = crate::model::rename_with_retries(&old, exe);
         return Err(err).with_context(|| format!("Couldn't put the new version at {}", exe.display()));
     }
     Ok(())
 }
 
-/// Remove what an earlier update left behind. Call at startup.
+/// Remove what an earlier update left behind. Call at startup. The `.old` exe can't be
+/// deleted while the process that was renamed to it is still running, so that removal is
+/// best effort and a later start finishes it.
 pub fn clean_up() {
     if let Ok(exe) = std::env::current_exe() {
         let _ = fs::remove_file(old_exe(&exe));
@@ -697,7 +683,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
             drop(scanner);
         });
-        let result = rename_with_retries(&from, &dest);
+        let result = crate::model::rename_with_retries(&from, &dest);
         release.join().unwrap();
         result.unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"installer");
