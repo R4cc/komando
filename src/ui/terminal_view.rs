@@ -2,23 +2,25 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
+use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::grid::{Dimensions as _, Scroll};
 use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::TermMode;
+use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use futures::StreamExt as _;
 use futures::channel::{mpsc, oneshot};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontStyle, FontWeight,
-    Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels,
-    ScrollEvent, SharedString, StrikethroughStyle, Subscription, Task, TextRun, TouchPhase, UnderlineStyle, Window,
-    actions, canvas, div, fill, outline, point, prelude::*, px, size,
+    App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
+    Focusable, FontStyle, FontWeight, Hsla, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PathBuilder, Pixels, ScrollEvent, ShapedLine, SharedString, StrikethroughStyle, Subscription,
+    Task, TextAlign, TextRun, TouchPhase, UTF16Selection, UnderlineStyle, Window, actions, canvas, div, fill,
+    outline, point, prelude::*, px, size,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, PopupMenu};
@@ -190,6 +192,9 @@ pub struct TerminalView {
     autoscroll: Option<(Instant, f32)>,
     /// A button press the program was told about; its release goes to the program too.
     mouse_pressed: Option<keys::MouseButton>,
+    /// Text an IME (or a pending dead key on Linux) is composing, drawn at the cursor until
+    /// it is committed.
+    marked: Option<String>,
     /// The cell the mouse was last reported in (motion is reported once per cell).
     mouse_cell: Option<(usize, usize)>,
     /// Wheel movement smaller than a line, carried over to the next event.
@@ -227,6 +232,97 @@ impl Focusable for TerminalView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
+}
+
+/// Text input from the platform: plain keys (which `key_down` leaves unhandled), what dead
+/// keys compose and what an IME commits. The "document" is only the composition in progress
+/// (`marked`); committed text goes straight to the Session.
+impl EntityInputHandler for TerminalView {
+    fn text_for_range(
+        &mut self,
+        range: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        let utf16: Vec<u16> = self.marked.as_deref().unwrap_or_default().encode_utf16().collect();
+        let range = range.start.min(utf16.len())..range.end.min(utf16.len());
+        let text = String::from_utf16_lossy(&utf16[range.clone()]);
+        *adjusted_range = Some(range);
+        Some(text)
+    }
+
+    fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
+        let end = self.marked.as_deref().map_or(0, |text| text.encode_utf16().count());
+        Some(UTF16Selection { range: end..end, reversed: false })
+    }
+
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
+        self.marked.as_deref().map(|text| 0..text.encode_utf16().count())
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if self.marked.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn replace_text_in_range(&mut self, _: Option<Range<usize>>, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // Committing ends the composition, and so does an empty commit (a cancelled one).
+        if self.marked.take().is_some() {
+            cx.notify();
+        }
+        if self.focus.is_focused(window) {
+            self.type_text(text, cx);
+        }
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _: Option<Range<usize>>,
+        text: &str,
+        _: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.marked = (!text.is_empty()).then(|| text.to_string());
+        window.invalidate_character_coordinates();
+        cx.notify();
+    }
+
+    /// The cursor's cell, wherever in the composition: the IME puts its candidates by it.
+    fn bounds_for_range(
+        &mut self,
+        _: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let (col, row) = cursor_cell(&*self.term.lock())?;
+        let (cw, ch) = self.cell.get();
+        let origin = point(element_bounds.left() + px(cw * col as f32), element_bounds.top() + px(ch * row as f32));
+        Some(Bounds::new(origin, size(px(cw), px(ch))))
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _: gpui::Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+
+    fn accepts_text_input(&self, _: &mut Window, _: &mut Context<Self>) -> bool {
+        !self.is_disconnected()
+    }
+}
+
+/// The viewport cell (column, row) the cursor is in, when it is on screen.
+fn cursor_cell<T>(term: &Term<T>) -> Option<(usize, usize)> {
+    let cursor = term.grid().cursor.point;
+    let row = cursor.line.0 + term.grid().display_offset() as i32;
+    (0..term.screen_lines() as i32).contains(&row).then_some((cursor.column.0, row as usize))
 }
 
 /// The grid assumed before a pane is first laid out.
@@ -272,6 +368,7 @@ impl TerminalView {
             drag_at: None,
             autoscroll: None,
             mouse_pressed: None,
+            marked: None,
             mouse_cell: None,
             scroll_remainder: 0.,
             focus_reported: None,
@@ -656,9 +753,14 @@ impl TerminalView {
         }
         let ks = &event.keystroke;
         let m = &ks.modifiers;
+        let mods = Mods { ctrl: m.control, alt: m.alt, shift: m.shift };
         // Application shortcuts are all ctrl+shift+… (and ctrl+tab); plain ctrl+letter keys
         // belong to the shell (ctrl+w deletes a word in bash, ctrl+k kills the line).
-        if (m.control && m.shift && ks.key != "-" && ks.key != "2" && ks.key != "6") || (m.control && ks.key == "tab") {
+        if keys::is_app_shortcut(&ks.key, ks.key_char.as_deref(), mods) {
+            return;
+        }
+        // Unhandled, Alt+F4 closes the window and Alt+Space opens its menu.
+        if cfg!(target_os = "windows") && keys::is_window_command(&ks.key, mods) {
             return;
         }
         if self.is_disconnected() {
@@ -668,9 +770,15 @@ impl TerminalView {
             }
             return;
         }
+        // Plain text is left to come back through the input handler (`EntityInputHandler`
+        // below), which is how dead keys compose and IMEs commit: Windows only turns the key
+        // into text (WM_CHAR) when it goes unhandled here, and Linux types `key_char` itself.
+        // Both do so only for keys with no modifier but shift, the same test as here.
+        if m.is_subset_of(&Modifiers::shift()) && keys::is_text_input(ks.key_char.as_deref()) {
+            return;
+        }
         let mode = *self.term.lock().mode();
         let app_cursor = mode.contains(TermMode::APP_CURSOR);
-        let mods = Mods { ctrl: m.control, alt: m.alt, shift: m.shift };
         if let Some(bytes) = keys::to_bytes(&ks.key, ks.key_char.as_deref(), mods, app_cursor) {
             self.scroll_to_bottom();
             {
@@ -689,6 +797,18 @@ impl TerminalView {
             cx.stop_propagation();
             cx.notify();
         }
+    }
+
+    /// Type text from the platform's text input: a key, a dead-key composition or an IME's
+    /// commit.
+    fn type_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if text.is_empty() || self.is_disconnected() {
+            return;
+        }
+        self.scroll_to_bottom();
+        self.term.lock().selection = None;
+        self.write(text.as_bytes().to_vec());
+        cx.notify();
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
@@ -1598,6 +1718,8 @@ struct Frame {
     /// Bar and underline cursors, over the text.
     cursor_bars: Vec<(Bounds<Pixels>, Hsla)>,
     cursor_outline: Option<(Bounds<Pixels>, Hsla)>,
+    /// What the IME is composing, over the cursor: its area, text and background.
+    preedit: Option<(Bounds<Pixels>, ShapedLine, Hsla)>,
     font_size: Pixels,
 }
 
@@ -1891,6 +2013,9 @@ impl Render for TerminalView {
         let origin_cell = self.origin.clone();
         let cell_cell = self.cell.clone();
         let glyph_cache = self.glyph_cache.clone();
+        let marked = self.marked.clone();
+        let input_view = cx.entity();
+        let input_focus = self.focus.clone();
         let highlighter = cx.try_global::<ActiveHighlights>().map(|h| h.0.clone()).unwrap_or_default();
         let (rail, flash_row) = crate::perf::time("command rail", || self.render_rail(cx));
         // Laid over the terminal's right edge, sized from the last layout's width.
@@ -2055,9 +2180,29 @@ impl Render for TerminalView {
                 for d in &mut frame.decorations {
                     d.y += if d.kind == DecorationKind::Strike { ctx.strike_y } else { ctx.underline_y };
                 }
+                // The IME's composition sits at the cursor, underlined, until it is committed.
+                if let Some(text) = marked.filter(|text| !text.contains('\n'))
+                    && let Some((col, row)) = cursor_cell(&*term.lock())
+                {
+                    let fg = rgb_to_hsla(palette.foreground);
+                    let run = TextRun {
+                        len: text.len(),
+                        font: ctx.fonts[0].clone(),
+                        color: fg,
+                        background_color: None,
+                        underline: Some(UnderlineStyle { thickness: px(1.), color: Some(fg), wavy: false }),
+                        strikethrough: None,
+                    };
+                    let line = text_system.shape_line(text.into(), font_size, &[run], None);
+                    let origin = point(bounds.origin.x + cell_w * col as f32, bounds.origin.y + line_h * row as f32);
+                    let area = Bounds::new(origin, size(line.width, line_h));
+                    frame.preedit = Some((area, line, rgb_to_hsla(palette.background)));
+                }
                 frame
             }),
-            move |bounds, frame, window, _cx| crate::perf::time("terminal grid paint", || {
+            move |bounds, frame, window, cx| crate::perf::time("terminal grid paint", || {
+                // Text typed, composed with dead keys or committed by an IME comes in here.
+                window.handle_input(&input_focus, ElementInputHandler::new(bounds, input_view), cx);
                 let terminal_bounds = Bounds::new(
                     point(bounds.left() - px(PADDING_X), bounds.top() - px(PADDING_Y)),
                     size(bounds.size.width + px(PADDING_X * 2.), bounds.size.height + px(PADDING_Y * 2.)),
@@ -2131,6 +2276,10 @@ impl Render for TerminalView {
                 }
                 if let Some((bounds, color)) = frame.cursor_outline {
                     window.paint_quad(outline(bounds, color, gpui::BorderStyle::Solid));
+                }
+                if let Some((bounds, line, background)) = &frame.preedit {
+                    window.paint_quad(fill(*bounds, *background));
+                    let _ = line.paint(bounds.origin, bounds.size.height, TextAlign::Left, None, window, cx);
                 }
             }),
         )

@@ -84,8 +84,7 @@ pub fn to_bytes(key: &str, key_char: Option<&str>, mods: Mods, app_cursor: bool)
     if mods.ctrl {
         // Windows reports AltGr as ctrl+alt. When that produced a character of its own (`@`
         // on a German layout), type the character; otherwise ctrl+alt+x is ESC + ctrl+x.
-        let altgr_text = mods.alt && key_char.is_some_and(|text| is_altgr_text(text, key));
-        if !altgr_text {
+        if !is_altgr(key, key_char, mods) {
             let byte = control_byte(key)?;
             return Some(meta(&[byte]));
         }
@@ -94,7 +93,9 @@ pub fn to_bytes(key: &str, key_char: Option<&str>, mods: Mods, app_cursor: bool)
     let text = match key_char {
         Some(text) if !text.is_empty() => text.to_string(),
         _ if key == "space" => " ".to_string(),
-        _ if key.chars().count() == 1 => {
+        // Without alt, a key with no text typed nothing: on Linux, a dead key waiting for the
+        // next one, whose `key` is only the US key in its place.
+        _ if mods.alt && key.chars().count() == 1 => {
             if mods.shift { key.to_uppercase() } else { key.to_string() }
         }
         _ => return None,
@@ -128,6 +129,34 @@ fn control_byte(key: &str) -> Option<u8> {
 /// Whether ctrl+alt+`key` produced real text (AltGr) rather than the key itself.
 fn is_altgr_text(text: &str, key: &str) -> bool {
     !text.is_empty() && !text.chars().any(|c| c.is_control()) && !text.eq_ignore_ascii_case(key)
+}
+
+/// Whether the key was AltGr (which Windows reports as ctrl+alt, with or without shift)
+/// typing a character.
+fn is_altgr(key: &str, key_char: Option<&str>, mods: Mods) -> bool {
+    mods.ctrl && mods.alt && key_char.is_some_and(|text| is_altgr_text(text, key))
+}
+
+/// Whether the key belongs to the application's shortcuts rather than the shell. They are all
+/// ctrl+shift+… (and ctrl+tab); plain ctrl+letter keys belong to the shell (ctrl+w deletes a
+/// word in bash). Ctrl+shift+2, 6 and - are the shell's NUL, RS and US, and AltGr+shift
+/// (ctrl+alt+shift on Windows) typing a character is text.
+pub fn is_app_shortcut(key: &str, key_char: Option<&str>, mods: Mods) -> bool {
+    (mods.ctrl && key == "tab")
+        || (mods.ctrl && mods.shift && !matches!(key, "-" | "2" | "6") && !is_altgr(key, key_char, mods))
+}
+
+/// Alt+F4 (close) and Alt+Space (the window menu): on Windows these are the system's, and
+/// the terminal leaves them alone so the window can act on them.
+pub fn is_window_command(key: &str, mods: Mods) -> bool {
+    mods.alt && !mods.ctrl && matches!(key, "f4" | "space")
+}
+
+/// Whether a key's `key_char` is text which, pressed with no modifier but shift, is typed
+/// through the platform's text input rather than sent as a key. That is how dead keys compose (´ then e
+/// is é) and IMEs commit; Enter, Tab, Backspace and Escape produce no text and stay keys.
+pub fn is_text_input(key_char: Option<&str>) -> bool {
+    key_char.is_some_and(|text| !text.is_empty() && !text.chars().any(|c| c.is_control()))
 }
 
 fn ss3_or_csi(final_byte: char, modifier_param: u8) -> Vec<u8> {
@@ -322,6 +351,63 @@ mod tests {
         assert_eq!(to_bytes("a", None, CTRL_ALT, false), Some(vec![0x1b, 1]));
         assert_eq!(to_bytes("a", Some("a"), CTRL_ALT, false), Some(vec![0x1b, 1]));
         assert_eq!(to_bytes("a", Some("\u{1}"), CTRL_ALT, false), Some(vec![0x1b, 1]));
+    }
+
+    #[test]
+    fn altgr_with_shift_types_its_character() {
+        let ctrl_alt_shift = Mods { ctrl: true, alt: true, shift: true };
+        // Polish: AltGr+Shift+A is Ą.
+        assert_eq!(to_bytes("a", Some("Ą"), ctrl_alt_shift, false), Some("Ą".as_bytes().to_vec()));
+        assert!(!is_app_shortcut("a", Some("Ą"), ctrl_alt_shift));
+        // Without a character of its own it is still a shortcut.
+        assert!(is_app_shortcut("a", None, ctrl_alt_shift));
+        assert!(is_app_shortcut("a", Some("A"), ctrl_alt_shift));
+    }
+
+    #[test]
+    fn app_shortcuts_are_ctrl_shift_and_ctrl_tab() {
+        let ctrl_shift = Mods { ctrl: true, shift: true, ..NONE };
+        assert!(is_app_shortcut("c", None, ctrl_shift));
+        assert!(is_app_shortcut("tab", None, CTRL));
+        assert!(is_app_shortcut("tab", None, ctrl_shift));
+        // The shell's ctrl+shift keys and plain ctrl keys are not.
+        assert!(!is_app_shortcut("2", None, ctrl_shift));
+        assert!(!is_app_shortcut("6", None, ctrl_shift));
+        assert!(!is_app_shortcut("-", None, ctrl_shift));
+        assert!(!is_app_shortcut("c", None, CTRL));
+        assert!(!is_app_shortcut("c", Some("c"), NONE));
+    }
+
+    #[test]
+    fn alt_f4_and_alt_space_are_window_commands() {
+        assert!(is_window_command("f4", ALT));
+        assert!(is_window_command("space", ALT));
+        assert!(is_window_command("f4", Mods { shift: true, ..ALT }));
+        assert!(!is_window_command("f4", NONE));
+        assert!(!is_window_command("f4", CTRL_ALT));
+        assert!(!is_window_command("space", CTRL));
+        assert!(!is_window_command("x", ALT));
+    }
+
+    #[test]
+    fn a_key_that_typed_nothing_sends_nothing() {
+        // A dead key composing on Linux: no text, `key` is the US key in its place.
+        assert_eq!(to_bytes("=", None, NONE, false), None);
+        assert_eq!(to_bytes("=", None, Mods { shift: true, ..NONE }, false), None);
+        // With alt the key itself is still sent.
+        assert_eq!(to_bytes("x", None, ALT, false), Some(b"\x1bx".to_vec()));
+    }
+
+    #[test]
+    fn text_input_is_printable_text() {
+        assert!(is_text_input(Some("a")));
+        assert!(is_text_input(Some(" ")));
+        assert!(is_text_input(Some("´")));
+        assert!(is_text_input(Some("é")));
+        assert!(!is_text_input(None));
+        assert!(!is_text_input(Some("")));
+        assert!(!is_text_input(Some("\r")));
+        assert!(!is_text_input(Some("\u{1b}")));
     }
 
     #[test]
