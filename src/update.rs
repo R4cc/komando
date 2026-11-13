@@ -142,22 +142,165 @@ struct ApiRelease {
     assets: Vec<Asset>,
 }
 
-fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(30))
-        .user_agent(USER_AGENT)
-        .build()
+fn builder() -> ureq::AgentBuilder {
+    ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(10)).timeout_read(Duration::from_secs(30)).user_agent(USER_AGENT)
+}
+
+/// An agent for `url`. Proxy: `ALL_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY` (ureq reads them), else
+/// the Windows per-user proxy. `windows_store` trusts the Windows certificate store (Schannel,
+/// so a TLS-inspecting proxy's root CA works) instead of the bundled web roots. PAC/WPAD
+/// auto-configuration is not supported.
+fn agent_for(url: &str, windows_store: bool) -> ureq::Agent {
+    let mut builder = builder();
+    #[cfg(windows)]
+    {
+        if windows_store && let Ok(connector) = ureq::native_tls::TlsConnector::new() {
+            builder = builder.tls_connector(Arc::new(connector));
+        }
+        if !env_proxy_set()
+            && let Some(proxy) = system_proxy::for_url(url).and_then(|p| ureq::Proxy::new(p).ok())
+        {
+            builder = builder.proxy(proxy);
+        }
+    }
+    let _ = (url, windows_store);
+    builder.build()
+}
+
+#[cfg(windows)]
+fn env_proxy_set() -> bool {
+    ["ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
+}
+
+/// GET `url`. Tries the Windows certificate store first, then the bundled web roots, so an
+/// unusable store never makes things worse. Status errors are final; only transport errors retry.
+fn get(url: &str, accept: Option<&str>) -> Result<ureq::Response, ureq::Error> {
+    let request = |agent: ureq::Agent| {
+        let mut request = agent.get(url);
+        if let Some(accept) = accept {
+            request = request.set("Accept", accept);
+        }
+        request.call()
+    };
+    match request(agent_for(url, true)) {
+        Err(ureq::Error::Transport(first)) if cfg!(windows) => {
+            log::debug!("Request to {url} failed with the Windows certificate store: {first}");
+            request(agent_for(url, false)).map_err(|err| match err {
+                // Report the first failure; it is the one the user's setup produces.
+                ureq::Error::Transport(_) => ureq::Error::Transport(first),
+                other => other,
+            })
+        }
+        other => other,
+    }
+}
+
+/// The Windows per-user proxy (Internet Settings), as read from the registry.
+#[cfg(windows)]
+mod system_proxy {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+
+    fn query(name: &str) -> Option<String> {
+        let out = Command::new("reg").args(["query", KEY, "/v", name]).creation_flags(0x08000000).output().ok()?;
+        out.status.success().then(|| parse_reg_value(&String::from_utf8_lossy(&out.stdout), name)).flatten()
+    }
+
+    /// The proxy URL for `url`, or `None` when the proxy is off, absent or bypassed.
+    pub fn for_url(url: &str) -> Option<String> {
+        let enabled = query("ProxyEnable")?;
+        if !super::system_proxy_enabled(&enabled) {
+            return None;
+        }
+        let server = query("ProxyServer")?;
+        let host = url.split("://").nth(1)?.split(['/', ':']).next()?;
+        if let Some(over) = query("ProxyOverride")
+            && super::bypassed(host, &over)
+        {
+            return None;
+        }
+        super::proxy_for_scheme(&server, url.starts_with("https://"))
+    }
+
+    /// The data of `name` in `reg query` output: `    Name    REG_SZ    data`.
+    pub(super) fn parse_reg_value(out: &str, name: &str) -> Option<String> {
+        out.lines().find_map(|line| {
+            let rest = line.trim().strip_prefix(name)?;
+            if !rest.starts_with(char::is_whitespace) {
+                return None;
+            }
+            let (_kind, data) = rest.trim_start().split_once(char::is_whitespace)?; // REG_SZ / REG_DWORD
+            Some(data.trim().to_string())
+        })
+    }
+}
+
+/// `ProxyEnable` as `reg query` prints a DWORD: `0x1`.
+#[cfg(any(windows, test))]
+fn system_proxy_enabled(value: &str) -> bool {
+    let value = value.trim();
+    value.strip_prefix("0x").map_or_else(|| value.parse::<u32>().ok(), |hex| u32::from_str_radix(hex, 16).ok()).is_some_and(|n| n != 0)
+}
+
+/// The proxy URL out of a `ProxyServer` value: `host:port` for all protocols, or
+/// `http=host:port;https=host:port;socks=...`.
+#[cfg(any(windows, test))]
+fn proxy_for_scheme(server: &str, https: bool) -> Option<String> {
+    let server = server.trim();
+    let with_scheme = |addr: &str, default: &str| {
+        let addr = addr.trim();
+        if addr.is_empty() { None } else if addr.contains("://") { Some(addr.to_string()) } else { Some(format!("{default}://{addr}")) }
+    };
+    if !server.contains('=') {
+        return with_scheme(server, "http");
+    }
+    let find = |key: &str| {
+        server.split(';').find_map(|entry| {
+            let (name, addr) = entry.split_once('=')?;
+            name.trim().eq_ignore_ascii_case(key).then(|| addr.to_string())
+        })
+    };
+    let wanted = if https { "https" } else { "http" };
+    // Windows lists http/https proxies as HTTP proxies; fall back to the other, never to SOCKS.
+    find(wanted).or_else(|| find(if https { "http" } else { "https" })).and_then(|addr| with_scheme(&addr, "http"))
+}
+
+/// Whether `host` matches a `ProxyOverride` list (`;`-separated, `*` wildcards, `<local>`).
+#[cfg(any(windows, test))]
+fn bypassed(host: &str, over: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    over.split(';').map(|p| p.trim().to_ascii_lowercase()).filter(|p| !p.is_empty()).any(|pattern| {
+        if pattern == "<local>" {
+            return !host.contains('.');
+        }
+        wildcard_match(&pattern, &host)
+    })
+}
+
+#[cfg(any(windows, test))]
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == text,
+        Some((head, tail)) => {
+            let Some(rest) = text.strip_prefix(head) else { return false };
+            (0..=rest.len()).filter(|&i| rest.is_char_boundary(i)).any(|i| wildcard_match(tail, &rest[i..]))
+        }
+    }
 }
 
 /// The latest published release. Blocking: call it off the UI thread.
 pub fn fetch_latest() -> Result<Release> {
+    // Logged here so the silent startup check leaves a trace too.
+    fetch_latest_inner().inspect_err(|err| log::warn!("Update check failed: {err:#}"))
+}
+
+fn fetch_latest_inner() -> Result<Release> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let response = agent()
-        .get(&url)
-        .set("Accept", "application/vnd.github+json")
-        .call()
-        .map_err(|err| match err {
+    let response = get(&url, Some("application/vnd.github+json")).map_err(|err| match err {
             ureq::Error::Status(404, _) => anyhow!("No release has been published yet."),
             ureq::Error::Status(403 | 429, _) => {
                 anyhow!("GitHub limits how often it can be asked. Try again in a few minutes.")
@@ -200,10 +343,7 @@ fn parse_release(release: ApiRelease) -> Result<Release> {
 /// Download `asset` to `dest`, counting bytes into `progress`. The file is written next to
 /// `dest` first and only moved there once its size and digest check out.
 pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<()> {
-    let response = agent()
-        .get(&asset.browser_download_url)
-        .call()
-        .map_err(|err| anyhow!("Couldn't download {}: {err}", asset.name))?;
+    let response = get(&asset.browser_download_url, None).map_err(|err| anyhow!("Couldn't download {}: {err}", asset.name))?;
     let partial = dest.with_extension("part");
     if let Some(dir) = dest.parent() {
         fs::create_dir_all(dir).with_context(|| format!("Couldn't create {}", dir.display()))?;
@@ -430,6 +570,50 @@ pub fn relaunch(exe: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxy_server_plain_and_per_protocol() {
+        assert_eq!(proxy_for_scheme("proxy.corp:8080", true).as_deref(), Some("http://proxy.corp:8080"));
+        assert_eq!(proxy_for_scheme(" http://p:3128 ", false).as_deref(), Some("http://p:3128"));
+        let multi = "http=a:80;https=b:443;ftp=c:21;socks=d:1080";
+        assert_eq!(proxy_for_scheme(multi, true).as_deref(), Some("http://b:443"));
+        assert_eq!(proxy_for_scheme(multi, false).as_deref(), Some("http://a:80"));
+        assert_eq!(proxy_for_scheme("http=a:80", true).as_deref(), Some("http://a:80"));
+        assert_eq!(proxy_for_scheme("socks=d:1080", true), None);
+        assert_eq!(proxy_for_scheme("HTTPS=b:443", true).as_deref(), Some("http://b:443"));
+        assert_eq!(proxy_for_scheme("", true), None);
+    }
+
+    #[test]
+    fn proxy_enable_and_override() {
+        assert!(system_proxy_enabled("0x1"));
+        assert!(!system_proxy_enabled("0x0"));
+        assert!(system_proxy_enabled("1"));
+        assert!(!system_proxy_enabled("junk"));
+        let over = "localhost;127.*;*.corp.example;<local>";
+        assert!(bypassed("localhost", over));
+        assert!(bypassed("127.0.0.1", over));
+        assert!(bypassed("git.corp.example", over));
+        assert!(bypassed("intranet", over));
+        assert!(!bypassed("api.github.com", over));
+        assert!(!bypassed("api.github.com", ""));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reg_query_output() {
+        let out = concat!("\r\nHKEY_CURRENT_USER\\Software\\X\r\n", "    ProxyServer    REG_SZ    http=a:80;https=b:443\r\n\r\n");
+        assert_eq!(system_proxy::parse_reg_value(out, "ProxyServer").as_deref(), Some("http=a:80;https=b:443"));
+        assert_eq!(system_proxy::parse_reg_value(out, "ProxyEnable"), None);
+    }
+
+    /// Real request, run by hand: `cargo test --lib update::tests::live -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_github_request() {
+        let release = fetch_latest().expect("latest release");
+        println!("latest: {}", release.tag);
+    }
 
     struct TestDir(PathBuf);
 
