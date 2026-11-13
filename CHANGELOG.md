@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-13
+
 ### Added
 
 - Split view: drag a host or local shell from the sidebar onto the terminal area to open
@@ -65,12 +67,6 @@ All notable changes to Komando are listed here. The format follows
   to clear.
 - An empty folder you can't write to no longer suggests dropping files into it.
 - Highlights in the minimap no longer use stale results after Highlight Rules change.
-
-### Security
-
-- "Copy as .txt" files, which can contain anything printed in the terminal, are deleted
-  from the temporary folder after a day.
-- A key passphrase typed at sign-in is wiped from memory after use.
 - "Keep both" works when uploading into a folder other than the one shown, including
   files dropped onto a folder row, and avoids numbered filenames already in that folder.
 - Copying or moving files to their own folder works when its path has a trailing slash
@@ -88,6 +84,12 @@ All notable changes to Komando are listed here. The format follows
   double click on one of them maximized or restored the window.
 - With background blur on, Windows no longer draws its own minimize, maximize and close
   icons behind Komando's window buttons, so each button shows one icon again.
+
+### Security
+
+- "Copy as .txt" files, which can contain anything printed in the terminal, are deleted
+  from the temporary folder after a day.
+- A key passphrase typed at sign-in is wiped from memory after use.
 
 ## [0.3.3] - 2026-11-12
 
@@ -700,7 +702,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/R4cc/komando/compare/v0.3.3...v0.3.4
 [0.3.0]: https://github.com/R4cc/komando/compare/v0.2.8...v0.3.0
 [0.1.17]: https://github.com/R4cc/komando/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/R4cc/komando/compare/v0.1.9...v0.1.16
