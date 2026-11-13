@@ -45,7 +45,8 @@ pub struct Transfer {
     source: WeakEntity<FileBrowser>,
     progress: Arc<Progress>,
     pub state: State,
-    /// A failure stays counted on the Downloads entry until the panel has shown it.
+    /// The panel has shown how it ended. Until then a failure stays counted on the Downloads
+    /// entry, and a finished download marks it as new.
     seen: bool,
 }
 
@@ -119,6 +120,11 @@ impl Transfers {
             .count()
     }
 
+    /// A download finished while the panel was closed, and the panel hasn't been opened since.
+    pub fn new_download(&self) -> bool {
+        self.items.iter().any(|t| !t.seen && !t.is_upload() && matches!(t.state, State::Done { .. }))
+    }
+
     pub fn has_active(&self) -> bool {
         self.items.iter().any(|t| matches!(t.state, State::Active))
     }
@@ -144,7 +150,7 @@ impl Transfers {
 
     fn mark_seen(&mut self) {
         for t in &mut self.items {
-            if matches!(t.state, State::Failed { .. }) {
+            if !matches!(t.state, State::Active) {
                 t.seen = true;
             }
         }
@@ -202,9 +208,12 @@ impl Transfers {
         let at = Local::now();
         match result {
             Ok((local, remote)) => {
-                if let (Job::Download { open_after: true, .. }, Some(path)) = (&t.job, &local) {
+                let opened = matches!(t.job, Job::Download { open_after: true, .. });
+                if let (true, Some(path)) = (opened, &local) {
                     cx.open_with_system(path);
                 }
+                // New, unless the panel shows it finishing or it opened right away.
+                t.seen = self.open || opened;
                 t.state = State::Done { at, local, remote };
             }
             Err(error) => {

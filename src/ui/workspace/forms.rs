@@ -1,18 +1,19 @@
 //! The host and project forms.
 //!
 //! Both edit the settings a Project hands down to its Hosts in the same way: the Project sets
-//! a default (user, Credential, Jump Host, Startup Commands), and in the host form each one
+//! a default (user, Credential, Jump Hosts, Startup Commands), and in the host form each one
 //! is a choice between taking the Project's, setting the Host's own, or switching it off.
-//! Startup Commands add up instead: the Project's run first, then the Host's.
+//! Jump Hosts and Startup Commands add up instead: the Project's come first, then the Host's,
+//! and the host form has a switch to leave the Project's out.
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, App, ClickEvent, Context, Entity, FontWeight, SharedString, Window, div, prelude::*, px};
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 
 use super::{FIRST_PROJECT_COLOR, FIRST_PROJECT_NAME, Overlay, Workspace, form_field, form_section, icon_picker, segmented, switch};
-use crate::model::{CredentialId, Host, HostId, Inherited, Library, Project};
+use crate::model::{CredentialId, Host, Inherited, JumpHost, Library, Project};
 use crate::theme::{AppPalette, project_color};
-use crate::ui::widgets::{ButtonKind, badge, button, icon_el};
+use crate::ui::widgets::{ButtonKind, badge, button, icon_button, icon_el, icon_text_button};
 use crate::vault::{Credential, Secret};
 
 /// Where a Host takes a setting from, as picked in the host form.
@@ -59,8 +60,9 @@ pub(super) struct HostForm {
     commands: Entity<TextareaState>,
     user_source: Source,
     sign_in: SignIn,
-    jump_source: Source,
-    jump_host: Option<HostId>,
+    /// Go through the Project's Jump Hosts first.
+    use_project_jumps: bool,
+    jumps: Vec<JumpRow>,
     run_project_commands: bool,
     icon: String,
     icon_query: Entity<InputState>,
@@ -77,11 +79,31 @@ pub(super) struct ProjectForm {
     default_user: Entity<InputState>,
     sign_in: SignIn,
     key_path: Entity<InputState>,
-    jump_host: Option<HostId>,
-    /// "Reached through a jump host" is picked, maybe before a host is.
-    uses_jump_host: bool,
+    jumps: Vec<JumpRow>,
     commands: Entity<TextareaState>,
     error: Option<String>,
+}
+
+/// One Jump Host in a form's list: user, address and port side by side, and its password.
+pub(super) struct JumpRow {
+    /// Tells rows apart in element ids while rows are added and removed.
+    key: usize,
+    user: Entity<InputState>,
+    address: Entity<InputState>,
+    port: Entity<InputState>,
+    /// A new password, typed after "Set password"; saved to the Vault with the form.
+    password: Entity<InputState>,
+    /// The password field is shown. Closing it keeps what was typed.
+    password_open: bool,
+    /// The Credential it had when the form opened, kept unless replaced or removed.
+    saved: Option<CredentialId>,
+    remove_saved: bool,
+}
+
+/// A Jump Host read from a form row, before its new password (if any) is in the Vault.
+struct JumpEntry {
+    jump: JumpHost,
+    new_password: Option<String>,
 }
 
 fn lines(commands: &[String]) -> String {
@@ -133,6 +155,7 @@ impl Workspace {
         let user = self.form_input("", h.user.own().map_or("", |u| u.as_str()), window, cx);
         let key_path = self.form_input(r"C:\Users\you\.ssh\id_ed25519", "", window, cx);
         let commands = commands_field(&lines(&h.startup_commands), window, cx);
+        let jumps = h.jump_hosts.iter().map(|j| self.jump_row(Some(j), window, cx)).collect();
         name.update(cx, |f, cx| f.focus(window, cx));
         let sign_in = match h.credential {
             Inherited::Project => SignIn::Project,
@@ -151,8 +174,8 @@ impl Workspace {
             commands,
             user_source: Source::of(&h.user),
             sign_in,
-            jump_source: Source::of(&h.jump_host),
-            jump_host: h.jump_host.own().cloned(),
+            use_project_jumps: h.use_project_jump_hosts,
+            jumps,
             run_project_commands: h.run_project_commands,
             icon: h.icon.unwrap_or_else(|| "server".into()),
             icon_query,
@@ -175,16 +198,27 @@ impl Workspace {
     }
 
     pub(super) fn submit_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // A key file goes into the Vault: ask for the master password first, then save.
-        let (sign_in, key_path) = match &self.overlay {
-            Some(Overlay::HostForm(form)) => (form.sign_in, form.key_path.clone()),
-            Some(Overlay::ProjectForm(form)) => (form.sign_in, form.key_path.clone()),
+        // A key file or a Jump Host's password goes into the Vault: ask for the master
+        // password first, then save.
+        let (sign_in, key_path, jumps) = match &self.overlay {
+            Some(Overlay::HostForm(form)) => (form.sign_in, form.key_path.clone(), &form.jumps),
+            Some(Overlay::ProjectForm(form)) => (form.sign_in, form.key_path.clone(), &form.jumps),
             _ => return,
         };
-        if sign_in == SignIn::KeyFile && self.vault.is_none() && !key_path.read(cx).value().trim().is_empty() {
-            self.pending.push(super::Pending::Form);
-            self.show_unlock("The key file is copied into your vault, encrypted.", window, cx);
-            return;
+        let new_password = jumps.iter().any(|row| !row.password.read(cx).value().is_empty());
+        if self.vault.is_none() {
+            let reason = if sign_in == SignIn::KeyFile && !key_path.read(cx).value().trim().is_empty() {
+                Some("The key file is copied into your vault, encrypted.")
+            } else if new_password {
+                Some("Jump host passwords are saved in your vault, encrypted.")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                self.pending.push(super::Pending::Form);
+                self.show_unlock(reason, window, cx);
+                return;
+            }
         }
         match &self.overlay {
             Some(Overlay::HostForm(_)) => self.submit_host_form(window, cx),
@@ -253,20 +287,66 @@ impl Workspace {
             .map_err(|err| format!("Could not store the key: {err}"))
     }
 
-    /// Save a changed copy of the Library, unless a Host could no longer be reached. It is
-    /// taken only once it is on disk, so a failed write changes nothing.
+    /// Save a changed copy of the Library. It is taken only once it is on disk, so a failed
+    /// write changes nothing.
     pub(super) fn commit_library(&mut self, library: Library) -> Result<(), String> {
-        library.check_routes().map_err(|err| err.to_string())?;
         library.save(&self.data_dir).map_err(|err| format!("Could not save: {err:#}"))?;
         self.library = library;
         Ok(())
     }
 
-    /// A key file imported for a form that then could not be saved: take it out of the Vault
-    /// again, or every retry would leave another copy no Host uses.
-    fn forget_imported_key(&mut self, id: Option<CredentialId>) {
-        if let (Some(id), Some(vault)) = (id, self.vault.as_mut()) {
-            let _ = vault.remove(&id);
+    /// Credentials added for a form that then could not be saved: take them out of the Vault
+    /// again, or every retry would leave another copy nothing uses.
+    fn forget_added(&mut self, ids: Vec<CredentialId>) {
+        if let Some(vault) = self.vault.as_mut() {
+            for id in ids {
+                let _ = vault.remove(&id);
+            }
+        }
+    }
+
+    /// Save a form: put the Jump Hosts' new passwords in the Vault, change a copy of the
+    /// Library with them, and commit it. On failure the new passwords leave the Vault again;
+    /// on success, passwords no Jump Host uses any more do.
+    fn commit_form(
+        &mut self,
+        jumps: Vec<JumpEntry>,
+        mut added: Vec<CredentialId>,
+        before: Vec<JumpHost>,
+        change: impl FnOnce(&mut Library, Vec<JumpHost>),
+    ) -> Result<(), String> {
+        let mut saved = Vec::with_capacity(jumps.len());
+        for JumpEntry { mut jump, new_password } in jumps {
+            if let Some(password) = new_password {
+                let Some(vault) = self.vault.as_mut() else {
+                    self.forget_added(added);
+                    return Err("Unlock the vault to save the jump host's password.".into());
+                };
+                let credential = Credential { label: format!("{} (jump host)", jump.label()), secret: Secret::Password { password } };
+                match vault.add(credential) {
+                    Ok(id) => {
+                        added.push(id.clone());
+                        jump.credential = Some(id);
+                    }
+                    Err(err) => {
+                        self.forget_added(added);
+                        return Err(format!("Could not store the password: {err}"));
+                    }
+                }
+            }
+            saved.push(jump);
+        }
+        let mut library = self.library.clone();
+        change(&mut library, saved);
+        match self.commit_library(library) {
+            Ok(()) => {
+                self.forget_unused_credentials(before.into_iter().filter_map(|j| j.credential));
+                Ok(())
+            }
+            Err(err) => {
+                self.forget_added(added);
+                Err(err)
+            }
         }
     }
 
@@ -300,25 +380,15 @@ impl Workspace {
         if name.is_empty() || address.is_empty() {
             return Err("Give the host a name and an address.".into());
         }
-        let port = match port.as_str() {
-            "" => 22,
-            port => match port.parse::<u16>() {
-                Ok(p) if p > 0 => p,
-                _ => return Err("The port is a number from 1 to 65535.".into()),
-            },
-        };
+        let Some(port) = parse_port(&port) else { return Err("The port is a number from 1 to 65535.".into()) };
         let user = match form.user_source {
             Source::Project => Inherited::Project,
             Source::Off => Inherited::Off,
             Source::Own if user.is_empty() => return Err("Type a user name, or take the project's.".into()),
             Source::Own => Inherited::Own(user),
         };
-        let jump_host = match (form.jump_source, &form.jump_host) {
-            (Source::Project, _) => Inherited::Project,
-            (Source::Off, _) => Inherited::Off,
-            (Source::Own, Some(id)) => Inherited::Own(id.clone()),
-            (Source::Own, None) => return Err("Pick the host it is reached through.".into()),
-        };
+        let jumps = read_jump_rows(&form.jumps, cx)?;
+        let use_project_jumps = form.use_project_jumps;
         let startup_commands = commands_of(&form.commands, cx);
         let (project_id, editing, sign_in, run_project_commands, icon) =
             (form.project_id.clone(), form.editing.clone(), form.sign_in, form.run_project_commands, form.icon.clone());
@@ -339,31 +409,30 @@ impl Workspace {
         host.address = address;
         host.port = port;
         host.user = user;
-        host.jump_host = jump_host;
+        host.use_project_jump_hosts = use_project_jumps;
         host.startup_commands = startup_commands;
         host.run_project_commands = run_project_commands;
         host.icon = Some(icon);
+        let before = std::mem::take(&mut host.jump_hosts);
 
-        let mut library = self.library.clone();
-        match library.hosts.iter_mut().find(|h| h.id == host.id) {
-            Some(existing) => *existing = host,
-            None => {
-                match library.projects.iter_mut().find(|p| p.id == project_id) {
-                    Some(project) => project.hosts.push(host.id.clone()),
-                    // The first connection, added from the start screen: give it a project.
-                    None => library.projects.push(Project {
-                        hosts: vec![host.id.clone()],
-                        ..Project::new(FIRST_PROJECT_NAME, FIRST_PROJECT_COLOR, "folder")
-                    }),
+        self.commit_form(jumps, imported.into_iter().collect(), before, move |library, jumps| {
+            host.jump_hosts = jumps;
+            match library.hosts.iter_mut().find(|h| h.id == host.id) {
+                Some(existing) => *existing = host,
+                None => {
+                    match library.projects.iter_mut().find(|p| p.id == project_id) {
+                        Some(project) => project.hosts.push(host.id.clone()),
+                        // The first connection, added from the start screen: give it a project.
+                        None => {
+                            let mut project = Project::new(FIRST_PROJECT_NAME, FIRST_PROJECT_COLOR, "folder");
+                            project.hosts.push(host.id.clone());
+                            library.projects.push(project);
+                        }
+                    }
+                    library.hosts.push(host);
                 }
-                library.hosts.push(host);
             }
-        }
-        let result = self.commit_library(library);
-        if result.is_err() {
-            self.forget_imported_key(imported);
-        }
-        result
+        })
     }
 
     pub(super) fn render_host_form(&self, form: &HostForm, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -393,7 +462,7 @@ impl Workspace {
             .child(self.host_user_field(form, project, p, cx))
             .child(self.host_credential_field(form, host, project, p, cx));
 
-        let route = form_section("Reached through", p).child(self.host_jump_field(form, project, p, cx));
+        let route = form_section("Jump hosts", p).child(self.host_jump_field(form, project, wide, p, cx));
 
         let project_commands = project.map(|pr| pr.startup_commands.clone()).unwrap_or_default();
         let commands = form_section("Startup commands", p)
@@ -430,12 +499,13 @@ impl Workspace {
                 form.icon = name;
             }
         }));
-        // Two columns: who it is and how you sign in on the left, how it is reached and what
-        // runs on it on the right.
+        // Two columns: who it is and how you sign in on the left, what runs on it and how it
+        // looks on the right. The jump hosts, a row of fields each, get the full width below.
         let body = form_body(
             wide,
-            vec![connection.into_any_element(), sign_in.into_any_element(), icon.into_any_element()],
-            vec![route.into_any_element(), commands.into_any_element()],
+            vec![connection.into_any_element(), sign_in.into_any_element()],
+            vec![commands.into_any_element(), icon.into_any_element()],
+            vec![route.into_any_element()],
         );
 
         let ok_label = if form.editing.is_some() { "Save" } else { "Add host" };
@@ -513,106 +583,215 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn host_jump_field(&self, form: &HostForm, project: Option<&Project>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let options = [("From project", Source::Project), ("Jump host", Source::Own), ("Direct", Source::Off)];
-        let choice = source_choice("hf-jump", &options, form.jump_source, p, cx, |form, source| form.jump_source = source);
-        let project_jump = project.and_then(|pr| pr.jump_host.as_deref());
-        let is_project_jump = form.editing.is_some() && project_jump == form.editing.as_deref();
-        let hint = match form.jump_source {
-            Source::Project if is_project_jump => "This is the project's jump host: it connects directly.".to_string(),
-            Source::Project => match project_jump.and_then(|id| self.library.host(id)) {
-                Some(jump) => format!("Reached through {}, the project's jump host.", jump.name),
-                None => "The project sets no jump host, so it connects directly.".to_string(),
-            },
-            Source::Own => "Komando signs in to the jump host first and reaches this host from there.".to_string(),
-            Source::Off => "Connects directly from this PC.".to_string(),
+    fn host_jump_field(&self, form: &HostForm, project: Option<&Project>, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let project_jumps = project.map(|pr| pr.jump_hosts.clone()).unwrap_or_default();
+        let through_project = form.use_project_jumps && !project_jumps.is_empty();
+        let own = form.jumps.len();
+        let hint = match (through_project, own) {
+            (false, 0) => "Connects directly from this PC.",
+            (true, 0) => "Komando signs in to the project's jump hosts in turn, then reaches this host from the last.",
+            (false, _) => "Komando signs in to each jump host in turn, top first, then reaches this host from the last.",
+            (true, _) => "Komando signs in to the project's jump hosts, then to these, then reaches this host from the last.",
         };
-        let exclude = form.editing.clone();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .when(!project_jumps.is_empty(), |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(switch("hf-project-jumps".into(), "Go through the project's jump hosts first", form.use_project_jumps, p).on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| {
+                                if let Some(form) = this.host_form() {
+                                    form.use_project_jumps = !form.use_project_jumps;
+                                }
+                                cx.notify();
+                            }),
+                        ))
+                        .child(div().text_size(px(12.5)).text_color(p.text).child("Go through the project's jump hosts first")),
+                )
+                .when(form.use_project_jumps, |el| {
+                    el.child(commands_preview(&project_jumps.iter().map(JumpHost::label).collect::<Vec<_>>(), p))
+                })
+            })
+            .child(self.jump_list("hf", &form.jumps, wide, p, cx))
+            .child(hint_text(hint.into(), p))
+            .into_any_element()
+    }
+
+    // ---- jump host list (both forms) ----------------------------------------------------
+
+    /// A form row for a Jump Host, empty or filled from a saved one.
+    fn jump_row(&mut self, jump: Option<&JumpHost>, window: &mut Window, cx: &mut Context<Self>) -> JumpRow {
+        let port = jump.filter(|j| j.port != 22).map(|j| j.port.to_string()).unwrap_or_default();
+        let user = self.form_input("user", jump.and_then(|j| j.user.as_deref()).unwrap_or(""), window, cx);
+        let address = self.form_input("host name or IP", jump.map_or("", |j| j.address.as_str()), window, cx);
+        let port = self.form_input("22", &port, window, cx);
+        let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Password"));
+        let sub = cx.subscribe_in(&password, window, |this, _, event: &InputEvent, window, cx| {
+            if let InputEvent::PressEnter { .. } = event {
+                this.submit_form(window, cx);
+            }
+        });
+        self._subscriptions.push(sub);
+        self.next_jump_row += 1;
+        JumpRow {
+            key: self.next_jump_row,
+            user,
+            address,
+            port,
+            password,
+            password_open: false,
+            saved: jump.and_then(|j| j.credential.clone()),
+            remove_saved: false,
+        }
+    }
+
+    /// The open form's Jump Host rows.
+    fn jump_rows(&mut self) -> Option<&mut Vec<JumpRow>> {
+        match self.overlay.as_mut() {
+            Some(Overlay::HostForm(form)) => Some(&mut form.jumps),
+            Some(Overlay::ProjectForm(form)) => Some(&mut form.jumps),
+            _ => None,
+        }
+    }
+
+    fn add_jump_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let row = self.jump_row(None, window, cx);
+        let address = row.address.clone();
+        if let Some(rows) = self.jump_rows() {
+            rows.push(row);
+            address.update(cx, |f, cx| f.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Change the row with `key`, if the form still has it.
+    fn update_jump_row(&mut self, key: usize, change: impl FnOnce(&mut JumpRow)) {
+        if let Some(row) = self.jump_rows().and_then(|rows| rows.iter_mut().find(|r| r.key == key)) {
+            change(row);
+        }
+    }
+
+    /// The Jump Hosts of a form, one row each, with a button to add another.
+    /// In a narrow form the user and port fields shrink and the password button shows only
+    /// its icon, so the address keeps room.
+    fn jump_list(&self, prefix: &'static str, rows: &[JumpRow], wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let (user_width, port_width, actions_width) = if wide { (140., 72., 170.) } else { (96., 60., 70.) };
+        let column_label = |text: &'static str| div().text_size(px(11.5)).text_color(p.text_faint).child(text);
+        let header = div()
+            .flex()
+            .gap(px(8.))
+            .pl(px(22.))
+            .child(column_label("User").w(px(user_width)).flex_shrink_0())
+            .child(column_label("Host name or IP").flex_1().min_w_0())
+            .child(column_label("Port").w(px(port_width)).flex_shrink_0())
+            .child(div().w(px(actions_width)).flex_shrink_0());
+        let any = !rows.is_empty();
+        let rows = rows.iter().enumerate().map(|(i, row)| {
+            let key = row.key;
+            let has_saved = row.saved.is_some() && !row.remove_saved;
+            let typed = !row.password.read(cx).value().is_empty();
+            let (password_icon, password_label) =
+                if has_saved || typed { ("check", "Password set") } else { ("key-round", "Set password") };
+            let fields = div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().w(px(14.)).flex_shrink_0().text_size(px(12.)).text_color(p.text_faint).child(format!("{}", i + 1)))
+                .child(div().w(px(user_width)).flex_shrink_0().child(Input::new(&row.user)))
+                .child(div().flex_1().min_w_0().child(Input::new(&row.address)))
+                .child(div().w(px(port_width)).flex_shrink_0().child(Input::new(&row.port)))
+                .child(
+                    div()
+                        .w(px(actions_width))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(
+                            icon_text_button((prefix, 100 + key * 4), password_icon, if wide { password_label } else { "" }, ButtonKind::Secondary, p)
+                                .flex_1()
+                                .px(px(10.))
+                                .when(!wide, |el| el.gap(px(0.)))
+                                .aria_label(format!("{password_label} for jump host {}", i + 1))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    let mut focus = None;
+                                    this.update_jump_row(key, |row| {
+                                        row.password_open = !row.password_open;
+                                        focus = row.password_open.then(|| row.password.clone());
+                                    });
+                                    if let Some(field) = focus {
+                                        field.update(cx, |f, cx| f.focus(window, cx));
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            icon_button((prefix, 101 + key * 4), "x", p)
+                                .aria_label(format!("Remove jump host {}", i + 1))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    if let Some(rows) = this.jump_rows() {
+                                        rows.retain(|r| r.key != key);
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            let password = row.password_open.then(|| {
+                let hint = if has_saved {
+                    "A password is saved in the vault. Type a new one to replace it when you save."
+                } else {
+                    "Saved in the vault, encrypted, when you save. Leave empty to be asked when you connect."
+                };
+                div()
+                    .pl(px(22.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(div().flex_1().min_w_0().child(Input::new(&row.password)))
+                            .when(has_saved, |el| {
+                                el.child(
+                                    button((prefix, 102 + key * 4), "Forget saved password", ButtonKind::Ghost, p).on_click(cx.listener(
+                                        move |this, _: &ClickEvent, window, cx| {
+                                            let mut field = None;
+                                            this.update_jump_row(key, |row| {
+                                                row.remove_saved = true;
+                                                field = Some(row.password.clone());
+                                            });
+                                            if let Some(field) = field {
+                                                field.update(cx, |f, cx| f.set_value("", window, cx));
+                                            }
+                                            cx.notify();
+                                        },
+                                    )),
+                                )
+                            }),
+                    )
+                    .child(hint_text(hint.into(), p))
+            });
+            div().flex().flex_col().gap(px(6.)).child(fields).children(password)
+        });
         div()
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(div().flex().child(choice))
-            .child(hint_text(hint, p))
-            .when(form.jump_source == Source::Own, |el| {
-                el.child(self.host_list("hf-jump-list", form.jump_host.as_deref(), exclude.as_deref(), p, cx, |this, id| {
-                    if let Some(form) = this.host_form() {
-                        form.jump_host = Some(id);
-                        form.error = None;
-                    }
-                }))
-            })
-            .into_any_element()
-    }
-
-    /// A list of saved Hosts to pick a Jump Host from.
-    fn host_list(
-        &self,
-        id: &'static str,
-        selected: Option<&str>,
-        exclude: Option<&str>,
-        p: AppPalette,
-        cx: &mut Context<Self>,
-        pick: impl Fn(&mut Workspace, String) + Clone + 'static,
-    ) -> AnyElement {
-        let mut hosts: Vec<&Host> = self.library.hosts.iter().filter(|h| Some(h.id.as_str()) != exclude).collect();
-        hosts.sort_by_key(|h| h.name.to_lowercase());
-        if hosts.is_empty() {
-            return hint_text("Add the jump host as a host first, then pick it here.".into(), p);
-        }
-        let rows = hosts.into_iter().enumerate().map(|(i, host)| {
-            let project = self.library.projects.iter().find(|pr| pr.hosts.contains(&host.id));
-            let color = host
-                .color
-                .as_deref()
-                .or(project.map(|pr| pr.color.as_str()))
-                .map(project_color)
-                .unwrap_or(p.text_muted);
-            let detail = match project {
-                Some(pr) => format!("{} · {}", host.address, pr.name),
-                None => host.address.clone(),
-            };
-            let is_selected = selected == Some(host.id.as_str());
-            let (pick, host_id) = (pick.clone(), host.id.clone());
-            div()
-                .id((id, i))
-                .h(px(40.))
-                .px(px(10.))
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .rounded(px(8.))
-                .cursor_pointer()
-                .when(is_selected, |el| el.bg(p.brand_soft))
-                .when(!is_selected, |el| el.hover(|s| s.bg(p.hover)))
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    pick(this, host_id.clone());
-                    cx.notify();
-                }))
-                .child(badge(host.icon.as_deref().unwrap_or("server"), color, 24.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(host.name.clone()))
-                        .child(div().text_size(px(11.5)).text_color(p.text_faint).truncate().child(detail)),
-                )
-                .when(is_selected, |el| el.child(icon_el("check", 15., p.brand)))
-        });
-        div()
-            .id(id)
-            .max_h(px(176.))
-            .overflow_y_scroll()
-            .p(px(4.))
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .rounded(px(10.))
-            .border_1()
-            .border_color(p.border)
-            .children(rows)
+            .when(any, |el| el.child(header).children(rows))
+            .child(
+                div().flex().child(
+                    icon_text_button((prefix, 99usize), "plus", "Add jump host", ButtonKind::Ghost, p)
+                        .px(px(10.))
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.add_jump_row(window, cx))),
+                ),
+            )
             .into_any_element()
     }
 
@@ -637,6 +816,7 @@ impl Workspace {
         let default_user = self.form_input("", pr.default_user.as_deref().unwrap_or(""), window, cx);
         let key_path = self.form_input(r"C:\Users\you\.ssh\id_ed25519", "", window, cx);
         let commands = commands_field(&lines(&pr.startup_commands), window, cx);
+        let jumps = pr.jump_hosts.iter().map(|j| self.jump_row(Some(j), window, cx)).collect();
         name.update(cx, |f, cx| f.focus(window, cx));
         let icon_query = self.new_icon_query(window, cx);
         self.overlay = Some(Overlay::ProjectForm(ProjectForm {
@@ -648,8 +828,7 @@ impl Workspace {
             default_user,
             sign_in: if pr.credential.is_some() { SignIn::Saved } else { SignIn::Ask },
             key_path,
-            uses_jump_host: pr.jump_host.is_some(),
-            jump_host: pr.jump_host.clone(),
+            jumps,
             commands,
             error: None,
         }));
@@ -668,11 +847,7 @@ impl Workspace {
         if name.is_empty() {
             return Err("Give the project a name.".into());
         }
-        let jump_host = match (form.uses_jump_host, &form.jump_host) {
-            (false, _) => None,
-            (true, Some(id)) => Some(id.clone()),
-            (true, None) => return Err("Pick the jump host its hosts are reached through.".into()),
-        };
+        let jumps = read_jump_rows(&form.jumps, cx)?;
         let startup_commands = commands_of(&form.commands, cx);
         let (editing, color, icon, sign_in) = (form.editing.clone(), form.color.clone(), form.icon.clone(), form.sign_in);
 
@@ -695,19 +870,16 @@ impl Workspace {
         project.color = color;
         project.icon = icon;
         project.default_user = (!default_user.is_empty()).then_some(default_user);
-        project.jump_host = jump_host;
         project.startup_commands = startup_commands;
+        let before = std::mem::take(&mut project.jump_hosts);
 
-        let mut library = self.library.clone();
-        match library.projects.iter_mut().find(|pr| pr.id == project.id) {
-            Some(existing) => *existing = project,
-            None => library.projects.push(project),
-        }
-        let result = self.commit_library(library);
-        if result.is_err() {
-            self.forget_imported_key(imported);
-        }
-        result
+        self.commit_form(jumps, imported.into_iter().collect(), before, move |library, jumps| {
+            project.jump_hosts = jumps;
+            match library.projects.iter_mut().find(|pr| pr.id == project.id) {
+                Some(existing) => *existing = project,
+                None => library.projects.push(project),
+            }
+        })
     }
 
     pub(super) fn render_project_form(&self, form: &ProjectForm, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -762,20 +934,6 @@ impl Workspace {
             _ => "Hosts ask for a password when you connect. Komando can save a typed one for the whole project.",
         };
 
-        let jump_labels = [("Direct", !form.uses_jump_host), ("Jump host", form.uses_jump_host)];
-        let jump_choice = segmented("pf-jump", &jump_labels, p, cx, |this, i, _, cx| {
-            if let Some(form) = this.project_form() {
-                form.uses_jump_host = i == 1;
-                form.error = None;
-            }
-            cx.notify();
-        });
-        let jump_hint = if form.uses_jump_host {
-            "Its hosts are reached through this host unless they choose otherwise. The jump host itself connects directly."
-        } else {
-            "Its hosts connect directly from this PC unless they choose a jump host."
-        };
-
         let defaults = form_section("Defaults for its hosts", p)
             .child(hint_text("Each host takes these unless it sets its own.".into(), p))
             .child(form_field("User", Some("Empty: asked when you connect."), Input::new(&form.default_user).into_any_element(), p))
@@ -788,24 +946,13 @@ impl Workspace {
                     .child(div().flex().child(sign_in_choice))
                     .when(form.sign_in == SignIn::KeyFile, |el| el.child(key_file_row(&form.key_path, "pf", p, cx)))
                     .child(hint_text(sign_in_hint.into(), p)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(field_label("Reached through", p))
-                    .child(div().flex().child(jump_choice))
-                    .child(hint_text(jump_hint.into(), p))
-                    .when(form.uses_jump_host, |el| {
-                        el.child(self.host_list("pf-jump-list", form.jump_host.as_deref(), None, p, cx, |this, id| {
-                            if let Some(form) = this.project_form() {
-                                form.jump_host = Some(id);
-                                form.error = None;
-                            }
-                        }))
-                    }),
             );
+        let jump_hint = if form.jumps.is_empty() {
+            "Its hosts connect directly from this PC, unless they add jump hosts of their own."
+        } else {
+            "Its hosts are reached through these, top first, unless a host switches them off. A host can add its own after them."
+        };
+        let jumps = form_section("Jump hosts", p).child(self.jump_list("pf", &form.jumps, wide, p, cx)).child(hint_text(jump_hint.into(), p));
         let commands = form_section("Startup commands", p).child(form_field(
             "For every host",
             Some("One per line. Typed into every host's shell once it is ready, before the host's own."),
@@ -823,13 +970,14 @@ impl Workspace {
                 form.icon = name;
             }
         }));
-        // Two columns: the project itself on the left, what its hosts inherit on the right.
+        // Two columns: the project itself on the left, what its hosts inherit on the right. The
+        // jump hosts, a row of fields each, get the full width below.
         let (left, right) = if wide {
-            (vec![project.into_any_element(), icon.into_any_element(), commands.into_any_element()], vec![defaults.into_any_element()])
+            (vec![project.into_any_element(), icon.into_any_element()], vec![defaults.into_any_element(), commands.into_any_element()])
         } else {
             (vec![project.into_any_element(), defaults.into_any_element(), commands.into_any_element(), icon.into_any_element()], vec![])
         };
-        let body = form_body(wide, left, right);
+        let body = form_body(wide, left, right, vec![jumps.into_any_element()]);
 
         let subtitle = if form.editing.is_some() { "Its settings apply to all its hosts" } else { "A group of hosts that belong together" };
         form_shell(
@@ -933,7 +1081,9 @@ fn form_error(message: String, p: AppPalette) -> AnyElement {
 fn form_header(badge: AnyElement, title: String, subtitle: String, p: AppPalette) -> AnyElement {
     div()
         .flex_shrink_0()
-        .px(px(24.))
+        .pl(px(24.))
+        // Room for the dialog's close button in the top-right corner.
+        .pr(px(56.))
         .pt(px(22.))
         .pb(px(18.))
         .flex()
@@ -984,8 +1134,8 @@ pub(super) const WIDE_FORM_WIDTH: f32 = 880.;
 const NARROW_FORM_WIDTH: f32 = 520.;
 
 /// A form's sections: in two columns side by side when `wide`, else `left` then `right` in
-/// one. Validation feedback lives in the fixed footer.
-fn form_body(wide: bool, left: Vec<AnyElement>, right: Vec<AnyElement>) -> AnyElement {
+/// one; `full` after them at full width. Validation feedback lives in the fixed footer.
+fn form_body(wide: bool, left: Vec<AnyElement>, right: Vec<AnyElement>, full: Vec<AnyElement>) -> AnyElement {
     let column = || div().flex().flex_col().gap(px(20.));
     let sections = if wide {
         div()
@@ -997,7 +1147,38 @@ fn form_body(wide: bool, left: Vec<AnyElement>, right: Vec<AnyElement>) -> AnyEl
     } else {
         column().children(left).children(right)
     };
-    div().flex().flex_col().gap(px(20.)).child(sections).into_any_element()
+    div().flex().flex_col().gap(px(20.)).child(sections).children(full).into_any_element()
+}
+
+/// The Jump Hosts typed into a form, in order. Rows left completely empty are skipped.
+fn read_jump_rows(rows: &[JumpRow], cx: &App) -> Result<Vec<JumpEntry>, String> {
+    let text = |field: &Entity<InputState>| field.read(cx).value().trim().to_string();
+    let mut jumps = vec![];
+    for (i, row) in rows.iter().enumerate() {
+        let (user, address, port) = (text(&row.user), text(&row.address), text(&row.port));
+        let password = row.password.read(cx).value().to_string();
+        let saved = row.saved.clone().filter(|_| !row.remove_saved);
+        if user.is_empty() && address.is_empty() && port.is_empty() && password.is_empty() && saved.is_none() {
+            continue;
+        }
+        let n = i + 1;
+        if address.is_empty() {
+            return Err(format!("Type the host name or IP of jump host {n}, or remove it."));
+        }
+        let port = parse_port(&port).ok_or_else(|| format!("The port of jump host {n} is a number from 1 to 65535."))?;
+        let new_password = (!password.is_empty()).then_some(password);
+        let user = (!user.is_empty()).then_some(user);
+        jumps.push(JumpEntry { jump: JumpHost { address, port, user, credential: saved }, new_password });
+    }
+    Ok(jumps)
+}
+
+/// A port field: empty is 22.
+fn parse_port(text: &str) -> Option<u16> {
+    match text {
+        "" => Some(22),
+        port => port.parse::<u16>().ok().filter(|p| *p > 0),
+    }
 }
 
 /// A form's layout: header and footer stay put, the middle scrolls.

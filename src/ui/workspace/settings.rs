@@ -12,13 +12,22 @@ pub enum SettingsSection {
     FileBrowser,
     Shells,
     Highlights,
+    Import,
     Security,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 7] =
-        [Self::Appearance, Self::Terminal, Self::FileBrowser, Self::Shells, Self::Highlights, Self::Security, Self::About];
+    pub const ALL: [SettingsSection; 8] = [
+        Self::Appearance,
+        Self::Terminal,
+        Self::FileBrowser,
+        Self::Shells,
+        Self::Highlights,
+        Self::Import,
+        Self::Security,
+        Self::About,
+    ];
 
     fn label(self) -> &'static str {
         match self {
@@ -27,6 +36,7 @@ impl SettingsSection {
             Self::FileBrowser => "File browser",
             Self::Shells => "Local shells",
             Self::Highlights => "Highlights",
+            Self::Import => "Import",
             Self::Security => "Security",
             Self::About => "About",
         }
@@ -39,6 +49,7 @@ impl SettingsSection {
             Self::FileBrowser => "folder-open",
             Self::Shells => "terminal",
             Self::Highlights => "highlighter",
+            Self::Import => "import",
             Self::Security => "shield",
             Self::About => "info",
         }
@@ -51,6 +62,7 @@ impl SettingsSection {
             Self::FileBrowser => "The SFTP file browser beside SSH sessions.",
             Self::Shells => "The shells on this PC listed at the top of the sidebar. Hide the ones you don't use, remove them, or add your own, such as WSL or Git Bash.",
             Self::Highlights => "Colour matching text in terminal output. Rules apply top to bottom; the first match wins.",
+            Self::Import => "Bring your hosts over from another SSH client. Nothing changes until you confirm the review.",
             Self::Security => "The vault that holds your passwords and keys.",
             Self::About => "",
         }
@@ -267,6 +279,7 @@ impl Workspace {
             SettingsSection::FileBrowser => self.settings_file_browser(p, cx),
             SettingsSection::Shells => self.settings_shells(p, cx),
             SettingsSection::Highlights => self.settings_highlights(p, cx),
+            SettingsSection::Import => self.settings_import(p, cx),
             SettingsSection::Security => self.settings_security(p, cx),
             SettingsSection::About => self.settings_about(p, cx),
         };
@@ -1348,7 +1361,7 @@ impl Workspace {
 }
 
 /// A bordered group of setting rows separated by hairlines.
-fn group(p: AppPalette, rows: Vec<AnyElement>) -> AnyElement {
+pub(super) fn group(p: AppPalette, rows: Vec<AnyElement>) -> AnyElement {
     let count = rows.len();
     div()
         .rounded(px(12.))

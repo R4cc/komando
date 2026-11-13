@@ -43,10 +43,13 @@ pub struct Project {
     /// The Project Credential: used by Hosts that set no Credential of their own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<CredentialId>,
-    /// The Jump Host its Hosts are reached through, unless a Host sets its own or connects
-    /// directly. The Jump Host itself is never reached through itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub jump_host: Option<HostId>,
+    /// Jump Hosts its Hosts go through first, in order, unless a Host switches them off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jump_hosts: Vec<JumpHost>,
+    /// Before typed-in Jump Hosts: the saved Host its Hosts were reached through. Read from
+    /// older files and converted by `Library::load`; never written.
+    #[serde(default, rename = "jump_host", skip_serializing)]
+    legacy_jump_host: Option<HostId>,
     /// Startup Commands typed into every Host's shell, before the Host's own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub startup_commands: Vec<String>,
@@ -72,7 +75,8 @@ impl Project {
             icon: icon.into(),
             default_user: None,
             credential: None,
-            jump_host: None,
+            jump_hosts: vec![],
+            legacy_jump_host: None,
             startup_commands: vec![],
             hosts: vec![],
             shells: vec![],
@@ -156,9 +160,16 @@ pub struct Host {
     pub user: Inherited<String>,
     #[serde(default, skip_serializing_if = "Inherited::is_project")]
     pub credential: Inherited<CredentialId>,
-    /// The Host this one is reached through. Off: connect directly.
-    #[serde(default, skip_serializing_if = "Inherited::is_project")]
-    pub jump_host: Inherited<HostId>,
+    /// Go through the Project's Jump Hosts first, before the Host's own.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub use_project_jump_hosts: bool,
+    /// The Host's own Jump Hosts, in the order they are signed in to, after the Project's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jump_hosts: Vec<JumpHost>,
+    /// Before typed-in Jump Hosts: the saved Host this one was reached through. Read from
+    /// older files and converted by `Library::load`; never written.
+    #[serde(default, rename = "jump_host", skip_serializing)]
+    legacy_jump_host: Inherited<HostId>,
     /// Startup Commands typed after the Project's (see `run_project_commands`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub startup_commands: Vec<String>,
@@ -181,13 +192,58 @@ impl Host {
             port: default_port(),
             user: Inherited::Project,
             credential: Inherited::Project,
-            jump_host: Inherited::Project,
+            use_project_jump_hosts: true,
+            jump_hosts: vec![],
+            legacy_jump_host: Inherited::Project,
             startup_commands: vec![],
             run_project_commands: true,
             color: None,
             icon: None,
         }
     }
+}
+
+/// A Jump Host: a machine signed in to on the way to a Host, typed in where it is used.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JumpHost {
+    pub address: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+    /// None: asked when connecting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Its password in the Vault (a key, for Jump Hosts converted from saved Hosts).
+    /// None: asked when connecting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<CredentialId>,
+}
+
+impl JumpHost {
+    pub fn new(address: impl Into<String>) -> Self {
+        Self { address: address.into(), port: default_port(), user: None, credential: None }
+    }
+
+    /// `user@address:port`, leaving out what is not set or is the default.
+    pub fn label(&self) -> String {
+        let user = self.user.as_deref().map(|u| format!("{u}@")).unwrap_or_default();
+        let port = if self.port == default_port() { String::new() } else { format!(":{}", self.port) };
+        format!("{user}{}{port}", self.address)
+    }
+}
+
+/// Where a Jump Host on a Host's way is saved: the n-th of a Project's or of a Host's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JumpOwner {
+    Project(ProjectId, usize),
+    Host(HostId, usize),
+}
+
+/// A Jump Host on a Host's way, with where it is saved, so what is typed for it while
+/// connecting can be saved there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteJump {
+    pub owner: JumpOwner,
+    pub jump: JumpHost,
 }
 
 fn yes() -> bool {
@@ -269,8 +325,9 @@ pub struct ResolvedHost {
     pub credential: Option<CredentialId>,
     /// Where the credential came from, so "save password" can offer the right target.
     pub credential_source: CredentialSource,
-    /// The Jump Host this Host is reached through, if any.
-    pub jump_host: Option<HostId>,
+    /// The Jump Hosts to sign in to first, in order: the Project's (unless the Host
+    /// switches them off), then the Host's own. Empty: connect directly.
+    pub jump_hosts: Vec<RouteJump>,
     /// The Project's Startup Commands (unless the Host skips them), then the Host's own.
     pub startup_commands: Vec<String>,
     pub color: String,
@@ -294,8 +351,14 @@ pub fn resolve(host: &Host, project: &Project) -> ResolvedHost {
         (Inherited::Project, Some(c)) => (Some(c.clone()), CredentialSource::Project),
         (Inherited::Project, None) => (None, CredentialSource::None),
     };
-    // The Project's Jump Host connects directly itself.
-    let project_jump = project.jump_host.as_ref().filter(|id| **id != host.id);
+    let project_jumps = project
+        .jump_hosts
+        .iter()
+        .enumerate()
+        .filter(|_| host.use_project_jump_hosts)
+        .map(|(i, jump)| RouteJump { owner: JumpOwner::Project(project.id.clone(), i), jump: jump.clone() });
+    let own_jumps =
+        host.jump_hosts.iter().enumerate().map(|(i, jump)| RouteJump { owner: JumpOwner::Host(host.id.clone(), i), jump: jump.clone() });
     let mut startup_commands = if host.run_project_commands { project.startup_commands.clone() } else { vec![] };
     startup_commands.extend(host.startup_commands.iter().cloned());
     ResolvedHost {
@@ -307,32 +370,12 @@ pub fn resolve(host: &Host, project: &Project) -> ResolvedHost {
         user: host.user.or_project(project.default_user.as_ref()).cloned(),
         credential,
         credential_source,
-        jump_host: host.jump_host.or_project(project_jump).cloned(),
+        jump_hosts: project_jumps.chain(own_jumps).collect(),
         startup_commands,
         color: host.color.clone().unwrap_or_else(|| project.color.clone()),
         icon: host.icon.clone().unwrap_or_else(|| "server".into()),
     }
 }
-
-/// Why a Host can't be reached.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RouteError {
-    /// The named Host is reached through itself, directly or through other Jump Hosts.
-    Cycle(String),
-    /// The named Host's Jump Host no longer exists.
-    Missing(String),
-}
-
-impl std::fmt::Display for RouteError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RouteError::Cycle(name) => write!(f, "{name} would be reached through itself. Pick another jump host."),
-            RouteError::Missing(name) => write!(f, "The jump host of {name} no longer exists."),
-        }
-    }
-}
-
-impl std::error::Error for RouteError {}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Library {
@@ -355,7 +398,9 @@ impl Library {
             return Ok(Self::default());
         }
         let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        let mut library: Self = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        library.convert_legacy_jump_hosts();
+        Ok(library)
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
@@ -411,56 +456,98 @@ impl Library {
         Some(resolve(self.host(host_id)?, self.project(project_id)?))
     }
 
-    /// The Hosts to connect to, in order, to reach a Host opened from a Project: its Jump
-    /// Hosts first (outermost first), the Host itself last.
-    ///
-    /// A Jump Host takes its settings from the same Project if it is in it, otherwise from the
-    /// first Project that holds it.
-    pub fn route(&self, project_id: &str, host_id: &str) -> Result<Vec<ResolvedHost>, RouteError> {
-        let mut hops = vec![self.resolve(project_id, host_id).ok_or_else(|| RouteError::Missing(host_id.into()))?];
-        while let Some(jump) = hops.last().and_then(|h| h.jump_host.clone()) {
-            let from = hops.last().expect("not empty");
-            if hops.iter().any(|h| h.host_id == jump) {
-                return Err(RouteError::Cycle(hops[0].name.clone()));
-            }
-            let project = match self.project(&from.project_id) {
-                Some(p) if p.hosts.contains(&jump) => Some(p),
-                _ => self.projects.iter().find(|p| p.hosts.contains(&jump)),
-            };
-            let hop = project
-                .and_then(|p| self.resolve(&p.id, &jump))
-                .ok_or_else(|| RouteError::Missing(from.name.clone()))?;
-            hops.push(hop);
+    /// A saved Jump Host, to change it.
+    pub fn jump_host_mut(&mut self, owner: &JumpOwner) -> Option<&mut JumpHost> {
+        match owner {
+            JumpOwner::Project(id, i) => self.projects.iter_mut().find(|p| &p.id == id)?.jump_hosts.get_mut(*i),
+            JumpOwner::Host(id, i) => self.hosts.iter_mut().find(|h| &h.id == id)?.jump_hosts.get_mut(*i),
         }
-        hops.reverse();
-        Ok(hops)
     }
 
-    /// Whether every Host in every Project can be reached: no Jump Host cycles, no missing
-    /// Jump Hosts. Forms check a changed copy of the Library with this before saving it.
-    pub fn check_routes(&self) -> Result<(), RouteError> {
-        for project in &self.projects {
-            for host in &project.hosts {
-                self.route(&project.id, host)?;
-            }
+    /// Turn Jump Hosts saved as Hosts (older files) into typed-in ones: each becomes the
+    /// address, port, user and Credential it had, after the Jump Hosts it was reached through
+    /// itself. The Hosts stay. A Host that set its own Jump Host, or connected directly,
+    /// leaves the Project's Jump Hosts off, as does a Project's Jump Host in that Project.
+    pub(crate) fn convert_legacy_jump_hosts(&mut self) {
+        let legacy = self.projects.iter().any(|p| p.legacy_jump_host.is_some())
+            || self.hosts.iter().any(|h| !h.legacy_jump_host.is_project());
+        if !legacy {
+            return;
         }
-        Ok(())
-    }
-
-    /// Hosts that are reached through a Host, on their own or by their Project's default.
-    pub fn reached_through(&self, jump: &str) -> Vec<&Host> {
-        self.hosts
+        let project_jumps: Vec<Vec<JumpHost>> = self
+            .projects
             .iter()
-            .filter(|h| h.id != jump)
-            .filter(|h| match &h.jump_host {
-                Inherited::Own(id) => id == jump,
-                Inherited::Off => false,
-                Inherited::Project => self
-                    .projects
-                    .iter()
-                    .any(|p| p.hosts.contains(&h.id) && p.jump_host.as_deref() == Some(jump)),
+            .map(|p| p.legacy_jump_host.as_deref().map(|jump| self.legacy_chain(&p.id, jump)).unwrap_or_default())
+            .collect();
+        let host_jumps: Vec<(bool, Vec<JumpHost>)> = self
+            .hosts
+            .iter()
+            .map(|h| match &h.legacy_jump_host {
+                Inherited::Own(jump) => {
+                    let project = self.projects.iter().find(|p| p.hosts.contains(&h.id)).map(|p| p.id.as_str()).unwrap_or("");
+                    (false, self.legacy_chain(project, jump))
+                }
+                Inherited::Off => (false, vec![]),
+                Inherited::Project => {
+                    let is_project_jump = self
+                        .projects
+                        .iter()
+                        .any(|p| p.hosts.contains(&h.id) && p.legacy_jump_host.as_deref() == Some(h.id.as_str()));
+                    (!is_project_jump, vec![])
+                }
             })
-            .collect()
+            .collect();
+        for (project, jumps) in self.projects.iter_mut().zip(project_jumps) {
+            project.legacy_jump_host = None;
+            if !jumps.is_empty() {
+                project.jump_hosts = jumps;
+            }
+        }
+        for (host, (use_project, jumps)) in self.hosts.iter_mut().zip(host_jumps) {
+            host.legacy_jump_host = Inherited::Project;
+            host.use_project_jump_hosts &= use_project;
+            if !jumps.is_empty() {
+                host.jump_hosts = jumps;
+            }
+        }
+    }
+
+    /// The legacy Jump Host `jump`, reached from a Host in Project `from`, as typed-in Jump
+    /// Hosts: those it was reached through first, then itself. It took its settings from
+    /// `from` if it was in it, otherwise from the first Project holding it. A missing Host
+    /// or a cycle ends the chain.
+    fn legacy_chain(&self, from: &str, jump: &str) -> Vec<JumpHost> {
+        let mut chain = vec![];
+        let mut seen: Vec<HostId> = vec![];
+        let (mut from, mut next) = (from.to_string(), Some(jump.to_string()));
+        while let Some(id) = next.take() {
+            if seen.contains(&id) {
+                break;
+            }
+            let project = match self.project(&from) {
+                Some(p) if p.hosts.contains(&id) => Some(p),
+                _ => self.projects.iter().find(|p| p.hosts.contains(&id)),
+            };
+            let (Some(host), Some(project)) = (self.host(&id), project) else { break };
+            let credential = match (&host.credential, &project.credential) {
+                (Inherited::Own(c), _) => Some(c.clone()),
+                (Inherited::Project, c) => c.clone(),
+                (Inherited::Off, _) => None,
+            };
+            chain.push(JumpHost {
+                address: host.address.clone(),
+                port: host.port,
+                user: host.user.or_project(project.default_user.as_ref()).cloned(),
+                credential,
+            });
+            // A Project's Jump Host connected directly itself.
+            let project_jump = project.legacy_jump_host.as_ref().filter(|j| **j != id);
+            next = host.legacy_jump_host.or_project(project_jump).cloned();
+            from = project.id.clone();
+            seen.push(id);
+        }
+        chain.reverse();
+        chain
     }
 
     /// Copy a Host into the Project it was picked from, right below the original. The copy
@@ -488,7 +575,7 @@ impl Library {
 
     /// Move a Host from one Project to the end of another. A Host that is already in the
     /// other Project only leaves this one. Its own settings stay; what it took from the
-    /// Project (user, Credential, Jump Host, Startup Commands) now comes from the new one.
+    /// Project (user, Credential, Jump Hosts, Startup Commands) now comes from the new one.
     /// Returns false when nothing changed.
     pub fn move_host(&mut self, host_id: &str, from: &str, to: &str) -> bool {
         let position = |id: &str| self.projects.iter().position(|p| p.id == id);
@@ -503,19 +590,11 @@ impl Library {
         true
     }
 
-    /// Delete a Host. Hosts that were reached through it connect directly from now on.
+    /// Delete a Host.
     pub fn remove_host(&mut self, id: &str) {
         self.hosts.retain(|h| h.id != id);
-        for host in &mut self.hosts {
-            if host.jump_host.own().is_some_and(|j| j == id) {
-                host.jump_host = Inherited::Off;
-            }
-        }
         for project in &mut self.projects {
             project.hosts.retain(|h| h != id);
-            if project.jump_host.as_deref() == Some(id) {
-                project.jump_host = None;
-            }
         }
     }
 
@@ -530,17 +609,19 @@ impl Library {
         }
     }
 
-    /// Number of Hosts and Projects that reference a Credential, for "used by N" hints.
+    /// Number of Hosts, Projects and Jump Hosts that reference a Credential, for "used by N"
+    /// hints and to tell when one is no longer needed.
     pub fn credential_users(&self, credential: &str) -> usize {
+        let jumps = |list: &[JumpHost]| list.iter().filter(|j| j.credential.as_deref() == Some(credential)).count();
         self.hosts
             .iter()
-            .filter(|h| h.credential.own().is_some_and(|c| c == credential))
-            .count()
+            .map(|h| usize::from(h.credential.own().is_some_and(|c| c == credential)) + jumps(&h.jump_hosts))
+            .sum::<usize>()
             + self
                 .projects
                 .iter()
-                .filter(|p| p.credential.as_deref() == Some(credential))
-                .count()
+                .map(|p| usize::from(p.credential.as_deref() == Some(credential)) + jumps(&p.jump_hosts))
+                .sum::<usize>()
     }
 }
 
@@ -714,7 +795,8 @@ mod tests {
             icon: "folder".into(),
             default_user: user.map(Into::into),
             credential: credential.map(Into::into),
-            jump_host: None,
+            jump_hosts: vec![],
+            legacy_jump_host: None,
             startup_commands: vec![],
             hosts: vec!["h1".into()],
             shells: vec![],
@@ -733,7 +815,9 @@ mod tests {
             port: 22,
             user: own(user),
             credential: own(credential),
-            jump_host: Inherited::Project,
+            use_project_jump_hosts: true,
+            jump_hosts: vec![],
+            legacy_jump_host: Inherited::Project,
             startup_commands: vec![],
             run_project_commands: true,
             color: color.map(Into::into),
@@ -746,9 +830,13 @@ mod tests {
         Host { id: id.into(), name: id.into(), address: format!("{id}.lan"), ..host(None, None, None) }
     }
 
-    fn reached_through(mut host: Host, jump: &str) -> Host {
-        host.jump_host = Inherited::Own(jump.into());
-        host
+    fn jump(address: &str) -> JumpHost {
+        JumpHost::new(address)
+    }
+
+    /// The addresses signed in to before the Host, in order.
+    fn jump_addresses(lib: &Library, host: &str) -> Vec<String> {
+        lib.resolve("p1", host).unwrap().jump_hosts.into_iter().map(|j| j.jump.address).collect()
     }
 
     /// A Library with one Project "p1" holding the given Hosts.
@@ -756,10 +844,6 @@ mod tests {
         let mut p = project(None, None);
         p.hosts = hosts.iter().map(|h| h.id.clone()).collect();
         Library { shells: None, projects: vec![p], hosts }
-    }
-
-    fn route_names(lib: &Library, host: &str) -> Vec<String> {
-        lib.route("p1", host).unwrap().into_iter().map(|h| h.name).collect()
     }
 
     /// `library` plus an empty second Project "p2" ("Hermes", user "deploy").
@@ -810,75 +894,191 @@ mod tests {
     }
 
     #[test]
-    fn a_host_without_jump_host_is_its_own_route() {
+    fn a_host_without_jump_hosts_connects_directly() {
         let lib = library(vec![named("web")]);
-        assert_eq!(route_names(&lib, "web"), ["web"]);
+        assert!(jump_addresses(&lib, "web").is_empty());
     }
 
     #[test]
-    fn jump_hosts_chain_in_connection_order() {
-        let lib = library(vec![reached_through(named("web"), "inner"), reached_through(named("inner"), "outer"), named("outer")]);
-        assert_eq!(route_names(&lib, "web"), ["outer", "inner", "web"]);
-    }
-
-    #[test]
-    fn the_project_jump_host_applies_to_all_but_itself() {
-        let mut lib = library(vec![named("web"), named("bastion")]);
-        lib.projects[0].jump_host = Some("bastion".into());
-        assert_eq!(route_names(&lib, "web"), ["bastion", "web"]);
-        assert_eq!(route_names(&lib, "bastion"), ["bastion"]);
-    }
-
-    #[test]
-    fn a_host_can_connect_directly_despite_the_project_jump_host() {
+    fn project_jump_hosts_come_first_then_the_hosts_own() {
         let mut web = named("web");
-        web.jump_host = Inherited::Off;
-        let mut lib = library(vec![web, named("bastion")]);
-        lib.projects[0].jump_host = Some("bastion".into());
-        assert_eq!(route_names(&lib, "web"), ["web"]);
+        web.jump_hosts = vec![jump("inner.lan")];
+        let mut lib = library(vec![web]);
+        lib.projects[0].jump_hosts = vec![jump("edge.example.com"), jump("bastion.lan")];
+        assert_eq!(jump_addresses(&lib, "web"), ["edge.example.com", "bastion.lan", "inner.lan"]);
+        let owners: Vec<_> = lib.resolve("p1", "web").unwrap().jump_hosts.into_iter().map(|j| j.owner).collect();
+        assert_eq!(
+            owners,
+            [JumpOwner::Project("p1".into(), 0), JumpOwner::Project("p1".into(), 1), JumpOwner::Host("web".into(), 0)]
+        );
     }
 
     #[test]
-    fn a_jump_host_outside_the_project_resolves_in_its_own_project() {
-        let mut lib = library(vec![reached_through(named("web"), "bastion")]);
-        let mut infra = project(Some("infra-key"), Some("ops"));
-        infra.id = "p2".into();
-        infra.color = "green".into();
-        infra.hosts = vec!["bastion".into()];
-        lib.projects.push(infra);
-        lib.hosts.push(named("bastion"));
-        lib.projects[0].credential = Some("atlas-key".into());
-
-        let route = lib.route("p1", "web").unwrap();
-        assert_eq!((route[0].project_id.as_str(), route[0].credential.as_deref()), ("p2", Some("infra-key")));
-        assert_eq!(route[0].user.as_deref(), Some("ops"));
-        assert_eq!((route[1].project_id.as_str(), route[1].credential.as_deref()), ("p1", Some("atlas-key")));
+    fn a_host_can_switch_the_project_jump_hosts_off() {
+        let mut web = named("web");
+        web.use_project_jump_hosts = false;
+        web.jump_hosts = vec![jump("inner.lan")];
+        let mut lib = library(vec![web, named("db")]);
+        lib.projects[0].jump_hosts = vec![jump("bastion.lan")];
+        assert_eq!(jump_addresses(&lib, "web"), ["inner.lan"]);
+        assert_eq!(jump_addresses(&lib, "db"), ["bastion.lan"]);
     }
 
     #[test]
-    fn a_jump_host_in_the_same_project_resolves_there() {
-        let mut lib = library(vec![reached_through(named("web"), "bastion"), named("bastion")]);
-        let mut other = project(Some("other-key"), None);
-        other.id = "p0".into();
-        other.hosts = vec!["bastion".into()];
-        lib.projects.insert(0, other);
-        lib.projects[1].credential = Some("atlas-key".into());
-        let route = lib.route("p1", "web").unwrap();
-        assert_eq!(route[0].credential.as_deref(), Some("atlas-key"));
+    fn a_saved_jump_host_can_be_changed_where_it_is_saved() {
+        let mut web = named("web");
+        web.jump_hosts = vec![jump("inner.lan")];
+        let mut lib = library(vec![web]);
+        lib.projects[0].jump_hosts = vec![jump("bastion.lan")];
+        lib.jump_host_mut(&JumpOwner::Project("p1".into(), 0)).unwrap().user = Some("ops".into());
+        lib.jump_host_mut(&JumpOwner::Host("web".into(), 0)).unwrap().credential = Some("c1".into());
+        assert!(lib.jump_host_mut(&JumpOwner::Host("web".into(), 1)).is_none());
+        let jumps = lib.resolve("p1", "web").unwrap().jump_hosts;
+        assert_eq!(jumps[0].jump.user.as_deref(), Some("ops"));
+        assert_eq!(jumps[1].jump.credential.as_deref(), Some("c1"));
+        assert_eq!(lib.credential_users("c1"), 1);
     }
 
     #[test]
-    fn cycles_are_refused() {
-        let lib = library(vec![reached_through(named("a"), "b"), reached_through(named("b"), "a")]);
-        assert_eq!(lib.route("p1", "a").unwrap_err(), RouteError::Cycle("a".into()));
-        assert!(lib.check_routes().is_err());
-        assert!(library(vec![reached_through(named("a"), "b"), named("b")]).check_routes().is_ok());
+    fn jump_hosts_round_trip_and_defaults_are_left_out() {
+        let mut web = named("web");
+        web.jump_hosts = vec![JumpHost { address: "bastion".into(), port: 2222, user: Some("ops".into()), credential: Some("c1".into()) }, jump("inner")];
+        let text = toml::to_string_pretty(&web).unwrap();
+        assert!(!text.contains("use_project_jump_hosts"), "on by default: {text}");
+        assert!(!text.contains("jump_host ="), "the old key is never written: {text}");
+        assert_eq!(toml::from_str::<Host>(&text).unwrap(), web);
+        web.use_project_jump_hosts = false;
+        let text = toml::to_string_pretty(&web).unwrap();
+        assert!(text.contains("use_project_jump_hosts = false"), "{text}");
+        assert_eq!(web.jump_hosts[0].label(), "ops@bastion:2222");
+        assert_eq!(web.jump_hosts[1].label(), "inner");
+    }
+
+    /// A Library as Komando 0.3.4 wrote it, with Jump Hosts saved as Hosts, after loading.
+    fn converted(text: &str) -> Library {
+        let mut lib: Library = toml::from_str(text).unwrap();
+        lib.convert_legacy_jump_hosts();
+        lib
+    }
+
+    const LEGACY: &str = r#"
+        [[projects]]
+        id = "p1"
+        name = "Atlas"
+        color = "red"
+        default_user = "deploy"
+        credential = "atlas-key"
+        jump_host = "bastion"
+        hosts = ["web", "db", "bastion", "direct", "deep"]
+
+        [[projects]]
+        id = "p2"
+        name = "Infra"
+        color = "green"
+        default_user = "ops"
+        hosts = ["edge", "inner"]
+
+        [[hosts]]
+        id = "web"
+        name = "web"
+        address = "web.lan"
+
+        [[hosts]]
+        id = "db"
+        name = "db"
+        address = "db.lan"
+
+        [[hosts]]
+        id = "bastion"
+        name = "bastion"
+        address = "bastion.example.com"
+        port = 2222
+        credential = "bastion-pw"
+
+        [[hosts]]
+        id = "direct"
+        name = "direct"
+        address = "direct.lan"
+        jump_host = false
+
+        [[hosts]]
+        id = "deep"
+        name = "deep"
+        address = "deep.lan"
+        jump_host = "inner"
+
+        [[hosts]]
+        id = "edge"
+        name = "edge"
+        address = "edge.example.com"
+        user = "root"
+
+        [[hosts]]
+        id = "inner"
+        name = "inner"
+        address = "inner.lan"
+        jump_host = "edge"
+    "#;
+
+    #[test]
+    fn saved_host_jump_hosts_become_typed_in_ones() {
+        let lib = converted(LEGACY);
+        let bastion = JumpHost { address: "bastion.example.com".into(), port: 2222, user: Some("deploy".into()), credential: Some("bastion-pw".into()) };
+        assert_eq!(lib.projects[0].jump_hosts, [bastion]);
+        // Hosts that took the Project's still do; the Project's Jump Host itself connects directly.
+        assert_eq!(jump_addresses(&lib, "web"), ["bastion.example.com"]);
+        assert!(lib.host("db").unwrap().use_project_jump_hosts);
+        assert!(jump_addresses(&lib, "bastion").is_empty());
+        assert!(jump_addresses(&lib, "direct").is_empty());
+        // A chain through another Project: each takes that Project's settings.
+        let deep = lib.host("deep").unwrap();
+        assert!(!deep.use_project_jump_hosts);
+        let edge = JumpHost { address: "edge.example.com".into(), port: 22, user: Some("root".into()), credential: None };
+        let inner = JumpHost { address: "inner.lan".into(), port: 22, user: Some("ops".into()), credential: None };
+        assert_eq!(deep.jump_hosts, [edge.clone(), inner]);
+        assert_eq!(lib.host("inner").unwrap().jump_hosts, [edge]);
+        // The Hosts stay.
+        assert_eq!(lib.hosts.len(), 7);
     }
 
     #[test]
-    fn a_missing_jump_host_is_reported() {
-        let lib = library(vec![reached_through(named("web"), "gone")]);
-        assert_eq!(lib.route("p1", "web").unwrap_err(), RouteError::Missing("web".into()));
+    fn converted_libraries_save_without_the_old_keys() {
+        let lib = converted(LEGACY);
+        let text = toml::to_string_pretty(&lib).unwrap();
+        assert!(!text.contains("jump_host ="), "{text}");
+        assert_eq!(converted(&text), lib, "converting again changes nothing");
+    }
+
+    #[test]
+    fn a_legacy_jump_host_cycle_or_missing_host_ends_the_chain() {
+        let text = r#"
+            [[projects]]
+            id = "p1"
+            name = "Atlas"
+            color = "red"
+            hosts = ["a", "b", "c"]
+
+            [[hosts]]
+            id = "a"
+            name = "a"
+            address = "a.lan"
+            jump_host = "b"
+
+            [[hosts]]
+            id = "b"
+            name = "b"
+            address = "b.lan"
+            jump_host = "a"
+
+            [[hosts]]
+            id = "c"
+            name = "c"
+            address = "c.lan"
+            jump_host = "gone"
+        "#;
+        let lib = converted(text);
+        assert_eq!(jump_addresses(&lib, "a"), ["a.lan", "b.lan"]);
+        assert!(jump_addresses(&lib, "c").is_empty());
     }
 
     #[test]
@@ -903,23 +1103,9 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_jump_host_makes_its_hosts_connect_directly() {
-        let mut lib = library(vec![reached_through(named("web"), "bastion"), named("db"), named("bastion")]);
-        lib.projects[0].jump_host = Some("bastion".into());
-        let mut names: Vec<_> = lib.reached_through("bastion").into_iter().map(|h| h.name.clone()).collect();
-        names.sort();
-        assert_eq!(names, ["db", "web"]);
-
-        lib.remove_host("bastion");
-        assert!(lib.host("bastion").is_none());
-        assert_eq!(lib.projects[0].jump_host, None);
-        assert_eq!(lib.host("web").unwrap().jump_host, Inherited::Off);
-        assert_eq!(route_names(&lib, "db"), ["db"]);
-    }
-
-    #[test]
     fn duplicating_a_host_copies_it_below_the_original_in_that_project() {
-        let mut web = reached_through(named("web"), "bastion");
+        let mut web = named("web");
+        web.jump_hosts = vec![jump("bastion.lan")];
         web.credential = Inherited::Own("web-key".into());
         web.startup_commands = vec!["uptime".into()];
         let mut lib = library(vec![web, named("db"), named("bastion")]);
@@ -930,7 +1116,7 @@ mod tests {
         assert_eq!(copy.name, "web (copy)");
         assert_eq!(copy.address, "web.lan");
         assert_eq!(copy.credential, Inherited::Own("web-key".into()));
-        assert_eq!(copy.jump_host, Inherited::Own("bastion".into()));
+        assert_eq!(copy.jump_hosts, [jump("bastion.lan")]);
         assert_eq!(copy.startup_commands, ["uptime"]);
         assert_eq!(lib.projects[0].hosts, ["web", id.as_str(), "db", "bastion"]);
 
@@ -1062,19 +1248,19 @@ mod tests {
         assert_eq!(lib.hosts[0].user, Inherited::Own("admin".into()));
         assert_eq!(lib.hosts[0].credential, Inherited::Own("c1".into()));
         assert_eq!(lib.hosts[1].user, Inherited::Project);
-        assert_eq!(lib.hosts[1].jump_host, Inherited::Project);
+        assert!(lib.hosts[1].use_project_jump_hosts);
         assert!(lib.hosts[1].run_project_commands);
     }
 
     #[test]
     fn switched_off_settings_are_written_as_false() {
         let mut h = host(None, None, None);
-        h.jump_host = Inherited::Off;
+        h.user = Inherited::Off;
         h.credential = Inherited::Own("c1".into());
         let text = toml::to_string(&h).unwrap();
-        assert!(text.contains("jump_host = false"), "{text}");
+        assert!(text.contains("user = false"), "{text}");
         assert!(text.contains("credential = \"c1\""), "{text}");
-        assert!(!text.contains("user"), "inherited settings are left out: {text}");
+        assert!(!text.contains("jump"), "defaults are left out: {text}");
         assert_eq!(toml::from_str::<Host>(&text).unwrap(), h);
     }
 

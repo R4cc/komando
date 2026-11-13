@@ -13,13 +13,16 @@ A saved SSH destination: address, port, user, Credential and how it looks (icon,
 _Avoid_: Profile, server, connection, bookmark
 
 **Jump Host**:
-A Host that another Host is reached through, because that Host can't be reached directly from
-this PC. A Jump Host can itself be reached through another, forming a chain.
+A machine Komando signs in to on the way to a Host, because the Host can't be reached directly
+from this PC: an address, port, user and optional password, typed in where it is used. It is
+not a Host. A Host can be reached through several Jump Hosts, signed in to one after another.
 _Avoid_: Bastion, proxy, ProxyJump, gateway
 
 **Project Default**:
-A setting a Project gives its Hosts: user, Project Credential, Jump Host, Startup Commands. Each
-Host takes it, sets its own, or switches it off (no Jump Host means connecting directly).
+A setting a Project gives its Hosts: user, Project Credential, Jump Hosts, Startup Commands.
+Each Host takes it, sets its own, or switches it off. Jump Hosts and Startup Commands add up
+instead: a Host goes through the Project's Jump Hosts first (unless it switches them off), then
+its own.
 _Avoid_: Inherited setting, project setting
 
 **Host Key**:

@@ -15,7 +15,73 @@ use komando::vault::{Credential, Secret, Vault};
 
 const MASTER: &str = "demo-master-password";
 
+/// Counts live heap bytes, so memory measurements can tell the program's own allocations apart
+/// from what the allocator keeps, GPU buffers and mapped fonts. `KOMANDO_DEMO_MEM=1` prints
+/// them every 5 seconds; otherwise counting costs two relaxed atomic adds per allocation.
+mod heap {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicIsize, Ordering};
+
+    pub static LIVE: AtomicIsize = AtomicIsize::new(0);
+    pub static PEAK: AtomicIsize = AtomicIsize::new(0);
+
+    pub struct Counting;
+
+    fn add(bytes: isize) {
+        let now = LIVE.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        if bytes > 0 {
+            PEAK.fetch_max(now, Ordering::Relaxed);
+        }
+    }
+
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            add(layout.size() as isize);
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            add(layout.size() as isize);
+            unsafe { System.alloc_zeroed(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            add(-(layout.size() as isize));
+            unsafe { System.dealloc(ptr, layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            add(new_size as isize - layout.size() as isize);
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    pub fn report() {
+        if std::env::var_os("KOMANDO_DEMO_MEM").is_none() {
+            return;
+        }
+        std::thread::spawn(|| {
+            let start = std::time::Instant::now();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let mib = |v: isize| v as f64 / (1024. * 1024.);
+                let rss = std::fs::read_to_string("/proc/self/status")
+                    .ok()
+                    .and_then(|s| s.lines().find(|l| l.starts_with("VmRSS:")).map(|l| l[6..].trim().to_string()))
+                    .unwrap_or_default();
+                eprintln!(
+                    "mem t={:>4}s heap={:>8.1} MiB peak={:>8.1} MiB rss={rss}",
+                    start.elapsed().as_secs(),
+                    mib(LIVE.load(std::sync::atomic::Ordering::Relaxed)),
+                    mib(PEAK.load(std::sync::atomic::Ordering::Relaxed)),
+                );
+            }
+        });
+    }
+}
+
+#[global_allocator]
+static ALLOC: heap::Counting = heap::Counting;
+
 fn main() {
+    heap::report();
     let dir = PathBuf::from(env::var("KOMANDO_DEMO_DIR").expect("KOMANDO_DEMO_DIR"));
     let key = fs::read_to_string(env::var("KOMANDO_DEMO_KEY").expect("KOMANDO_DEMO_KEY")).unwrap();
     let host_key = fs::read_to_string(env::var("KOMANDO_DEMO_HOST_KEY").expect("KOMANDO_DEMO_HOST_KEY")).unwrap();
@@ -32,10 +98,11 @@ fn main() {
         .unwrap();
     let key_id_for_stress = key_id.clone();
 
-    let host = |name: &str, address: &str, port: u16, icon: &str| Host {
-        port,
-        icon: Some(icon.into()),
-        ..Host::new(name, address)
+    let host = |name: &str, address: &str, port: u16, icon: &str| {
+        let mut host = Host::new(name, address);
+        host.port = port;
+        host.icon = Some(icon.into());
+        host
     };
     let web01 = host("web01", "127.0.0.1", port, "server");
     let web02 = host("web02", "10.20.1.12", 22, "server");
@@ -45,11 +112,12 @@ fn main() {
     let mon = host("monitoring", "10.0.0.20", 22, "cpu");
     let backup = host("backup", "10.0.0.30", 22, "hard-drive");
 
-    let project = |name: &str, color: &str, icon: &str, hosts: &[&Host], credential: Option<String>| Project {
-        default_user: Some(user.clone()),
-        credential,
-        hosts: hosts.iter().map(|h| h.id.clone()).collect(),
-        ..Project::new(name, color, icon)
+    let project = |name: &str, color: &str, icon: &str, hosts: &[&Host], credential: Option<String>| {
+        let mut project = Project::new(name, color, icon);
+        project.default_user = Some(user.clone());
+        project.credential = credential;
+        project.hosts = hosts.iter().map(|h| h.id.clone()).collect();
+        project
     };
     let library = Library {
         shells: None,
@@ -113,12 +181,11 @@ fn main() {
                 }
                 library.hosts.push(h);
             }
-            library.projects.push(Project {
-                default_user: Some(user.clone()),
-                credential: Some(key_id_for_stress.clone()),
-                hosts,
-                ..Project::new(format!("Project {pi:02}"), colors[pi % colors.len()], icons[pi % icons.len()])
-            });
+            let mut project = Project::new(format!("Project {pi:02}"), colors[pi % colors.len()], icons[pi % icons.len()]);
+            project.default_user = Some(user.clone());
+            project.credential = Some(key_id_for_stress.clone());
+            project.hosts = hosts;
+            library.projects.push(project);
         }
         library.save(&dir).unwrap();
         if idle {

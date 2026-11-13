@@ -6,6 +6,7 @@ mod compat_tests;
 pub mod export;
 pub mod favorites;
 pub mod highlight;
+pub mod import;
 pub mod keys;
 pub mod marks;
 pub mod model;

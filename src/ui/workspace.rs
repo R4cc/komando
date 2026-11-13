@@ -33,6 +33,7 @@ use crate::ui::widgets::{
 use crate::vault::{Credential, Secret, Vault};
 
 mod forms;
+mod import;
 mod settings;
 mod split;
 mod updates;
@@ -275,6 +276,10 @@ pub struct Workspace {
     favorites: Entity<FavoriteStore>,
     /// The divider between terminal and file browser is being dragged.
     sftp_resizing: bool,
+    /// The last key handed to a jump host row in a form (see `forms::JumpRow`).
+    next_jump_row: usize,
+    /// Settings → Import: where an import from another SSH client is.
+    import: import::ImportFlow,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -355,6 +360,8 @@ impl Workspace {
             transfers,
             favorites,
             sftp_resizing: false,
+            next_jump_row: 0,
+            import: import::ImportFlow::default(),
             _subscriptions: vec![transfers_sub],
         };
         this.apply_appearance(window, cx);
@@ -697,7 +704,10 @@ impl Workspace {
         for job in std::mem::take(&mut self.pending) {
             match job {
                 Pending::Open { project_id, host_id } => self.open_host_session(&project_id, &host_id, window, cx),
-                Pending::Form => self.show_form_error("The key file goes into the vault: unlock it, or pick another sign-in.", cx),
+                Pending::Form => self.show_form_error(
+                    "Key files and jump host passwords go into the vault: unlock it, or leave them out.",
+                    cx,
+                ),
                 Pending::Save { .. } => {}
             }
         }
@@ -881,7 +891,7 @@ impl Workspace {
                         this.save_password(id, *hop, password.clone(), cx);
                     } else {
                         this.pending.push(Pending::Save { session: id, hop: *hop, password: password.clone() });
-                        let host = this.hop_host(id, *hop).and_then(|(_, host_id)| this.library.host(&host_id).map(|h| h.name.clone()));
+                        let host = this.hop_target(id, *hop).map(|target| this.hop_name(&target));
                         let reason = match host {
                             Some(name) => format!("To remember the password for {name}, Komando saves it in your vault."),
                             None => "To remember this password, Komando saves it in your vault.".to_string(),
@@ -901,11 +911,20 @@ impl Workspace {
                 }
                 this.start_waiting(cx);
             }
-            TerminalEvent::EditHost { hop } => {
-                if let Some((project_id, host_id)) = this.hop_host(id, *hop) {
-                    this.open_edit_host(project_id, host_id, window, cx);
+            TerminalEvent::EditHost { hop } => match this.hop_target(id, *hop) {
+                Some(HopTarget::Jump(model::RouteJump { owner: model::JumpOwner::Project(project_id, _), .. })) => {
+                    this.open_edit_project(project_id, window, cx)
                 }
-            }
+                Some(HopTarget::Host { project_id, host_id }) => this.open_edit_host(project_id, host_id, window, cx),
+                // A Host's own Jump Host is edited in that Host's form.
+                Some(HopTarget::Jump(_)) => {
+                    let entry = this.sessions.iter().find(|s| s.id == id);
+                    if let Some((Some(project_id), SessionKind::Ssh { host_id })) = entry.map(|e| (e.project_id.clone(), e.kind.clone())) {
+                        this.open_edit_host(project_id, host_id, window, cx);
+                    }
+                }
+                None => {}
+            },
         });
         if let Some(project_id) = &project_id {
             self.collapsed.remove(project_id);
@@ -947,8 +966,8 @@ impl Workspace {
     fn open_host(&mut self, project_id: &str, host_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let needs_vault = self
             .library
-            .route(project_id, host_id)
-            .is_ok_and(|route| route.iter().any(|hop| hop.credential.is_some()));
+            .resolve(project_id, host_id)
+            .is_some_and(|host| host.credential.is_some() || host.jump_hosts.iter().any(|j| j.jump.credential.is_some()));
         if needs_vault && self.vault.is_none() {
             self.pending.push(Pending::Open { project_id: project_id.into(), host_id: host_id.into() });
             let name = self.library.host(host_id).map(|h| h.name.clone()).unwrap_or_else(|| "This host".into());
@@ -1029,27 +1048,35 @@ impl Workspace {
                 }
             }
             SessionKind::Ssh { host_id } => {
-                let route = match project_id.map(|p| self.library.route(p, host_id)) {
-                    Some(Ok(route)) => route,
-                    Some(Err(err)) => {
-                        proxy.send(session::SessionEvent::Status(Status::Disconnected(err.to_string())));
-                        return;
-                    }
-                    None => return,
+                let Some(host) = project_id.and_then(|p| self.library.resolve(p, host_id)) else {
+                    proxy.send(session::SessionEvent::Status(Status::Disconnected("This host is no longer saved.".into())));
+                    return;
                 };
-                let cards = (route.len() > 1).then(|| route.iter().map(route_card).collect());
-                let startup = route.last().map(|target| target.startup_commands.clone()).unwrap_or_default();
-                view.update(cx, |v, _| v.begin_connect(cards, startup));
-                let hops = route
-                    .into_iter()
-                    .map(|hop| ssh::Hop {
-                        secret: hop.credential.as_deref().and_then(|id| self.vault.as_ref()?.get(id)).map(|c| c.secret.clone()),
-                        name: hop.name,
-                        address: hop.address,
-                        port: hop.port,
-                        user: hop.user,
+                let cards = (!host.jump_hosts.is_empty()).then(|| {
+                    host.jump_hosts.iter().map(|j| jump_card(&j.jump, &host.color)).chain([route_card(&host)]).collect()
+                });
+                view.update(cx, |v, _| v.begin_connect(cards, host.startup_commands.clone()));
+                let secret = |credential: Option<&str>| {
+                    credential.and_then(|id| self.vault.as_ref()?.get(id)).map(|c| c.secret.clone())
+                };
+                let mut hops: Vec<ssh::Hop> = host
+                    .jump_hosts
+                    .iter()
+                    .map(|j| ssh::Hop {
+                        secret: secret(j.jump.credential.as_deref()),
+                        name: j.jump.address.clone(),
+                        address: j.jump.address.clone(),
+                        port: j.jump.port,
+                        user: j.jump.user.clone(),
                     })
                     .collect();
+                hops.push(ssh::Hop {
+                    secret: secret(host.credential.as_deref()),
+                    name: host.name,
+                    address: host.address,
+                    port: host.port,
+                    user: host.user,
+                });
                 let target = ssh::Target { hops, known_hosts: self.data_dir.join("known_hosts") };
                 Some(ssh::spawn(target, size, term, proxy))
             }
@@ -1071,13 +1098,25 @@ impl Workspace {
         self.focus_active(window, cx);
     }
 
-    /// The Host of one hop of a Session's route: (Project id, Host id).
-    fn hop_host(&self, session_id: usize, hop: usize) -> Option<(String, String)> {
+    /// What one hop of a Session's way is: one of its Jump Hosts, or the Host at its end.
+    fn hop_target(&self, session_id: usize, hop: usize) -> Option<HopTarget> {
         let entry = self.sessions.iter().find(|s| s.id == session_id)?;
         let SessionKind::Ssh { host_id } = &entry.kind else { return None };
-        let route = self.library.route(entry.project_id.as_deref()?, host_id).ok()?;
-        let resolved = route.get(hop)?;
-        Some((resolved.project_id.clone(), resolved.host_id.clone()))
+        let project_id = entry.project_id.as_deref()?;
+        let host = self.library.resolve(project_id, host_id)?;
+        match host.jump_hosts.get(hop) {
+            Some(jump) => Some(HopTarget::Jump(jump.clone())),
+            None if hop == host.jump_hosts.len() => Some(HopTarget::Host { project_id: project_id.into(), host_id: host_id.clone() }),
+            None => None,
+        }
+    }
+
+    /// A hop's name as the user knows it: the Host's name, or the Jump Host's address.
+    fn hop_name(&self, target: &HopTarget) -> String {
+        match target {
+            HopTarget::Jump(jump) => jump.jump.address.clone(),
+            HopTarget::Host { host_id, .. } => self.library.host(host_id).map(|h| h.name.clone()).unwrap_or_default(),
+        }
     }
 
     fn activate(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1283,20 +1322,74 @@ impl Workspace {
 
     // ---- passwords & output -----------------------------------------------------------
 
-    /// Save a user name typed for one hop of a Session as that hop's Host's own.
+    /// Save a user name typed for one hop of a Session: as the Host's own, or for the Jump
+    /// Host where it is saved.
     fn save_user(&mut self, session_id: usize, hop: usize, user: String, cx: &mut Context<Self>) {
-        let Some((_, host_id)) = self.hop_host(session_id, hop) else { return };
-        let Some(host) = self.library.hosts.iter_mut().find(|h| h.id == host_id) else { return };
-        host.user = model::Inherited::Own(user);
-        match self.library.save(&self.data_dir) {
-            Ok(_) => self.show_toast("User name saved for this host.", cx),
+        let mut library = self.library.clone();
+        let saved = match self.hop_target(session_id, hop) {
+            Some(HopTarget::Jump(jump)) => library.jump_host_mut(&jump.owner).map(|j| j.user = Some(user)),
+            Some(HopTarget::Host { host_id, .. }) => {
+                library.hosts.iter_mut().find(|h| h.id == host_id).map(|h| h.user = model::Inherited::Own(user))
+            }
+            None => None,
+        };
+        if saved.is_none() {
+            return;
+        }
+        match library.save(&self.data_dir) {
+            Ok(_) => {
+                self.library = library;
+                self.show_toast("User name saved.", cx);
+            }
             Err(err) => self.show_toast(format!("Could not save: {err}"), cx),
+        }
+    }
+
+    /// Save a password typed for a Jump Host on a Session's way, where that Jump Host is
+    /// saved. It gets a Credential of its own; the one it had goes once nothing uses it.
+    fn save_jump_password(&mut self, jump: model::RouteJump, password: String, cx: &mut Context<Self>) {
+        let Some(vault) = self.vault.as_mut() else { return };
+        let label = format!("{} (jump host)", jump.jump.label());
+        let cred_id = match vault.add(Credential { label, secret: Secret::Password { password } }) {
+            Ok(id) => id,
+            Err(err) => return self.show_toast(format!("Could not save: {err}"), cx),
+        };
+        let mut library = self.library.clone();
+        let Some(saved) = library.jump_host_mut(&jump.owner) else {
+            let _ = vault.remove(&cred_id);
+            return;
+        };
+        let before = saved.credential.replace(cred_id.clone());
+        match library.save(&self.data_dir) {
+            Ok(_) => {
+                self.library = library;
+                self.forget_unused_credentials(before);
+                self.show_toast("Password saved to the vault.", cx);
+            }
+            Err(err) => {
+                let _ = vault.remove(&cred_id);
+                self.show_toast(format!("Could not save the password: {err:#}"), cx);
+            }
+        }
+    }
+
+    /// Take Credentials out of the Vault that nothing in the Library uses any more.
+    pub(super) fn forget_unused_credentials(&mut self, ids: impl IntoIterator<Item = model::CredentialId>) {
+        let Some(vault) = self.vault.as_mut() else { return };
+        for id in ids {
+            if self.library.credential_users(&id) == 0 {
+                let _ = vault.remove(&id);
+            }
         }
     }
 
     /// Save a password typed for one hop of a Session for that hop's Host.
     fn save_password(&mut self, session_id: usize, hop: usize, password: String, cx: &mut Context<Self>) {
-        let Some((project_id, host_id)) = self.hop_host(session_id, hop) else { return };
+        let (project_id, host_id) = match self.hop_target(session_id, hop) {
+            Some(HopTarget::Host { project_id, host_id }) => (project_id, host_id),
+            Some(HopTarget::Jump(jump)) => return self.save_jump_password(jump, password, cx),
+            None => return,
+        };
         let Some(resolved) = self.library.resolve(&project_id, &host_id) else { return };
         let Some(vault) = self.vault.as_mut() else { return };
         let label = format!("{}@{}", resolved.user.clone().unwrap_or_default(), resolved.name);
@@ -1466,15 +1559,6 @@ impl Workspace {
             body.push_str(&format!(" It is in {projects} projects and leaves all of them."));
         }
         body.push_str(" Its open sessions are closed. A saved key or password stays in the vault.");
-        let mut reached: Vec<&str> = self.library.reached_through(&host_id).iter().map(|h| h.name.as_str()).collect();
-        reached.sort_unstable();
-        match reached.as_slice() {
-            [] => {}
-            [one] => body.push_str(&format!(" {one} is reached through it and will connect directly.")),
-            [rest @ .., last] => {
-                body.push_str(&format!(" {} and {last} are reached through it and will connect directly.", rest.join(", ")))
-            }
-        }
         self.overlay = Some(Overlay::Confirm {
             title: format!("Delete {}?", host.name),
             body,
@@ -1583,7 +1667,18 @@ fn welcome_shells(shells: Vec<LocalShell>) -> Vec<(String, LocalShell)> {
     picked
 }
 
-/// How a Host on the way shows on the route page.
+/// One hop of a Session's way (see `Workspace::hop_target`).
+enum HopTarget {
+    Jump(model::RouteJump),
+    Host { project_id: String, host_id: String },
+}
+
+/// How a Jump Host shows on the route page, in the colour of the Host it leads to.
+fn jump_card(jump: &model::JumpHost, color: &str) -> RouteCard {
+    RouteCard { name: jump.address.clone(), detail: jump.label(), icon: "network".into(), color: project_color(color) }
+}
+
+/// How the Host at the end of the way shows on the route page.
 fn route_card(hop: &model::ResolvedHost) -> RouteCard {
     let user = hop.user.as_deref().map(|u| format!("{u}@")).unwrap_or_default();
     let port = if hop.port == 22 { String::new() } else { format!(":{}", hop.port) };
@@ -1637,6 +1732,13 @@ impl Workspace {
                             .text_color(p.text)
                             .child(if creating { "Create a master password" } else { "Enter your master password" }),
                     ),
+            )
+            // Same as "Not now" or Escape.
+            .child(div().flex_1())
+            .child(
+                close_x("unlock-close", p)
+                    .flex_shrink_0()
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.skip_unlock(window, cx))),
             );
         let note = div()
             .flex()
@@ -1981,9 +2083,9 @@ impl Workspace {
             .flex_1()
             .min_h_0();
 
-        let (show_downloads, attention, downloads_open) = {
+        let (show_downloads, attention, downloads_open, new_download) = {
             let t = self.transfers.read(cx);
-            (t.any(), t.attention(), t.is_open())
+            (t.any(), t.attention(), t.is_open(), t.new_download())
         };
         let footer_row = |id: &'static str, icon: &str, label: String| {
             div()
@@ -2063,6 +2165,23 @@ impl Workspace {
                     .when(show_downloads, |el| {
                         el.child(
                             footer_row("downloads", "download", "Downloads".into())
+                                .when(new_download, |el| {
+                                    el.aria_label("Downloads, new download").child(
+                                        // A dot on the icon's top-right corner (the 15px icon
+                                        // sits 8px in, 8.5px down), ringed in the sidebar's
+                                        // colour so it reads as cut out of the icon.
+                                        div()
+                                            .absolute()
+                                            .left(px(17.))
+                                            .top(px(5.5))
+                                            .size(px(10.))
+                                            .rounded_full()
+                                            .bg(p.brand)
+                                            .border_2()
+                                            .border_color(p.sidebar),
+                                    )
+                                })
+                                .relative()
                                 .when(downloads_open, |el| el.bg(p.active).text_color(p.text))
                                 .child(div().flex_1())
                                 .when(attention > 0, |el| {
@@ -2890,12 +3009,11 @@ impl Workspace {
                         SidebarItem::Host { project, host } => {
                             let r = model::resolve(host, project);
                             let user = r.user.clone().map(|u| format!("{u}@")).unwrap_or_default();
-                            let via = r
-                                .jump_host
-                                .as_deref()
-                                .and_then(|id| self.library.host(id))
-                                .map(|jump| format!(" · via {}", jump.name))
-                                .unwrap_or_default();
+                            let via = match r.jump_hosts.as_slice() {
+                                [] => String::new(),
+                                [one] => format!(" · via {}", one.jump.address),
+                                more => format!(" · via {} jump hosts", more.len()),
+                            };
                             (r.icon.clone(), project_color(&r.color), host.name.clone(), format!("{user}{}{via} · {}", host.address, project.name))
                         }
                         SidebarItem::Shell { project, shell } => (
@@ -2939,12 +3057,14 @@ impl Workspace {
                     .child(
                         div()
                             .p(px(14.))
+                            .pt(px(12.))
                             .flex()
                             .flex_col()
                             .gap(px(10.))
                             .border_b_1()
                             .border_color(p.border)
-                            .child(section_label(&title, p))
+                            // As tall as the close button beside it, so the field starts below it.
+                            .child(div().h(px(30.)).flex().items_center().child(section_label(&title, p)))
                             .child(Input::new(query)),
                     )
                     .child(list)
@@ -3000,8 +3120,16 @@ impl Workspace {
                         .border_1()
                         .border_color(p.border)
                         .shadow(elevation(p.dark))
+                        .relative()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(body),
+                        .child(body)
+                        .child(
+                            close_x("overlay-close", p)
+                                .absolute()
+                                .top(px(12.))
+                                .right(px(12.))
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx))),
+                        ),
                 )
                 .into_any_element(),
         )
@@ -3264,7 +3392,8 @@ fn form_card(p: AppPalette, title: &str, body: AnyElement, actions: Vec<AnyEleme
         .flex()
         .flex_col()
         .gap(px(16.))
-        .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title.to_string()))
+        // Room on the right for the dialog's close button.
+        .child(div().pr(px(28.)).text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title.to_string()))
         .child(body)
         .child(div().flex().justify_end().gap(px(8.)).children(actions))
         .into_any_element()
@@ -3285,6 +3414,11 @@ fn form_field(label: &str, hint: Option<&str>, control: AnyElement, p: AppPalett
         .child(control)
         .when_some(hint, |el, hint| el.child(div().text_size(px(12.)).text_color(p.text_muted).child(hint.to_string())))
         .into_any_element()
+}
+
+/// The ✕ in a dialog's top-right corner. It does what Escape does there.
+fn close_x(id: &'static str, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+    icon_button(id, "x", p).aria_label("Close")
 }
 
 fn modal(p: AppPalette, body: AnyElement) -> AnyElement {

@@ -342,6 +342,39 @@ pub fn drop_blank_scrollback<T>(term: &mut Term<T>) -> bool {
     blank
 }
 
+/// Give every row of the Scrollback an allocation the size of the terminal's width.
+///
+/// Resizing leaves rows bigger than they need to be: alacritty keeps a row's allocation when the
+/// terminal gets narrower, and widening a row at least doubles it (`Vec` growth). With a full
+/// Scrollback, widening the window by one column doubled the Session's memory, for good, as rows
+/// are recycled rather than reallocated. A clone of a row is allocated at exactly its length.
+///
+/// Works through the rows a stretch at a time, so the parser and the UI never wait long for the
+/// terminal. Stops when the width changes again: the resize that changed it starts another pass.
+pub fn compact_rows<T>(term: &FairMutex<Term<T>>, cols: usize) {
+    const STRETCH: usize = 2048;
+    // Rows done, counted from the oldest. Output that arrives in between shifts the rows a
+    // little; a row missed that way stays as big as it was, which is harmless.
+    let mut done = 0;
+    loop {
+        let mut term = term.lock();
+        let grid = term.grid_mut();
+        let total = grid.total_lines();
+        if grid.columns() != cols || done >= total {
+            return;
+        }
+        let top = -(grid.history_size() as i32);
+        let end = (done + STRETCH).min(total);
+        for i in done..end {
+            let row = &mut grid[Line(top + i as i32)];
+            *row = row.clone();
+        }
+        drop(term);
+        done = end;
+        std::thread::yield_now();
+    }
+}
+
 /// The whole Scrollback plus screen as plain text: colours dropped, trailing blanks trimmed.
 pub fn scrollback_text<T>(term: &Term<T>) -> String {
     let grid = term.grid();
@@ -372,6 +405,50 @@ mod tests {
     fn export_trims_and_uses_crlf() {
         assert_eq!(tidy_export("a  \nb\n\n\n"), "a\r\nb\r\n");
         assert_eq!(tidy_export("\n\n"), "");
+    }
+
+    /// Every row, oldest first, cell by cell (characters, colours, flags such as wrapping).
+    fn rows<T>(term: &Term<T>) -> Vec<Vec<alacritty_terminal::term::cell::Cell>> {
+        let grid = term.grid();
+        let top = -(grid.history_size() as i32);
+        (top..grid.screen_lines() as i32)
+            .map(|line| (0..grid.columns()).map(|col| grid[Line(line)][Column(col)].clone()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn compacting_rows_after_a_resize_keeps_every_cell() {
+        let (tx, _rx) = mpsc::unbounded();
+        let size = GridSize { cols: 60, rows: 10, cell_width: 8, cell_height: 18 };
+        let term = new_term(size, 5_000, EventProxy::new(tx));
+        let mut parser: Processor = Processor::new();
+        {
+            let mut t = term.lock();
+            // More than the Scrollback holds, in colour, some lines long enough to wrap.
+            for i in 0..6_000 {
+                let tail = "x".repeat(i % 90);
+                parser.advance(&mut *t, format!("\x1b[3{}mline {i}\x1b[0m {tail}\x1b[1m!\x1b[0m\r\n", i % 8).as_bytes());
+            }
+            t.resize(GridSize { cols: 61, ..size }.term_size());
+        }
+        let before = rows(&*term.lock());
+        let text = scrollback_text(&*term.lock());
+        // Widening rejoined some wrapped lines; the Scrollback is still full of output.
+        let history = term.lock().grid().history_size();
+        assert!(history > 4_900);
+
+        // A pass for a width the terminal no longer has changes nothing.
+        compact_rows(&term, 60);
+        assert_eq!(rows(&*term.lock()), before);
+
+        compact_rows(&term, 61);
+        let t = term.lock();
+        assert_eq!(rows(&*t), before);
+        assert_eq!(scrollback_text(&*t), text);
+        assert_eq!(t.grid().history_size(), history);
+        let grid = t.grid();
+        let top = -(grid.history_size() as i32);
+        assert!((top..grid.screen_lines() as i32).all(|line| grid[Line(line)].len() == 61));
     }
 
     #[test]

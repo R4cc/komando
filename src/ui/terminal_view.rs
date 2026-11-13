@@ -17,7 +17,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontStyle, FontWeight,
     Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels,
-    ScrollEvent, SharedString, StrikethroughStyle, Subscription, TextRun, TouchPhase, UnderlineStyle, Window,
+    ScrollEvent, SharedString, StrikethroughStyle, Subscription, Task, TextRun, TouchPhase, UnderlineStyle, Window,
     actions, canvas, div, fill, outline, point, prelude::*, px, size,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -212,8 +212,14 @@ pub struct TerminalView {
     hovered_mark: Option<u64>,
     /// The mark jumped to last, lit until the timer with the same number runs out.
     flash: Option<(u64, u64)>,
+    /// Shrinks the Scrollback's rows once a new width has settled (see `compact_after_resize`).
+    compaction: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// How long the width must stay the same before the rows are compacted, so dragging a window
+/// edge compacts once at the end rather than every frame.
+const COMPACT_DELAY: Duration = Duration::from_millis(500);
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
@@ -280,6 +286,7 @@ impl TerminalView {
             marks: Marks::default(),
             hovered_mark: None,
             flash: None,
+            compaction: None,
             _subscriptions: subscriptions,
         }
     }
@@ -302,6 +309,16 @@ impl TerminalView {
 
     pub fn proxy(&self) -> EventProxy {
         self.proxy.clone()
+    }
+
+    /// After the width changed: once it has settled, shrink the rows' allocations to the new
+    /// width, off the UI thread. A newer width replaces (and so cancels) a pending pass.
+    fn compact_after_resize(&mut self, cols: u16, cx: &mut Context<Self>) {
+        let term = self.term.clone();
+        self.compaction = Some(cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(COMPACT_DELAY).await;
+            cx.background_spawn(async move { crate::session::compact_rows(&term, cols as usize) }).await;
+        }));
     }
 
     /// The grid size from the pane's layout; `None` before it was first painted.
@@ -1914,6 +1931,8 @@ impl Render for TerminalView {
                 let rows = ((f32::from(bounds.size.height) / lh).floor() as u16).max(1);
                 let new_size = GridSize { cols, rows, cell_width: cw.round() as u16, cell_height: lh as u16 };
                 if grid.get() != Some(new_size) {
+                    // A new width leaves the Scrollback's rows oversized; the first layout has none.
+                    let width_changed = grid.get().is_some_and(|old| old.cols != new_size.cols);
                     grid.set(Some(new_size));
                     {
                         let mut term = term.lock();
@@ -1927,7 +1946,12 @@ impl Render for TerminalView {
                     }
                     let this = this.clone();
                     cx.defer(move |cx| {
-                        let _ = this.update(cx, |_, cx| cx.emit(TerminalEvent::Sized));
+                        let _ = this.update(cx, |view, cx| {
+                            if width_changed {
+                                view.compact_after_resize(new_size.cols, cx);
+                            }
+                            cx.emit(TerminalEvent::Sized)
+                        });
                     });
                 }
 

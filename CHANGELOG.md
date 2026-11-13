@@ -6,6 +6,20 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Dialogs such as the host and project forms, delete confirmations, quick connect and the
+  vault password now have a close button (✕) in the top-right corner. It does what Escape does.
+- A dot on the Downloads button shows that a download finished while the downloads panel
+  was closed. It goes away when you open the panel.
+- Import your SSH profiles from Tabby in Settings → Import. Komando finds Tabby's settings
+  on its own (or you choose its `config.yaml`), lets you tick the profile groups and profiles
+  to bring over, and shows a review before anything is saved. Each group becomes a project;
+  each profile becomes a host with its name, host name, port, user and a matching icon.
+  Profiles you already have in Komando are recognised and left unticked. Passwords, keys,
+  jump hosts, login scripts and colours are not imported; the review lists, per host, each
+  setting you changed in Tabby that doesn't come over.
+
 ### Changed
 
 - Release downloads use filenames containing the release version, such as
@@ -15,9 +29,17 @@ All notable changes to Komando are listed here. The format follows
 - The SFTP browser's right-click menu is shorter: Rename, Copy to… and Move to… are hidden
   unless you switch them on in the new Settings → File browser page. F2 still renames.
 - "Copy full path" in the SFTP browser's right-click menu is now called "Copy as path".
+- Jump hosts are now typed in where you use them instead of being saved hosts. In the host and
+  project forms, add as many as you need, each with user, host name or IP, port and a "Set
+  password" button that saves the password in the vault. Komando signs in to them top first.
+  A host goes through its project's jump hosts first, then its own; a switch turns the
+  project's off. Your existing jump hosts are converted automatically and the hosts stay.
 
 ### Fixed
 
+- Resizing the window, opening the SFTP browser or a split view no longer leaves a session
+  holding much more memory than its output needs. With a long scrollback, making the window
+  even one column wider used to double that session's memory until Komando closed.
 - "Jump to here" in the SFTP browser now changes the terminal's directory: to the folder,
   or for a file to the folder it is in. If a program such as an editor has the terminal,
   the browser says so instead of typing into it.

@@ -1,3 +1,7 @@
+---
+status: accepted; the "saved Host" part is superseded by ADR 0007
+---
+
 # Jump Hosts run inside the embedded client
 
 ADR 0002 left jump hosts out of v1. They are now supported, and they stay inside the embedded
