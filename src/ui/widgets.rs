@@ -158,6 +158,66 @@ pub fn spinner(id: impl Into<ElementId>, size: f32, color: Hsla) -> AnyElement {
         .into_any_element()
 }
 
+/// A ring around an icon showing how far something is: a faint full circle, and over it an
+/// arc from 12 o'clock clockwise to `fraction` (0 to 1). `None`: the amount isn't known, so a
+/// quarter arc turns instead. `size` is the ring's outer diameter.
+pub fn progress_ring(id: impl Into<ElementId>, fraction: Option<f32>, size: f32, stroke: f32, track: Hsla, color: Hsla) -> AnyElement {
+    let ring = move |start: f32, sweep: f32| {
+        gpui::canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                let center = bounds.center();
+                let radius = (size - stroke) / 2.;
+                if let Some(path) = arc_path(center, radius, stroke, 0., 1.) {
+                    window.paint_path(path, track);
+                }
+                if let Some(path) = arc_path(center, radius, stroke, start, sweep) {
+                    window.paint_path(path, color);
+                }
+            },
+        )
+        .size(px(size))
+    };
+    match fraction {
+        Some(fraction) => div().size(px(size)).child(ring(0., fraction.clamp(0., 1.))).into_any_element(),
+        None => div()
+            .size(px(size))
+            .with_animation(id, Animation::new(std::time::Duration::from_millis(1000)).repeat(), move |el, delta| {
+                el.child(ring(delta, 0.25))
+            })
+            .into_any_element(),
+    }
+}
+
+/// A stroked circular arc starting `start` turns clockwise from 12 o'clock and running
+/// `sweep` turns, built from cubic Béziers of at most a quarter turn each.
+fn arc_path(center: gpui::Point<gpui::Pixels>, radius: f32, stroke: f32, start: f32, sweep: f32) -> Option<gpui::Path<gpui::Pixels>> {
+    if sweep <= 0.001 {
+        return None;
+    }
+    let at = |turns: f32| {
+        let angle = turns * std::f32::consts::TAU;
+        (f32::from(center.x) + radius * angle.sin(), f32::from(center.y) - radius * angle.cos())
+    };
+    let segments = (sweep * 4.).ceil().max(1.) as usize;
+    let step = sweep / segments as f32;
+    // Control points lie along the tangents, k·radius from each end of a segment.
+    let k = 4. / 3. * (step * std::f32::consts::TAU / 4.).tan() * radius;
+    let mut path = gpui::PathBuilder::stroke(px(stroke));
+    let (x, y) = at(start);
+    path.move_to(point(px(x), px(y)));
+    for i in 0..segments {
+        let (a, b) = (start + step * i as f32, start + step * (i + 1) as f32);
+        let ((ax, ay), (bx, by)) = (at(a), at(b));
+        let (ta, tb) = (a * std::f32::consts::TAU, b * std::f32::consts::TAU);
+        // Clockwise on screen: the tangent at angle t is (cos t, sin t).
+        let c1 = point(px(ax + k * ta.cos()), px(ay + k * ta.sin()));
+        let c2 = point(px(bx - k * tb.cos()), px(by - k * tb.sin()));
+        path.cubic_bezier_to(point(px(bx), px(by)), c1, c2);
+    }
+    path.build().ok()
+}
+
 /// Islands are the rounded panels the window is made of (sidebar, terminal).
 /// Rows inside them have an 8px radius and sit 8px from the edge: 8 + 8 = 16.
 pub const ISLAND_RADIUS: f32 = 16.;

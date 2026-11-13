@@ -48,6 +48,9 @@ pub struct Transfer {
     /// The panel has shown how it ended. Until then a failure stays counted on the Downloads
     /// entry, and a finished download marks it as new.
     seen: bool,
+    /// Part of the current burst of transfers, whose combined progress the Downloads entry
+    /// shows. A burst starts when a transfer starts while none is running.
+    in_burst: bool,
 }
 
 impl Transfer {
@@ -68,6 +71,25 @@ enum Filter {
     All,
     Successful,
     Failed,
+}
+
+/// What the Downloads entry shows around its icon.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Activity {
+    /// Nothing running.
+    Idle,
+    /// Running, but no sizes known yet (a folder still being listed).
+    Unknown,
+    /// Running, this far (0 to 1) through the bytes of the current burst.
+    Progress(f32),
+}
+
+/// Bytes done over bytes to transfer, as (done, total) per transfer. Transfers whose size
+/// isn't known yet are left out; `None` if no size is known at all.
+fn combined_progress(parts: impl Iterator<Item = (u64, u64)>) -> Option<f32> {
+    let (done, total) =
+        parts.filter(|(_, total)| *total > 0).fold((0u64, 0u64), |(d, t), (done, total)| (d + done.min(total), t + total));
+    (total > 0).then(|| done as f32 / total as f32)
 }
 
 /// Tells the workspace that the counts on the Downloads entry changed.
@@ -125,6 +147,26 @@ impl Transfers {
         self.items.iter().any(|t| !t.seen && !t.is_upload() && matches!(t.state, State::Done { .. }))
     }
 
+    /// How far the current burst of transfers is, for the ring on the Downloads entry.
+    pub fn activity(&self) -> Activity {
+        if !self.has_active() {
+            return Activity::Idle;
+        }
+        let parts = self.items.iter().filter(|t| t.in_burst).map(|t| {
+            let total = t.progress.total.load(Ordering::Relaxed);
+            let done = match t.state {
+                State::Active => t.progress.done.load(Ordering::Relaxed),
+                // Ended (even failed): no longer moving, so it counts as complete.
+                _ => total,
+            };
+            (done, total)
+        });
+        match combined_progress(parts) {
+            Some(fraction) => Activity::Progress(fraction),
+            None => Activity::Unknown,
+        }
+    }
+
     pub fn has_active(&self) -> bool {
         self.items.iter().any(|t| matches!(t.state, State::Active))
     }
@@ -171,13 +213,20 @@ impl Transfers {
         // Newest first.
         self.items.insert(
             0,
-            Transfer { id, job, name, host, is_dir, source, progress: Arc::default(), state: State::Active, seen: false },
+            Transfer { id, job, name, host, is_dir, source, progress: Arc::default(), state: State::Active, seen: false, in_burst: false },
         );
         self.run(id, remote, cx);
     }
 
     fn run(&mut self, id: usize, remote: Arc<Remote>, cx: &mut Context<Self>) {
+        // Nothing else running: this one starts a new burst.
+        if !self.items.iter().any(|t| t.id != id && matches!(t.state, State::Active)) {
+            for t in &mut self.items {
+                t.in_burst = false;
+            }
+        }
         let Some(t) = self.items.iter_mut().find(|t| t.id == id) else { return };
+        t.in_burst = true;
         let progress = Arc::new(Progress::default());
         t.progress = progress.clone();
         t.state = State::Active;
@@ -654,5 +703,29 @@ impl Render for Transfers {
             })
             .children(self.popup.render())
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_combines_the_bytes_of_every_transfer() {
+        // A 100-byte file done, a 300-byte file a third through: 200 of 400.
+        assert_eq!(combined_progress([(100, 100), (100, 300)].into_iter()), Some(0.5));
+    }
+
+    #[test]
+    fn transfers_of_unknown_size_are_left_out_until_known() {
+        assert_eq!(combined_progress([(0, 0), (50, 200)].into_iter()), Some(0.25));
+        assert_eq!(combined_progress([(0, 0)].into_iter()), None);
+        assert_eq!(combined_progress(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn progress_never_passes_complete() {
+        // A file that grew on the server while it downloaded.
+        assert_eq!(combined_progress([(150, 100)].into_iter()), Some(1.0));
     }
 }

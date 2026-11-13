@@ -25,10 +25,10 @@ use crate::theme::{AppPalette, Appearance, TerminalPalette, UI_FONT, alpha, proj
 use crate::ui::connect_route::RouteCard;
 use crate::ui::file_browser::{self, BrowserEvent, FavoriteStore, FileBrowser, MenuExtras};
 use crate::ui::terminal_view::{TerminalEvent, TerminalView};
-use crate::ui::transfers::{Transfers, TransfersChanged};
+use crate::ui::transfers::{Activity, Transfers, TransfersChanged};
 use crate::ui::widgets::{
     ButtonKind, ISLAND_GAP, ISLAND_RADIUS, badge, button, elevation, icon_button, icon_el, icon_text_button, island,
-    is_artwork, section_label, shell_icon, spinner, status_dot, wordmark,
+    is_artwork, progress_ring, section_label, shell_icon, spinner, status_dot, wordmark,
 };
 use crate::vault::{Credential, Secret, Vault};
 
@@ -320,6 +320,8 @@ impl Workspace {
         let transfers = cx.new(|_| Transfers::new());
         let favorites = cx.new(|_| FavoriteStore::new(data_dir.clone()));
         let transfers_sub = cx.subscribe(&transfers, |_, _, _: &TransfersChanged, cx| cx.notify());
+        // The ring on the Downloads entry follows the panel's progress ticks.
+        let transfers_ticks = cx.observe(&transfers, |_, _, cx| cx.notify());
         let update = crate::update::take_install_error(&data_dir).map(UpdateState::Failed).unwrap_or(UpdateState::Idle);
         let mut this = Self {
             data_dir,
@@ -362,7 +364,7 @@ impl Workspace {
             sftp_resizing: false,
             next_jump_row: 0,
             import: import::ImportFlow::default(),
-            _subscriptions: vec![transfers_sub],
+            _subscriptions: vec![transfers_sub, transfers_ticks],
         };
         this.apply_appearance(window, cx);
         this.apply_highlights(cx);
@@ -2083,9 +2085,14 @@ impl Workspace {
             .flex_1()
             .min_h_0();
 
-        let (show_downloads, attention, downloads_open, new_download) = {
+        let (show_downloads, attention, downloads_open, new_download, activity) = {
             let t = self.transfers.read(cx);
-            (t.any(), t.attention(), t.is_open(), t.new_download())
+            (t.any(), t.attention(), t.is_open(), t.new_download(), t.activity())
+        };
+        let ring_fraction = match activity {
+            Activity::Idle => None,
+            Activity::Unknown => Some(None),
+            Activity::Progress(f) => Some(Some(f)),
         };
         let footer_row = |id: &'static str, icon: &str, label: String| {
             div()
@@ -2165,7 +2172,26 @@ impl Workspace {
                     .when(show_downloads, |el| {
                         el.child(
                             footer_row("downloads", "download", "Downloads".into())
-                                .when(new_download, |el| {
+                                .when_some(ring_fraction, |el, fraction| {
+                                    // Around the 15px icon (8px in, centred in the 32px row):
+                                    // the combined progress of everything running.
+                                    let label = match fraction {
+                                        Some(f) => format!("Downloads, {}% done", (f * 100.).round()),
+                                        None => "Downloads, in progress".to_string(),
+                                    };
+                                    el.aria_label(label).child(
+                                        div().absolute().left(px(8. + 7.5 - 12.)).top(px(16. - 12.)).child(progress_ring(
+                                            "downloads-ring",
+                                            fraction,
+                                            24.,
+                                            2.,
+                                            p.border,
+                                            p.brand,
+                                        )),
+                                    )
+                                })
+                                // The new-download dot waits until nothing is running.
+                                .when(new_download && ring_fraction.is_none(), |el| {
                                     el.aria_label("Downloads, new download").child(
                                         // A dot on the icon's top-right corner (the 15px icon
                                         // sits 8px in, 8.5px down), ringed in the sidebar's

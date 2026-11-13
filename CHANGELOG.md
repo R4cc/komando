@@ -10,6 +10,12 @@ All notable changes to Komando are listed here. The format follows
 
 - Dialogs such as the host and project forms, delete confirmations, quick connect and the
   vault password now have a close button (✕) in the top-right corner. It does what Escape does.
+- While files download or upload, a ring around the Downloads icon fills up with their
+  progress. Several at once share one ring that adds up all their bytes, and the number
+  beside it says how many are running. Until sizes are known, the ring turns instead.
+- The update button beside Settings now has its own icon, an arrow rising out of a circle, so
+  it no longer looks like the Downloads button above it. While the update downloads, a ring
+  around it fills up, like the one on Downloads.
 - A dot on the Downloads button shows that a download finished while the downloads panel
   was closed. It goes away when you open the panel.
 - Import your SSH profiles from Tabby in Settings → Import. Komando finds Tabby's settings
