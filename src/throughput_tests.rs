@@ -70,18 +70,26 @@ fn plain_line(i: u64) -> String {
 }
 
 /// Prints `lines` log lines to each shell, except for the user `quiet`, whose shell echoes
-/// what is typed, like a shell at its prompt.
+/// what is typed, like a shell at its prompt. Over SFTP it offers one file, `/big.bin`, of
+/// `file_size` bytes, made up as it is read.
 #[derive(Clone)]
 struct LogServer {
     lines: u64,
+    file_size: u64,
     user: String,
-    channel: Arc<Mutex<Option<Channel<Msg>>>>,
+    channels: Arc<Mutex<std::collections::HashMap<ChannelId, Channel<Msg>>>>,
+}
+
+impl LogServer {
+    fn new(lines: u64, file_size: u64) -> Self {
+        Self { lines, file_size, user: String::new(), channels: Arc::default() }
+    }
 }
 
 impl server::Server for LogServer {
     type Handler = Self;
     fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self {
-        Self { lines: self.lines, user: String::new(), channel: Arc::default() }
+        Self::new(self.lines, self.file_size)
     }
 }
 
@@ -99,8 +107,34 @@ impl server::Handler for LogServer {
         reply: server::ChannelOpenHandle,
         _: &mut Session,
     ) -> Result<(), Self::Error> {
-        *self.channel.lock().await = Some(channel);
+        self.channels.lock().await.insert(channel.id(), channel);
         reply.accept().await;
+        Ok(())
+    }
+
+    async fn subsystem_request(&mut self, id: ChannelId, name: &str, session: &mut Session) -> Result<(), Self::Error> {
+        let channel = self.channels.lock().await.remove(&id);
+        match channel {
+            Some(channel) if name == "sftp" => {
+                session.channel_success(id)?;
+                russh_sftp::server::run(channel.into_stream(), BigFile::new(self.file_size)).await;
+            }
+            _ => session.channel_failure(id)?,
+        }
+        Ok(())
+    }
+
+    /// Komando asks `id` when SFTP opens.
+    async fn exec_request(&mut self, id: ChannelId, _: &[u8], session: &mut Session) -> Result<(), Self::Error> {
+        session.channel_success(id)?;
+        if let Some(channel) = self.channels.lock().await.remove(&id) {
+            tokio::spawn(async move {
+                let _ = channel.data(&b"uid=1000(bench) gid=1000(bench) groups=1000(bench)\n"[..]).await;
+                let _ = channel.exit_status(0).await;
+                let _ = channel.eof().await;
+                let _ = channel.close().await;
+            });
+        }
         Ok(())
     }
 
@@ -121,7 +155,7 @@ impl server::Handler for LogServer {
 
     async fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
-        let Some(mut channel) = self.channel.lock().await.take() else { return Ok(()) };
+        let Some(mut channel) = self.channels.lock().await.remove(&channel) else { return Ok(()) };
         if self.user == "quiet" {
             tokio::spawn(async move {
                 while let Some(msg) = channel.wait().await {
@@ -157,6 +191,10 @@ impl server::Handler for LogServer {
 
 /// Start the server on its own runtime (a separate program in real use) and return its port.
 fn start_server(lines: u64, threads: usize) -> (u16, tokio::runtime::Runtime) {
+    start_server_with_file(lines, 0, threads)
+}
+
+fn start_server_with_file(lines: u64, file_size: u64, threads: usize) -> (u16, tokio::runtime::Runtime) {
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(threads).enable_all().build().unwrap();
     let key = russh::keys::PrivateKey::from(russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[7; 32]));
     let config = Arc::new(server::Config {
@@ -170,10 +208,118 @@ fn start_server(lines: u64, threads: usize) -> (u16, tokio::runtime::Runtime) {
     let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
     let port = listener.local_addr().unwrap().port();
     runtime.spawn(async move {
-        let mut server = LogServer { lines, user: String::new(), channel: Arc::default() };
+        let mut server = LogServer::new(lines, file_size);
         let _ = server.run_on_socket(config, &listener).await;
     });
     (port, runtime)
+}
+
+/// The SFTP side of [`LogServer`]: `/big.bin`, and `/many`, a folder of [`MANY_FILES`] files of
+/// [`MANY_SIZE`] bytes. Contents are made up as they are read.
+struct BigFile {
+    size: u64,
+    /// Folder listings already sent, by handle.
+    listed: std::collections::HashSet<String>,
+}
+
+const MANY_FILES: usize = 300;
+const MANY_SIZE: u64 = 64 * 1024;
+
+impl BigFile {
+    fn new(size: u64) -> Self {
+        Self { size, listed: Default::default() }
+    }
+
+    fn attrs(&self, path: &str) -> Result<russh_sftp::protocol::FileAttributes, russh_sftp::protocol::StatusCode> {
+        let (size, permissions) = match path {
+            "/big.bin" => (self.size, 0o100644),
+            "/many" => (0, 0o040755),
+            _ if path.starts_with("/many/") => (MANY_SIZE, 0o100644),
+            _ => return Err(russh_sftp::protocol::StatusCode::NoSuchFile),
+        };
+        Ok(russh_sftp::protocol::FileAttributes { size: Some(size), permissions: Some(permissions), ..Default::default() })
+    }
+
+    fn ok(id: u32) -> russh_sftp::protocol::Status {
+        russh_sftp::protocol::Status {
+            id,
+            status_code: russh_sftp::protocol::StatusCode::Ok,
+            error_message: "Ok".into(),
+            language_tag: "en-US".into(),
+        }
+    }
+}
+
+impl russh_sftp::server::Handler for BigFile {
+    type Error = russh_sftp::protocol::StatusCode;
+
+    fn unimplemented(&self) -> Self::Error {
+        russh_sftp::protocol::StatusCode::OpUnsupported
+    }
+
+    async fn realpath(&mut self, id: u32, _: String) -> Result<russh_sftp::protocol::Name, Self::Error> {
+        Ok(russh_sftp::protocol::Name { id, files: vec![russh_sftp::protocol::File::dummy("/")] })
+    }
+
+    async fn stat(&mut self, id: u32, path: String) -> Result<russh_sftp::protocol::Attrs, Self::Error> {
+        Ok(russh_sftp::protocol::Attrs { id, attrs: self.attrs(&path)? })
+    }
+
+    async fn lstat(&mut self, id: u32, path: String) -> Result<russh_sftp::protocol::Attrs, Self::Error> {
+        Ok(russh_sftp::protocol::Attrs { id, attrs: self.attrs(&path)? })
+    }
+
+    async fn fstat(&mut self, id: u32, handle: String) -> Result<russh_sftp::protocol::Attrs, Self::Error> {
+        Ok(russh_sftp::protocol::Attrs { id, attrs: self.attrs(&handle)? })
+    }
+
+    async fn open(
+        &mut self,
+        id: u32,
+        path: String,
+        _: russh_sftp::protocol::OpenFlags,
+        _: russh_sftp::protocol::FileAttributes,
+    ) -> Result<russh_sftp::protocol::Handle, Self::Error> {
+        self.attrs(&path)?;
+        Ok(russh_sftp::protocol::Handle { id, handle: path })
+    }
+
+    async fn read(&mut self, id: u32, handle: String, offset: u64, len: u32) -> Result<russh_sftp::protocol::Data, Self::Error> {
+        let size = self.attrs(&handle)?.size.unwrap_or(0);
+        if offset >= size {
+            return Err(russh_sftp::protocol::StatusCode::Eof);
+        }
+        let len = (len as u64).min(size - offset) as usize;
+        Ok(russh_sftp::protocol::Data { id, data: (0..len).map(|i| (offset as usize + i) as u8).collect() })
+    }
+
+    async fn opendir(&mut self, id: u32, path: String) -> Result<russh_sftp::protocol::Handle, Self::Error> {
+        if path.trim_end_matches('/') != "/many" {
+            return Err(russh_sftp::protocol::StatusCode::NoSuchFile);
+        }
+        let handle = format!("dir {id}");
+        self.listed.remove(&handle);
+        Ok(russh_sftp::protocol::Handle { id, handle })
+    }
+
+    async fn readdir(&mut self, id: u32, handle: String) -> Result<russh_sftp::protocol::Name, Self::Error> {
+        if !self.listed.insert(handle) {
+            return Err(russh_sftp::protocol::StatusCode::Eof);
+        }
+        let files = (0..MANY_FILES)
+            .map(|i| {
+                let name = format!("file{i:03}.log");
+                let attrs = self.attrs(&format!("/many/{name}")).expect("a file of the folder");
+                russh_sftp::protocol::File::new(name, attrs)
+            })
+            .collect();
+        Ok(russh_sftp::protocol::Name { id, files })
+    }
+
+    async fn close(&mut self, id: u32, handle: String) -> Result<russh_sftp::protocol::Status, Self::Error> {
+        self.listed.remove(&handle);
+        Ok(Self::ok(id))
+    }
 }
 
 struct Run {
@@ -503,5 +649,169 @@ fn throughput_many_sessions_and_typing() {
     eprintln!("typing, idle:        {}", percentiles(idle));
     eprintln!("typing, while busy:  {}", percentiles(busy));
     quiet.sink.close();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A TCP forwarder that delays every byte by `one_way` in each direction, like a distant
+/// server, and with `bytes_per_sec` caps each direction's bandwidth, like a slow link. What
+/// the link can't send yet waits in its queue, as in a router with plenty of buffer.
+/// (The same as the one in `compat_tests.rs`, which only builds on Linux.)
+struct DelayProxy {
+    port: u16,
+}
+
+impl DelayProxy {
+    fn start(target_port: u16, one_way: Duration, bytes_per_sec: Option<u64>) -> Self {
+        use std::net::{TcpListener, TcpStream};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        fn pump(mut from: TcpStream, mut to: TcpStream, delay: Duration, rate: Option<u64>) {
+            use std::io::{Read, Write};
+            let (tx, rx) = std::sync::mpsc::channel::<(Instant, Vec<u8>)>();
+            std::thread::spawn(move || {
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    match from.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if tx.send((Instant::now() + delay, buf[..n].to_vec())).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+            std::thread::spawn(move || {
+                let mut free_at = Instant::now();
+                while let Ok((mut at, bytes)) = rx.recv() {
+                    if let Some(rate) = rate {
+                        // The link sends one thing at a time, at `rate`.
+                        free_at = at.max(free_at) + Duration::from_secs_f64(bytes.len() as f64 / rate as f64);
+                        at = free_at;
+                    }
+                    if let Some(wait) = at.checked_duration_since(Instant::now()) {
+                        std::thread::sleep(wait);
+                    }
+                    if to.write_all(&bytes).is_err() {
+                        break;
+                    }
+                }
+                let _ = to.shutdown(std::net::Shutdown::Write);
+            });
+        }
+        std::thread::spawn(move || {
+            for client in listener.incoming().flatten() {
+                let server = TcpStream::connect(("127.0.0.1", target_port)).unwrap();
+                client.set_nodelay(true).unwrap();
+                server.set_nodelay(true).unwrap();
+                pump(client.try_clone().unwrap(), server.try_clone().unwrap(), one_way, bytes_per_sec);
+                pump(server, client, one_way, bytes_per_sec);
+            }
+        });
+        Self { port }
+    }
+}
+
+/// Typing in a Session while a large file downloads over SFTP on the same connection: how long
+/// a key takes to show, and how fast the download goes. Directly, and through a link with
+/// latency and limited bandwidth, where the download's data queues up ahead of the key's echo.
+///
+/// `KOMANDO_THROUGHPUT_SFTP_MB` sets the file size for the direct run (default 512 MB).
+#[test]
+#[ignore]
+fn throughput_typing_during_sftp_download() {
+    let mb: u64 = std::env::var("KOMANDO_THROUGHPUT_SFTP_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(512);
+    let dir = std::env::temp_dir().join(format!("komando-throughput-sftp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let known_hosts = dir.join("known_hosts");
+
+    // (label, one-way delay, bandwidth in bytes/s, file size): the slower links get about
+    // four seconds' worth.
+    let links: [(&str, Duration, Option<u64>, u64); 4] = [
+        ("direct", Duration::ZERO, None, mb * 1_000_000),
+        ("25 ms each way, 1 Gbit/s", Duration::from_millis(25), Some(125_000_000), 500_000_000),
+        ("25 ms each way, 100 Mbit/s", Duration::from_millis(25), Some(12_500_000), 50_000_000),
+        ("15 ms each way, 10 Mbit/s", Duration::from_millis(15), Some(1_250_000), 5_000_000),
+    ];
+    for (label, one_way, rate, size) in links {
+        let (server_port, _server) = start_server_with_file(0, size, 4);
+        let proxy = (one_way > Duration::ZERO || rate.is_some()).then(|| DelayProxy::start(server_port, one_way, rate));
+        let port = proxy.as_ref().map_or(server_port, |p| p.port);
+
+        let mut quiet = connect(port, "quiet", &known_hosts);
+        quiet.wait_connected();
+        let idle: Vec<Duration> = (0..20)
+            .map(|_| {
+                let latency = quiet.echo();
+                std::thread::sleep(Duration::from_millis(10));
+                latency
+            })
+            .collect();
+
+        let answer = quiet.sink.open_sftp().expect("an SSH Session opens SFTP");
+        let remote = Arc::new(futures::executor::block_on(answer).expect("a reply").expect("SFTP starts"));
+        let local = dir.join(format!("downloads-{}", label.len()));
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let download = {
+            let (remote, local, done) = (remote.clone(), local.clone(), done.clone());
+            std::thread::spawn(move || {
+                let start = Instant::now();
+                let progress = crate::sftp::Progress::default();
+                let path = futures::executor::block_on(crate::sftp::spawn(async move {
+                    remote.download("/big.bin", &local, &progress).await
+                }))
+                .expect("the download task ran")
+                .expect("the download succeeded");
+                let elapsed = start.elapsed();
+                done.store(true, std::sync::atomic::Ordering::Relaxed);
+                (path, elapsed)
+            })
+        };
+
+        // Type about 20 keys a second while it downloads, from a moment after it starts.
+        let start = Instant::now();
+        let mut busy = Vec::new();
+        while !done.load(std::sync::atomic::Ordering::Relaxed) {
+            if start.elapsed() > Duration::from_millis(300) {
+                busy.push(quiet.echo());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let (path, elapsed) = download.join().unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), size, "the whole file arrived");
+        let _ = std::fs::remove_dir_all(&local);
+
+        // A folder of many small files, which download side by side.
+        let start = Instant::now();
+        let folder = futures::executor::block_on(crate::sftp::spawn({
+            let (remote, local) = (remote.clone(), local.clone());
+            async move { remote.download("/many", &local, &crate::sftp::Progress::default()).await }
+        }))
+        .expect("the download task ran")
+        .expect("the folder downloaded");
+        let folder_time = start.elapsed();
+        let files: Vec<_> = std::fs::read_dir(&folder).unwrap().map(|e| e.unwrap().metadata().unwrap().len()).collect();
+        assert_eq!(files.len(), MANY_FILES);
+        assert!(files.iter().all(|&len| len == MANY_SIZE));
+        let _ = std::fs::remove_dir_all(&local);
+        eprintln!(
+            "[{label}] download {:.0} MB in {:.2} s = {:.1} MB/s",
+            size as f64 / 1e6,
+            elapsed.as_secs_f64(),
+            size as f64 / 1e6 / elapsed.as_secs_f64()
+        );
+        eprintln!(
+            "[{label}] folder of {MANY_FILES} x {} KB in {:.2} s",
+            MANY_SIZE / 1024,
+            folder_time.as_secs_f64()
+        );
+        eprintln!("[{label}] typing, idle:               {}", percentiles(idle));
+        if busy.is_empty() {
+            eprintln!("[{label}] typing, while downloading: the download ended too soon to type");
+        } else {
+            eprintln!("[{label}] typing, while downloading: {}", percentiles(busy));
+        }
+        quiet.sink.close();
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

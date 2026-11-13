@@ -9,19 +9,25 @@
 //! failure the partial file is removed. The remote file is opened before anything is created
 //! locally, so a permission error never produces an empty file. Uploads work the same way on
 //! the server.
+//!
+//! Downloads read through a second SFTP channel, issuing the reads themselves so they can keep
+//! as much on its way as the link carries without a queue building up in front of the
+//! terminal's keystrokes (see [`flow`]).
+
+mod flow;
 
 use std::future::Future;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use futures::{StreamExt as _, TryStreamExt as _};
 use russh::ChannelMsg;
 use russh::client::Handle;
-use russh_sftp::client::SftpSession;
+use russh_sftp::client::{RawSftpSession, SftpSession};
 use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -595,6 +601,158 @@ pub struct Remote {
     budget: tokio::sync::Semaphore,
     /// Files the transfers on this connection may have open together.
     slots: tokio::sync::Semaphore,
+    /// The channel downloads read through; `None` if the server wouldn't open a second one,
+    /// and downloads then read through `sftp`.
+    reader: Option<Reader>,
+}
+
+/// A second SFTP channel, for downloads whose reads are paced by [`flow::Flow`].
+struct Reader {
+    raw: Arc<RawSftpSession>,
+    flow: Arc<flow::Flow>,
+    /// The largest read the server takes.
+    max_read: u32,
+}
+
+impl Reader {
+    async fn open(handle: &Handle<Client>) -> Result<Reader> {
+        let channel = handle.channel_open_session().await?;
+        channel.request_subsystem(true, "sftp").await?;
+        let config = russh_sftp::client::Config { request_timeout_secs: REQUEST_TIMEOUT_SECS, ..Default::default() };
+        let mut raw = RawSftpSession::new_with_config(channel.into_stream(), config);
+        let version = raw.init().await?;
+        let mut max_read = flow::MAX_REQUEST;
+        if version.extensions.get(russh_sftp::extensions::LIMITS).is_some_and(|v| v == "1") {
+            let limits = russh_sftp::client::rawsession::Limits::from(raw.limits().await?);
+            if let Some(len) = limits.read_len.filter(|&len| len > 0) {
+                max_read = max_read.min(len.min(u32::MAX as u64) as u32);
+            }
+            raw.set_limits(limits);
+        }
+        Ok(Reader { raw: Arc::new(raw), flow: Arc::default(), max_read })
+    }
+}
+
+/// A file open on the [`Reader`] channel, closed when dropped.
+struct RemoteHandle {
+    raw: Arc<RawSftpSession>,
+    name: String,
+}
+
+impl Drop for RemoteHandle {
+    fn drop(&mut self) {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let (raw, name) = (self.raw.clone(), std::mem::take(&mut self.name));
+            runtime.spawn(async move {
+                let _ = raw.close(name).await;
+            });
+        }
+    }
+}
+
+/// A remote file opened for a download.
+enum Download<'a> {
+    Paced(PacedFile<'a>),
+    /// Read by the SFTP library, a fixed number of reads ahead.
+    Plain(Box<russh_sftp::client::fs::File>),
+}
+
+impl Download<'_> {
+    async fn copy_to(self, output: &mut tokio::fs::File, remote: &str, local: &Path, progress: &Progress) -> Result<(), OpError> {
+        match self {
+            Download::Plain(mut input) => copy_down(&mut input, output, remote, local, progress).await,
+            // The file closes when `file` is dropped, without waiting for the server to confirm.
+            Download::Paced(file) => file.copy_to(output, remote, local, progress).await,
+        }
+    }
+}
+
+struct PacedFile<'a> {
+    reader: &'a Reader,
+    handle: RemoteHandle,
+    /// The size the file had when listed; reading goes on past it if it has grown.
+    size: Option<u64>,
+}
+
+type ReadReply = tokio::task::JoinHandle<Result<Vec<u8>, SftpError>>;
+
+impl PacedFile<'_> {
+    /// Read `len` bytes at `offset`, on a task of its own so its round trip is timed as it
+    /// happens, not when the download loop gets to it.
+    fn read(&self, offset: u64, len: u32) -> ReadReply {
+        let (raw, flow, name) = (self.reader.raw.clone(), self.reader.flow.clone(), self.handle.name.clone());
+        tokio::spawn(async move {
+            let sent = Instant::now();
+            let reply = raw.read(name, offset, len).await;
+            flow.done(len, reply.is_ok().then(|| sent.elapsed()));
+            reply.map(|data| data.data)
+        })
+    }
+
+    async fn copy_to(&self, output: &mut tokio::fs::File, remote: &str, local: &Path, progress: &Progress) -> Result<(), OpError> {
+        let flow = &self.reader.flow;
+        // Reads on their way, oldest first: where each starts, how long, and its reply.
+        let mut pending: std::collections::VecDeque<(u64, u32, ReadReply)> = Default::default();
+        // Where the next read starts.
+        let mut next = 0u64;
+        // Reads stop at the listed size, plus one read past it that finds the end (or more, if
+        // the file has grown), asked for along with the others rather than after them.
+        let mut limit = self.size;
+        let at_most = |next: u64, limit: Option<u64>| match limit {
+            Some(limit) if next < limit => (limit - next).min(self.reader.max_read as u64) as u32,
+            _ => self.reader.max_read,
+        };
+        loop {
+            progress.check()?;
+            while limit.is_none_or(|limit| next <= limit)
+                && let Some(len) = flow.try_reserve(at_most(next, limit))
+            {
+                pending.push_back((next, len, self.read(next, len)));
+                next += len as u64;
+            }
+            if pending.is_empty() {
+                // The read past the listed size brought more: the file has grown.
+                if limit.is_some_and(|limit| next > limit) {
+                    limit = None;
+                } else {
+                    // Other transfers have the room: wait for some.
+                    let len = flow.reserve(at_most(next, limit)).await;
+                    pending.push_back((next, len, self.read(next, len)));
+                    next += len as u64;
+                }
+                continue;
+            }
+            let reply = tokio::select! {
+                reply = &mut pending.front_mut().expect("not empty").2 => reply,
+                // Room for more reads.
+                _ = flow.room() => continue,
+            };
+            let (offset, len, _) = pending.pop_front().expect("not empty");
+            match reply.map_err(|_| OpError::connection())? {
+                Ok(data) if data.is_empty() => return Ok(()),
+                Ok(data) => {
+                    output.write_all(&data).await.map_err(|e| OpError::local(&e, local))?;
+                    progress.add(data.len() as u64);
+                    // Less than asked for before the end: get the rest before anything after it.
+                    let (mut at, end) = (offset + data.len() as u64, offset + len as u64);
+                    while at < end {
+                        match self.reader.raw.read(self.handle.name.as_str(), at, (end - at) as u32).await {
+                            Ok(more) if more.data.is_empty() => return Ok(()),
+                            Ok(more) => {
+                                output.write_all(&more.data).await.map_err(|e| OpError::local(&e, local))?;
+                                progress.add(more.data.len() as u64);
+                                at += more.data.len() as u64;
+                            }
+                            Err(SftpError::Status(status)) if status.status_code == StatusCode::Eof => return Ok(()),
+                            Err(e) => return Err(OpError::from(e).at(remote)),
+                        }
+                    }
+                }
+                Err(SftpError::Status(status)) if status.status_code == StatusCode::Eof => return Ok(()),
+                Err(e) => return Err(OpError::from(e).at(remote)),
+            }
+        }
+    }
 }
 
 /// A file's turn among the connection's transfers, until dropped.
@@ -639,9 +797,24 @@ impl Remote {
             .await
             .map_err(|_| anyhow!("The server did not start SFTP. It may not offer it."))?
             .map_err(|e| anyhow!("Could not start SFTP: {e}"))?;
-        let home = sftp.canonicalize(".").await.unwrap_or_else(|_| "/".into());
+        // The download channel opens while the home folder is looked up.
+        let opening_reader = tokio::time::timeout(Duration::from_secs(20), Reader::open(&handle));
+        let (home, reader) = tokio::join!(sftp.canonicalize("."), opening_reader);
+        let home = home.unwrap_or_else(|_| "/".into());
+        let reader = match reader {
+            Ok(Ok(reader)) => Some(reader),
+            Ok(Err(err)) => {
+                log::warn!("Downloads share the SFTP channel: a second one did not open: {err:#}");
+                None
+            }
+            Err(_) => {
+                log::warn!("Downloads share the SFTP channel: a second one did not open in time");
+                None
+            }
+        };
         let mut remote = Remote { sftp, handle, identity: Identity::default(), home, uploading: Mutex::default(), budget: tokio::sync::Semaphore::new(BUDGET_KIB as usize),
             slots: tokio::sync::Semaphore::new(PARALLEL),
+            reader,
         };
         // Who we are decides which files look inaccessible. Without it nothing is marked.
         if let Ok(Ok(out)) = tokio::time::timeout(Duration::from_secs(10), remote.exec("id")).await
@@ -926,13 +1099,13 @@ impl Remote {
         // Wait for room among the connection's other transfers before opening anything.
         let _room = self.take_room(attrs.size.unwrap_or(0), progress).await?;
         // Open the remote file before creating anything here: no access, no file.
-        let mut input = self.sftp.open(remote_path).await.map_err(|e| OpError::from(e).at(remote_path))?;
+        let input = self.open_download(remote_path, attrs.size).await?;
         progress.total.store(attrs.size.unwrap_or(0), Ordering::Relaxed);
         tokio::fs::create_dir_all(local_dir).await.map_err(|e| OpError::local(&e, local_dir))?;
         let (target, partial, output) = reserve_local(local_dir, &name, false).await?;
         let result = async {
             let mut output = output.expect("a file was reserved");
-            copy_down(&mut input, &mut output, remote_path, &partial, progress).await?;
+            input.copy_to(&mut output, remote_path, &partial, progress).await?;
             output.sync_all().await.map_err(|e| OpError::local(&e, &partial))?;
             drop(output);
             finish_local(&partial, &target).await
@@ -942,6 +1115,16 @@ impl Remote {
             let _ = tokio::fs::remove_file(&partial).await;
         }
         result
+    }
+
+    /// Open a remote file to download, on the reader channel if there is one.
+    async fn open_download(&self, path: &str, size: Option<u64>) -> Result<Download<'_>, OpError> {
+        let Some(reader) = &self.reader else {
+            return self.sftp.open(path).await.map(|file| Download::Plain(Box::new(file))).map_err(|e| OpError::from(e).at(path));
+        };
+        let handle = reader.raw.open(path, OpenFlags::READ, FileAttributes::empty()).await.map_err(|e| OpError::from(e).at(path))?;
+        let handle = RemoteHandle { raw: reader.raw.clone(), name: handle.handle };
+        Ok(Download::Paced(PacedFile { reader, handle, size }))
     }
 
     async fn download_dir(&self, remote_path: &str, local_dir: &Path, name: &str, progress: &Progress) -> Result<PathBuf, OpError> {
@@ -982,9 +1165,9 @@ impl Remote {
                     progress.check()?;
                     let remote = join(remote_path, rel);
                     let local = join_rel(partial, local_rel);
-                    let mut input = self.sftp.open(remote.as_str()).await.map_err(|e| OpError::from(e).at(&remote))?;
+                    let input = self.open_download(&remote, Some(*size)).await?;
                     let mut output = create_download_file(&local).await?;
-                    copy_down(&mut input, &mut output, &remote, &local, progress).await?;
+                    input.copy_to(&mut output, &remote, &local, progress).await?;
                     // Written and closed before the folder is renamed (Windows can't rename a
                     // folder with an open file in it). Not synced to disk one by one: with
                     // thousands of small files that costs more than the transfer.
