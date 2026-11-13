@@ -466,6 +466,8 @@ impl Workspace {
         let app = cx.global::<Appearance>().app;
         let brand = app.brand;
         gpui_component::Theme::update(cx, |theme| {
+            // Window-level menus and overlays must use the same font as the workspace.
+            theme.font_family = UI_FONT.into();
             // gpui-component's Root paints this under the whole window. Komando paints its
             // own canvas (translucent with the background blur on); an opaque colour here
             // would hide the blurred backdrop behind it.

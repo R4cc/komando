@@ -6,6 +6,10 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The interface now uses the bundled Geist Sans font, including menus and overlays.
+
 ## [0.3.5] - 2026-11-13
 
 ### Added

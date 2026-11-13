@@ -406,4 +406,4 @@ pub struct Appearance {
 
 impl gpui::Global for Appearance {}
 
-pub const UI_FONT: &str = "Inter";
+pub const UI_FONT: &str = "Geist";

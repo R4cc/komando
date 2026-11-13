@@ -30,12 +30,13 @@ use crate::ui::workspace::{
     ToggleSftp, Workspace,
 };
 
-pub const FONTS: [&[u8]; 5] = [
+pub const FONTS: [&[u8]; 6] = [
     include_bytes!("../assets/fonts/CascadiaMono-Regular.ttf"),
     include_bytes!("../assets/fonts/CascadiaMono-Bold.ttf"),
-    include_bytes!("../assets/fonts/Inter-Regular.ttf"),
-    include_bytes!("../assets/fonts/Inter-Medium.ttf"),
-    include_bytes!("../assets/fonts/Inter-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/Geist-Regular.ttf"),
+    include_bytes!("../assets/fonts/Geist-Medium.ttf"),
+    include_bytes!("../assets/fonts/Geist-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/Geist-Bold.ttf"),
 ];
 
 /// Fonts, component library and key bindings. Shared by the app and the screenshot tool.
