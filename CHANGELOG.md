@@ -39,6 +39,15 @@ All notable changes to Komando are listed here. The format follows
   works, and a key path starting with `~\` points to your home folder.
 - A custom local shell whose path contains spaces, such as
   `C:\Program Files\PowerShell\7\pwsh.exe`, now starts reliably.
+- Checking for and downloading updates now works behind company proxies. Komando uses the
+  Windows proxy settings (or `HTTPS_PROXY`) and trusts certificates installed in Windows, such
+  as those of a proxy that inspects HTTPS. Automatic proxy scripts (PAC) aren't supported yet.
+
+### Security
+
+- A file opened from the file browser by double-clicking it is now marked as downloaded from
+  the internet, so Windows shows the same SmartScreen and security warnings as for a browser
+  download. Files you only download are not marked.
 
 ## [0.3.5] - 2026-11-13
 
