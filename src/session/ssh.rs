@@ -561,7 +561,8 @@ async fn authenticate(
                 Ok(decoded) => Ok(decoded),
                 Err(_) if passphrase.is_none() => {
                     let pass = ask(proxy, "Key passphrase", true, None, None).await.ok_or_else(|| anyhow!("Cancelled."))?;
-                    russh::keys::decode_secret_key(key, Some(&pass.value))
+                    let pass = Zeroizing::new(pass.value);
+                    russh::keys::decode_secret_key(key, Some(pass.as_str()))
                 }
                 Err(err) => Err(err),
             };

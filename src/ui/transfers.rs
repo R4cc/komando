@@ -560,7 +560,12 @@ impl Render for Transfers {
             .map(|t| self.render_row(t, p, cx))
             .collect();
         let empty = shown.is_empty();
-        let finished = self.items.iter().any(|t| !matches!(t.state, State::Active));
+        // Whether "Clear" has anything to remove under the current filter.
+        let finished = self.items.iter().any(|t| match self.filter {
+            Filter::All => !matches!(t.state, State::Active),
+            Filter::Successful => matches!(t.state, State::Done { .. }),
+            Filter::Failed => matches!(t.state, State::Failed { .. }),
+        });
         div()
             .id("transfers-panel")
             .occlude()

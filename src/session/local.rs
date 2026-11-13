@@ -27,7 +27,7 @@ pub fn spawn(shell: &LocalShell, size: GridSize, term: SharedTerm, proxy: EventP
         escape_args: true,
     };
     let pty = tty::new(&options, size.window_size(), 0)
-        .with_context(|| format!("could not start {}", shell.program))?;
+        .with_context(|| format!("Couldn't start {}", shell.program))?;
     let event_loop = EventLoop::new(term, proxy.clone(), pty, true, false)?;
     let sink = InputSink::Local(event_loop.channel());
     proxy.set_responder(sink.clone());

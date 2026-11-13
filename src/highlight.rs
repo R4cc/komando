@@ -199,7 +199,17 @@ impl Highlighter {
             });
             rules.push(Rule { regex, group, style, display });
         }
-        let set = (!patterns.is_empty()).then(|| RegexSetBuilder::new(&patterns).build().ok()).flatten();
+        // Each pattern compiled on its own above; the combined set can still fail (size limit).
+        // Without it nothing is highlighted, so say why instead of failing silently.
+        let set = match (!patterns.is_empty()).then(|| RegexSetBuilder::new(&patterns).build()) {
+            Some(Ok(set)) => Some(set),
+            Some(Err(err)) => {
+                log::error!("highlight rules: {err}");
+                skipped.push(("All rules".into(), format!("Highlighting is off: {}", first_line(&err.to_string()))));
+                None
+            }
+            None => None,
+        };
         Self { set, rules, skipped }
     }
 

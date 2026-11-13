@@ -21,7 +21,7 @@ use gpui::{
     actions, canvas, div, fill, outline, point, prelude::*, px, size,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt, PopupMenu};
 use gpui_component::Icon;
 
 use crate::highlight::{self, ActiveHighlights};
@@ -219,12 +219,15 @@ impl Focusable for TerminalView {
     }
 }
 
+/// The grid assumed before a pane is first laid out.
+const DEFAULT_GRID: GridSize = GridSize { cols: 120, rows: 36, cell_width: 8, cell_height: 18 };
+
 impl TerminalView {
     /// Create the pane and its grid. The backend is attached with [`TerminalView::attach`].
     pub fn new(title: impl Into<SharedString>, scrollback: usize, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (tx, rx) = mpsc::unbounded();
         let proxy = EventProxy::new(tx);
-        let initial = GridSize { cols: 120, rows: 36, cell_width: 8, cell_height: 18 };
+        let initial = DEFAULT_GRID;
         if let Some(appearance) = cx.try_global::<Appearance>() {
             proxy.set_palette(&appearance.term);
         }
@@ -297,7 +300,6 @@ impl TerminalView {
         self.proxy.clone()
     }
 
-    /// The grid size last laid out, or a sensible default before the first paint.
     /// The grid size from the pane's layout; `None` before it was first painted.
     pub fn measured_size(&self) -> Option<GridSize> {
         self.grid.get()
@@ -313,8 +315,9 @@ impl TerminalView {
         }
     }
 
+    /// The grid size last laid out, or a sensible default before the first paint.
     pub fn grid_size(&self) -> GridSize {
-        self.grid.get().unwrap_or(GridSize { cols: 120, rows: 36, cell_width: 8, cell_height: 18 })
+        self.grid.get().unwrap_or(DEFAULT_GRID)
     }
 
     /// Get ready for a new connection: the route page if it goes through Jump Hosts, and the
@@ -794,10 +797,7 @@ impl TerminalView {
         };
         let icon = |name: &str| Icon::empty().path(format!("icons/{name}.svg"));
         let run = |label: &str, icon_name: &str, f: fn(&mut Self, &mut Window, &mut Context<Self>)| {
-            let view = view.clone();
-            PopupMenuItem::new(label.to_string()).icon(icon(icon_name)).on_click(move |_, window, cx| {
-                let _ = view.update(cx, |this, cx| f(this, window, cx));
-            })
+            crate::ui::popup::item(label, icon_name, &view, f)
         };
         menu.action_context(focus)
             .menu_with_icon_and_disabled("Copy", icon("copy"), Box::new(Copy), !selected)
@@ -1246,8 +1246,6 @@ impl TerminalView {
     fn render_route(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let route = self.route.as_ref()?;
         let p = cx.global::<Appearance>().app;
-        // The current hop's question shows in the workspace's modal layer, over this page.
-        let prompt = None;
         let hop = route.current();
         let actions = vec![
             button("route-edit", "Edit host", ButtonKind::Secondary, p)
@@ -1257,7 +1255,7 @@ impl TerminalView {
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(TerminalEvent::Reconnect)))
                 .into_any_element(),
         ];
-        Some(route.render(prompt, actions, p))
+        Some(route.render(actions, p))
     }
 
     /// The open question as a card.

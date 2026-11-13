@@ -98,6 +98,10 @@ impl Vault {
         if master_password.chars().count() < 8 {
             bail!("The master password needs at least 8 characters.");
         }
+        // Another window may have created one since the dialog opened; never overwrite it.
+        if Self::exists(dir) {
+            bail!("A vault already exists. Unlock it with its master password instead.");
+        }
         let mut salt = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut salt);
         let kdf = KdfParams::DEFAULT;
@@ -329,6 +333,18 @@ mod tests {
     fn short_master_password_is_refused() {
         let dir = temp_dir();
         assert!(Vault::create(&dir, "short").is_err());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn an_existing_vault_is_never_overwritten() {
+        let dir = temp_dir();
+        let mut v = Vault::create(&dir, "correct horse").unwrap();
+        let id = v.add(password("hunter2")).unwrap();
+        drop(v);
+        assert!(Vault::create(&dir, "another horse").is_err());
+        let v = Vault::unlock(&dir, "correct horse").unwrap();
+        assert_eq!(v.get(&id), Some(&password("hunter2")));
         fs::remove_dir_all(dir).ok();
     }
 }

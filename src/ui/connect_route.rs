@@ -60,10 +60,6 @@ impl ConnectRoute {
         self.finished = true;
     }
 
-    pub fn is_failed(&self) -> bool {
-        self.failed.is_some()
-    }
-
     pub fn is_finished(&self) -> bool {
         self.finished
     }
@@ -106,9 +102,9 @@ impl ConnectRoute {
         }
     }
 
-    /// The page. `prompt` is a question the current hop asks (Host Key, password), shown
-    /// under the cards; `actions` are the buttons shown when the connection failed.
-    pub fn render(&self, prompt: Option<AnyElement>, actions: Vec<AnyElement>, p: AppPalette) -> AnyElement {
+    /// The page. `actions` are the buttons shown when the connection failed; the current
+    /// hop's question (Host Key, password) shows in the workspace's modal layer instead.
+    pub fn render(&self, actions: Vec<AnyElement>, p: AppPalette) -> AnyElement {
         let target = self.cards.last().map(|c| c.name.clone()).unwrap_or_default();
         let jumps = self.cards.len().saturating_sub(1);
         let subtitle = match jumps {
@@ -183,8 +179,7 @@ impl ConnectRoute {
                         )
                         .child(div().flex().gap(px(8.)).children(actions)),
                 )
-            })
-            .children(prompt);
+            });
 
         if self.finished {
             page.with_animation("route-fade", Animation::new(FADE), |el, delta| el.opacity(1. - delta))

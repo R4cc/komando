@@ -9,6 +9,21 @@ pub fn export_dir() -> PathBuf {
     std::env::temp_dir().join("Komando")
 }
 
+/// Remove exports older than a day. They hold terminal output, which can include secrets,
+/// and only need to live long enough to be pasted somewhere.
+pub fn clean_up() {
+    let Some(cutoff) = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(24 * 60 * 60)) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(export_dir()) else { return };
+    for entry in entries.flatten() {
+        let stale = entry.metadata().is_ok_and(|meta| meta.is_file() && meta.modified().is_ok_and(|at| at < cutoff));
+        if stale && entry.path().extension().is_some_and(|ext| ext == "txt") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Returns a short note for the confirmation toast.
 pub fn write_and_copy_file(name: &str, text: &str) -> Result<String> {
     let dir = export_dir();

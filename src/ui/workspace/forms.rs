@@ -127,11 +127,11 @@ impl Workspace {
         let host = editing.as_deref().and_then(|id| self.library.host(id)).cloned();
         let h = host.clone().unwrap_or_else(|| Host::new("", ""));
         let port = if h.port == 22 { String::new() } else { h.port.to_string() };
-        let name = self.form_input("", &h.name, true, window, cx);
-        let address = self.form_input("", &h.address, true, window, cx);
-        let port = self.form_input("22", &port, true, window, cx);
-        let user = self.form_input("", h.user.own().map_or("", |u| u.as_str()), true, window, cx);
-        let key_path = self.form_input(r"C:\Users\you\.ssh\id_ed25519", "", true, window, cx);
+        let name = self.form_input("", &h.name, window, cx);
+        let address = self.form_input("", &h.address, window, cx);
+        let port = self.form_input("22", &port, window, cx);
+        let user = self.form_input("", h.user.own().map_or("", |u| u.as_str()), window, cx);
+        let key_path = self.form_input(r"C:\Users\you\.ssh\id_ed25519", "", window, cx);
         let commands = commands_field(&lines(&h.startup_commands), window, cx);
         name.update(cx, |f, cx| f.focus(window, cx));
         let sign_in = match h.credential {
@@ -162,17 +162,15 @@ impl Workspace {
     }
 
     /// A one-line form field; Enter in it submits the open form.
-    fn form_input(&mut self, placeholder: &str, value: &str, submit: bool, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+    fn form_input(&mut self, placeholder: &str, value: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
         let (placeholder, value) = (placeholder.to_string(), value.to_string());
         let field = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).default_value(value));
-        if submit {
-            let sub = cx.subscribe_in(&field, window, |this, _, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    this.submit_form(window, cx);
-                }
-            });
-            self._subscriptions.push(sub);
-        }
+        let sub = cx.subscribe_in(&field, window, |this, _, event: &InputEvent, window, cx| {
+            if let InputEvent::PressEnter { .. } = event {
+                this.submit_form(window, cx);
+            }
+        });
+        self._subscriptions.push(sub);
         field
     }
 
@@ -290,14 +288,7 @@ impl Workspace {
     fn finish_form(&mut self, result: Result<(), String>, window: &mut Window, cx: &mut Context<Self>) {
         match result {
             Ok(()) => self.close_overlay(window, cx),
-            Err(message) => {
-                match self.overlay.as_mut() {
-                    Some(Overlay::HostForm(form)) => form.error = Some(message),
-                    Some(Overlay::ProjectForm(form)) => form.error = Some(message),
-                    _ => {}
-                }
-                cx.notify();
-            }
+            Err(message) => self.show_form_error(&message, cx),
         }
     }
 
@@ -642,9 +633,9 @@ impl Workspace {
         }
         let project = editing.as_deref().and_then(|id| self.library.project(id)).cloned();
         let pr = project.clone().unwrap_or_else(|| Project::new("", "blue", "folder"));
-        let name = self.form_input("", &pr.name, true, window, cx);
-        let default_user = self.form_input("", pr.default_user.as_deref().unwrap_or(""), true, window, cx);
-        let key_path = self.form_input(r"C:\Users\you\.ssh\id_ed25519", "", true, window, cx);
+        let name = self.form_input("", &pr.name, window, cx);
+        let default_user = self.form_input("", pr.default_user.as_deref().unwrap_or(""), window, cx);
+        let key_path = self.form_input(r"C:\Users\you\.ssh\id_ed25519", "", window, cx);
         let commands = commands_field(&lines(&pr.startup_commands), window, cx);
         name.update(cx, |f, cx| f.focus(window, cx));
         let icon_query = self.new_icon_query(window, cx);

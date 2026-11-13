@@ -116,7 +116,8 @@ struct LineCache {
     lines: HashMap<u64, Rc<[Run]>>,
     /// What the runs depend on besides the line itself (the Highlight Rules and the theme);
     /// when it changes, everything is worked out again.
-    key: Option<(usize, bool)>,
+    /// The `Arc` itself rather than its address: a freed address can be reused by new rules.
+    key: Option<(Arc<Highlighter>, bool)>,
 }
 
 /// Lines kept in the cache before it starts over; a few screens' worth of minimap.
@@ -217,10 +218,10 @@ fn layout<T>(
     };
     let geometry = Geometry { top: f32::from(bounds.origin.y), start, history, screen };
 
-    let key = (Arc::as_ptr(highlighter) as usize, palette.dark);
-    if cache.key != Some(key) || cache.lines.len() > CACHE_LINES {
+    let same = cache.key.as_ref().is_some_and(|(h, dark)| Arc::ptr_eq(h, highlighter) && *dark == palette.dark);
+    if !same || cache.lines.len() > CACHE_LINES {
         cache.lines.clear();
-        cache.key = Some(key);
+        cache.key = Some((highlighter.clone(), palette.dark));
     }
 
     // Like VS Code: a fixed width per character, and long lines are cut off at the edge.
@@ -377,9 +378,10 @@ pub fn minimap(
             // it is being dragged.
             let dragging = paint_box_state.dragging.get();
             window.paint_quad(
-                fill(viewport, if dragging { app.active.opacity(1.5) } else { app.active })
+                // `Hsla::opacity` only ever fades (it clamps to 1), so brighten the alpha directly.
+                fill(viewport, if dragging { Hsla { a: (app.active.a * 1.5).min(1.), ..app.active } } else { app.active })
                     .border_widths(px(1.))
-                    .border_color(if dragging { app.text_faint } else { app.border.opacity(2.) }),
+                    .border_color(if dragging { app.text_faint } else { app.border }),
             );
             for (bounds, color) in rects {
                 window.paint_quad(fill(bounds, color));

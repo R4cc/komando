@@ -38,6 +38,36 @@ All notable changes to Komando are listed here. The format follows
   or folder name, instead of overwriting a file or merging folders silently.
 - In split view, dragging files from one File Browser into the other no longer moves
   files with matching paths on the wrong Host.
+- If your list of hosts can't be read at start, Komando keeps the file under a new name
+  and tells you, instead of replacing it with an empty list the next time it saves.
+- Creating a vault never replaces one that already exists, for example one created in
+  another Komando window while the master password dialog was open.
+- Settings, hosts and the vault are written to disk completely before they replace the
+  old file, so a crash or power cut can't leave an empty file behind.
+- A setting that can't be saved now shows a message instead of being lost silently.
+- Messages in the corner disappear after about 4 seconds, instead of staying for up to
+  24 seconds.
+- Ctrl+Shift+K and Ctrl+, no longer close an open host or project form and lose what
+  you typed.
+- "Copy as .txt" twice in the same minute no longer overwrites the first file.
+- Copying a folder on the server and uploading a folder skip links to folders, as
+  downloads already did, instead of following a link that loops.
+- When creating a folder fails during an upload, the message names the folder that
+  failed instead of the upload's destination.
+- A failed update download no longer leaves its partial file in the temporary folder.
+- When Highlight Rules can't be combined, the Highlights page says so instead of
+  highlighting nothing without explanation.
+- The minimap's viewport box now gets brighter while you drag it, as intended.
+- "Clear successful" and "Clear failed" in Downloads only appear when there is something
+  to clear.
+- An empty folder you can't write to no longer suggests dropping files into it.
+- Highlights in the minimap no longer use stale results after Highlight Rules change.
+
+### Security
+
+- "Copy as .txt" files, which can contain anything printed in the terminal, are deleted
+  from the temporary folder after a day.
+- A key passphrase typed at sign-in is wiped from memory after use.
 - "Keep both" works when uploading into a folder other than the one shown, including
   files dropped onto a folder row, and avoids numbered filenames already in that folder.
 - Copying or moving files to their own folder works when its path has a trailing slash

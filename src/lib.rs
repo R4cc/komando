@@ -92,6 +92,7 @@ pub fn run(options: Options) {
         .run(move |cx: &mut App| {
             perf::init();
             update::clean_up();
+            export::clean_up();
             init(cx);
             let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
             cx.open_window(

@@ -208,24 +208,30 @@ pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<
     if let Some(dir) = dest.parent() {
         fs::create_dir_all(dir).with_context(|| format!("Couldn't create {}", dir.display()))?;
     }
-    let mut file = fs::File::create(&partial).with_context(|| format!("Couldn't write {}", partial.display()))?;
+    let file = fs::File::create(&partial).with_context(|| format!("Couldn't write {}", partial.display()))?;
     let saving = || format!("Couldn't save the download to {}", partial.display());
     let mut reader = response.into_reader();
     let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 64 * 1024];
     let mut total = 0u64;
-    loop {
-        let read = reader.read(&mut buffer).context("The download was interrupted")?;
-        if read == 0 {
-            break;
+    // The file is closed when this returns, so a failed download can be removed below.
+    let mut copy = |mut file: fs::File| -> Result<()> {
+        let mut buffer = vec![0u8; 64 * 1024];
+        loop {
+            let read = reader.read(&mut buffer).context("The download was interrupted")?;
+            if read == 0 {
+                break;
+            }
+            file.write_all(&buffer[..read]).with_context(saving)?;
+            hasher.update(&buffer[..read]);
+            total += read as u64;
+            progress.store(total, Ordering::Relaxed);
         }
-        file.write_all(&buffer[..read]).with_context(saving)?;
-        hasher.update(&buffer[..read]);
-        total += read as u64;
-        progress.store(total, Ordering::Relaxed);
+        file.flush().with_context(saving)
+    };
+    if let Err(err) = copy(file) {
+        let _ = fs::remove_file(&partial);
+        return Err(err);
     }
-    file.flush().with_context(saving)?;
-    drop(file);
     let check = || -> Result<()> {
         if total != asset.size {
             bail!("The download is incomplete ({total} of {} bytes).", asset.size);
@@ -242,7 +248,10 @@ pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<
         let _ = fs::remove_file(&partial);
         return Err(err);
     }
-    rename_with_retries(&partial, dest).with_context(|| format!("Couldn't put the download at {}", dest.display()))?;
+    if let Err(err) = rename_with_retries(&partial, dest) {
+        let _ = fs::remove_file(&partial);
+        return Err(err).with_context(|| format!("Couldn't put the download at {}", dest.display()));
+    }
     Ok(())
 }
 
@@ -696,17 +705,15 @@ mod tests {
 
     #[test]
     fn replacing_the_program_keeps_the_old_one_aside() {
-        let dir = std::env::temp_dir().join(format!("komando-update-test-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("komando.exe");
-        let new = dir.join("komando.download");
+        let dir = TestDir::new();
+        let exe = dir.0.join("komando.exe");
+        let new = dir.0.join("komando.download");
         fs::write(&exe, "old").unwrap();
         fs::write(&new, "new").unwrap();
         replace_exe(&exe, &new).unwrap();
         assert_eq!(fs::read_to_string(&exe).unwrap(), "new");
         assert_eq!(fs::read_to_string(old_exe(&exe)).unwrap(), "old");
         assert!(!new.exists());
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Downloads the latest release's program from GitHub and checks it (size and SHA-256).

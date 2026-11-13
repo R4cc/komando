@@ -476,10 +476,10 @@ mod tests {
         for _ in 0..1000 {
             proxy.send_event(Event::Wakeup);
         }
-        assert!(matches!(rx.try_next(), Ok(Some(SessionEvent::Wakeup))));
-        assert!(rx.try_next().is_err());
+        assert!(matches!(rx.try_recv(), Ok(SessionEvent::Wakeup)));
+        assert!(rx.try_recv().is_err());
         proxy.clear_dirty();
         proxy.send_event(Event::Wakeup);
-        assert!(matches!(rx.try_next(), Ok(Some(SessionEvent::Wakeup))));
+        assert!(matches!(rx.try_recv(), Ok(SessionEvent::Wakeup)));
     }
 }

@@ -299,8 +299,16 @@ impl Workspace {
     pub fn new(data_dir: PathBuf, startup: Startup, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = Settings::load(&data_dir);
         // A fresh install has no Projects; the detected local shells stand alone.
+        let mut library_error = None;
         let library = Library::load(&data_dir).unwrap_or_else(|err| {
             log::error!("{err:#}");
+            // Move the unreadable file aside: the next save would otherwise replace it.
+            let path = data_dir.join(Library::FILE);
+            let aside = path.with_extension(format!("toml.broken-{}", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+            library_error = Some(match std::fs::rename(&path, &aside) {
+                Ok(()) => format!("Couldn't read your hosts ({err:#}). The file was kept as {}.", aside.display()),
+                Err(_) => format!("Couldn't read your hosts: {err:#}"),
+            });
             Library::default()
         });
         let highlights = highlight::load(&data_dir);
@@ -361,6 +369,9 @@ impl Workspace {
             }
         }
         this.start_auto_lock(window, cx);
+        if let Some(message) = library_error {
+            this.show_toast_for(message, Duration::from_secs(20), cx);
+        }
         // Look for a new version shortly after start, without getting in the way of it.
         if this.settings.check_for_updates && !matches!(this.update, UpdateState::Failed(_)) {
             cx.spawn(async move |this, cx| {
@@ -477,25 +488,25 @@ impl Workspace {
         } else {
             self.settings.light_theme = id.into();
         }
-        let _ = self.settings.save(&self.data_dir);
+        self.save_settings(cx);
         self.apply_appearance(window, cx);
     }
 
     fn set_app_theme(&mut self, theme: AppThemeSetting, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.app_theme = theme;
-        let _ = self.settings.save(&self.data_dir);
+        self.save_settings(cx);
         self.apply_appearance(window, cx);
     }
 
     fn set_terminal_theme(&mut self, theme: TerminalThemeSetting, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.terminal_theme = theme;
-        let _ = self.settings.save(&self.data_dir);
+        self.save_settings(cx);
         self.apply_appearance(window, cx);
     }
 
     fn set_background_blur(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.background_blur = on;
-        let _ = self.settings.save(&self.data_dir);
+        self.save_settings(cx);
         self.apply_appearance(window, cx);
     }
 
@@ -531,7 +542,7 @@ impl Workspace {
         } else {
             disabled.push(id.to_string());
         }
-        let _ = self.settings.save(&self.data_dir);
+        self.save_settings(cx);
         self.apply_highlights(cx);
         cx.notify();
     }
@@ -547,7 +558,7 @@ impl Workspace {
     fn delete_highlight_set(&mut self, id: &str, cx: &mut Context<Self>) {
         self.highlights.retain(|s| s.id != id);
         self.settings.disabled_highlight_sets.retain(|d| d != id);
-        let _ = self.settings.save(&self.data_dir);
+        self.save_settings(cx);
         self.save_highlights(cx);
         cx.notify();
     }
@@ -668,7 +679,13 @@ impl Workspace {
                     }
                 }
             }
-            Err(err) => state.error = Some(err.to_string()),
+            Err(err) => {
+                // A vault created elsewhere since the dialog opened: ask for its password now.
+                if state.creating && Vault::exists(&self.data_dir) {
+                    state.creating = false;
+                }
+                state.error = Some(err.to_string());
+            }
         }
         cx.notify();
     }
@@ -708,10 +725,6 @@ impl Workspace {
                         && this.last_activity.elapsed() >= Duration::from_secs(minutes as u64 * 60)
                     {
                         this.lock_vault(cx);
-                    }
-                    if this.toast.as_ref().is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(4)) {
-                        this.toast = None;
-                        cx.notify();
                     }
                 });
                 if alive.is_err() {
@@ -1110,7 +1123,7 @@ impl Workspace {
                 BrowserEvent::Close => this.toggle_sftp(id, window, cx),
                 BrowserEvent::ShowHidden(show) => {
                     this.settings.sftp_show_hidden = *show;
-                    let _ = this.settings.save(&this.data_dir);
+                    this.save_settings(cx);
                 }
                 BrowserEvent::Retry => {
                     let sink = this.sessions.iter().find(|s| s.id == id).and_then(|s| s.view.read(cx).sink());
@@ -1320,7 +1333,7 @@ impl Workspace {
         let name = format!(
             "{}_{}.txt",
             sanitize(&entry.label),
-            chrono::Local::now().format("%Y-%m-%d_%H-%M")
+            chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
         );
         match crate::export::write_and_copy_file(&name, &text) {
             Ok(note) => self.show_toast(format!("Copied {name}{note}"), cx),
@@ -1334,14 +1347,38 @@ impl Workspace {
     }
 
     fn show_toast(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.toast = Some((message.into(), Instant::now()));
+        self.show_toast_for(message, Duration::from_secs(4), cx);
+    }
+
+    fn show_toast_for(&mut self, message: impl Into<SharedString>, duration: Duration, cx: &mut Context<Self>) {
+        let shown = Instant::now();
+        self.toast = Some((message.into(), shown));
         cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(duration).await;
+            let _ = this.update(cx, |this, cx| {
+                // Unless a newer toast replaced it.
+                if this.toast.as_ref().is_some_and(|(_, at)| *at == shown) {
+                    this.toast = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Save the settings, and say so when that fails instead of dropping the change silently.
+    fn save_settings(&mut self, cx: &mut Context<Self>) {
+        if let Err(err) = self.settings.save(&self.data_dir) {
+            self.show_toast(format!("Could not save settings: {err:#}"), cx);
+        }
     }
 
     // ---- overlays: picker and forms ----------------------------------------------------
 
     fn open_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.prompt_open(cx) {
+        // Replacing an open form would lose what was typed into it.
+        if self.modal_open(cx) {
             return;
         }
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search hosts and shells…"));
@@ -3472,11 +3509,11 @@ impl Render for Workspace {
             }))
             .on_drop(cx.listener(|this, _: &SftpDivider, _, cx| {
                 this.sftp_resizing = false;
-                let _ = this.settings.save(&this.data_dir);
+                this.save_settings(cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
-                if this.prompt_open(cx) {
+                if this.modal_open(cx) {
                     return;
                 }
                 if matches!(this.page, Page::Settings(_)) {

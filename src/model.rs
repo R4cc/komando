@@ -3,7 +3,7 @@
 //! Secrets never live here: a Host or Project only names a Credential by id, and the
 //! Credential itself lives in the Vault (see `vault.rs`).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -677,13 +677,21 @@ fn which(exe: &str) -> bool {
 
 /// Write via a temporary file and rename, so a crash never leaves a half-written file.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
     let tmp = path.with_extension("tmp");
-    fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
-    Ok(())
+    let written = (|| {
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        // On disk before the rename, so a power cut can't leave an empty file in its place.
+        file.sync_all()
+    })()
+    .with_context(|| format!("writing {}", tmp.display()))
+    .and_then(|()| fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display())));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
 }
-
-pub type CredentialNames = BTreeMap<CredentialId, String>;
 
 #[cfg(test)]
 mod tests {

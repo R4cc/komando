@@ -357,7 +357,7 @@ impl Workspace {
                     .into_any_element(),
             ),
             UpdateState::Failed(message) => (
-                "The update didn't work".into(),
+                "The update didn't finish".into(),
                 message.clone(),
                 p.danger,
                 button("update-retry", "Try again", ButtonKind::Secondary, p)
@@ -421,7 +421,7 @@ impl Workspace {
             )
             .child(switch("update-auto".into(), "Check for updates automatically", auto, p).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.settings.check_for_updates = !auto;
-                let _ = this.settings.save(&this.data_dir);
+                this.save_settings(cx);
                 cx.notify();
             })))
             .into_any_element();

@@ -520,8 +520,9 @@ impl FileBrowser {
     pub fn set_show_hidden(&mut self, show: bool, cx: &mut Context<Self>) {
         self.show_hidden = show;
         if !show {
-            let entries = &self.entries;
-            self.selected.retain(|p| entries.iter().any(|e| &e.path == p && !e.is_hidden()));
+            let visible: HashSet<&str> =
+                self.entries.iter().filter(|e| !e.is_hidden()).map(|e| e.path.as_str()).collect();
+            self.selected.retain(|p| visible.contains(p.as_str()));
         }
         self.update_rows();
         cx.emit(BrowserEvent::ShowHidden(show));
@@ -852,7 +853,6 @@ impl FileBrowser {
         });
         input.update(cx, |state, cx| {
             state.focus(window, cx);
-            // Select the name without its extension, as file managers do.
             state.select_all(window, cx);
         });
         self.edit = Some(Edit { kind, input, _subscription: subscription });
@@ -1729,6 +1729,8 @@ impl FileBrowser {
         let identity = self.identity();
         let view = cx.entity().downgrade();
         let me = cx.entity_id();
+        // What a drag from a selected row carries; worked out once, not once per row.
+        let mut selection: Option<Vec<String>> = None;
         let mut out = vec![];
         for ix in range {
             if has_parent && ix == 0 {
@@ -1781,7 +1783,7 @@ impl FileBrowser {
             };
 
             let dragged = if selected {
-                self.selection().into_iter().map(|e| e.path).collect::<Vec<_>>()
+                selection.get_or_insert_with(|| self.selection().into_iter().map(|e| e.path).collect()).clone()
             } else {
                 vec![entry.path.clone()]
             };
@@ -2035,8 +2037,8 @@ impl FileBrowser {
                     message("loader-circle", p.text_faint, "Loading…".into(), None).into_any_element()
                 } else if self.rows.is_empty() && self.edit.is_none() && !self.loading {
                     if self.entries.is_empty() {
-                        message("folder-open", p.text_faint, "This folder is empty".into(), Some("Drop files here to upload them.".into()))
-                            .into_any_element()
+                        let hint = (self.dir_access.write != Allowed::No).then(|| "Drop files here to upload them.".into());
+                        message("folder-open", p.text_faint, "This folder is empty".into(), hint).into_any_element()
                     } else {
                         message("eye-off", p.text_faint, "Only hidden files here".into(), None)
                             .child(

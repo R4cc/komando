@@ -113,7 +113,7 @@ impl Workspace {
                     this.apply_appearance(window, cx);
                 }
                 SliderEvent::Release(_) => {
-                    let _ = this.settings.save(&this.data_dir);
+                    this.save_settings(cx);
                 }
             });
             self._subscriptions.push(sub);
@@ -128,7 +128,7 @@ impl Workspace {
                     this.apply_appearance(window, cx);
                 }
                 SliderEvent::Release(_) => {
-                    let _ = this.settings.save(&this.data_dir);
+                    this.save_settings(cx);
                 }
             });
             self._subscriptions.push(sub);
@@ -157,7 +157,7 @@ impl Workspace {
                     let family = if value.is_empty() { Settings::default().font_family } else { value };
                     if family != this.settings.font_family {
                         this.settings.font_family = family;
-                        let _ = this.settings.save(&this.data_dir);
+                        this.save_settings(cx);
                         this.apply_appearance(window, cx);
                     }
                 }
@@ -181,7 +181,7 @@ impl Workspace {
                 cx.notify();
             });
         }
-        let _ = self.settings.save(&self.data_dir);
+        self.save_settings(cx);
         cx.notify();
     }
 
@@ -541,7 +541,7 @@ impl Workspace {
             cx,
             |this, i, _, cx| {
                 this.settings.scrollback_lines = SCROLLBACK_CHOICES[i].0;
-                let _ = this.settings.save(&this.data_dir);
+                this.save_settings(cx);
                 cx.notify();
             },
         );
@@ -630,7 +630,7 @@ impl Workspace {
             cx,
             |this, i, _, cx| {
                 this.settings.auto_lock_minutes = AUTO_LOCK_CHOICES[i].0;
-                let _ = this.settings.save(&this.data_dir);
+                this.save_settings(cx);
                 cx.notify();
             },
         );

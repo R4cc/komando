@@ -765,9 +765,17 @@ impl Remote {
                 let read = self.sftp.read_dir(src.as_str()).await.map_err(|e| OpError::from(e).at(&src))?;
                 for entry in read {
                     let name = entry.file_name();
-                    if name != "." && name != ".." {
-                        stack.push((join(&src, &name), join(&dst, &name)));
+                    if name == "." || name == ".." {
+                        continue;
                     }
+                    let child = join(&src, &name);
+                    // Links to folders are skipped (they can loop), as in `walk_dir`.
+                    if is_link_mode(entry.metadata().permissions)
+                        && self.sftp.metadata(child.as_str()).await.is_ok_and(|t| is_dir_mode(t.permissions))
+                    {
+                        continue;
+                    }
+                    stack.push((child, join(&dst, &name)));
                 }
             } else {
                 let mut input = self.sftp.open(src.as_str()).await.map_err(|e| OpError::from(e).at(&src))?;
@@ -999,7 +1007,7 @@ impl Remote {
                     .iter()
                     .map(|rel| {
                         let remote = remote_of(rel);
-                        async move { self.sftp.create_dir(remote.as_str()).await.map_err(|e| OpError::from(e).at(remote_dir)) }
+                        async move { self.sftp.create_dir(remote.as_str()).await.map_err(|e| OpError::from(e).at(&remote)) }
                     })
                     .collect();
                 all(jobs, PARALLEL).await?;
@@ -1251,7 +1259,9 @@ fn plan_local(local: &Path) -> Result<Vec<(String, Option<u64>)>, OpError> {
             let name = child.file_name().to_string_lossy().into_owned();
             let child_rel = if rel.is_empty() { name } else { format!("{rel}/{name}") };
             let meta = std::fs::metadata(child.path()).map_err(|e| OpError::local(&e, &child.path()))?;
-            if meta.is_dir() {
+            // Links to folders are skipped (they can loop), as in `download_dir`.
+            let is_link = child.file_type().is_ok_and(|t| t.is_symlink());
+            if meta.is_dir() && !is_link {
                 plan.push((child_rel.clone(), None));
                 queue.push(child_rel);
             } else if meta.is_file() {

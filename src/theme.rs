@@ -286,6 +286,7 @@ pub const PROJECT_COLORS: [(&str, u32); 12] = [
 /// A preset name or `#rrggbb`. Unknown values fall back to slate.
 pub fn project_color(value: &str) -> Hsla {
     if let Some(hexstr) = value.strip_prefix('#')
+        && hexstr.len() == 6
         && let Ok(v) = u32::from_str_radix(hexstr, 16)
     {
         return hex(v);
