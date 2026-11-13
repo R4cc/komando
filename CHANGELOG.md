@@ -20,6 +20,10 @@ All notable changes to Komando are listed here. The format follows
 - Several Sessions printing at once no longer hold each other up, and typing in a quiet
   Session stays quick while others print. Eight Sessions each printing half a million log lines
   finish more than twice as fast as before on a PC with eight or more CPU threads.
+- Typing stays responsive while files download in the file browser. Downloads now keep only
+  as much data on its way as the connection can carry, instead of a fixed amount that queued
+  up ahead of your keystrokes: on a 100 Mbit/s link with 50 ms latency, keys showed about a
+  third of a second late and now show about 15 ms late, and downloads are as fast as before.
 
 ## [0.3.6] - 2026-11-13
 
