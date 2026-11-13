@@ -68,7 +68,9 @@ throwaway data folder and opens a few sessions; it's what produced the README sc
 `src/throughput_tests.rs` measures how fast SSH output gets into the terminal: an SSH server in
 the test process prints 1,000,000 coloured log lines through the real Session path, while a
 stand-in for the UI copies the screen every frame. A second test feeds the same output straight
-into the parser, without SSH. They run on Windows too:
+into the parser, without SSH. A third runs several busy Sessions at once while it types in a
+quiet one, and reports how long the output took and how long each typed key took to show
+(`KOMANDO_THROUGHPUT_SESSIONS`, default 8). They run on Windows too:
 
 ```sh
 cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1

@@ -182,11 +182,21 @@ async fn open_tcp(address: &str, port: u16) -> std::io::Result<tokio::net::TcpSt
     Err(last_error.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("{address} has no address"))))
 }
 
+/// Threads for SSH and SFTP: one per CPU but one, which is left for the UI, between 2 and 8.
+///
+/// Output is parsed on these threads, so they bound how much output all Sessions together take
+/// in, and how soon a key typed in one Session shows while others print. With 8 Sessions each
+/// printing 500,000 log lines, 2 threads took 2.3 s in all and delayed a typed key by up to 24 ms;
+/// 8 threads took 0.95 s and at most 2.4 ms.
+fn ssh_threads() -> usize {
+    std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(1)).clamp(2, 8)
+}
+
 pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+            .worker_threads(ssh_threads())
             .thread_name("komando-ssh")
             .enable_all()
             .build()

@@ -13,6 +13,9 @@ All notable changes to Komando are listed here. The format follows
   sooner.
 - Large amounts of SSH output, such as a flood of log lines, come through up to four times
   faster. A million coloured log lines that took about 4 seconds now take under 1 second.
+- Several Sessions printing at once no longer hold each other up, and typing in a quiet
+  Session stays quick while others print. Eight Sessions each printing half a million log lines
+  finish more than twice as fast as before on a PC with eight or more CPU threads.
 
 ## [0.3.6] - 2026-11-13
 

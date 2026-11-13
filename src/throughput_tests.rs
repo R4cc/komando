@@ -69,23 +69,27 @@ fn plain_line(i: u64) -> String {
     text.trim_end().to_string()
 }
 
+/// Prints `lines` log lines to each shell, except for the user `quiet`, whose shell echoes
+/// what is typed, like a shell at its prompt.
 #[derive(Clone)]
 struct LogServer {
     lines: u64,
+    user: String,
     channel: Arc<Mutex<Option<Channel<Msg>>>>,
 }
 
 impl server::Server for LogServer {
     type Handler = Self;
     fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self {
-        Self { lines: self.lines, channel: Arc::default() }
+        Self { lines: self.lines, user: String::new(), channel: Arc::default() }
     }
 }
 
 impl server::Handler for LogServer {
     type Error = russh::Error;
 
-    async fn auth_password(&mut self, _: &str, _: &str) -> Result<server::Auth, Self::Error> {
+    async fn auth_password(&mut self, user: &str, _: &str) -> Result<server::Auth, Self::Error> {
+        self.user = user.to_string();
         Ok(server::Auth::Accept)
     }
 
@@ -117,7 +121,19 @@ impl server::Handler for LogServer {
 
     async fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
-        let Some(channel) = self.channel.lock().await.take() else { return Ok(()) };
+        let Some(mut channel) = self.channel.lock().await.take() else { return Ok(()) };
+        if self.user == "quiet" {
+            tokio::spawn(async move {
+                while let Some(msg) = channel.wait().await {
+                    if let russh::ChannelMsg::Data { data } = msg
+                        && channel.data(&data[..]).await.is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+            return Ok(());
+        }
         let lines = self.lines;
         tokio::spawn(async move {
             // Blocks of about 64 KiB, each sent once the client's window has room for it.
@@ -140,8 +156,8 @@ impl server::Handler for LogServer {
 }
 
 /// Start the server on its own runtime (a separate program in real use) and return its port.
-fn start_server(lines: u64) -> (u16, tokio::runtime::Runtime) {
-    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+fn start_server(lines: u64, threads: usize) -> (u16, tokio::runtime::Runtime) {
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(threads).enable_all().build().unwrap();
     let key = russh::keys::PrivateKey::from(russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[7; 32]));
     let config = Arc::new(server::Config {
         keys: vec![key],
@@ -154,7 +170,7 @@ fn start_server(lines: u64) -> (u16, tokio::runtime::Runtime) {
     let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
     let port = listener.local_addr().unwrap().port();
     runtime.spawn(async move {
-        let mut server = LogServer { lines, channel: Arc::default() };
+        let mut server = LogServer { lines, user: String::new(), channel: Arc::default() };
         let _ = server.run_on_socket(config, &listener).await;
     });
     (port, runtime)
@@ -256,7 +272,7 @@ fn throughput_coloured_log_lines_over_ssh() {
     let (port, _server) = match external {
         Some(port) => (port, None),
         None => {
-            let (port, server) = start_server(lines);
+            let (port, server) = start_server(lines, 2);
             (port, Some(server))
         }
     };
@@ -305,4 +321,187 @@ fn throughput_parser_only() {
         let secs = start.elapsed().as_secs_f64();
         eprintln!("scrollback {scrollback:>6}: {:.3} s = {:.1} MB/s", secs, data.len() as f64 / 1e6 / secs);
     }
+}
+
+/// A Session to the benchmark server as `user`, at the size of a 1600 x 1000 pixel window.
+struct Bench {
+    term: crate::session::SharedTerm,
+    proxy: EventProxy,
+    sink: crate::session::InputSink,
+    events: futures::channel::mpsc::UnboundedReceiver<SessionEvent>,
+}
+
+fn connect(port: u16, user: &str, known_hosts: &std::path::Path) -> Bench {
+    let size = GridSize { cols: 177, rows: 42, cell_width: 9, cell_height: 17 };
+    let (tx, events) = futures::channel::mpsc::unbounded();
+    let proxy = EventProxy::new(tx);
+    proxy.set_palette(&TerminalPalette::dark());
+    proxy.set_size(size);
+    let term = new_term(size, 100_000, proxy.clone());
+    let target = crate::session::ssh::Target {
+        hops: vec![crate::session::ssh::Hop {
+            name: "bench".into(),
+            address: "127.0.0.1".into(),
+            port,
+            user: Some(user.into()),
+            secret: Some(crate::vault::Secret::Password { password: "bench".into() }),
+        }],
+        known_hosts: known_hosts.to_path_buf(),
+    };
+    let sink = crate::session::ssh::spawn(target, size, term.clone(), proxy.clone());
+    Bench { term, proxy, sink, events }
+}
+
+impl Bench {
+    /// The next event, if one is waiting. Host Key prompts are answered on the way.
+    fn next(&mut self) -> Option<SessionEvent> {
+        loop {
+            match self.events.try_recv() {
+                Ok(SessionEvent::Prompt(Prompt::HostKey { reply, .. })) => {
+                    let _ = reply.send(true);
+                }
+                Ok(event) => return Some(event),
+                Err(futures::channel::mpsc::TryRecvError::Closed) => panic!("the session ended without a status"),
+                Err(futures::channel::mpsc::TryRecvError::Empty) => return None,
+            }
+        }
+    }
+
+    fn wait_connected(&mut self) {
+        let start = Instant::now();
+        loop {
+            match self.next() {
+                Some(SessionEvent::Status(Status::Connected)) => return,
+                Some(SessionEvent::Status(Status::Disconnected(reason))) => panic!("{reason}"),
+                Some(SessionEvent::Wakeup) => self.proxy.clear_dirty(),
+                Some(_) => {}
+                None => std::thread::yield_now(),
+            }
+            assert!(start.elapsed() < Duration::from_secs(10), "connecting timed out");
+        }
+    }
+
+    /// Type a key and wait until its echo has been parsed into the grid.
+    fn echo(&mut self) -> Duration {
+        let start = Instant::now();
+        self.sink.write(b"a".to_vec());
+        loop {
+            match self.next() {
+                Some(SessionEvent::Wakeup) => {
+                    self.proxy.clear_dirty();
+                    return start.elapsed();
+                }
+                Some(SessionEvent::Status(Status::Disconnected(reason))) => panic!("{reason}"),
+                _ => std::thread::yield_now(),
+            }
+        }
+    }
+}
+
+fn percentiles(mut samples: Vec<Duration>) -> String {
+    samples.sort();
+    let at = |p: f64| samples[((samples.len() - 1) as f64 * p) as usize].as_secs_f64() * 1000.0;
+    format!("median {:.2} ms, p95 {:.2} ms, max {:.2} ms ({} keys)", at(0.5), at(0.95), at(1.0), samples.len())
+}
+
+/// Several Sessions printing logs at once, the way an engineer watches a few deploys, while
+/// another Session sits at a prompt: how long all the output takes, and how long a key typed in
+/// the quiet Session takes to show.
+///
+/// `KOMANDO_THROUGHPUT_SESSIONS` sets the number of busy Sessions (default 8) and
+/// `KOMANDO_THROUGHPUT_LINES` the lines each prints (default 500,000).
+#[test]
+#[ignore]
+fn throughput_many_sessions_and_typing() {
+    let sessions: usize = std::env::var("KOMANDO_THROUGHPUT_SESSIONS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+    let lines: u64 = std::env::var("KOMANDO_THROUGHPUT_LINES").ok().and_then(|v| v.parse().ok()).unwrap_or(500_000);
+    // Enough server threads that the server is not what limits the busy Sessions.
+    let (port, _server) = start_server(lines, 8);
+    let dir = std::env::temp_dir().join(format!("komando-throughput-many-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let known_hosts = dir.join("known_hosts");
+
+    // The quiet Session first, which also trusts the server's key for the others.
+    let mut quiet = connect(port, "quiet", &known_hosts);
+    quiet.wait_connected();
+    let idle: Vec<Duration> = (0..50)
+        .map(|_| {
+            let latency = quiet.echo();
+            std::thread::sleep(Duration::from_millis(5));
+            latency
+        })
+        .collect();
+
+    let mut bytes_each = 0u64;
+    let mut block = Vec::new();
+    for i in 0..lines {
+        log_line(i, &mut block);
+        bytes_each += block.len() as u64;
+        block.clear();
+    }
+
+    // The busy Sessions, each with a UI stand-in that re-arms Wakeups once per frame. Only the
+    // first copies its screen, as only the Session in front is drawn.
+    let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(sessions));
+    let start = Instant::now();
+    let workers: Vec<_> = (0..sessions)
+        .map(|index| {
+            let remaining = remaining.clone();
+            let mut bench = connect(port, "busy", &known_hosts);
+            std::thread::spawn(move || {
+                let mut connected_at = None;
+                loop {
+                    match bench.next() {
+                        Some(SessionEvent::Status(Status::Connected)) => connected_at = Some(Instant::now()),
+                        Some(SessionEvent::Status(Status::Disconnected(reason))) => {
+                            remaining.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                            let connected_at = connected_at.unwrap_or_else(|| panic!("never connected: {reason}"));
+                            bench.sink.close();
+                            return (connected_at, Instant::now());
+                        }
+                        Some(SessionEvent::Wakeup) => {
+                            std::thread::sleep(Duration::from_millis(16));
+                            bench.proxy.clear_dirty();
+                            if index == 0 {
+                                let term = bench.term.lock();
+                                let mut cells = 0usize;
+                                for indexed in term.renderable_content().display_iter {
+                                    cells += indexed.cell.c as usize & 1;
+                                }
+                                std::hint::black_box(cells);
+                            }
+                        }
+                        Some(_) => {}
+                        None => std::thread::sleep(Duration::from_millis(1)),
+                    }
+                }
+            })
+        })
+        .collect();
+
+    // Type in the quiet Session while the others print, about 30 keys a second.
+    let mut busy = Vec::new();
+    while remaining.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+        if start.elapsed() > Duration::from_millis(300) {
+            busy.push(quiet.echo());
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let ends: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+    let first_start = ends.iter().map(|e| e.0).min().unwrap();
+    let last_end = ends.iter().map(|e| e.1).max().unwrap();
+    let total = (last_end - first_start).as_secs_f64();
+    let mut each: Vec<f64> = ends.iter().map(|e| (e.1 - e.0).as_secs_f64()).collect();
+    each.sort_by(f64::total_cmp);
+    eprintln!(
+        "{sessions} busy Sessions x {lines} lines ({:.1} MB each): all done in {total:.3} s = {:.1} MB/s together; each took {:.3}-{:.3} s",
+        bytes_each as f64 / 1e6,
+        (bytes_each * sessions as u64) as f64 / 1e6 / total,
+        each[0],
+        each[each.len() - 1],
+    );
+    eprintln!("typing, idle:        {}", percentiles(idle));
+    eprintln!("typing, while busy:  {}", percentiles(busy));
+    quiet.sink.close();
+    let _ = std::fs::remove_dir_all(&dir);
 }
