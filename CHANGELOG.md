@@ -6,6 +6,17 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- "Duplicate host…" in a host's right-click menu. It adds a copy with the same settings
+  and sign-in below the original, then opens the copy's form so you can rename it or
+  change its address.
+
+### Fixed
+
+- With background blur on, Windows no longer draws its own minimize, maximize and close
+  icons behind Komando's window buttons, so each button shows one icon again.
+
 ## [0.3.3] - 2026-11-12
 
 ### Fixed

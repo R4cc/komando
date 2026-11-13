@@ -58,13 +58,45 @@ pub fn set_backdrop(window: &gpui::Window, on: bool) -> bool {
             DwmExtendFrameIntoClientArea(hwnd, &margins)
         }
     };
-    match configure(on) {
+    let enabled = match configure(on) {
         Ok(()) => on,
         Err(error) => {
             log::warn!("Could not configure Windows backdrop: {error}");
             // Best effort rollback if extending the frame failed after enabling Mica.
             let _ = configure(false);
             false
+        }
+    };
+    set_native_caption(hwnd, !enabled);
+    enabled
+}
+
+/// Give the window a native caption, or take it away.
+///
+/// Windows adds `WS_CAPTION` to every overlapped window, so DWM lays out its own minimise,
+/// maximise and close buttons at the top right even though gpui hides the title bar. With
+/// the frame extended over the whole window for Mica, DWM paints them there, beneath
+/// Komando's translucent title bar, and they show through next to our own buttons. Without
+/// a caption there is nothing for DWM to draw. Hit testing (dragging, snap layouts on the
+/// maximise button, closing) comes from `WM_NCHITTEST` and the system menu, which stay.
+#[cfg(windows)]
+fn set_native_caption(hwnd: windows::Win32::Foundation::HWND, caption: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_STYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+        SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WS_CAPTION,
+    };
+
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let wanted = if caption { style | WS_CAPTION.0 as isize } else { style & !(WS_CAPTION.0 as isize) };
+        if wanted == style {
+            return;
+        }
+        SetWindowLongPtrW(hwnd, GWL_STYLE, wanted);
+        // The frame is cached until it is told to recalculate.
+        let flags = SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE;
+        if let Err(error) = SetWindowPos(hwnd, None, 0, 0, 0, 0, flags) {
+            log::warn!("Could not update the window frame: {error}");
         }
     }
 }

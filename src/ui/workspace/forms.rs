@@ -104,6 +104,21 @@ impl Workspace {
         self.open_host_form(project_id, Some(host_id), window, cx);
     }
 
+    /// Copy a Host below itself in the Project it was picked from, then open the copy's form
+    /// so its name and address can be changed.
+    pub(super) fn duplicate_host(&mut self, project_id: String, host_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.prompt_open(cx) {
+            return;
+        }
+        let mut library = self.library.clone();
+        let Some(copy) = library.duplicate_host(&project_id, &host_id) else { return };
+        match self.commit_library(library) {
+            Ok(()) => self.open_edit_host(project_id, copy, window, cx),
+            Err(err) => self.show_toast(format!("Could not duplicate: {err}"), cx),
+        }
+        cx.notify();
+    }
+
     fn open_host_form(&mut self, project_id: String, editing: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         // One dialog at a time: a Session's open question comes first.
         if self.prompt_open(cx) {

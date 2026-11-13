@@ -2005,10 +2005,14 @@ impl Workspace {
             if let SidebarItem::Host { project, host } = &item {
                 let (pa, ha) = (project.id.clone(), host.id.clone());
                 let (pb, hb) = (project.id.clone(), host.id.clone());
+                let (pd, hd) = (project.id.clone(), host.id.clone());
                 let hc = host.id.clone();
                 menu = menu
                     .separator()
                     .item(menu_item("Edit host…", "pencil", &ws, move |this, window, cx| this.open_edit_host(pa.clone(), ha.clone(), window, cx)))
+                    .item(menu_item("Duplicate host…", "copy-plus", &ws, move |this, window, cx| {
+                        this.duplicate_host(pd.clone(), hd.clone(), window, cx)
+                    }))
                     .item(menu_item("Copy address", "copy", &ws, move |this, _, cx| this.copy_host_address(&pb, &hb, cx)))
                     .separator()
                     .item(menu_item("Delete host…", "trash", &ws, move |this, _, cx| this.confirm_delete_host(hc.clone(), cx)));
@@ -2404,11 +2408,9 @@ impl Workspace {
             .flex_shrink_0()
             .flex()
             .items_center()
-            // Mica extends DWM's native caption glyphs into our client area. Cover the
-            // entire title bar uniformly, including glyphs outside our custom hitboxes
-            // at different DPI settings. A cover just behind the buttons leaves a dark
-            // rectangular patch and can expose part of a native glyph beside it.
-            .bg(if cfg!(windows) { p.canvas.opacity(1.) } else { p.canvas })
+            // No cover for DWM's own caption buttons is needed: with Mica on, the window has
+            // no native caption for DWM to draw them in (see `platform::set_backdrop`).
+            .bg(p.canvas)
             // Windows: the bar is the window's caption, so dragging, double-click to maximise
             // and snapping work as with any window. Buttons inside take their clicks.
             .window_control_area(WindowControlArea::Drag)

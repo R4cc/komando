@@ -463,6 +463,29 @@ impl Library {
             .collect()
     }
 
+    /// Copy a Host into the Project it was picked from, right below the original. The copy
+    /// keeps every setting, including its Credential (shared, not copied in the Vault), and
+    /// is named "<name> (copy)", numbered when that name is taken. Returns the copy's id.
+    pub fn duplicate_host(&mut self, project_id: &str, host_id: &str) -> Option<HostId> {
+        let original = self.host(host_id)?.clone();
+        let project = self.projects.iter().position(|p| p.id == project_id)?;
+        let taken = |name: &str| self.hosts.iter().any(|h| h.name == name);
+        let mut name = format!("{} (copy)", original.name);
+        let mut n = 2;
+        while taken(&name) {
+            name = format!("{} (copy {n})", original.name);
+            n += 1;
+        }
+        let copy = Host { id: new_id(), name, ..original };
+        let id = copy.id.clone();
+        let hosts = &mut self.projects[project].hosts;
+        let at = hosts.iter().position(|h| h == host_id).map_or(hosts.len(), |i| i + 1);
+        hosts.insert(at, id.clone());
+        let after = self.hosts.iter().position(|h| h.id == host_id).map_or(self.hosts.len(), |i| i + 1);
+        self.hosts.insert(after, copy);
+        Some(id)
+    }
+
     /// Delete a Host. Hosts that were reached through it connect directly from now on.
     pub fn remove_host(&mut self, id: &str) {
         self.hosts.retain(|h| h.id != id);
@@ -820,6 +843,29 @@ mod tests {
         assert_eq!(lib.projects[0].jump_host, None);
         assert_eq!(lib.host("web").unwrap().jump_host, Inherited::Off);
         assert_eq!(route_names(&lib, "db"), ["db"]);
+    }
+
+    #[test]
+    fn duplicating_a_host_copies_it_below_the_original_in_that_project() {
+        let mut web = reached_through(named("web"), "bastion");
+        web.credential = Inherited::Own("web-key".into());
+        web.startup_commands = vec!["uptime".into()];
+        let mut lib = library(vec![web, named("db"), named("bastion")]);
+
+        let id = lib.duplicate_host("p1", "web").unwrap();
+        let copy = lib.host(&id).unwrap();
+        assert_ne!(id, "web");
+        assert_eq!(copy.name, "web (copy)");
+        assert_eq!(copy.address, "web.lan");
+        assert_eq!(copy.credential, Inherited::Own("web-key".into()));
+        assert_eq!(copy.jump_host, Inherited::Own("bastion".into()));
+        assert_eq!(copy.startup_commands, ["uptime"]);
+        assert_eq!(lib.projects[0].hosts, ["web", id.as_str(), "db", "bastion"]);
+
+        let again = lib.duplicate_host("p1", "web").unwrap();
+        assert_eq!(lib.host(&again).unwrap().name, "web (copy 2)");
+        assert!(lib.duplicate_host("p1", "missing").is_none());
+        assert!(lib.duplicate_host("nope", "web").is_none());
     }
 
     #[test]
