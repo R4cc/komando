@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-11-13
+
 ### Added
 
 - Dialogs such as the host and project forms, delete confirmations, quick connect and the
