@@ -41,8 +41,7 @@ Run the tests with `cargo test --lib`.
 ## Versions and releases
 
 The version is in `Cargo.toml` and every change is listed in [CHANGELOG.md](../CHANGELOG.md).
-Patch versions (0.1.x) go up with each change; minor and major versions are bumped by the
-maintainer.
+Follow the [versioning policy in AGENTS.md](../AGENTS.md#versioning).
 
 Publish a GitHub release with a tag that matches `Cargo.toml`, like `v0.2.0`. The
 [release workflow](../.github/workflows/release.yml) builds Komando on Windows and attaches

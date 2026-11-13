@@ -1,16 +1,22 @@
 # Komando
 
+## Builds and CI
+
+- Monitor CI only when the user explicitly asks. Pushing changes does not authorize CI
+  monitoring or waiting for CI to finish.
+- Run local builds only when expected to finish in under two minutes. Skip builds known
+  to take longer unless the user explicitly requests that build, and report what was skipped.
+
 ## Versioning
 
 The version lives in `Cargo.toml` (`version = "X.Y.Z"`) and is shown in the app (Settings → About).
 
-- **Every change you ship bumps the patch number** (0.1.0 → 0.1.1). Do it in the same commit
-  as the change: update `Cargo.toml` (and `Cargo.lock` via a build), and add an entry to
-  `CHANGELOG.md`.
-- **Never bump the minor or major number yourself.** Those are the maintainer's call. When a
-  change looks like it deserves one, say so in your reply and explain why. A minor bump fits a
-  notable new capability or a change in behaviour users will notice; a major bump fits breaking
-  changes to stored data (`library.toml`, `vault.json`, `highlights.json`) or the end of 0.x.
+- **Change the version only when the user explicitly asks**, including patch, minor and major
+  bumps. You may recommend a bump and explain why; leave the version unchanged until requested.
+- When a bump is requested, update `Cargo.toml` and the matching package version in
+  `Cargo.lock` in the same commit, and add the version's entry to `CHANGELOG.md`.
+- Keep user-facing changes under `Unreleased` in `CHANGELOG.md` until a version bump or
+  release is explicitly requested.
 - `CHANGELOG.md` follows Keep a Changelog: newest version first, sections `Added`, `Changed`,
   `Fixed`, `Removed`, `Security`. Write entries for users, not as commit messages.
 - A release is a GitHub release tagged `vX.Y.Z`, which must match `Cargo.toml`; the release
