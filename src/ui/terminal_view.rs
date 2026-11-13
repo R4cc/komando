@@ -100,10 +100,13 @@ impl Activity {
         !self.settled(now) && lasted >= ACTIVITY_SUSTAIN
     }
 }
-/// How often the Scrollback moves while a selection is held above or below the terminal.
-const AUTOSCROLL_TICK: Duration = Duration::from_millis(40);
-/// Most lines it moves per tick, when the pointer is far from the terminal.
-const AUTOSCROLL_MAX_LINES: f32 = 8.;
+/// Lines per second the Scrollback moves while a selection is held just past the top or
+/// bottom of the terminal; each line height further away adds as much again.
+const AUTOSCROLL_SPEED: f32 = 25.;
+/// Most lines per second, when the pointer is far from the terminal.
+const AUTOSCROLL_MAX_SPEED: f32 = 200.;
+/// Longest time counted between two frames, so a stalled frame doesn't jump the Scrollback.
+const AUTOSCROLL_MAX_STEP: Duration = Duration::from_millis(100);
 /// How long the shell must stay quiet before the next Startup Command is typed.
 const STARTUP_QUIET: Duration = Duration::from_millis(150);
 /// How long to wait for the shell's first output before typing anyway.
@@ -182,8 +185,9 @@ pub struct TerminalView {
     selecting: bool,
     /// Where the pointer is while selecting, even outside the terminal.
     drag_at: Option<gpui::Point<Pixels>>,
-    /// The Scrollback is scrolling because a selection was dragged above or below the grid.
-    autoscrolling: bool,
+    /// The Scrollback is scrolling because a selection was dragged above or below the grid:
+    /// when it last moved, and the part of a line it has yet to move.
+    autoscroll: Option<(Instant, f32)>,
     /// A button press the program was told about; its release goes to the program too.
     mouse_pressed: Option<keys::MouseButton>,
     /// The cell the mouse was last reported in (motion is reported once per cell).
@@ -260,7 +264,7 @@ impl TerminalView {
             activity_watch: false,
             selecting: false,
             drag_at: None,
-            autoscrolling: false,
+            autoscroll: None,
             mouse_pressed: None,
             mouse_cell: None,
             scroll_remainder: 0.,
@@ -896,7 +900,7 @@ impl TerminalView {
     /// The pointer moved while a selection is being dragged, wherever it is: over the
     /// terminal, the sidebar, or outside the window (the window keeps the mouse while a button
     /// is held). Past the top or bottom of the grid the Scrollback scrolls along.
-    fn drag_selection(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+    fn drag_selection(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         if !self.selecting {
             return;
         }
@@ -908,18 +912,10 @@ impl TerminalView {
         }
         self.drag_at = Some(event.position);
         self.extend_selection(event.position);
-        if self.autoscroll_lines(event.position) != 0 && !self.autoscrolling {
-            self.autoscrolling = true;
-            cx.spawn(async move |this, cx| {
-                loop {
-                    cx.background_executor().timer(AUTOSCROLL_TICK).await;
-                    let go_on = this.update(cx, |this, cx| this.autoscroll_step(cx)).unwrap_or(false);
-                    if !go_on {
-                        break;
-                    }
-                }
-            })
-            .detach();
+        if self.autoscroll_speed(event.position) != 0. && self.autoscroll.is_none() {
+            // Step once per displayed frame, so it moves as smoothly as the display refreshes.
+            self.autoscroll = Some((Instant::now(), 0.));
+            cx.on_next_frame(window, |this, window, cx| this.autoscroll_step(window, cx));
         }
         cx.notify();
     }
@@ -931,42 +927,45 @@ impl TerminalView {
         }
     }
 
-    /// Lines to scroll for a selection dragged to `position`: up (positive) above the grid,
-    /// down below it, faster the further away; 0 over it.
-    fn autoscroll_lines(&self, position: gpui::Point<Pixels>) -> i32 {
+    /// Lines per second to scroll for a selection dragged to `position`: up (positive) above
+    /// the grid, down below it, faster the further away; 0 over it.
+    fn autoscroll_speed(&self, position: gpui::Point<Pixels>) -> f32 {
         let top = f32::from(self.origin.get().y);
         let (_, ch) = self.cell.get();
         let bottom = top + self.grid_size().rows as f32 * ch;
         let y = f32::from(position.y);
-        let lines = |distance: f32| (1. + distance / ch).min(AUTOSCROLL_MAX_LINES) as i32;
+        let speed = |distance: f32| ((1. + distance / ch) * AUTOSCROLL_SPEED).min(AUTOSCROLL_MAX_SPEED);
         if y < top {
-            lines(top - y)
+            speed(top - y)
         } else if y >= bottom {
-            -lines(y - bottom)
+            -speed(y - bottom)
         } else {
-            0
+            0.
         }
     }
 
-    /// One tick of scrolling while a selection is held above or below the grid. Returns
-    /// whether to keep going.
-    fn autoscroll_step(&mut self, cx: &mut Context<Self>) -> bool {
-        let position = match self.drag_at {
-            Some(position) if self.selecting => position,
-            _ => {
-                self.autoscrolling = false;
-                return false;
-            }
+    /// One frame of scrolling while a selection is held above or below the grid: as many
+    /// lines as the time since the last frame allows, the rest carried to the next frame.
+    fn autoscroll_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((last, carry)) = self.autoscroll else { return };
+        let (position, speed) = match self.drag_at {
+            Some(position) if self.selecting => (position, self.autoscroll_speed(position)),
+            _ => (Default::default(), 0.),
         };
-        let lines = self.autoscroll_lines(position);
-        if lines == 0 {
-            self.autoscrolling = false;
-            return false;
+        if speed == 0. {
+            self.autoscroll = None;
+            return;
         }
-        self.term.lock().scroll_display(Scroll::Delta(lines));
-        self.extend_selection(position);
-        cx.notify();
-        true
+        let now = Instant::now();
+        let carry = carry + speed * now.duration_since(last).min(AUTOSCROLL_MAX_STEP).as_secs_f32();
+        let lines = carry.trunc();
+        if lines != 0. {
+            self.term.lock().scroll_display(Scroll::Delta(lines as i32));
+            self.extend_selection(position);
+            cx.notify();
+        }
+        self.autoscroll = Some((now, carry - lines));
+        cx.on_next_frame(window, |this, window, cx| this.autoscroll_step(window, cx));
     }
 
     fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -2036,9 +2035,9 @@ impl Render for TerminalView {
                     }
                 });
                 // A selection keeps following the pointer once it leaves the terminal.
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                     if phase == gpui::DispatchPhase::Bubble {
-                        let _ = this_drag.update(cx, |this, cx| this.drag_selection(event, cx));
+                        let _ = this_drag.update(cx, |this, cx| this.drag_selection(event, window, cx));
                     }
                 });
                 // One layer for the whole grid: everything in it shares one draw order and

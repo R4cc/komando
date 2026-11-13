@@ -28,6 +28,9 @@ All notable changes to Komando are listed here. The format follows
 - Once an SSH connection has signed in, its connection messages (host key check, signing
   in) are erased, so the shell starts on a clean screen. If connecting fails, they stay so
   you can see why.
+- Dragging a selection past the top or bottom of the terminal now scrolls once per screen
+  refresh instead of in jumps 25 times a second, so it looks smooth on 120 Hz and faster
+  displays.
 
 ### Fixed
 
