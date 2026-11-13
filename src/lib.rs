@@ -8,6 +8,7 @@ pub mod favorites;
 pub mod highlight;
 pub mod import;
 pub mod keys;
+pub mod logging;
 pub mod marks;
 pub mod model;
 pub mod perf;
@@ -89,6 +90,7 @@ pub struct Options {
 }
 
 pub fn run(options: Options) {
+    logging::init(&options.data_dir);
     gpui_platform::application()
         .with_assets(Assets)
         .run(move |cx: &mut App| {
