@@ -8,6 +8,15 @@ All notable changes to Komando are listed here. The format follows
 
 ### Added
 
+- Split view: drag a host or local shell from the sidebar onto the terminal area to open
+  it beside the session you're in. A blue outline shows which half it takes as you move
+  the pointer, and letting go opens it there. Click either side to type in it; drag a side
+  onto the other half to swap them. "Open in split view" in an item's right-click menu does
+  the same, and the split view button in the title bar goes back to one session. Dragging
+  the host you're in opens a second session of it beside the first.
+- Drag a host onto another project in the sidebar to move it there. The project lights up
+  while the host is over it. Open sessions go with the host and stay connected; from then
+  on it takes the new project's defaults.
 - "Duplicate host…" in a host's right-click menu. It adds a copy with the same settings
   and sign-in below the original, then opens the copy's form so you can rename it or
   change its address.

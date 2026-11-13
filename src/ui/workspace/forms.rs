@@ -256,7 +256,7 @@ impl Workspace {
     }
 
     /// Save a changed copy of the Library, unless a Host could no longer be reached.
-    fn commit_library(&mut self, library: Library) -> Result<(), String> {
+    pub(super) fn commit_library(&mut self, library: Library) -> Result<(), String> {
         library.check_routes().map_err(|err| err.to_string())?;
         self.library = library;
         let _ = self.library.save(&self.data_dir);

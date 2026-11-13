@@ -55,6 +55,11 @@ _Avoid_: History, buffer, log
 A line the user entered in a Session (prompt and command), remembered so the command rail can list it and jump back to it. It lasts as long as the line is in the Scrollback.
 _Avoid_: Bookmark, history entry
 
+**Split View**:
+Two Sessions shown side by side, made by dragging a sidebar item onto a half of the terminal
+area. It comes back when either of its Sessions is activated, and ends when one is discarded.
+_Avoid_: Pane layout, tiling
+
 **File Browser**:
 The SFTP panel beside an SSH Session's terminal, browsing that Host's files over the Session's own connection. Each Session has its own.
 _Avoid_: File manager, explorer, SFTP window

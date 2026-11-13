@@ -486,6 +486,23 @@ impl Library {
         Some(id)
     }
 
+    /// Move a Host from one Project to the end of another. A Host that is already in the
+    /// other Project only leaves this one. Its own settings stay; what it took from the
+    /// Project (user, Credential, Jump Host, Startup Commands) now comes from the new one.
+    /// Returns false when nothing changed.
+    pub fn move_host(&mut self, host_id: &str, from: &str, to: &str) -> bool {
+        let position = |id: &str| self.projects.iter().position(|p| p.id == id);
+        let (Some(from), Some(to)) = (position(from), position(to)) else { return false };
+        if from == to || self.host(host_id).is_none() || !self.projects[from].hosts.iter().any(|h| h == host_id) {
+            return false;
+        }
+        self.projects[from].hosts.retain(|h| h != host_id);
+        if !self.projects[to].hosts.iter().any(|h| h == host_id) {
+            self.projects[to].hosts.push(host_id.to_string());
+        }
+        true
+    }
+
     /// Delete a Host. Hosts that were reached through it connect directly from now on.
     pub fn remove_host(&mut self, id: &str) {
         self.hosts.retain(|h| h.id != id);
@@ -726,6 +743,44 @@ mod tests {
 
     fn route_names(lib: &Library, host: &str) -> Vec<String> {
         lib.route("p1", host).unwrap().into_iter().map(|h| h.name).collect()
+    }
+
+    /// `library` plus an empty second Project "p2" ("Hermes", user "deploy").
+    fn two_projects(hosts: Vec<Host>) -> Library {
+        let mut lib = library(hosts);
+        lib.projects.push(Project { id: "p2".into(), name: "Hermes".into(), hosts: vec![], ..project(None, Some("deploy")) });
+        lib
+    }
+
+    #[test]
+    fn moving_a_host_takes_it_to_the_end_of_the_other_project() {
+        let mut lib = two_projects(vec![named("web"), named("db")]);
+        lib.projects[1].hosts.push("other".into());
+        assert!(lib.move_host("web", "p1", "p2"));
+        assert_eq!(lib.projects[0].hosts, ["db"]);
+        assert_eq!(lib.projects[1].hosts, ["other", "web"]);
+        // It now takes the new Project's defaults.
+        assert_eq!(lib.resolve("p2", "web").unwrap().user.as_deref(), Some("deploy"));
+    }
+
+    #[test]
+    fn moving_a_host_already_in_the_other_project_only_leaves_this_one() {
+        let mut lib = two_projects(vec![named("web")]);
+        lib.projects[1].hosts.push("web".into());
+        assert!(lib.move_host("web", "p1", "p2"));
+        assert!(lib.projects[0].hosts.is_empty());
+        assert_eq!(lib.projects[1].hosts, ["web"]);
+    }
+
+    #[test]
+    fn moving_a_host_nowhere_changes_nothing() {
+        let mut lib = two_projects(vec![named("web")]);
+        let before = lib.clone();
+        assert!(!lib.move_host("web", "p1", "p1"));
+        assert!(!lib.move_host("web", "p2", "p1"), "not in p2");
+        assert!(!lib.move_host("web", "p1", "gone"));
+        assert!(!lib.move_host("gone", "p1", "p2"));
+        assert_eq!(lib, before);
     }
 
     #[test]

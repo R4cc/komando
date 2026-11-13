@@ -34,8 +34,10 @@ use crate::vault::{Credential, Secret, Vault};
 
 mod forms;
 mod settings;
+mod split;
 mod updates;
 pub use settings::SettingsSection;
+use split::{DraggedItem, DropTarget, PendingSplit, Side, Split};
 use updates::UpdateState;
 
 actions!(
@@ -63,8 +65,8 @@ enum Page {
 
 const SIDEBAR_WIDTH: f32 = 264.;
 
-/// What is dragged while resizing the file browser (drawn as nothing).
-struct SftpDivider;
+/// What is dragged while resizing a Session's file browser (drawn as nothing).
+struct SftpDivider(usize);
 
 impl Render for SftpDivider {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -249,6 +251,12 @@ pub struct Workspace {
     pending: Vec<Pending>,
     sessions: Vec<SessionEntry>,
     active: Option<usize>,
+    /// Two Sessions side by side, shown while either is active (see `split.rs`).
+    split: Option<Split>,
+    /// A split waiting for the new Session dropped into it.
+    pending_split: Option<PendingSplit>,
+    /// Where a sidebar item being dragged would land.
+    drop_target: Option<DropTarget>,
     /// The Session last shown for each item, so a click returns to it.
     last_active: std::collections::HashMap<ItemKey, usize>,
     next_id: usize,
@@ -323,6 +331,9 @@ impl Workspace {
             pending: vec![],
             sessions: vec![],
             active: None,
+            split: None,
+            pending_split: None,
+            drop_target: None,
             last_active: Default::default(),
             next_id: 1,
             pane_size: None,
@@ -880,6 +891,7 @@ impl Workspace {
         if let Some(project_id) = &project_id {
             self.collapsed.remove(project_id);
         }
+        let key = item.clone();
         self.sessions.push(SessionEntry {
             id,
             item,
@@ -899,6 +911,7 @@ impl Workspace {
             _browser_subscription: None,
             _browser_observer: None,
         });
+        self.take_pending_split(&key, id);
         self.activate(id, window, cx);
         view
     }
@@ -940,7 +953,10 @@ impl Workspace {
     /// lines above the prompt when it does.
     fn start_when_sized(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
         let Some(entry) = self.sessions.iter_mut().find(|s| &s.view == view) else { return };
-        let size = view.read(cx).measured_size().or(self.pane_size);
+        // Opened into a split: it gets half the room, which the last pane laid out may not
+        // have had. Wait for its own pane.
+        let in_split = self.split.is_some_and(|s| s.contains(entry.id));
+        let size = view.read(cx).measured_size().or(self.pane_size.filter(|_| !in_split));
         match size {
             Some(size) => {
                 view.update(cx, |v, _| v.assume_size(size));
@@ -1120,11 +1136,10 @@ impl Workspace {
     }
 
     /// Drag the divider between terminal and file browser: the browser takes what is right
-    /// of the pointer.
-    fn resize_sftp(&mut self, x: f32, window: &mut Window, cx: &mut Context<Self>) {
-        let window_width = f32::from(window.bounds().size.width);
-        let right_edge = window_width - ISLAND_GAP - 8.;
-        let max = (window_width - SIDEBAR_WIDTH - ISLAND_GAP * 3. - 300.).max(320.);
+    /// of the pointer, up to the right edge of its pane (`pane`).
+    fn resize_sftp(&mut self, x: f32, pane: gpui::Bounds<gpui::Pixels>, cx: &mut Context<Self>) {
+        let right_edge = f32::from(pane.right()) - 8.;
+        let max = (f32::from(pane.size.width) - 300.).max(320.);
         let width = (right_edge - x).clamp(320., max);
         if (width - self.settings.sftp_width).abs() >= 1. {
             self.settings.sftp_width = width;
@@ -1173,10 +1188,12 @@ impl Workspace {
             let entry = self.sessions.remove(index);
             self.last_active.retain(|_, v| *v != id);
             entry.view.update(cx, |v, _| v.close());
+            let partner = self.leave_split(id);
             if self.active == Some(id) {
                 self.active = None;
-                // Stay with the item: show another of its Sessions, if it has one.
-                let next = self.sessions_of(&entry.item).next().map(|s| s.id);
+                // The other half of a split fills the area; otherwise stay with the item and
+                // show another of its Sessions, if it has one.
+                let next = partner.or_else(|| self.sessions_of(&entry.item).next().map(|s| s.id));
                 if let Some(next) = next {
                     self.activate(next, window, cx);
                 }
@@ -1203,8 +1220,12 @@ impl Workspace {
 
     /// The item of the active Session, for "new session on this item".
     fn active_item(&self) -> Option<SidebarItem> {
-        let key = self.active_entry()?.item.clone();
-        match key {
+        self.item_for_key(&self.active_entry()?.item.clone())
+    }
+
+    /// The sidebar item a key stands for, if it is still there.
+    fn item_for_key(&self, key: &ItemKey) -> Option<SidebarItem> {
+        match key.clone() {
             ItemKey::Host { project, host } => {
                 let project = self.library.project(&project)?;
                 if !project.hosts.contains(&host) { return None; }
@@ -1425,11 +1446,12 @@ impl Workspace {
     fn discard_sessions(&mut self, matches: impl Fn(&SessionEntry) -> bool, cx: &mut Context<Self>) {
         let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.sessions).into_iter().partition(|s| matches(s));
         self.sessions = kept;
-        for entry in gone {
+        for entry in &gone {
             entry.view.update(cx, |v, _| v.close());
             self.last_active.retain(|_, v| *v != entry.id);
+            let partner = self.leave_split(entry.id).filter(|p| !gone.iter().any(|g| g.id == *p));
             if self.active == Some(entry.id) {
-                self.active = None;
+                self.active = partner;
             }
         }
     }
@@ -1712,7 +1734,38 @@ impl Workspace {
                     .children(self.render_item(&item, color, 20., p, cx)).into_any_element()
             }
         };
-        div().px(px(8.)).pb(px(2.)).child(element).into_any_element()
+        // Every row of a Project's group takes a Host dropped on it (moved to that Project);
+        // the whole group lights up while one is held over it.
+        let project_index = match row {
+            SidebarRow::Project { index }
+            | SidebarRow::FirstHost { project: index }
+            | SidebarRow::Host { project: index, .. }
+            | SidebarRow::ProjectShell { project: index, .. } => Some(index),
+            _ => None,
+        };
+        let project_id = project_index.and_then(|i| self.library.projects.get(i)).map(|p| p.id.clone());
+        let wrapper = div().id(("sidebar-row", ix)).mx(px(4.)).px(px(4.)).pb(px(2.)).child(element);
+        let Some(project_id) = project_id else { return wrapper.into_any_element() };
+        let lit = self.drop_project(cx) == Some(project_id.as_str());
+        let first = matches!(row, SidebarRow::Project { .. });
+        let last = !matches!(
+            self.sidebar_rows.get(ix + 1),
+            Some(SidebarRow::FirstHost { project } | SidebarRow::Host { project, .. } | SidebarRow::ProjectShell { project, .. })
+                if Some(*project) == project_index
+        );
+        let blue = split::drop_color();
+        let (over, dropped) = (project_id.clone(), project_id);
+        wrapper
+            .when(lit, |el| {
+                el.bg(blue.opacity(if p.dark { 0.16 } else { 0.1 }))
+                    .when(first, |el| el.rounded_t(px(10.)))
+                    .when(last, |el| el.rounded_b(px(10.)))
+            })
+            .on_drag_move(cx.listener(move |this, event: &gpui::DragMoveEvent<DraggedItem>, _, cx| {
+                this.drag_over_project(&over, ix, event, cx)
+            }))
+            .on_drop(cx.listener(move |this, dragged: &DraggedItem, _, cx| this.drop_on_project(&dropped, dragged, cx)))
+            .into_any_element()
     }
 
     fn render_project_row(&self, index: usize, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -1727,6 +1780,8 @@ impl Workspace {
             let busy = sessions.iter().any(|s| s.busy);
             let pid = project.id.clone();
             let pid_host = project.id.clone();
+            // A Host from another Project is held over this one's group.
+            let move_here = self.drop_project(cx) == Some(project.id.as_str());
             let ws = cx.entity().downgrade();
             let menu_pid = project.id.clone();
             let project_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
@@ -1808,7 +1863,20 @@ impl Workspace {
                                 ),
                             ),
                     )
-                    .child(icon_el(if collapsed { "chevron-right" } else { "chevron-down" }, 14., p.text_faint))
+                    .map(|el| {
+                        if move_here {
+                            el.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_size(px(11.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(split::drop_color())
+                                    .child("Move here"),
+                            )
+                        } else {
+                            el.child(icon_el(if collapsed { "chevron-right" } else { "chevron-down" }, 14., p.text_faint))
+                        }
+                    })
                     .context_menu(project_menu)
                 .into_any_element()
     }
@@ -1962,6 +2030,9 @@ impl Workspace {
         let shown = self.last_active.get(&key).copied().or_else(|| sessions.first().map(|s| s.id));
         let main = shown.and_then(|id| sessions.iter().find(|s| s.id == id).copied()).or(sessions.first().copied());
         let holds_active = sessions.iter().any(|s| Some(s.id) == self.active);
+        // Shown in the other half of the split: lit, more faintly than the active row.
+        let split = self.shown_split();
+        let beside = !holds_active && sessions.iter().any(|s| split.is_some_and(|split| split.contains(s.id)));
         // A group's state: live if any Session is, connecting if any is on the way.
         let status = if grouped {
             let any = |f: fn(&Status) -> bool| sessions.iter().any(|s| f(&s.status));
@@ -1987,6 +2058,8 @@ impl Workspace {
         let menu_item_src = item.clone();
         let menu_key = key.clone();
         let count = sessions.len();
+        // Beside the Session shown, unless that is the one this would show.
+        let can_split = self.active.is_some() && self.placement_possible(&key);
         let item_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
             let item = menu_item_src.clone();
             let (open, another) = (item.clone(), item.clone());
@@ -1995,6 +2068,12 @@ impl Workspace {
                     this.activate_item(open.clone(), false, window, cx)
                 }))
                 .item(menu_item("New session", "plus", &ws, move |this, window, cx| this.activate_item(another.clone(), true, window, cx)));
+            if can_split {
+                let split_key = menu_key.clone();
+                menu = menu.item(menu_item("Open in split view", "columns-2", &ws, move |this, window, cx| {
+                    this.open_in_split(&split_key, None, Side::Right, window, cx)
+                }));
+            }
             if grouped {
                 let (fold, all) = (menu_key.clone(), menu_key.clone());
                 menu = menu
@@ -2038,6 +2117,7 @@ impl Workspace {
         let item_for_click = item.clone();
         let item_for_new = item.clone();
         let toggle_key = key.clone();
+        let dragged = self.dragged(item, None, color);
         // A shell's coloured icon is dimmed like the tinted ones when it's idle.
         let dim = !(active || live) && is_artwork(&icon);
         let mut rows = vec![];
@@ -2058,9 +2138,12 @@ impl Workspace {
                 .cursor_pointer()
                 .when(active, |el| el.bg(p.active))
                 .when(!active, |el| el.hover(|s| s.bg(p.hover)))
+                .when(beside && !active && !expanded, |el| el.bg(p.hover))
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     this.activate_item(item_for_click.clone(), event.modifiers().control, window, cx)
                 }))
+                // Drag it onto the terminal area to open it beside, or onto another Project.
+                .on_drag(dragged, self.drag_preview(cx))
                 .child(
                     div()
                         .flex_shrink_0()
@@ -2157,7 +2240,7 @@ impl Workspace {
         );
         if expanded {
             for session in &sessions {
-                rows.push(self.render_session_row(session, indent, p, cx));
+                rows.push(self.render_session_row(item, session, color, indent, p, cx));
             }
         }
         rows
@@ -2165,9 +2248,19 @@ impl Workspace {
 
     /// One Session of an item with several: its state, its title (or "Session 2"), and a
     /// button that disconnects it, or closes it once it has dropped.
-    fn render_session_row(&self, session: &SessionEntry, indent: f32, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_session_row(
+        &self,
+        item: &SidebarItem,
+        session: &SessionEntry,
+        color: Hsla,
+        indent: f32,
+        p: AppPalette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let id = session.id;
         let active = Some(id) == self.active;
+        let beside = !active && self.shown_split().is_some_and(|s| s.contains(id));
+        let dragged = self.dragged(item, Some(id), color);
         let live = session.is_live();
         let dropped = !live;
         let title = session_title(session);
@@ -2199,6 +2292,8 @@ impl Workspace {
             .cursor_pointer()
             .when(active, |el| el.bg(p.active))
             .when(!active, |el| el.hover(|s| s.bg(p.hover)))
+            .when(beside, |el| el.bg(p.hover))
+            .on_drag(dragged, self.drag_preview(cx))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.activate(id, window, cx);
                 let dropped = this.sessions.iter().find(|s| s.id == id).is_some_and(|s| !s.is_live());
@@ -2389,6 +2484,12 @@ impl Workspace {
                             .child("SFTP"),
                     )
                 })
+                .when(self.shown_split().is_some(), |el| {
+                    el.child(
+                        strip_action("close-split", "columns-2", "Close split view", false, p)
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_split(window, cx))),
+                    )
+                })
                 .child(
                     strip_action("copy-text", "copy", "Copy output", false, p)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_text(cx))),
@@ -2450,77 +2551,126 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The terminal area: the active Session, or the two of its split side by side. It is
+    /// also where sidebar items are dropped to open them beside the Session shown.
     fn render_main(&self, p: AppPalette, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let Some(entry) = self.active_entry() else {
-            return self.render_empty(p, cx);
+        let content = match (self.active_entry(), self.shown_split()) {
+            (None, _) => self.render_empty(p, cx),
+            (Some(_), Some(split)) => div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .flex()
+                .gap(px(ISLAND_GAP))
+                .children([split.left, split.right].into_iter().filter_map(|id| self.render_pane(id, true, p, window, cx)))
+                .into_any_element(),
+            (Some(entry), None) => self.render_pane(entry.id, false, p, window, cx).unwrap_or_else(|| div().into_any_element()),
         };
-        let project = entry.project_id.as_deref().and_then(|id| self.library.project(id));
-        let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.text_faint);
-        let term_bg = cx.global::<Appearance>().term.background_hsla();
-        let browser = entry.browser.clone().filter(|_| entry.sftp_open);
-        // The browser keeps at least 300px for the terminal when the window is narrow.
-        let window_width = f32::from(window.bounds().size.width);
-        let max = (window_width - SIDEBAR_WIDTH - ISLAND_GAP * 3. - 300.).max(280.);
-        let width = self.settings.sftp_width.min(max).max(280.);
-        if let Some(browser) = &browser {
-            browser.update(cx, |b, _| b.width = width);
-        }
-        island(p)
+        div()
+            .id("main-area")
             .relative()
             .flex_1()
             .min_w_0()
             .h_full()
-            .bg(term_bg)
-            .overflow_hidden()
             .flex()
-            .child(div().flex_1().min_w_0().h_full().child(entry.view.clone()))
-            .when_some(browser, |el, browser| {
-                el.child(
-                    div()
-                        .id("sftp-divider")
-                        .group("sftp-divider")
-                        .w(px(9.))
-                        .h_full()
-                        .flex_shrink_0()
-                        .flex()
-                        .justify_center()
-                        .py(px(14.))
-                        .cursor_col_resize()
-                        .on_drag(SftpDivider, |_, _, _, cx| cx.new(|_| SftpDivider))
-                        .child(
-                            div()
-                                .w(px(2.))
-                                .h_full()
-                                .rounded_full()
-                                .when(self.sftp_resizing, |el| el.bg(p.brand))
-                                .group_hover("sftp-divider", |s| s.bg(p.brand.opacity(0.6))),
-                        ),
-                )
-                .child(
-                    div().w(px(width)).flex_shrink_0().h_full().pt(px(10.)).pr(px(8.)).pb(px(8.)).child(
-                        div()
-                            .size_full()
-                            .rounded(px(12.))
-                            .border_1()
-                            .border_color(p.border)
-                            .bg(p.sidebar)
-                            .overflow_hidden()
-                            .child(browser),
-                    ),
-                )
-            })
-            // Project colour accent: you always see which Project you are typing into. It is
-            // the top edge of the island itself, so it follows the rounded corners and tapers
-            // off down their curve.
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .rounded(px(ISLAND_RADIUS))
-                    .border_t_2()
-                    .border_color(color),
-            )
+            .child(content)
+            .children(self.render_drop_overlay(cx))
+            .on_drag_move(cx.listener(|this, event: &gpui::DragMoveEvent<DraggedItem>, _, cx| this.drag_over_main(event, cx)))
+            .on_drop(cx.listener(|this, dragged: &DraggedItem, window, cx| this.drop_on_main(dragged, window, cx)))
             .into_any_element()
+    }
+
+    /// One Session's terminal, with its file browser when open. In a split, a press anywhere
+    /// in it makes it the active one, and the other's Project colour edge fades.
+    fn render_pane(&self, id: usize, in_split: bool, p: AppPalette, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let entry = self.sessions.iter().find(|s| s.id == id)?;
+        let focused = self.active == Some(id);
+        let project = entry.project_id.as_deref().and_then(|id| self.library.project(id));
+        let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.text_faint);
+        let term_bg = cx.global::<Appearance>().term.background_hsla();
+        let browser = entry.browser.clone().filter(|_| entry.sftp_open);
+        // The browser keeps at least 300px for the terminal when the pane is narrow.
+        let window_width = f32::from(window.bounds().size.width);
+        let area = window_width - SIDEBAR_WIDTH - ISLAND_GAP * 3.;
+        let pane_width = if in_split { (area - ISLAND_GAP) / 2. } else { area };
+        let max = (pane_width - 300.).max(280.);
+        let width = self.settings.sftp_width.min(max).max(280.);
+        if let Some(browser) = &browser {
+            browser.update(cx, |b, _| b.width = width);
+        }
+        Some(
+            island(p)
+                .id(("pane", id))
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .bg(term_bg)
+                .overflow_hidden()
+                .flex()
+                .when(in_split && !focused, |el| {
+                    el.capture_any_mouse_down(cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
+                        if this.active != Some(id) && !this.modal_open(cx) {
+                            this.activate(id, window, cx);
+                        }
+                    }))
+                })
+                .on_drag_move(cx.listener(move |this, event: &gpui::DragMoveEvent<SftpDivider>, _, cx| {
+                    if event.drag(cx).0 == id {
+                        this.sftp_resizing = true;
+                        this.drop_target = None;
+                        this.resize_sftp(f32::from(event.event.position.x), event.bounds, cx);
+                    }
+                }))
+                .child(div().flex_1().min_w_0().h_full().child(entry.view.clone()))
+                .when_some(browser, |el, browser| {
+                    el.child(
+                        div()
+                            .id("sftp-divider")
+                            .group("sftp-divider")
+                            .w(px(9.))
+                            .h_full()
+                            .flex_shrink_0()
+                            .flex()
+                            .justify_center()
+                            .py(px(14.))
+                            .cursor_col_resize()
+                            .on_drag(SftpDivider(id), |d, _, _, cx| cx.new(|_| SftpDivider(d.0)))
+                            .child(
+                                div()
+                                    .w(px(2.))
+                                    .h_full()
+                                    .rounded_full()
+                                    .when(self.sftp_resizing, |el| el.bg(p.brand))
+                                    .group_hover("sftp-divider", |s| s.bg(p.brand.opacity(0.6))),
+                            ),
+                    )
+                    .child(
+                        div().w(px(width)).flex_shrink_0().h_full().pt(px(10.)).pr(px(8.)).pb(px(8.)).child(
+                            div()
+                                .size_full()
+                                .rounded(px(12.))
+                                .border_1()
+                                .border_color(p.border)
+                                .bg(p.sidebar)
+                                .overflow_hidden()
+                                .child(browser),
+                        ),
+                    )
+                })
+                // Project colour accent: you always see which Project you are typing into. It is
+                // the top edge of the island itself, so it follows the rounded corners and tapers
+                // off down their curve. In a split, the pane you are not typing in has it faded.
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(px(ISLAND_RADIUS))
+                        .border_t_2()
+                        .border_color(if focused { color } else { color.opacity(0.3) }),
+                )
+                .into_any_element(),
+        )
     }
 
     fn render_empty(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -3283,9 +3433,11 @@ impl Render for Workspace {
                     this.toggle_sftp(id, window, cx);
                 }
             }))
-            .on_drag_move(cx.listener(|this, event: &gpui::DragMoveEvent<SftpDivider>, window, cx| {
-                this.sftp_resizing = true;
-                this.resize_sftp(f32::from(event.event.position.x), window, cx);
+            // A sidebar item let go anywhere that takes no drop: nothing happens, and the
+            // drop indicators go.
+            .on_drop(cx.listener(|this, _: &DraggedItem, _, cx| {
+                this.drop_target = None;
+                cx.notify();
             }))
             .on_drop(cx.listener(|this, _: &SftpDivider, _, cx| {
                 this.sftp_resizing = false;
