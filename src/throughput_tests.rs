@@ -815,3 +815,80 @@ fn throughput_typing_during_sftp_download() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// How long the operations that hold the terminal's lock take with a full Scrollback: while one
+/// runs, output stops being parsed and the screen stops being drawn. Command Marks every
+/// thousand lines, as if commands were typed between the logs.
+#[test]
+#[ignore]
+fn throughput_lock_holders_with_full_scrollback() {
+    fn time<R>(label: &str, f: impl FnOnce() -> R) -> R {
+        let start = Instant::now();
+        let result = f();
+        eprintln!("  {label:<44} {:>9.2} ms", start.elapsed().as_secs_f64() * 1e3);
+        result
+    }
+    for scrollback in [100_000usize, 500_000] {
+        let (tx, _rx) = futures::channel::mpsc::unbounded();
+        let proxy = EventProxy::new(tx);
+        let size = GridSize { cols: 177, rows: 42, cell_width: 9, cell_height: 17 };
+        let term = new_term(size, scrollback, proxy.clone());
+        let mut output = crate::session::ssh::Output::default();
+        let mut marks = crate::marks::Marks::default();
+        let mut data = Vec::new();
+        for i in 0..scrollback as u64 + 1_000 {
+            if i % 1_000 == 0 {
+                output.feed(&term, &proxy, &data);
+                data.clear();
+                output.feed(&term, &proxy, b"[ops@web01 ~]$ tail -n 1000 app.log");
+                marks.entered(&mut *term.lock());
+                output.feed(&term, &proxy, b"\r\n");
+                marks.output(&mut *term.lock());
+            }
+            log_line(i, &mut data);
+        }
+        output.feed(&term, &proxy, &data);
+        marks.output(&mut *term.lock());
+        eprintln!(
+            "scrollback {scrollback}: {} rows, {} marks",
+            term.lock().grid().history_size(),
+            marks.list().len()
+        );
+
+        // Marks, once per frame while the command rail shows.
+        time("marks: first look", || marks.rows(&*term.lock()).len());
+        time("marks: nothing moved", || marks.rows(&*term.lock()).len());
+        let mut line = Vec::new();
+        log_line(0, &mut line);
+        output.feed(&term, &proxy, &line);
+        time("marks: after one more line", || marks.rows(&*term.lock()).len());
+        let newest = *marks.rows(&*term.lock()).last().expect("marks");
+        term.lock().grid_mut()[newest.1][Column(0)].set_hyperlink(None);
+        time("marks: newest one gone (rescan)", || marks.rows(&*term.lock()).len());
+
+        time("Copy output", || crate::session::scrollback_text(&*term.lock()).len());
+        let raw = time("  of which the text", || {
+            let term = term.lock();
+            let grid = term.grid();
+            let top = alacritty_terminal::index::Point::new(Line(-(grid.history_size() as i32)), Column(0));
+            let bottom = alacritty_terminal::index::Point::new(Line(grid.screen_lines() as i32 - 1), grid.last_column());
+            term.bounds_to_string(top, bottom)
+        });
+        time("  of which tidying it", || crate::session::tidy_export(&raw).len());
+
+        let resize = |label: &str, cols: u16, rows: u16| {
+            time(label, || {
+                let mut term = term.lock();
+                term.resize(GridSize { cols, rows, ..size }.term_size());
+                crate::session::drop_blank_scrollback(&mut *term);
+            })
+        };
+        resize("resize: one row less", 177, 41);
+        resize("resize: one row more", 177, 42);
+        resize("resize: one column narrower", 176, 42);
+        resize("resize: one column wider", 177, 42);
+        resize("resize: half as wide", 88, 42);
+        resize("resize: back to full width", 177, 42);
+        time("compact rows (in stretches, off the UI)", || crate::session::compact_rows(&term, 177));
+    }
+}

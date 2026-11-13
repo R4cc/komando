@@ -69,18 +69,19 @@ pub(crate) enum LogKind {
 
 /// The connection's progress, written into the terminal above where the shell will start:
 /// where it is connecting, the Host Key, how it signs in. Once every hop has signed in it is
-/// erased, so the shell starts on a clean screen; a connection that fails keeps it, to show why.
+/// erased, so the shell starts on a clean screen. A connection that fails keeps it, to show
+/// why, until an attempt after it signs in: that erases the failed attempts' lines with its own.
 #[derive(Clone)]
 pub(crate) struct ConnectLog {
     term: SharedTerm,
     proxy: EventProxy,
-    /// Lines written since the last `clear`, shared by the clones every hop holds.
+    /// Lines written since the last `clear`, by this attempt and earlier ones in the terminal.
     lines: Arc<AtomicUsize>,
 }
 
 impl ConnectLog {
     pub(crate) fn new(term: SharedTerm, proxy: EventProxy) -> Self {
-        Self { term, proxy, lines: Arc::default() }
+        Self { term, lines: proxy.connect_log_lines(), proxy }
     }
 
     pub(crate) fn line(&self, kind: LogKind, text: &str) {
@@ -140,6 +141,13 @@ fn log_line(kind: LogKind, text: &str) -> String {
     // Control characters from a server or a Host's name must not drive the terminal.
     let text: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
     format!("\x1b[0m\x1b[90mSSH\x1b[0m \x1b[{color}m{mark}\x1b[0m {text}\x1b[0m\r\n")
+}
+
+/// The error when the user closes a sign-in question (user name, password, key passphrase).
+const CANCELLED: &str = "Cancelled.";
+
+fn is_cancelled(err: &anyhow::Error) -> bool {
+    err.root_cause().to_string() == CANCELLED
 }
 
 /// `name (address:port)`, or just `address:port` when the name is the address.
@@ -216,6 +224,10 @@ pub fn spawn(target: Target, size: GridSize, term: SharedTerm, proxy: EventProxy
             Err(err) => {
                 let reason = format!("{err:#}");
                 log.line(LogKind::Fail, &reason);
+                // Enter reconnects a disconnected Session: say so where the user is looking.
+                if is_cancelled(&err) {
+                    log.line(LogKind::Step, "Press Enter to reconnect");
+                }
                 reason
             }
         };
@@ -368,7 +380,7 @@ async fn run(
                 log.line(LogKind::Step, "No user name saved for this host: waiting for one");
                 let answer = ask(&proxy, &format!("User name for {}", hop.name), false, Some(false), None)
                     .await
-                    .ok_or_else(|| anyhow!("Cancelled."))?;
+                    .ok_or_else(|| anyhow!(CANCELLED))?;
                 (answer.value, answer.remember)
             }
         };
@@ -604,7 +616,7 @@ async fn authenticate(
             let decoded = match russh::keys::decode_secret_key(key, passphrase.as_deref()) {
                 Ok(decoded) => Ok(decoded),
                 Err(_) if passphrase.is_none() => {
-                    let pass = ask(proxy, "Key passphrase", true, None, None).await.ok_or_else(|| anyhow!("Cancelled."))?;
+                    let pass = ask(proxy, "Key passphrase", true, None, None).await.ok_or_else(|| anyhow!(CANCELLED))?;
                     let pass = Zeroizing::new(pass.value);
                     russh::keys::decode_secret_key(key, Some(pass.as_str()))
                 }
@@ -643,7 +655,7 @@ async fn authenticate(
     for _ in 0..3 {
         let label = format!("Password for {user}");
         let Some(answer) = ask(proxy, &label, true, Some(remember), last_error.take()).await else {
-            return Err(anyhow!("Cancelled."));
+            return Err(anyhow!(CANCELLED));
         };
         remember = answer.remember;
         let password = Zeroizing::new(answer.value);
@@ -658,7 +670,8 @@ async fn authenticate(
 
 #[cfg(test)]
 mod tests {
-    use super::{ConnectLog, LogKind, Output, SudoPassword, log_line, show_watching_sudo};
+    use super::{CANCELLED, ConnectLog, LogKind, Output, SudoPassword, is_cancelled, log_line, show_watching_sudo};
+    use anyhow::anyhow;
     use crate::session::{EventProxy, GridSize, new_term, scrollback_text};
 
     #[test]
@@ -713,11 +726,43 @@ mod tests {
     }
 
     #[test]
+    fn signing_in_erases_the_logs_of_earlier_attempts_that_failed() {
+        let (tx, _rx) = futures::channel::mpsc::unbounded();
+        let proxy = EventProxy::new(tx);
+        let term = new_term(GridSize { cols: 40, rows: 20, cell_width: 9, cell_height: 18 }, 100, proxy.clone());
+        let mut parser: alacritty_terminal::vte::ansi::Processor = alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut *term.lock(), b"earlier output\r\n");
+
+        // Two attempts cancelled at the password, each with a log of its own.
+        for _ in 0..2 {
+            let log = ConnectLog::new(term.clone(), proxy.clone());
+            log.line(LogKind::Step, "Connecting to rhel-01");
+            log.line(LogKind::Step, "Signing in as lxadm with a password: waiting for it");
+            log.line(LogKind::Fail, CANCELLED);
+        }
+        assert!(scrollback_text(&*term.lock()).contains(CANCELLED), "a failed attempt keeps its log");
+
+        let log = ConnectLog::new(term.clone(), proxy.clone());
+        log.line(LogKind::Step, "Connecting to rhel-01");
+        log.line(LogKind::Good, "Signed in to rhel-01 as lxadm");
+        log.clear();
+        assert_eq!(scrollback_text(&*term.lock()), "earlier output\r\n");
+        assert_eq!(term.lock().grid().cursor.point.line.0, 1, "the shell starts where the first log began");
+    }
+
+    #[test]
     fn log_lines_are_tagged_and_end_the_line() {
         let line = log_line(LogKind::Good, "Signed in to web01 as ana");
         assert!(line.starts_with("\x1b[0m\x1b[90mSSH\x1b[0m "));
         assert!(line.contains("✓"));
         assert!(line.ends_with("Signed in to web01 as ana\x1b[0m\r\n"));
+    }
+
+    #[test]
+    fn only_a_closed_question_counts_as_cancelled() {
+        assert!(is_cancelled(&anyhow!(CANCELLED)));
+        assert!(is_cancelled(&anyhow!(CANCELLED).context("Signing in to web01")));
+        assert!(!is_cancelled(&anyhow!("Connection refused")));
     }
 
     #[test]

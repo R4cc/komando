@@ -219,12 +219,35 @@ pub struct TerminalView {
     flash: Option<(u64, u64)>,
     /// Shrinks the Scrollback's rows once a new width has settled (see `compact_after_resize`).
     compaction: Option<Task<()>>,
+    reflow: Rc<Cell<Reflow>>,
     _subscriptions: Vec<Subscription>,
 }
 
 /// How long the width must stay the same before the rows are compacted, so dragging a window
 /// edge compacts once at the end rather than every frame.
 const COMPACT_DELAY: Duration = Duration::from_millis(500);
+
+/// A new width rewraps every line of the Scrollback, with the terminal locked: 10 ms for
+/// 100,000 lines, 70 ms for 500,000. Dragging a window edge changes the width every frame, so
+/// while it keeps changing the grid keeps its width for a while after each rewrap, and catches
+/// up when the wait is over: rewrapping takes at most a fifth of the time, and the edge moves
+/// smoothly. A short Scrollback rewraps in well under a frame, so it keeps up every frame.
+#[derive(Clone, Copy, Default)]
+struct Reflow {
+    /// When the width last changed, and how long rewrapping took.
+    at: Option<Instant>,
+    took: Duration,
+    /// A frame is due when the wait is over.
+    woken: bool,
+}
+
+impl Reflow {
+    /// How long a new width still waits.
+    fn wait(&self, now: Instant) -> Option<Duration> {
+        let ready = self.at? + self.took * 5;
+        (ready > now).then(|| ready - now)
+    }
+}
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
@@ -384,6 +407,7 @@ impl TerminalView {
             hovered_mark: None,
             flash: None,
             compaction: None,
+            reflow: Rc::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -406,6 +430,18 @@ impl TerminalView {
 
     pub fn proxy(&self) -> EventProxy {
         self.proxy.clone()
+    }
+
+    /// Paint again once a new width has waited long enough (see `Reflow`).
+    fn repaint_after(&mut self, wait: Duration, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| {
+                this.reflow.set(Reflow { woken: false, ..this.reflow.get() });
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// After the width changed: once it has settled, shrink the rows' allocations to the new
@@ -2004,6 +2040,7 @@ impl Render for TerminalView {
         let sink = self.sink.clone();
         let proxy = self.proxy.clone();
         let grid = self.grid.clone();
+        let reflow = self.reflow.clone();
         let this = cx.entity().downgrade();
         let this_drag = this.clone();
         let this_hover = this.clone();
@@ -2054,14 +2091,34 @@ impl Render for TerminalView {
 
                 let cols = ((f32::from(bounds.size.width) / cw).floor() as u16).max(2);
                 let rows = ((f32::from(bounds.size.height) / lh).floor() as u16).max(1);
-                let new_size = GridSize { cols, rows, cell_width: cw.round() as u16, cell_height: lh as u16 };
-                if grid.get() != Some(new_size) {
+                let mut new_size = GridSize { cols, rows, cell_width: cw.round() as u16, cell_height: lh as u16 };
+                let old_size = grid.get();
+                // A new width may have to wait (see `Reflow`); a new height never does.
+                let now = Instant::now();
+                let wait = old_size.filter(|old| old.cols != new_size.cols).and_then(|_| reflow.get().wait(now));
+                if let (Some(_), Some(old)) = (wait, old_size) {
+                    new_size.cols = old.cols;
+                }
+                if let Some(wait) = wait
+                    && !reflow.get().woken
+                {
+                    reflow.set(Reflow { woken: true, ..reflow.get() });
+                    let this = this.clone();
+                    cx.defer(move |cx| {
+                        let _ = this.update(cx, |view, cx| view.repaint_after(wait, cx));
+                    });
+                }
+                if old_size != Some(new_size) {
                     // A new width leaves the Scrollback's rows oversized; the first layout has none.
-                    let width_changed = grid.get().is_some_and(|old| old.cols != new_size.cols);
+                    let width_changed = old_size.is_some_and(|old| old.cols != new_size.cols);
                     grid.set(Some(new_size));
                     {
                         let mut term = term.lock();
+                        let start = Instant::now();
                         term.resize(new_size.term_size());
+                        if width_changed {
+                            reflow.set(Reflow { at: Some(start), took: start.elapsed(), ..reflow.get() });
+                        }
                         // Fewer rows push lines into the Scrollback; blank ones are dead space.
                         crate::session::drop_blank_scrollback(&mut *term);
                     }
@@ -2232,55 +2289,59 @@ impl Render for TerminalView {
                         let _ = this_drag.update(cx, |this, cx| this.drag_selection(event, window, cx));
                     }
                 });
-                // One layer for the whole grid: everything in it shares one draw order and
-                // is drawn by kind (backgrounds, line art, underlines, then text), instead of
-                // each of thousands of glyphs being placed in the scene on its own.
-                window.paint_layer(bounds, |window| {
-                    for (bounds, color) in &frame.rects {
+                // A new width may wait a moment (see `Reflow`): meanwhile the grid can be wider
+                // than the pane, and must not draw over its neighbours.
+                window.with_content_mask(Some(gpui::ContentMask { bounds: terminal_bounds }), |window| {
+                    // One layer for the whole grid: everything in it shares one draw order and
+                    // is drawn by kind (backgrounds, line art, underlines, then text), instead of
+                    // each of thousands of glyphs being placed in the scene on its own.
+                    window.paint_layer(bounds, |window| {
+                        for (bounds, color) in &frame.rects {
+                            window.paint_quad(fill(*bounds, *color));
+                        }
+                        for (prim, color) in &frame.prims {
+                            paint_prim(window, prim, *color);
+                        }
+                        for d in &frame.decorations {
+                            let origin = point(d.x0, d.y);
+                            let width = d.x1 - d.x0;
+                            let line = UnderlineStyle { thickness: px(1.), color: Some(d.color), wavy: false };
+                            match d.kind {
+                                DecorationKind::Underline => window.paint_underline(origin, width, &line),
+                                DecorationKind::Curly => {
+                                    window.paint_underline(origin, width, &UnderlineStyle { wavy: true, ..line })
+                                }
+                                DecorationKind::Double => {
+                                    window.paint_underline(point(d.x0, d.y - px(1.)), width, &line);
+                                    window.paint_underline(point(d.x0, d.y + px(1.)), width, &line);
+                                }
+                                DecorationKind::Strike => window.paint_strikethrough(
+                                    origin,
+                                    width,
+                                    &StrikethroughStyle { thickness: px(1.), color: Some(d.color) },
+                                ),
+                            }
+                        }
+                        for g in &frame.glyphs {
+                            let _ = if g.emoji {
+                                window.paint_emoji(g.origin, g.font_id, g.id, frame.font_size)
+                            } else {
+                                window.paint_glyph(g.origin, g.font_id, g.id, frame.font_size, g.color)
+                            };
+                        }
+                    });
+                    // The cursor goes on top of the text.
+                    for (bounds, color) in &frame.cursor_bars {
                         window.paint_quad(fill(*bounds, *color));
                     }
-                    for (prim, color) in &frame.prims {
-                        paint_prim(window, prim, *color);
+                    if let Some((bounds, color)) = frame.cursor_outline {
+                        window.paint_quad(outline(bounds, color, gpui::BorderStyle::Solid));
                     }
-                    for d in &frame.decorations {
-                        let origin = point(d.x0, d.y);
-                        let width = d.x1 - d.x0;
-                        let line = UnderlineStyle { thickness: px(1.), color: Some(d.color), wavy: false };
-                        match d.kind {
-                            DecorationKind::Underline => window.paint_underline(origin, width, &line),
-                            DecorationKind::Curly => {
-                                window.paint_underline(origin, width, &UnderlineStyle { wavy: true, ..line })
-                            }
-                            DecorationKind::Double => {
-                                window.paint_underline(point(d.x0, d.y - px(1.)), width, &line);
-                                window.paint_underline(point(d.x0, d.y + px(1.)), width, &line);
-                            }
-                            DecorationKind::Strike => window.paint_strikethrough(
-                                origin,
-                                width,
-                                &StrikethroughStyle { thickness: px(1.), color: Some(d.color) },
-                            ),
-                        }
-                    }
-                    for g in &frame.glyphs {
-                        let _ = if g.emoji {
-                            window.paint_emoji(g.origin, g.font_id, g.id, frame.font_size)
-                        } else {
-                            window.paint_glyph(g.origin, g.font_id, g.id, frame.font_size, g.color)
-                        };
+                    if let Some((bounds, line, background)) = &frame.preedit {
+                        window.paint_quad(fill(*bounds, *background));
+                        let _ = line.paint(bounds.origin, bounds.size.height, TextAlign::Left, None, window, cx);
                     }
                 });
-                // The cursor goes on top of the text.
-                for (bounds, color) in &frame.cursor_bars {
-                    window.paint_quad(fill(*bounds, *color));
-                }
-                if let Some((bounds, color)) = frame.cursor_outline {
-                    window.paint_quad(outline(bounds, color, gpui::BorderStyle::Solid));
-                }
-                if let Some((bounds, line, background)) = &frame.preedit {
-                    window.paint_quad(fill(*bounds, *background));
-                    let _ = line.paint(bounds.origin, bounds.size.height, TextAlign::Left, None, window, cx);
-                }
             }),
         )
         .size_full();

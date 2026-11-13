@@ -27,7 +27,7 @@ use crate::sftp::{self, Access, Allowed, Entry, ErrorKind, Identity, Kind, Listi
 use crate::theme::{AppPalette, Appearance};
 use crate::ui::popup::{self, Popup};
 use crate::ui::transfers::{self, Job, Transfers};
-use crate::ui::widgets::{ButtonKind, button, icon_el, spinner};
+use crate::ui::widgets::{Busy, BusyPhase, ButtonKind, busy_done, after_delay, button, icon_el, spinner};
 
 const ROW_HEIGHT: f32 = 30.;
 
@@ -186,6 +186,11 @@ pub struct FileBrowser {
     notice_seq: u64,
     /// A running operation, shown in the footer.
     busy: Option<SharedString>,
+    /// Starting SFTP, loading a folder or running an operation: the footer's spinner, then
+    /// its check. The workspace copies it for the title bar's SFTP button.
+    indicator: Busy,
+    /// What the footer says while `indicator` works.
+    indicator_label: SharedString,
     selected: HashSet<String>,
     anchor: Option<String>,
     sort: (SortKey, bool),
@@ -268,6 +273,8 @@ impl FileBrowser {
             notice: None,
             notice_seq: 0,
             busy: None,
+            indicator: Busy::default(),
+            indicator_label: SharedString::default(),
             selected: HashSet::new(),
             anchor: None,
             sort: (SortKey::Name, true),
@@ -303,7 +310,7 @@ impl FileBrowser {
     }
 
     /// Starting SFTP, or loading a folder (the first one included).
-    pub fn is_busy(&self) -> bool {
+    fn is_busy(&self) -> bool {
         match self.conn {
             Conn::Connecting => true,
             Conn::Ready(_) => self.loading || (self.cwd.is_none() && self.load_error.is_none()),
@@ -311,17 +318,41 @@ impl FileBrowser {
         }
     }
 
+    /// The work under way and its indicator (see `indicator`).
+    pub fn indicator(&self) -> Busy {
+        self.indicator
+    }
+
+    /// Keep `indicator` in step after work starts or ends. `ok`: the work that just ended
+    /// succeeded, so a check follows once nothing else is under way.
+    fn sync_indicator(&mut self, ok: bool, cx: &mut Context<Self>) {
+        if self.busy.is_some() || self.is_busy() {
+            self.indicator_label = self.busy.clone().unwrap_or_else(|| {
+                if matches!(self.conn, Conn::Connecting) { "Starting SFTP…" } else { "Loading…" }.into()
+            });
+            self.indicator.start();
+            if !ok {
+                self.indicator.fail();
+            }
+        } else {
+            self.indicator.finish(ok, cx);
+        }
+    }
+
     /// Open SFTP on the Session's connection.
     pub fn connect(&mut self, sink: Option<InputSink>, cx: &mut Context<Self>) {
         let Some(answer) = sink.and_then(|s| s.open_sftp()) else {
             self.conn = Conn::Waiting("The session isn't connected. Reconnect it to browse files.".into());
+            self.indicator.clear();
             cx.notify();
             return;
         };
         self.conn = Conn::Connecting;
+        self.sync_indicator(true, cx);
         cx.spawn(async move |this, cx| {
             let result = answer.await;
             let _ = this.update(cx, |this, cx| {
+                let ok = matches!(result, Ok(Ok(_)));
                 match result {
                     Ok(Ok(remote)) => {
                         let start = this.cwd.clone().unwrap_or_else(|| remote.home.clone());
@@ -331,6 +362,7 @@ impl FileBrowser {
                     Ok(Err(err)) => this.conn = Conn::Failed(format!("{err:#}")),
                     Err(_) => this.conn = Conn::Waiting("The session ended. Reconnect it to browse files.".into()),
                 }
+                this.sync_indicator(ok, cx);
                 cx.notify();
             });
         })
@@ -343,6 +375,7 @@ impl FileBrowser {
         self.conn = Conn::Waiting("The session is disconnected. Reconnect it to browse files.".into());
         self.loading = false;
         self.busy = None;
+        self.indicator.clear();
         cx.notify();
     }
 
@@ -424,6 +457,7 @@ impl FileBrowser {
         self.load_seq += 1;
         let seq = self.load_seq;
         self.loading = true;
+        self.sync_indicator(true, cx);
         let task = sftp::spawn(async move { remote.list(&path).await });
         cx.spawn(async move |this, cx| {
             let result = task.await.and_then(|r| r);
@@ -439,6 +473,7 @@ impl FileBrowser {
 
     fn loaded(&mut self, result: Result<Listing, OpError>, history: History, cx: &mut Context<Self>) {
         self.loading = false;
+        let ok = result.is_ok();
         match result {
             Ok(listing) => {
                 let same_folder = self.cwd.as_deref() == Some(listing.path.as_str());
@@ -498,6 +533,7 @@ impl FileBrowser {
                 }
             }
         }
+        self.sync_indicator(ok, cx);
         cx.notify();
     }
 
@@ -637,6 +673,8 @@ impl FileBrowser {
     // ---- notices ------------------------------------------------------------------
 
     fn notify_error(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        // Work that reported an error ends without a check, even if it partly succeeded.
+        self.indicator.fail();
         self.show_notice(text.into(), true, cx);
     }
 
@@ -677,13 +715,16 @@ impl FileBrowser {
             return;
         };
         self.busy = Some(busy.into());
+        self.sync_indicator(true, cx);
         let task = sftp::spawn(op(remote));
         cx.spawn(async move |this, cx| {
             let result = task.await.and_then(|r| r);
             let _ = this.update(cx, |this, cx| {
                 this.busy = None;
+                let ok = result.is_ok();
                 done(this, result, cx);
                 this.refresh(cx);
+                this.sync_indicator(ok, cx);
                 cx.notify();
             });
         })
@@ -2023,7 +2064,8 @@ impl FileBrowser {
         };
         let body = match &self.conn {
             Conn::Waiting(reason) => message("unplug", p.text_faint, "Not connected".into(), Some(reason.clone())).into_any_element(),
-            Conn::Connecting => message("loader-circle", p.text_faint, "Starting SFTP…".into(), None).into_any_element(),
+            // Both waits share an id, so "Loading…" carries on from "Starting SFTP…".
+            Conn::Connecting => after_delay("sftp-state-wait", message("loader-circle", p.text_faint, "Starting SFTP…".into(), None)),
             Conn::Failed(reason) => message("circle-alert", p.danger, "SFTP isn't available".into(), Some(reason.clone()))
                 .child(
                     button("sftp-reconnect", "Try again", ButtonKind::Secondary, p)
@@ -2060,7 +2102,7 @@ impl FileBrowser {
                         )
                         .into_any_element()
                 } else if self.cwd.is_none() {
-                    message("loader-circle", p.text_faint, "Loading…".into(), None).into_any_element()
+                    after_delay("sftp-state-wait", message("loader-circle", p.text_faint, "Loading…".into(), None))
                 } else if self.rows.is_empty() && self.edit.is_none() && !self.loading {
                     if self.entries.is_empty() {
                         let hint = (self.dir_access.write != Allowed::No).then(|| "Drop files here to upload them.".into());
@@ -2097,7 +2139,24 @@ impl FileBrowser {
                 text.push_str(&format!(", {}", format_size(bytes)));
             }
         }
-        let status: Option<SharedString> = self.busy.clone().or_else(|| self.loading.then(|| "Loading…".into()));
+        let status = match self.indicator.phase() {
+            BusyPhase::Idle => None,
+            BusyPhase::Working => Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .child(spinner("sftp-footer-spinner", 12., p.brand))
+                    .child(self.indicator_label.clone())
+                    .into_any_element(),
+            ),
+            BusyPhase::Done => {
+                let color = p.success;
+                Some(busy_done("sftp-footer-done", move |opacity| {
+                    div().flex().items_center().gap(px(5.)).opacity(opacity).child(icon_el("check", 12., color)).child("Done").into_any_element()
+                }))
+            }
+        };
         let show = self.show_hidden;
         div()
             .h(px(28.))
@@ -2111,9 +2170,7 @@ impl FileBrowser {
             .text_size(px(11.5))
             .text_color(p.text_faint)
             .child(div().flex_1().min_w_0().truncate().child(if self.cwd.is_some() { text } else { String::new() }))
-            .when_some(status, |el, status| {
-                el.child(div().flex().items_center().gap(px(5.)).child(spinner("sftp-footer-spinner", 12., p.brand)).child(status))
-            })
+            .children(status)
             .child(
                 div()
                     .id("sftp-hidden-toggle")

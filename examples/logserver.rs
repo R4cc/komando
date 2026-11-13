@@ -98,6 +98,20 @@ impl server::Handler for LogServer {
         Ok(())
     }
 
+    /// Logged, to see when a resize reaches the server.
+    async fn window_change_request(
+        &mut self,
+        _: ChannelId,
+        cols: u32,
+        rows: u32,
+        _: u32,
+        _: u32,
+        _: &mut Session,
+    ) -> Result<(), Self::Error> {
+        eprintln!("{:?} resized to {cols} x {rows}", std::time::SystemTime::now());
+        Ok(())
+    }
+
     async fn shell_request(&mut self, id: ChannelId, session: &mut Session) -> Result<(), Self::Error> {
         session.channel_success(id)?;
         let Some(mut channel) = self.channel.take() else { return Ok(()) };

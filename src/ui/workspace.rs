@@ -27,7 +27,7 @@ use crate::ui::file_browser::{self, BrowserEvent, FavoriteStore, FileBrowser, Me
 use crate::ui::terminal_view::{TerminalEvent, TerminalView};
 use crate::ui::transfers::{Activity, Transfers, TransfersChanged};
 use crate::ui::widgets::{
-    ButtonKind, ISLAND_GAP, ISLAND_RADIUS, badge, button, elevation, icon_button, icon_el, icon_text_button, island,
+    Busy, BusyPhase, ButtonKind, ISLAND_GAP, ISLAND_RADIUS, badge, busy_done, button, elevation, icon_button, icon_el, icon_text_button, island,
     is_artwork, progress_ring, section_label, shell_icon, spinner, status_dot, wordmark,
 };
 use crate::vault::{Credential, Secret, Vault};
@@ -167,9 +167,9 @@ struct SessionEntry {
     /// opens again where it was.
     browser: Option<Entity<FileBrowser>>,
     sftp_open: bool,
-    /// The browser is starting SFTP or loading a folder: the title bar's SFTP button turns a
-    /// loader. Copied from the browser when it changes, so rendering never reads the browser.
-    sftp_busy: bool,
+    /// The browser's work under way: the title bar's SFTP button turns a loader, then shows a
+    /// check. Copied from the browser when it changes, so rendering never reads the browser.
+    sftp_busy: Busy,
     /// Opened before any terminal pane was laid out: the shell starts once one is, at its size.
     waiting_for_size: bool,
     _subscription: Subscription,
@@ -954,7 +954,7 @@ impl Workspace {
             status: Status::Connecting,
             browser: None,
             sftp_open: false,
-            sftp_busy: false,
+            sftp_busy: Busy::default(),
             waiting_for_size: false,
             _subscription: sub,
             _browser_subscription: None,
@@ -1193,10 +1193,11 @@ impl Workspace {
                 }
             });
             let observer = cx.observe(&browser, move |this, browser, cx| {
-                let busy = browser.read(cx).is_busy();
+                let busy = browser.read(cx).indicator();
                 let Some(entry) = this.sessions.iter_mut().find(|s| s.id == id) else { return };
                 if entry.sftp_busy != busy {
                     entry.sftp_busy = busy;
+                    busy.schedule_redraws(cx);
                     cx.notify();
                 }
             });
@@ -2639,7 +2640,7 @@ impl Workspace {
         let id = entry.id;
         let is_ssh = matches!(entry.kind, SessionKind::Ssh { .. });
         let sftp_open = entry.sftp_open;
-        let sftp_busy = sftp_open && entry.sftp_busy;
+        let sftp_phase = if sftp_open { entry.sftp_busy.phase() } else { BusyPhase::Idle };
         // SFTP runs over the session's connection: until it is connected the button only looks
         // like one. An open browser can still be closed.
         let sftp_ready = matches!(entry.status, Status::Connected);
@@ -2651,6 +2652,7 @@ impl Workspace {
         } else {
             p.text_faint.opacity(0.55)
         };
+        let sftp_done = p.success;
         let sftp_tip = match (&entry.status, sftp_open) {
             (_, true) => "Close file browser (Ctrl+Shift+E)",
             (Status::Connected, false) => "Browse files over SFTP (Ctrl+Shift+E)",
@@ -2722,7 +2724,20 @@ impl Workspace {
                             .when(!sftp_enabled, |el| el.cursor_default())
                             // Its hitbox hides the title bar's drag area: see `strip_action`.
                             .occlude()
-                            .child(if sftp_busy { spinner("sftp-toggle-spinner", 13., sftp_color) } else { icon_el("folder-open", 13., sftp_color) })
+                            .child(match sftp_phase {
+                                BusyPhase::Idle => icon_el("folder-open", 13., sftp_color),
+                                BusyPhase::Working => spinner("sftp-toggle-spinner", 13., sftp_color),
+                                // The check fades out as the folder fades back in.
+                                BusyPhase::Done => busy_done("sftp-toggle-done", move |opacity| {
+                                    let layer = |o: f32| div().absolute().top_0().left_0().size(px(13.)).opacity(o);
+                                    div()
+                                        .relative()
+                                        .size(px(13.))
+                                        .child(layer(1. - opacity).child(icon_el("folder-open", 13., sftp_color)))
+                                        .child(layer(opacity).child(icon_el("check", 13., sftp_done)))
+                                        .into_any_element()
+                                }),
+                            })
                             .child("SFTP"),
                     )
                 })

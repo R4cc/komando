@@ -10,6 +10,8 @@ use gpui::{
     SharedString, Stateful, Styled, Transformation, div, percentage, point, prelude::*, px, svg,
 };
 
+use std::time::{Duration, Instant};
+
 use crate::theme::{AppPalette, UI_FONT, alpha};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -156,6 +158,143 @@ pub fn spinner(id: impl Into<ElementId>, size: f32, color: Hsla) -> AnyElement {
             icon.with_transformation(Transformation::rotate(percentage(delta)))
         })
         .into_any_element()
+}
+
+/// The least time a spinner shows, so work that takes milliseconds doesn't flash it.
+pub const MIN_SPIN: Duration = Duration::from_millis(500);
+/// How long the check stays after work succeeds, then how long it takes to fade out.
+const DONE_HOLD: Duration = Duration::from_millis(1200);
+const DONE_FADE: Duration = Duration::from_millis(800);
+/// A wait shown in place of content appears only when it lasts longer than this.
+const WAIT_DELAY: Duration = Duration::from_millis(300);
+const WAIT_FADE_IN: Duration = Duration::from_millis(200);
+
+/// Work under way, shown as a spinner and, once it succeeds, as a check that fades out.
+/// The spinner stays at least `MIN_SPIN`, so quick work reads as "working, done" rather
+/// than a flicker. A failure clears it at once: the error says what happened.
+///
+/// The phase follows the clock, so the owner calls `schedule_redraws` (`finish` does it)
+/// to render again when the spinner turns into the check and when the check is gone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Busy {
+    started: Option<Instant>,
+    ended: Option<Instant>,
+    failed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BusyPhase {
+    Idle,
+    Working,
+    Done,
+}
+
+impl Busy {
+    /// Work is under way. Work that follows other work, even one still finishing its
+    /// spinner's minimum time, carries on the same spinner.
+    pub fn start(&mut self) {
+        if self.is_working() {
+            return;
+        }
+        if self.done_times().is_some_and(|(check, _)| Instant::now() < check) {
+            self.ended = None;
+        } else {
+            *self = Self { started: Some(Instant::now()), ended: None, failed: false };
+        }
+    }
+
+    /// Part of the work under way failed: no check when it ends.
+    pub fn fail(&mut self) {
+        if self.is_working() {
+            self.failed = true;
+        }
+    }
+
+    /// The work ended: a check follows if it succeeded, nothing if it failed.
+    pub fn finish<T: 'static>(&mut self, ok: bool, cx: &mut gpui::Context<T>) {
+        if !self.is_working() {
+            return;
+        }
+        if !ok || self.failed {
+            self.clear();
+            return;
+        }
+        self.ended = Some(Instant::now());
+        self.schedule_redraws(cx);
+    }
+
+    /// Show nothing, at once.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn phase(&self) -> BusyPhase {
+        if self.started.is_none() {
+            return BusyPhase::Idle;
+        }
+        let Some((check, gone)) = self.done_times() else { return BusyPhase::Working };
+        let now = Instant::now();
+        if now < check {
+            BusyPhase::Working
+        } else if now < gone {
+            BusyPhase::Done
+        } else {
+            BusyPhase::Idle
+        }
+    }
+
+    /// Render `cx`'s view again when the spinner turns into the check and when the check is gone.
+    pub fn schedule_redraws<T: 'static>(&self, cx: &mut gpui::Context<T>) {
+        let Some((check, gone)) = self.done_times() else { return };
+        for at in [check, gone] {
+            // A little late rather than early, so the phase has changed by then.
+            let wait = at.saturating_duration_since(Instant::now()) + Duration::from_millis(15);
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        }
+    }
+
+    fn is_working(&self) -> bool {
+        self.started.is_some() && self.ended.is_none()
+    }
+
+    /// When the check appears and when it's gone, once the work has ended.
+    fn done_times(&self) -> Option<(Instant, Instant)> {
+        let (started, ended) = (self.started?, self.ended?);
+        let check = ended.max(started + MIN_SPIN);
+        Some((check, check + DONE_HOLD + DONE_FADE))
+    }
+}
+
+/// Content for `BusyPhase::Done`. `draw` gets the check's opacity: 1 while it holds,
+/// then falling to 0, so the check and anything beside it fade out together.
+pub fn busy_done(id: impl Into<ElementId>, draw: impl Fn(f32) -> AnyElement + 'static) -> AnyElement {
+    let total = (DONE_HOLD + DONE_FADE).as_secs_f32();
+    let hold = DONE_HOLD.as_secs_f32() / total;
+    div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .with_animation(id, Animation::new(DONE_HOLD + DONE_FADE), move |el, delta| {
+            let fade = ((delta - hold) / (1. - hold)).clamp(0., 1.);
+            el.child(draw(1. - gpui::ease_in_out(fade)))
+        })
+        .into_any_element()
+}
+
+/// A wait shown in place of content (a placeholder with a spinner): it fades in only once
+/// the wait passes `WAIT_DELAY`, so content that arrives sooner replaces nothing visible.
+/// Keep `id` the same across consecutive waits, so the next one doesn't start over.
+pub fn after_delay<E: Styled + IntoElement + 'static>(id: impl Into<ElementId>, el: E) -> AnyElement {
+    let total = (WAIT_DELAY + WAIT_FADE_IN).as_secs_f32();
+    let delay = WAIT_DELAY.as_secs_f32() / total;
+    el.with_animation(id, Animation::new(WAIT_DELAY + WAIT_FADE_IN), move |el, delta| {
+        el.opacity(((delta - delay) / (1. - delay)).clamp(0., 1.))
+    })
+    .into_any_element()
 }
 
 /// A ring around an icon showing how far something is: a faint full circle, and over it an

@@ -6,6 +6,25 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Loading indicators no longer flash when work finishes almost at once. In the file browser,
+  the footer and the title bar's SFTP button keep their spinner for at least half a second,
+  then show a check that fades out after a moment. The "Loading…" message in place of the
+  file list appears only if loading takes longer than about a third of a second, and
+  "Checking…" in Settings → About stays long enough to read.
+- When you cancel signing in to an SSH Session, the connection log now says "Press Enter to
+  reconnect" under "Cancelled."
+- Dragging the window's edge stays smooth with a long Scrollback. Rewrapping 500,000 lines
+  to a new width used to take most of every frame; now the text rewraps a few times a second
+  while you drag and catches up when you let go. Shorter Scrollbacks still rewrap every frame.
+- Copy output takes about 40% less time with a full Scrollback.
+
+### Fixed
+
+- When an SSH Session signs in after earlier attempts failed or were cancelled, the
+  connection log of those attempts is now cleared too, so the shell starts on a clean screen.
+
 ## [0.3.7] - 2026-11-13
 
 ### Changed

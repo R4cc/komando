@@ -191,6 +191,9 @@ pub struct EventProxy {
     /// replies: programs such as neovim send a colour query followed by a device-attributes
     /// query, and take the second answer arriving first as "not supported".
     reports: Arc<Mutex<Reports>>,
+    /// Connection log lines on screen and not yet erased (see `ssh::ConnectLog`), over every
+    /// attempt in this terminal: signing in erases the lines of earlier attempts that failed too.
+    connect_log: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[derive(Default)]
@@ -206,7 +209,12 @@ impl EventProxy {
             dirty: Arc::new(AtomicBool::new(false)),
             responder: Arc::new(Default::default()),
             reports: Arc::new(Mutex::new(Reports::default())),
+            connect_log: Arc::default(),
         }
+    }
+
+    pub(crate) fn connect_log_lines(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        self.connect_log.clone()
     }
 
     pub fn set_responder(&self, sink: InputSink) {
@@ -375,12 +383,54 @@ pub fn compact_rows<T>(term: &FairMutex<Term<T>>, cols: usize) {
     }
 }
 
-/// The whole Scrollback plus screen as plain text: colours dropped, trailing blanks trimmed.
+/// The whole Scrollback plus screen as plain text: colours dropped, trailing blanks trimmed,
+/// Windows line endings. The same as [`tidy_export`] of the terminal's own `bounds_to_string`,
+/// built in one pass into one buffer, several times faster: the terminal is locked meanwhile,
+/// and a full Scrollback of 100,000 lines took 60 ms the other way.
 pub fn scrollback_text<T>(term: &Term<T>) -> String {
+    use alacritty_terminal::term::cell::{Flags, LineLength};
+
     let grid = term.grid();
-    let top = Point::new(Line(-(grid.history_size() as i32)), Column(0));
-    let bottom = Point::new(Line(grid.screen_lines() as i32 - 1), grid.last_column());
-    tidy_export(&term.bounds_to_string(top, bottom))
+    let mut out = String::new();
+    // Where the line being written starts, and where the text ends without blank lines after.
+    let (mut line_start, mut content_end) = (0, 0);
+    for line in -(grid.history_size() as i32)..grid.screen_lines() as i32 {
+        let row = &grid[Line(line)];
+        let len = row.line_length().0;
+        let cells = &row[..][..len];
+        if cells.iter().any(|cell| cell.c == '\t') {
+            // A tab skips the cells up to the next tab stop, and only the terminal knows those.
+            let (start, end) = (Point::new(Line(line), Column(0)), Point::new(Line(line), grid.last_column()));
+            out.push_str(term.bounds_to_string(start, end).trim_end_matches('\n'));
+        } else {
+            for cell in cells {
+                if !cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                    out.push(cell.c);
+                    out.extend(cell.zerowidth().into_iter().flatten());
+                }
+            }
+        }
+        // A row that wraps goes on in the next one.
+        if len == 0 || !cells[len - 1].flags.contains(Flags::WRAPLINE) {
+            end_line(&mut out, &mut line_start, &mut content_end);
+        }
+    }
+    if line_start < out.len() {
+        end_line(&mut out, &mut line_start, &mut content_end);
+    }
+    out.truncate(content_end);
+    out
+}
+
+/// Trim the line from `line_start` and end it.
+fn end_line(out: &mut String, line_start: &mut usize, content_end: &mut usize) {
+    let kept = out[*line_start..].trim_end().len();
+    out.truncate(*line_start + kept);
+    out.push_str("\r\n");
+    *line_start = out.len();
+    if kept > 0 {
+        *content_end = out.len();
+    }
 }
 
 /// Trim trailing spaces on each line and trailing empty lines, and use Windows line endings.
@@ -471,6 +521,39 @@ mod tests {
         assert!(t.grid().history_size() > 0);
         assert!(!drop_blank_scrollback(&mut *t));
         assert!(scrollback_text(&*t).starts_with("prompt>\r\n"));
+    }
+
+    #[test]
+    fn scrollback_text_matches_the_terminals_own_text() {
+        let (tx, _rx) = mpsc::unbounded();
+        let size = GridSize { cols: 12, rows: 6, cell_width: 8, cell_height: 16 };
+        let term = new_term(size, 100, EventProxy::new(tx));
+        let mut parser: Processor = Processor::new();
+        let mut t = term.lock();
+        let output = [
+            "plain\r\n",
+            "\r\n",
+            "trailing   \r\n",
+            "\x1b[41m  coloured bg  \x1b[0m\r\n",
+            "a line long enough to wrap twice, with spaces at the wrap   x\r\n",
+            "wide \u{4e16}\u{754c}\u{4e16}\u{754c}\u{4e16}\u{754c} wraps\r\n",
+            "e\u{301}\u{301} combining, zero\u{200d}width\r\n",
+            "tab\there\tand\tthere\r\n",
+            "\x1b]8;;https://example.com\x07link\x1b]8;;\x07\r\n",
+            "\u{a0}nbsp\u{a0}\r\n",
+            "\r\n\r\nlast\r\n\r\n",
+        ];
+        for chunk in output {
+            parser.advance(&mut *t, chunk.as_bytes());
+            let grid = t.grid();
+            let top = Point::new(Line(-(grid.history_size() as i32)), Column(0));
+            let bottom = Point::new(Line(grid.screen_lines() as i32 - 1), grid.last_column());
+            assert_eq!(scrollback_text(&*t), tidy_export(&t.bounds_to_string(top, bottom)), "after {chunk:?}");
+        }
+        assert!(scrollback_text(&*t).starts_with("plain\r\n\r\ntrailing\r\n"));
+        drop(t);
+        let blank = new_term(size, 100, EventProxy::new(mpsc::unbounded().0));
+        assert_eq!(scrollback_text(&*blank.lock()), "");
     }
 
     #[test]

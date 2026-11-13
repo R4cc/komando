@@ -73,7 +73,9 @@ quiet one, and reports how long the output took and how long each typed key took
 (`KOMANDO_THROUGHPUT_SESSIONS`, default 8). A fourth types in a Session while a large file and
 a folder of small files download over SFTP on its connection, directly and through simulated
 links with latency and limited bandwidth (`KOMANDO_THROUGHPUT_SFTP_MB` sets the direct file's
-size, default 512). They run on Windows too:
+size, default 512). A fifth fills Scrollbacks of 100,000 and 500,000 lines and times what
+holds the terminal locked: Copy output, resizes, and finding Command Marks. They run on Windows
+too:
 
 ```sh
 cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1
@@ -84,7 +86,8 @@ cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1
 
 To include rendering, run the whole app against `examples/logserver.rs`. It writes a key pair
 for `examples/demo.rs`, floods each shell it opens and prints how long the terminal took to take
-in the output:
+in the output. It also logs each terminal size the app sends, with the time it arrived.
+`KOMANDO_DEMO_SCROLLBACK` sets the demo's Scrollback length:
 
 ```sh
 cargo run --release --example logserver -- target/bench 1000000 3

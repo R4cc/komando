@@ -141,6 +141,10 @@ fn main() {
         settings.dark_theme = dark.into();
         settings.light_theme = light.into();
     }
+    // KOMANDO_DEMO_SCROLLBACK=500000, for measuring with a long Scrollback.
+    if let Some(lines) = env::var("KOMANDO_DEMO_SCROLLBACK").ok().and_then(|v| v.parse().ok()) {
+        settings.scrollback_lines = lines;
+    }
     settings.save(&dir).unwrap();
 
     let mut parts = host_key.split_whitespace();

@@ -32,8 +32,14 @@ impl Workspace {
         self.update = UpdateState::Checking;
         cx.notify();
         let task = cx.background_spawn(async { update::fetch_latest() });
+        let started = std::time::Instant::now();
         cx.spawn(async move |this, cx| {
             let result = task.await;
+            // A quick answer would only flash "Checking…": show it for a moment at least.
+            let rest = crate::ui::widgets::MIN_SPIN.saturating_sub(started.elapsed());
+            if !rest.is_zero() {
+                cx.background_executor().timer(rest).await;
+            }
             let _ = this.update(cx, |this, cx| {
                 this.update = match result {
                     Ok(release) if release.is_newer() => UpdateState::Available(release),
