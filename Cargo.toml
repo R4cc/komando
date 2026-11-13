@@ -38,7 +38,7 @@ clipboard-win = "5"
 # Windows: also trust the Windows certificate store (Schannel); see update.rs.
 ureq = { version = "2", default-features = false, features = ["native-tls"] }
 raw-window-handle = "0.6"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Controls", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dwm", "Win32_UI_Controls", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [profile.dev]
 debug = 0

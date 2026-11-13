@@ -1,79 +1,177 @@
+<div align="center">
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
   <img src="assets/logo-light.svg" width="292" height="42" alt="Komando">
 </picture>
 
-# Komando: a fast, Rust-built SSH terminal with project-based server organisation
+### A fast, lightweight SSH terminal for Windows 11
 
-**Komando is a fast SSH terminal for Windows 11, written in Rust.** It keeps all your Linux servers organised in colour-coded projects, one click away, with passwords and keys in an encrypted vault. Built for sysadmins, DevOps and system engineers who spend their day in SSH sessions.
+All your Linux servers in colour-coded projects, one click away. Written in Rust, drawn on the GPU.
 
-**[⬇ Download Komando for Windows (.msi)](https://github.com/R4cc/komando/releases/latest)** · [All releases](https://github.com/R4cc/komando/releases) · [Changelog](CHANGELOG.md)
+[![Latest release](https://img.shields.io/github/v/release/R4cc/komando?label=release&color=f97316)](https://github.com/R4cc/komando/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/R4cc/komando/total?color=f97316)](https://github.com/R4cc/komando/releases)
+![Windows 11](https://img.shields.io/badge/Windows%2011-only-0078D4?logo=windows11&logoColor=white)
+![Rust](https://img.shields.io/badge/Rust-GPU%20rendered-000000?logo=rust)
 
-<img src="assets/screenshot-dark.png" alt="Komando SSH terminal: servers grouped into projects in a sidebar, an SSH session showing systemctl status and a highlighted application log">
+**[Download](#download)** · [Features](#features) · [Performance](#performance) · [Changelog](CHANGELOG.md)
 
-<sub>Screenshots of the real app: SSH sessions and SFTP against an isolated test server, with example logs and files.</sub>
+</div>
+
+<br>
+
+<table align="center">
+  <tr>
+    <td align="center"><b>1.5×</b><br><sub>faster startup</sub></td>
+    <td align="center"><b>4.3×</b><br><sub>less memory with 10 SSH sessions</sub></td>
+    <td align="center"><b>29 MB</b><br><sub>for 10 open sessions</sub></td>
+    <td align="center"><b>13 MB</b><br><sub>installer, nothing else to install</sub></td>
+  </tr>
+</table>
+
+<p align="center"><sub>Compared with Windows Terminal + the OpenSSH client built into Windows. <a href="#performance">Details below.</a></sub></p>
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="assets/screenshot-light.png">
+  <img src="assets/screenshot-dark.png" alt="Komando: projects of servers in the sidebar, an SSH session showing systemctl status and highlighted logs, and a minimap of the output on the right edge">
+</picture>
 
 ## Why Komando
 
-- **Fast.** Written in Rust, drawn on the GPU. Even a flood of log output stays smooth and the window never freezes.
-- **Light.** Idle with four sessions open, Komando's own data takes about 13 MB of memory. 10,000 saved hosts in 500 projects add only about 2 MB more.
-- **Organised.** Group servers into projects with their own colour and icon. You always know which environment you're typing into.
-- **Secure.** Passwords and SSH keys live in a vault encrypted with your master password. Unknown server keys are checked before you connect.
-- **Made for Windows 11.** A native Windows app with its own built-in SSH client. No WSL, no PuTTY, no extra tools.
+- **Fast and light.** A single native process, rendered on the GPU. The window is up in about a
+  quarter of a second, and ten open SSH sessions fit in about 29 MB.
+- **Organised.** Servers live in projects with their own colour and icon, so you always know
+  whether you're typing into staging or production.
+- **Everything built in.** SSH, SFTP, an encrypted password and key vault, log highlighting.
+  No WSL, no PuTTY, no OpenSSH setup.
+- **Made for people who live in SSH.** Startup commands, jump hosts, sudo without retyping,
+  reconnect in place, and every server one keystroke away.
+
+## Download
+
+Komando runs on **Windows 11** (64-bit) only ([why](docs/adr/0001-windows-11-only.md)).
+
+| | | |
+|---|---|---|
+| **Installer** | `Komando-<version>-x64.msi` | Recommended. Install for yourself (no admin rights) or for every user of the PC. Updates in one click. |
+| **Portable** | `Komando-<version>-x64.exe` | One file, nothing to install. Put it anywhere and run it. |
+
+**[⬇ Get the latest release](https://github.com/R4cc/komando/releases/latest)** and pick a file
+under **Assets**.
+
+<details>
+<summary><b>Windows SmartScreen warns about the portable EXE</b></summary>
+<br>
+
+Komando isn't code-signed yet, so Windows warns about the downloaded `.exe`. Right-click it →
+**Properties** → tick **Unblock** → **OK**, or in PowerShell from its folder:
+
+```powershell
+Unblock-File .\Komando-*-x64.exe
+```
+
+If your company blocks unknown programs entirely (AppLocker), this won't help.
+[Building it yourself](docs/development.md#build-it-yourself-on-windows) never triggers the warning.
+
+</details>
+
+**First start:** add a project and a host, then click it to connect. The first time Komando saves a
+password or key, it asks you to choose a master password for the vault. Your data stays on your
+machine in `%APPDATA%\Komando`.
+
+**Coming from Tabby?** Settings → Import brings your SSH profiles over.
 
 ## Features
 
-### Manage all your servers
+### Every server one click away
 
-- **Every server one click away.** The sidebar always lists your saved SSH hosts and local shells. Click to connect, or to jump back to a server you're already on.
-- **Projects with colours and icons.** A coloured strip above the terminal shows the active project at a glance, so you don't run a command on production by accident.
-- **Shared settings per project.** Set a default user, key or password, jump hosts and startup commands once for a project and every host inherits them, unless it sets its own. A host can belong to several projects.
-- **Jump hosts.** Reach servers that are only reachable from another server: type in one or more jump hosts with their user, address, port and password. While connecting, Komando shows each host on the way and where the connection is, or where it failed.
-- **Startup commands.** Have `cd /srv/app`, `sudo -i` or `tmux attach` typed for you once the shell is ready.
-- **Reconnect in place.** If a connection drops, you keep the output and one click reconnects in the same window.
-- **Multiple sessions per host.** Ctrl+click a host to open a second session on the same server. A host or shell with several sessions folds them into a group in the sidebar, each with its own row and close button.
-- **Coming from Tabby?** Settings → Import brings your SSH profiles over: groups become projects, and a review shows what comes along and which of your Tabby settings don't.
-- **Local shells too.** PowerShell 7, Windows PowerShell and Command Prompt are detected automatically and can live inside your projects. In Settings → Local shells, hide the ones you don't use or add your own, such as WSL or Git Bash.
+<img src="assets/screenshot-quick-connect.png" alt="Quick connect: typing web filters the hosts web01, web02 and web-stg01 across projects" width="560" align="right">
 
-### Secure by default
+- **Projects with colours and icons.** A coloured strip above the terminal shows which
+  environment you're in.
+- **Quick connect.** <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>K</kbd>, type a few letters, Enter.
+- **Shared settings per project.** Default user, key or password, jump hosts and startup commands
+  set once and inherited by every host.
+- **Jump hosts.** Reach servers that sit behind others. Komando shows each hop while connecting.
+- **Startup commands.** `cd /srv/app`, `sudo -i` or `tmux attach` typed for you once the shell is ready.
+- **Several sessions per host**, and **reconnect in place** with your output kept.
+- **Local shells too.** PowerShell 7, Windows PowerShell and Command Prompt are detected; add WSL
+  or Git Bash yourself.
 
-- **Encrypted password and key vault.** Argon2id and XChaCha20-Poly1305, locked by a master password. Stays unlocked until you close Komando, or auto-locks after a time you choose (5 minutes to 7 days) while your sessions stay connected.
-- **Saves passwords for you.** When a password you typed works, Komando offers to remember it for that host or for the whole project.
-- **Sudo without retyping.** When `sudo` asks for your password, press Enter and Komando types the password you signed in with.
-- **Import SSH keys.** OpenSSH and PuTTY `.ppk` keys are supported.
-- **Server fingerprint checks.** New servers ask for your trust on first connect, and a changed key blocks the connection. Hosts you already trust in your OpenSSH `known_hosts` are recognised.
-
-### Files over SFTP
-
-<img src="assets/screenshot-sftp.png" alt="Komando SFTP browser beside an SSH terminal, showing deployment folders, configuration files, sizes, modification dates and permissions">
-
-- **A file browser beside the terminal.** Click **SFTP** above any SSH session: the server's files open on the right, over the connection you already have, with no second login. Drag the divider to size it.
-- **Everything a quick file job needs.** Upload and download files and whole folders (or drop them in from Explorer), create, rename, copy, move and delete, sort by name, size or date, and see each file's permissions.
-- **Favorite folders.** Star `/var/log` once and it's there on every server, or keep a favorite to one host.
-- **Honest about access.** Files you can't read show a lock, and a download that fails never leaves an empty file behind. The Downloads list in the sidebar shows every transfer, with retry for the ones that failed.
+<br clear="right">
 
 ### Read logs faster
 
-<img src="assets/screenshot-highlights.png" alt="Komando settings: a rule set of 69 highlight rules, each shown in its own colour with regex and case badges and an on/off switch" width="720">
+<img src="assets/screenshot-highlights.png" alt="Highlight rules in Settings: ERROR in red, WARN in orange, INFO in blue, with regex and case badges" width="420" align="right">
 
-- **Syntax highlighting for terminal output.** ERROR in red, WARN in orange, `Active: active` in green. 69 ready-made rules for Linux and service logs are included.
-- **Your own rules.** Import and export rule sets as JSON, compatible with Tabby's highlight format. See [Highlights](docs/highlights.md).
-- **Minimap.** The whole output in miniature on the right edge, like in VS Code, with errors and warnings in colour. Click or drag to jump.
-- **Command rail.** A small mark at the left edge for every command you ran. Hover to see it, click to scroll back to it.
-- **Copy the whole output.** Copy a session's full scrollback as text, or as a `.txt` file you can paste straight into Explorer, Outlook or Teams.
+- **Highlighting for terminal output.** ERROR in red, WARN in orange, `Active: active` in green:
+  69 rules for Linux and service logs are included.
+- **Your own rules.** Import and export rule sets in Tabby's format. See [Highlights](docs/highlights.md).
+- **Minimap.** The whole scrollback in miniature on the right edge, errors and warnings in colour.
+  Click or drag to jump.
+- **Command rail.** A mark beside every command you ran. Click one to scroll back to it.
+- **Copy the whole output** as text, or as a `.txt` file to drop into Outlook or Teams.
 
-### Looks good
+<br clear="right">
 
-- **Themes for dark and light.** Pick a theme for each mode (Ember, Midnight, Forest, Paper, …); the terminal can follow the app or keep its own mode.
-- **Windows 11 Mica blur.** Your blurred wallpaper shows through the window, with the terminal kept readable. Adjustable or off in Settings.
-- **Slim, distraction-free layout.** Just your sidebar, the terminal, and a thin status line.
-- **Updates in one click.** A download icon beside Settings appears when a new version is
-  available. Hover for the version and release highlights; click to download, install and
-  restart. Open sessions close, and Windows asks for admin approval for an all-users install.
+### Files over SFTP
+
+<img src="assets/screenshot-sftp.png" alt="The SFTP browser beside an SSH session, listing /srv/atlas with sizes, dates and permissions">
+
+- **A file browser beside the terminal**, over the connection you already have. No second login.
+- **Upload and download** files and whole folders, or drop them in from Explorer. Create, rename,
+  copy, move and delete, with sizes, dates and permissions.
+- **Favorite folders** like `/var/log`, on every server or just one.
+- **Safe with Windows names.** Remote files called `con` or `README` and `readme` side by side
+  download without clobbering each other.
+
+### Secure by default
+
+<img src="assets/screenshot-vault.png" alt="The vault asks for the master password before web01 signs in with a saved key" width="380" align="right">
+
+- **Encrypted vault** for passwords and SSH keys: Argon2id and XChaCha20-Poly1305, locked by your
+  master password. Auto-locks after a time you choose while your sessions stay connected.
+- **Saves passwords for you** once they work, for one host or the whole project.
+- **Sudo without retyping.** When `sudo` asks, press Enter and Komando types the password you signed in with.
+- **Server fingerprints checked.** New hosts ask for trust, changed keys are blocked, and your
+  OpenSSH `known_hosts` is honoured.
+- **OpenSSH and PuTTY (`.ppk`) keys** both work.
+
+<br clear="right">
+
+### Feels like Windows 11
+
+- **Mica** lets your wallpaper show softly through the window. Adjustable or off.
+- **Themes** for dark and light mode (Ember, Midnight, Forest, Paper, …).
+- **One-click updates.** A button appears beside Settings when a new version is out.
+- **Any keyboard layout.** Dead keys (´ then e is é) and AltGr characters type as in any Windows app.
+
+## Performance
+
+Komando 0.3.6 against Windows Terminal with the OpenSSH client that ships with Windows, both
+connected to the same SSH server. Ryzen 7 9800X3D, Windows 11.
+
+| | Komando | Windows Terminal + OpenSSH | |
+|---|---:|---:|---|
+| Window on screen after launch | **235 ms** | 351 ms | 1.5× faster |
+| Memory, 1 SSH session | **22 MB** | 29 MB | 1.3× less |
+| Memory, 10 SSH sessions | **29 MB** | 127 MB | 4.3× less |
+| Processes for 10 sessions | **1** | 21 | |
+| CPU with 10 idle sessions | 0 % | 0 % | |
+
+Memory is the private working set, the "Memory" column in Task Manager, summed over all
+processes. Windows Terminal is still faster on raw throughput: it takes a million log lines in
+about 1.4 s, where Komando needs about 2.9 s. Method, ranges and caveats are in
+[docs/benchmarks.md](docs/benchmarks.md).
 
 ## Keyboard shortcuts
 
-All app shortcuts use Ctrl+Shift, so plain Ctrl keys (Ctrl+W, Ctrl+R, …) still reach the shell on your server.
+App shortcuts use <kbd>Ctrl</kbd>+<kbd>Shift</kbd>, so plain <kbd>Ctrl</kbd> keys (Ctrl+W, Ctrl+R, …)
+still reach the shell on your server.
+
+<details>
+<summary>All shortcuts</summary>
+<br>
 
 | Action | Keys |
 |---|---|
@@ -83,50 +181,51 @@ All app shortcuts use Ctrl+Shift, so plain Ctrl keys (Ctrl+W, Ctrl+R, …) still
 | Next / previous session | Ctrl+Tab / Ctrl+Shift+Tab |
 | Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
 | Copy whole output as text / as .txt file | Ctrl+Shift+A / Ctrl+Shift+S |
+| Show / hide the SFTP browser | Ctrl+Shift+E |
 | Lock vault | Ctrl+Shift+L |
-| Show / hide the SFTP file browser | Ctrl+Shift+E |
 | Settings | Ctrl+, |
 
-## Install
-
-1. **[Open the latest release](https://github.com/R4cc/komando/releases/latest)**, download `Komando-<version>-x64.msi` under **Assets**, and run it. Choose **Install for me only** (no administrator rights needed) or **Install for all users** of the PC.
-2. Start Komando. The first time it saves a password or key, it asks you to set a master password for the vault.
-3. Add your first project and host, and click to connect.
-
-### Without installing (portable)
-
-No installer and no admin rights needed. Komando is a single `.exe` with everything built in.
-
-1. **[Open the latest release](https://github.com/R4cc/komando/releases/latest)**, download `Komando-<version>-x64.exe` under **Assets**, and put it anywhere, for example `%LOCALAPPDATA%\Programs\Komando`.
-2. Right-click it → **Properties** → tick **Unblock** → **OK**. Or in PowerShell, from its folder: `Unblock-File .\Komando-*-x64.exe`.
-3. Double-click to start. Pin it to the taskbar if you like.
-
-Unblocking removes the "downloaded from the internet" mark that makes Windows SmartScreen warn about apps without a code-signing certificate. Komando isn't signed yet. If your company blocks unknown programs entirely (AppLocker), this won't help. You can also [build it yourself](docs/development.md#build-it-yourself-on-windows); a build from source never gets a SmartScreen warning.
-
-Komando runs on Windows 11 only ([why](docs/adr/0001-windows-11-only.md)). Your data stays on your machine in `%APPDATA%\Komando`. There is no recovery for a forgotten master password, but your projects and hosts are stored separately and survive.
+</details>
 
 ## FAQ
 
-**What is Komando?**
-A Rust-based SSH client and terminal emulator for Windows 11 that organises servers into projects.
+<details>
+<summary><b>Is it an alternative to PuTTY, MobaXterm, Tabby or Windows Terminal?</b></summary>
+<br>
+Yes, if you mostly work on Linux servers over SSH. Komando combines a GPU-rendered terminal, a
+built-in SSH and SFTP client and a server manager, and it reads PuTTY keys and Tabby profiles and
+highlight rules.
+</details>
 
-**Is it an alternative to PuTTY, Windows Terminal, Tabby or MobaXterm?**
-Yes, if you mostly work on Linux servers over SSH. Komando combines a fast GPU-rendered terminal, a built-in SSH client and a server manager, and it reads PuTTY keys and Tabby highlight rules.
+<details>
+<summary><b>Does it need WSL or OpenSSH?</b></summary>
+<br>
+No. SSH runs inside Komando, so remote output never passes through the Windows console layer.
+</details>
 
-**Does it need WSL or OpenSSH?**
-No. SSH runs inside Komando, so remote output never passes through the Windows console layer (ConPTY).
+<details>
+<summary><b>Where are my passwords stored?</b></summary>
+<br>
+In an encrypted vault on your computer, protected by your master password. Nothing is sent
+anywhere. A forgotten master password can't be recovered, but your projects and hosts are stored
+separately and survive.
+</details>
 
-**Where are my passwords stored?**
-In an encrypted vault on your computer, protected by your master password. Nothing is sent anywhere.
+<details>
+<summary><b>Why Windows 11 only?</b></summary>
+<br>
+Its users sit at Windows workstations and connect to Linux servers. Supporting one OS lets
+Komando use Windows features directly instead of going through cross-platform layers. See
+<a href="docs/adr/0001-windows-11-only.md">the decision record</a>.
+</details>
 
 ## Coming soon
 
-Search in output (Ctrl+F), split view, Windows Hello unlock and changing the master password.
+Search in output (<kbd>Ctrl</kbd>+<kbd>F</kbd>), split view, Windows Hello unlock and changing the
+master password.
 
-## For developers
+## Building and contributing
 
-Build instructions, release process and design notes are in [docs/development.md](docs/development.md). Terms used in the code are in [GLOSSARY.md](GLOSSARY.md).
-
----
-
-<sub>Keywords: SSH terminal for Windows, SSH client, SSH manager, terminal emulator, Rust terminal, GPU terminal, server management, sysadmin tools, DevOps, Linux server access, PuTTY alternative, Tabby alternative.</sub>
+Build instructions, the release process and design notes are in
+[docs/development.md](docs/development.md). Terms used in the code are in [GLOSSARY.md](GLOSSARY.md),
+and design decisions in [docs/adr](docs/adr).

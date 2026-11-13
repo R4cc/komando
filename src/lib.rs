@@ -45,7 +45,9 @@ pub fn init(cx: &mut App) {
     cx.text_system()
         .add_fonts(FONTS.iter().map(|bytes| Cow::Borrowed(*bytes)).collect())
         .expect("bundled fonts");
+    perf::startup("fonts added");
     gpui_component::init(cx);
+    perf::startup("component library ready");
     let t = Some(terminal_view::CONTEXT);
     cx.bind_keys([
         KeyBinding::new("ctrl-shift-c", Copy, t),
@@ -90,14 +92,19 @@ pub struct Options {
 }
 
 pub fn run(options: Options) {
+    // First, so the graphics driver loads while the rest of startup runs.
+    platform::warm_up_gpu();
     logging::init(&options.data_dir);
+    perf::startup("logging ready");
     gpui_platform::application()
         .with_assets(Assets)
         .run(move |cx: &mut App| {
+            perf::startup("platform ready");
             perf::init();
             update::clean_up();
             export::clean_up();
             init(cx);
+            perf::startup("app initialised");
             let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
             cx.open_window(
                 WindowOptions {
@@ -113,12 +120,15 @@ pub fn run(options: Options) {
                     ..Default::default()
                 },
                 |window, cx| {
+                    perf::startup("window created");
                     let workspace =
                         cx.new(|cx| Workspace::new(options.data_dir.clone(), options.startup.clone(), window, cx));
+                    window.on_next_frame(|_, _| perf::startup("first frame drawn"));
                     cx.new(|cx| gpui_component::Root::new(workspace, window, cx))
                 },
             )
             .expect("open window");
+            perf::startup("window opened");
             cx.activate(true);
         });
 }

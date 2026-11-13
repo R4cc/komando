@@ -62,3 +62,40 @@ pub fn time<R>(name: &'static str, f: impl FnOnce() -> R) -> R {
     entry.1 += elapsed;
     result
 }
+
+/// Startup trace for development: with `KOMANDO_STARTUP_TRACE` set, each `startup` mark prints
+/// how long after the process was created it was reached (so the time Windows spends loading
+/// the executable is included), and how long since the previous mark.
+pub fn startup(mark: &'static str) {
+    static TRACE: OnceLock<Option<Mutex<f64>>> = OnceLock::new();
+    let Some(previous) = TRACE.get_or_init(|| std::env::var_os("KOMANDO_STARTUP_TRACE").map(|_| Mutex::new(0.0))) else {
+        return;
+    };
+    let now = since_process_start_ms();
+    let mut previous = previous.lock().unwrap();
+    eprintln!("startup {now:>8.1} ms  (+{:>6.1})  {mark}", now - *previous);
+    log::info!("startup {now:.1} ms (+{:.1}) {mark}", now - *previous);
+    *previous = now;
+}
+
+#[cfg(windows)]
+fn since_process_start_ms() -> f64 {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let ticks = |t: FILETIME| ((t.dwHighDateTime as u64) << 32 | t.dwLowDateTime as u64) as f64;
+    let (mut created, mut exited, mut kernel, mut user) = Default::default();
+    // SAFETY: GetCurrentProcess is a pseudo handle; the out-pointers are valid locals.
+    unsafe {
+        if GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut kernel, &mut user).is_err() {
+            return 0.0;
+        }
+        (ticks(GetSystemTimePreciseAsFileTime()) - ticks(created)) / 10_000.0
+    }
+}
+
+#[cfg(not(windows))]
+fn since_process_start_ms() -> f64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
+}

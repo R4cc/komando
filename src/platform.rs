@@ -111,3 +111,51 @@ pub const SUPPORTS_BACKDROP: bool = cfg!(windows);
 mod tray;
 #[cfg(windows)]
 pub use tray::Tray;
+
+/// Start loading the graphics driver on a background thread, so it overlaps with the rest of
+/// startup instead of following it. Creating the first Direct3D device loads and initialises
+/// the GPU driver, which takes longer than anything else at startup (~140 ms on a fast PC).
+/// gpui does it on the main thread after DirectWrite and its other setup; by then this thread
+/// has done most of the work and gpui's own device comes up quickly. The device made here is
+/// thrown away. It picks the adapter the way gpui does (the first one that can run Direct3D 11),
+/// so on a laptop with two GPUs it loads the same driver and never wakes the other GPU.
+#[cfg(windows)]
+pub fn warm_up_gpu() {
+    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::Graphics::Direct3D::{
+        D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
+    };
+    use windows::Win32::Graphics::Direct3D11::{D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice};
+    use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIFactory6};
+
+    let spawned = std::thread::Builder::new().name("gpu warm-up".into()).spawn(|| {
+        // SAFETY: plain COM/D3D calls on objects this thread owns; everything is released on return.
+        unsafe {
+            let Ok(factory) = CreateDXGIFactory2::<IDXGIFactory6>(DXGI_CREATE_FACTORY_FLAGS::default()) else { return };
+            for index in 0..8 {
+                let Ok(adapter) = factory.EnumAdapters(index) else { return };
+                let levels = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1];
+                let created = D3D11CreateDevice(
+                    &adapter,
+                    D3D_DRIVER_TYPE_UNKNOWN,
+                    HMODULE::default(),
+                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                    Some(&levels),
+                    D3D11_SDK_VERSION,
+                    None,
+                    None,
+                    None,
+                );
+                if created.is_ok() {
+                    return;
+                }
+            }
+        }
+    });
+    if let Err(err) = spawned {
+        log::warn!("Couldn't start the GPU warm-up: {err}");
+    }
+}
+
+#[cfg(not(windows))]
+pub fn warm_up_gpu() {}

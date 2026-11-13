@@ -110,6 +110,25 @@ Set `KOMANDO_PERF=1` and Komando prints, every 5 seconds, how often the hot path
 long they took (window renders, terminal grid, minimap, command rail, output wake-ups). Off by
 default; each probe is then a single atomic load.
 
+Set `KOMANDO_STARTUP_TRACE=1` and Komando prints each startup step with the time since the
+process was created, so the time Windows spends loading the executable is included:
+
+```
+startup      9.6 ms  (+   9.6)  main
+startup    188.9 ms  (+ 178.2)  platform ready
+startup    229.3 ms  (+  36.6)  window created
+startup    246.0 ms  (+   1.6)  first frame drawn
+```
+
+Release builds have no console, so redirect stderr to a file
+(`Start-Process komando.exe -RedirectStandardError trace.txt`), or read the same lines from the log
+file. On a fast PC most of startup is gpui's platform setup: DirectWrite (~45 ms) and creating
+the Direct3D device, which loads the GPU driver (~140 ms). `platform::warm_up_gpu` starts that
+driver load on a background thread first thing, so it overlaps with DirectWrite. To see how
+startup feels on a slow PC, pin Komando to one or two CPUs (`SetProcessAffinityMask`) and run
+busy loops on the same CPUs; a Job object's CPU rate cap is enforced too coarsely to slow a
+startup this short.
+
 For load tests the demo has a stress mode: `KOMANDO_DEMO_STRESS=30,10,24` creates 30 projects of
 10 hosts and opens 24 sessions, all against the demo's test SSH server. Point the server's
 `ForceCommand` at a script that streams logs (a `while` loop of `printf`s will do) to make every

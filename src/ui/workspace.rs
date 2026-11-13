@@ -303,6 +303,7 @@ impl Focusable for Workspace {
 impl Workspace {
     pub fn new(data_dir: PathBuf, startup: Startup, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings = Settings::load(&data_dir);
+        crate::perf::startup("settings loaded");
         // A fresh install has no Projects; the detected local shells stand alone.
         let mut library_error = None;
         let library = Library::load(&data_dir).unwrap_or_else(|err| {
@@ -316,7 +317,9 @@ impl Workspace {
             });
             Library::default()
         });
+        crate::perf::startup("library loaded");
         let highlights = highlight::load(&data_dir);
+        crate::perf::startup("highlights loaded");
         let transfers = cx.new(|_| Transfers::new());
         let favorites = cx.new(|_| FavoriteStore::new(data_dir.clone()));
         let transfers_sub = cx.subscribe(&transfers, |_, _, _: &TransfersChanged, cx| cx.notify());
@@ -366,8 +369,11 @@ impl Workspace {
             import: import::ImportFlow::default(),
             _subscriptions: vec![transfers_sub, transfers_ticks],
         };
+        crate::perf::startup("workspace built");
         this.apply_appearance(window, cx);
+        crate::perf::startup("appearance applied");
         this.apply_highlights(cx);
+        crate::perf::startup("highlights compiled");
         let sub = cx.observe_window_appearance(window, |this, window, cx| this.apply_appearance(window, cx));
         this._subscriptions.push(sub);
         // The Vault stays locked until something needs it; then the master password is asked.
@@ -389,6 +395,7 @@ impl Workspace {
             })
             .detach();
         }
+        crate::perf::startup("workspace ready");
         if !startup.open.is_empty() {
             cx.defer_in(window, move |this, window, cx| this.run_startup(&startup, window, cx));
         }

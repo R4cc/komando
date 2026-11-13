@@ -6,6 +6,12 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Komando opens faster, most noticeably on slower PCs: the graphics driver now loads while the
+  rest of startup runs instead of after it. On a slow dual-core the window is ready about 0.2 s
+  sooner.
+
 ## [0.3.6] - 2026-11-13
 
 ### Added
