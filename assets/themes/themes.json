@@ -1,0 +1,86 @@
+[
+  {
+    "name": "Ember",
+    "mode": "dark",
+    "file": "01_01_ember.png",
+    "description": "Warm, high-contrast dark theme with an amber-orange glow."
+  },
+  {
+    "name": "Midnight",
+    "mode": "dark",
+    "file": "01_02_midnight.png",
+    "description": "Clean, cool dark theme with electric blue accents."
+  },
+  {
+    "name": "Forest",
+    "mode": "dark",
+    "file": "01_03_forest.png",
+    "description": "Calm, deep-green dark theme with soft emerald highlights."
+  },
+  {
+    "name": "Twilight",
+    "mode": "dark",
+    "file": "01_04_twilight.png",
+    "description": "Moody dark theme with rich violet accents."
+  },
+  {
+    "name": "Rosé",
+    "mode": "dark",
+    "file": "01_05_rose.png",
+    "description": "Deep burgundy theme with warm pink highlights."
+  },
+  {
+    "name": "Glacier",
+    "mode": "dark",
+    "file": "01_06_glacier.png",
+    "description": "Cool, near-black theme with icy cyan accents."
+  },
+  {
+    "name": "Obsidian",
+    "mode": "dark",
+    "file": "01_07_obsidian.png",
+    "description": "Monochrome charcoal and graphite with subtle silver highlights."
+  },
+  {
+    "name": "Ivory",
+    "mode": "light",
+    "file": "02_01_ivory.png",
+    "description": "Warm off-white theme with soft apricot-orange accents."
+  },
+  {
+    "name": "Sky",
+    "mode": "light",
+    "file": "02_02_sky.png",
+    "description": "Airy pale-blue theme with clear sky-blue accents."
+  },
+  {
+    "name": "Sage",
+    "mode": "light",
+    "file": "02_03_sage.png",
+    "description": "Soft green theme with muted sage accents."
+  },
+  {
+    "name": "Lavender",
+    "mode": "light",
+    "file": "02_04_lavender.png",
+    "description": "Light lilac theme with violet accents."
+  },
+  {
+    "name": "Blossom",
+    "mode": "light",
+    "file": "02_05_blossom.png",
+    "description": "Blush-pink theme with rose accents."
+  },
+  {
+    "name": "Sand",
+    "mode": "light",
+    "file": "02_06_sand.png",
+    "description": "Warm cream theme with sandy beige accents."
+  },
+  {
+    "name": "Slate",
+    "mode": "light",
+    "file": "02_07_slate.png",
+    "description": "Cool light-gray theme with slate-gray accents."
+  }
+]

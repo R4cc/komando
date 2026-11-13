@@ -18,6 +18,9 @@ pub struct ThemeSpec {
     pub id: &'static str,
     pub name: &'static str,
     pub dark: bool,
+    /// Original selector artwork, embedded so portable builds need no external assets.
+    pub thumbnail_file: &'static str,
+    pub thumbnail_png: &'static [u8],
     /// Buttons, switches, selections, links.
     pub accent: u32,
     /// The window background the islands float on, the islands, the sidebar and dialogs.
@@ -32,43 +35,54 @@ pub struct ThemeSpec {
     pub term_foreground: u32,
 }
 
-const fn spec(
-    id: &'static str,
-    name: &'static str,
-    dark: bool,
-    accent: u32,
-    [canvas, background, sidebar, surface]: [u32; 4],
-    [text, text_muted, text_faint]: [u32; 3],
-    [term_background, term_foreground]: [u32; 2],
-) -> ThemeSpec {
-    ThemeSpec { id, name, dark, accent, canvas, background, sidebar, surface, text, text_muted, text_faint, term_background, term_foreground }
+macro_rules! spec {
+    ($id:literal, $name:literal, $dark:literal, $thumbnail:literal, $accent:expr,
+     [$canvas:expr, $background:expr, $sidebar:expr, $surface:expr],
+     [$text:expr, $text_muted:expr, $text_faint:expr], [$term_background:expr, $term_foreground:expr]) => {
+        ThemeSpec {
+            id: $id, name: $name, dark: $dark,
+            thumbnail_file: $thumbnail,
+            thumbnail_png: include_bytes!(concat!("../assets/themes/", $thumbnail)),
+            accent: $accent, canvas: $canvas, background: $background, sidebar: $sidebar, surface: $surface,
+            text: $text, text_muted: $text_muted, text_faint: $text_faint,
+            term_background: $term_background, term_foreground: $term_foreground,
+        }
+    };
 }
 
-/// Dark themes. Greys are tinted toward each theme's accent, never near-black: deep grey is
-/// easier on the eyes over long sessions. The first is the default.
+/// Dark themes, with surfaces tinted toward their artwork's accent. The first is the default.
 pub const DARK_THEMES: &[ThemeSpec] = &[
-    spec("ember", "Ember", true, BRAND_DARK, [0x121215, 0x18181c, 0x1c1c20, 0x232328], [0xececef, 0xa1a1aa, 0x85858f], [0x1a1a1e, 0xd4d4d8]),
-    spec("midnight", "Midnight", true, 0x60a5fa, [0x0e121a, 0x131924, 0x171e2a, 0x1e2633], [0xe6ebf3, 0x9ca8ba, 0x7f8ba0], [0x151b26, 0xd0d8e6]),
-    spec("forest", "Forest", true, 0x4ade80, [0x0f1411, 0x141b17, 0x18201b, 0x1f2822], [0xe5eee8, 0x9db2a5, 0x7f9587], [0x161d19, 0xd0ddd4]),
-    spec("dusk", "Dusk", true, 0xa78bfa, [0x13111a, 0x1a1623, 0x1e1a29, 0x262132], [0xece8f4, 0xaaa2bc, 0x8d85a0], [0x1c1826, 0xdbd5e7]),
-    spec("rose", "Rosé", true, 0xf472b6, [0x161013, 0x1e161a, 0x231a1f, 0x2b2026], [0xf3e9ee, 0xb9a3ae, 0x9a8590], [0x20171b, 0xe7d7df]),
-    spec("glacier", "Glacier", true, 0x88c0d0, [0x1a1e26, 0x21262f, 0x252b35, 0x2d343f], [0xeceff4, 0xaeb7c6, 0x939dae], [0x232832, 0xd8dee9]),
-    spec("graphite", "Graphite", true, 0xe4e4e7, [0x0f0f10, 0x151516, 0x19191b, 0x212123], [0xededee, 0xa3a3a8, 0x88888e], [0x171718, 0xd6d6d9]),
+    spec!("ember", "Ember", true, "01_01_ember.png", BRAND_DARK, [0x15110f, 0x1d1714, 0x211b17, 0x2b231d], [0xf4ede6, 0xb8a69a, 0xa08b7c], [0x1b1512, 0xe4d5c9]),
+    spec!("midnight", "Midnight", true, "01_02_midnight.png", 0x60a5fa, [0x0c1220, 0x111b2d, 0x162136, 0x1e2b43], [0xe6edfa, 0xa0b2cf, 0x8a9fbe], [0x101a2b, 0xd0dcef]),
+    spec!("forest", "Forest", true, "01_03_forest.png", 0x4ade80, [0x0d1711, 0x122019, 0x17271e, 0x1e3025], [0xe5f1e8, 0xa1bba9, 0x89a792], [0x101e16, 0xd0e3d5]),
+    spec!("twilight", "Twilight", true, "01_04_twilight.png", 0xb794f6, [0x160f22, 0x1e162e, 0x241b37, 0x2e2344], [0xf0e8fa, 0xb6a6cd, 0xa18ebc], [0x1c142a, 0xe0d3ee]),
+    spec!("rose", "Rosé", true, "01_05_rose.png", 0xf472b6, [0x1c0f17, 0x27151f, 0x2e1925, 0x38202e], [0xfae8f1, 0xc7a5b7, 0xb38fa1], [0x24121c, 0xedd4e1]),
+    spec!("glacier", "Glacier", true, "01_06_glacier.png", 0x67d5e8, [0x0c151b, 0x111e26, 0x16252e, 0x1d303b], [0xe5f3f7, 0xa1bac5, 0x88a5b2], [0x0f1c24, 0xcfe6ee]),
+    spec!("obsidian", "Obsidian", true, "01_07_obsidian.png", 0xd4d4d8, [0x101011, 0x171718, 0x1c1c1e, 0x252527], [0xededee, 0xadadb2, 0x909098], [0x141415, 0xd6d6d9]),
 ];
 
 /// Light themes, the counterparts of the dark ones. The first is the default.
 pub const LIGHT_THEMES: &[ThemeSpec] = &[
-    spec("ember", "Ember", false, BRAND, [0xe8e8eb, 0xffffff, 0xfafafa, 0xffffff], [0x18181b, 0x52525b, 0x71717a], [0xfcfcfb, 0x27272a]),
-    spec("sky", "Sky", false, 0x2563eb, [0xe2e8f1, 0xfdfeff, 0xf5f8fc, 0xffffff], [0x141b2b, 0x4a5568, 0x647085], [0xfbfcff, 0x1f2937]),
-    spec("sage", "Sage", false, 0x15803d, [0xe1e8e3, 0xfdfffd, 0xf4f8f5, 0xffffff], [0x15201a, 0x4a5a50, 0x627268], [0xfbfdfb, 0x1f2a23]),
-    spec("lavender", "Lavender", false, 0x7c3aed, [0xe8e4f1, 0xfefdff, 0xf8f6fd, 0xffffff], [0x1d1729, 0x564d66, 0x726a83], [0xfcfbfe, 0x2a2338]),
-    spec("blossom", "Blossom", false, 0xdb2777, [0xf1e3ea, 0xfffdfe, 0xfcf5f8, 0xffffff], [0x2a1820, 0x654b57, 0x836776], [0xfefbfc, 0x33222b]),
-    spec("paper", "Paper", false, 0x0f766e, [0xe9e3d7, 0xfffdf8, 0xfaf6ee, 0xfffdf8], [0x2b2418, 0x5c5444, 0x766c5b], [0xfdfaf3, 0x2f2a20]),
-    spec("graphite", "Graphite", false, 0x27272a, [0xe4e4e6, 0xffffff, 0xf7f7f8, 0xffffff], [0x18181b, 0x52525b, 0x71717a], [0xfcfcfc, 0x27272a]),
+    spec!("ivory", "Ivory", false, "02_01_ivory.png", 0xb95c20, [0xeee3d6, 0xfffbf5, 0xfaf2e8, 0xfffdf9], [0x2c2119, 0x665345, 0x7d6959], [0xfffaf2, 0x392b20]),
+    spec!("sky", "Sky", false, "02_02_sky.png", 0x2563c5, [0xe0e9f7, 0xf8fbff, 0xeef4fd, 0xfcfdff], [0x17243b, 0x4b5d78, 0x5e708a], [0xf6faff, 0x23334e]),
+    spec!("sage", "Sage", false, "02_03_sage.png", 0x47764c, [0xe0eadb, 0xf9fcf6, 0xf0f6eb, 0xfcfef9], [0x1e2b1c, 0x50624a, 0x63745b], [0xf6faf1, 0x2b3925]),
+    spec!("lavender", "Lavender", false, "02_04_lavender.png", 0x7c3aed, [0xe9e0f5, 0xfcf9ff, 0xf4edfc, 0xfefcff], [0x251936, 0x5f4e75, 0x78648d], [0xfbf7ff, 0x332344]),
+    spec!("blossom", "Blossom", false, "02_05_blossom.png", 0xbe326e, [0xf2dfe8, 0xfff9fc, 0xfceef4, 0xfffcfd], [0x321b26, 0x704c5f, 0x866377], [0xfff6fa, 0x402331]),
+    spec!("sand", "Sand", false, "02_06_sand.png", 0x94683f, [0xece0cf, 0xfffaf2, 0xf8efdf, 0xfffcf7], [0x302619, 0x68583f, 0x7b6a4f], [0xfdf7ed, 0x3b3021]),
+    spec!("slate", "Slate", false, "02_07_slate.png", 0x596275, [0xe1e3e9, 0xfbfcfe, 0xf0f2f6, 0xfefeff], [0x202530, 0x535c6d, 0x636e7e], [0xf8f9fc, 0x2c3340]),
 ];
 
 /// The dark or light theme with this id, or the default one.
 pub fn theme(dark: bool, id: &str) -> &'static ThemeSpec {
+    // Retain saved selections from before the supplied artwork established these names.
+    let id = match (dark, id) {
+        (true, "dusk") => "twilight",
+        (true, "graphite") => "obsidian",
+        (false, "ember") => "ivory",
+        (false, "paper") => "sand",
+        (false, "graphite") => "slate",
+        _ => id,
+    };
     let list = if dark { DARK_THEMES } else { LIGHT_THEMES };
     list.iter().find(|t| t.id == id).unwrap_or(&list[0])
 }
@@ -115,7 +129,7 @@ impl AppPalette {
             surface: hex(t.surface),
             hover: alpha(ink, 0.05 * glare),
             active: alpha(ink, 0.08 * glare + if t.dark { 0. } else { 0.006 }),
-            border: alpha(ink, if t.dark { 0.07 } else { 0.09 }),
+            border: alpha(t.text, if t.dark { 0.07 } else { 0.09 }),
             text: hex(t.text),
             text_muted: hex(t.text_muted),
             text_faint: hex(t.text_faint),
@@ -182,9 +196,17 @@ impl TerminalPalette {
         Self::from_theme(&LIGHT_THEMES[0])
     }
 
-    /// The theme's terminal background and text with the shared ANSI colours of its mode,
-    /// which are tuned to read on all of that mode's backgrounds.
+    /// Theme-specific terminal neutrals with the shared semantic ANSI colours of its mode.
+    /// Reds, greens, etc. retain their meaning in programs across all themes.
     pub fn from_theme(t: &ThemeSpec) -> Self {
+        let mut ansi = if t.dark { DARK_ANSI } else { LIGHT_ANSI };
+        // Keep ANSI black lifted on dark backgrounds so black output stays visible.
+        if !t.dark {
+            ansi[0] = rgb8(t.term_foreground);
+        }
+        ansi[7] = rgb8(if t.dark { t.term_foreground } else { t.text_faint });
+        ansi[8] = rgb8(t.text_muted);
+        ansi[15] = rgb8(if t.dark { t.text } else { t.text_muted });
         Self {
             dark: t.dark,
             background: rgb8(t.term_background),
@@ -192,7 +214,7 @@ impl TerminalPalette {
             foreground: rgb8(t.term_foreground),
             cursor: rgb8(t.text),
             selection: alpha(t.accent, if t.dark { 0.30 } else { 0.20 }),
-            ansi: if t.dark { DARK_ANSI } else { LIGHT_ANSI },
+            ansi,
         }
     }
 
@@ -315,7 +337,7 @@ pub fn rgb_to_hsla(c: Rgb) -> Hsla {
 
 #[rustfmt::skip]
 const DARK_ANSI: [Rgb; 16] = [
-    // Black and bright black are lifted so they stay visible on grey backgrounds.
+    // Semantic colours are shared; from_theme replaces the neutral slots.
     rgb8(0x3f3f46), rgb8(0xf87171), rgb8(0x4ade80), rgb8(0xfacc15),
     rgb8(0x60a5fa), rgb8(0xc084fc), rgb8(0x22d3ee), rgb8(0xd4d4d8),
     rgb8(0x6b6b74), rgb8(0xfca5a5), rgb8(0x86efac), rgb8(0xfde047),
@@ -351,7 +373,7 @@ mod tests {
     #[test]
     fn themes_are_readable() {
         for t in DARK_THEMES.iter().chain(LIGHT_THEMES) {
-            for bg in [t.background, t.sidebar] {
+            for bg in [t.background, t.sidebar, t.surface] {
                 for (what, fg, min) in [("text", t.text, 7.), ("muted", t.text_muted, 4.5), ("faint", t.text_faint, 4.5), ("accent", t.accent, 3.)] {
                     let c = contrast(fg, bg);
                     assert!(c >= min, "{} ({}): {what} {fg:06x} on {bg:06x} is {c:.2}:1", t.name, if t.dark { "dark" } else { "light" });
@@ -373,7 +395,38 @@ mod tests {
             assert_eq!(ids.len(), list.len());
         }
         assert_eq!(theme(true, "nope").id, "ember");
+        assert_eq!(theme(false, "nope").id, "ivory");
         assert_eq!(theme(false, "sky").name, "Sky");
+    }
+
+    #[test]
+    fn themes_match_supplied_artwork_manifest() {
+        let manifest: Vec<serde_json::Value> = serde_json::from_str(include_str!("../assets/themes/themes.json")).unwrap();
+        let themes: Vec<_> = DARK_THEMES.iter().chain(LIGHT_THEMES).collect();
+        assert_eq!(themes.len(), manifest.len());
+        for (t, entry) in themes.iter().zip(manifest) {
+            assert_eq!(t.name, entry["name"].as_str().unwrap());
+            assert_eq!(if t.dark { "dark" } else { "light" }, entry["mode"].as_str().unwrap());
+            assert_eq!(t.thumbnail_file, entry["file"].as_str().unwrap());
+            assert!(t.thumbnail_png.starts_with(b"\x89PNG\r\n\x1a\n"), "{} is not a PNG", t.name);
+        }
+    }
+
+    #[test]
+    fn renamed_themes_keep_saved_selections() {
+        for (dark, old, new) in [
+            (true, "dusk", "twilight"),
+            (true, "graphite", "obsidian"),
+            (false, "ember", "ivory"),
+            (false, "paper", "sand"),
+            (false, "graphite", "slate"),
+        ] {
+            let mut settings = crate::model::Settings::default();
+            if dark { settings.dark_theme = old.into(); } else { settings.light_theme = old.into(); }
+            let saved = toml::to_string(&settings).unwrap();
+            let loaded: crate::model::Settings = toml::from_str(&saved).unwrap();
+            assert_eq!(theme(dark, if dark { &loaded.dark_theme } else { &loaded.light_theme }).id, new);
+        }
     }
 
     #[test]

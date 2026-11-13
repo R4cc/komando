@@ -696,7 +696,7 @@ impl Default for Settings {
             app_theme: AppThemeSetting::Dark,
             terminal_theme: TerminalThemeSetting::Follow,
             dark_theme: "ember".into(),
-            light_theme: "ember".into(),
+            light_theme: "ivory".into(),
             font_family: "Cascadia Mono".into(),
             font_size: 14.0,
             scrollback_lines: 100_000,

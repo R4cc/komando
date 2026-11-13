@@ -101,6 +101,18 @@ fn logo() -> Arc<gpui::Image> {
     .clone()
 }
 
+fn theme_thumbnail(theme: &crate::theme::ThemeSpec) -> Arc<gpui::Image> {
+    static IMAGES: OnceLock<std::collections::HashMap<&'static str, Arc<gpui::Image>>> = OnceLock::new();
+    IMAGES.get_or_init(|| {
+        crate::theme::DARK_THEMES
+            .iter()
+            .chain(crate::theme::LIGHT_THEMES)
+            .map(|t| (t.thumbnail_file, Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, t.thumbnail_png.to_vec()))))
+            .collect()
+    })[theme.thumbnail_file]
+        .clone()
+}
+
 impl Workspace {
     pub(super) fn open_settings(&mut self, section: SettingsSection, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_settings_controls(window, cx);
@@ -430,48 +442,46 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The dark or light themes as bubbles: each shows the theme's background, its text and
-    /// its accent. The mode in use is marked, and picking one of its themes applies at once.
+    /// Original theme artwork at the existing compact size. Picking a theme in the mode
+    /// in use applies its palette at once; each mode retains its own selection.
     fn theme_picker(&self, dark: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let themes = if dark { crate::theme::DARK_THEMES } else { crate::theme::LIGHT_THEMES };
         let current = self.theme_for(dark).id;
         let in_use = p.dark == dark;
-        let bubbles = themes.iter().map(|t| {
+        let selection = crate::theme::hex(if p.dark { crate::theme::BRAND_DARK } else { crate::theme::BRAND });
+        let selection_ink = if p.dark { gpui::black() } else { gpui::white() };
+        let thumbnails = themes.iter().map(|t| {
             let selected = t.id == current;
             let id = t.id;
-            let hex = crate::theme::hex;
-            let bubble = div()
+            let thumbnail = div()
                 .size(px(46.))
-                .rounded_full()
-                .bg(hex(t.background))
-                .border_1()
-                .border_color(if t.dark { gpui::white().opacity(0.12) } else { gpui::black().opacity(0.12) })
+                .flex_shrink_0()
                 .relative()
-                // A line of text and a tag: how the theme's text and accent sit on its background.
-                .child(div().absolute().left(px(10.)).top(px(11.)).w(px(14.)).h(px(4.)).rounded_full().bg(hex(t.text_muted)))
-                .child(div().absolute().left(px(10.)).top(px(18.)).w(px(8.)).h(px(4.)).rounded_full().bg(hex(t.text_faint)))
-                .child(
-                    div()
-                        .absolute()
-                        .right(px(6.))
-                        .bottom(px(6.))
-                        .size(px(19.))
-                        .rounded_full()
-                        .bg(hex(t.accent))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .when(selected, |el| {
-                            el.child(icon_el("check", 12., crate::theme::AppPalette::from_theme(t).on_brand))
-                        }),
-                );
+                // The PNG includes its rounded corners and transparency. Contain keeps all
+                // of its artwork visible without cropping, stretching or recolouring it.
+                .child(gpui::img(theme_thumbnail(t)).size_full().object_fit(gpui::ObjectFit::Contain))
+                .when(selected, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .right(px(6.))
+                            .bottom(px(6.))
+                            .size(px(19.))
+                            .rounded_full()
+                            .bg(selection)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon_el("check", 12., selection_ink)),
+                    )
+                });
             div()
                 .id(SharedString::from(format!("theme-{}-{id}", if dark { "dark" } else { "light" })))
                 .role(gpui::Role::RadioButton)
                 .aria_label(format!("{} theme: {}", if dark { "Dark" } else { "Light" }, t.name))
                 .aria_toggled(if selected { gpui::Toggled::True } else { gpui::Toggled::False })
                 .tab_index(0)
-                .focus_visible(move |s| s.border_2().border_color(p.brand))
+                .focus_visible(move |s| s.border_2().border_color(selection))
                 .w(px(72.))
                 .flex()
                 .flex_col()
@@ -482,11 +492,11 @@ impl Workspace {
                 .child(
                     div()
                         .p(px(3.))
-                        .rounded_full()
+                        .rounded(px(14.))
                         .border_2()
-                        .border_color(if selected { p.brand } else { gpui::transparent_black() })
+                        .border_color(if selected { selection } else { gpui::transparent_black() })
                         .when(!selected, |el| el.hover(|s| s.border_color(p.border)))
-                        .child(bubble),
+                        .child(thumbnail),
                 )
                 .child(
                     div()
@@ -540,7 +550,7 @@ impl Workspace {
                         "Colours of the app and the terminal in light mode."
                     })),
             )
-            .child(div().flex().flex_wrap().gap(px(6.)).children(bubbles))
+            .child(div().flex().flex_wrap().gap(px(6.)).children(thumbnails))
             .into_any_element()
     }
 

@@ -8,6 +8,10 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- Appearance now shows fourteen rounded theme thumbnails with matching app and terminal
+  palettes: Ember, Midnight, Forest, Twilight, Rosé, Glacier and Obsidian for dark mode;
+  Ivory, Sky, Sage, Lavender, Blossom, Sand and Slate for light mode. An orange outline and
+  checkmark mark the selected theme, and existing theme preferences carry over.
 - Komando opens faster, most noticeably on slower PCs: the graphics driver now loads while the
   rest of startup runs instead of after it. On a slow dual-core the window is ready about 0.2 s
   sooner.

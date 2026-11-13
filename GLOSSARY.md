@@ -100,7 +100,7 @@ Light or dark mode for Komando's chrome: sidebar, dialogs and settings. (Setting
 
 **Theme**:
 A named set of colours for one mode, covering the chrome and the terminal: accent, tinted
-greys, text and terminal background (Ember, Midnight, Paper, …). Dark and light Themes are
+greys, text and terminal background (Ember, Midnight, Ivory, …). Dark and light Themes are
 separate lists; the user picks one of each, and the mode decides which one shows.
 
 **Terminal Theme**:
