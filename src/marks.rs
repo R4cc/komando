@@ -241,6 +241,11 @@ fn stamp<T>(term: &mut Term<T>, line: Line, id: u64) {
     term.grid_mut()[line][Column(0)].set_hyperlink(Some(Hyperlink::new(Some(id), TAG_URI.into())));
 }
 
+/// Whether a row's first cell carries a Command Mark: the row starts an entered line.
+pub fn is_marked(cell: &alacritty_terminal::term::cell::Cell) -> bool {
+    tag_id(cell).is_some()
+}
+
 fn tag_id(cell: &alacritty_terminal::term::cell::Cell) -> Option<u64> {
     let link = cell.hyperlink()?;
     (link.uri() == TAG_URI).then(|| link.id().parse().ok()).flatten()
@@ -264,7 +269,7 @@ fn wraps<T>(term: &Term<T>, line: Line) -> bool {
 }
 
 /// First row of the (possibly wrapped) line that `line` belongs to.
-fn logical_start<T>(term: &Term<T>, mut line: Line) -> Line {
+pub fn logical_start<T>(term: &Term<T>, mut line: Line) -> Line {
     let top = term.grid().topmost_line();
     let mut steps = 0;
     while line > top && steps < MAX_ROWS && wraps(term, line - 1) {
@@ -305,14 +310,22 @@ fn worth_marking(line: &str) -> bool {
 /// The prompt ends at the first `$`, `#`, `>`, `%`, `❯` or `»` followed by a space. A line without
 /// one is all command.
 pub fn split_prompt(line: &str) -> (&str, &str) {
+    match prompt_end(line) {
+        Some(end) => (line[..end].trim(), line[end..].trim()),
+        None => ("", line.trim()),
+    }
+}
+
+/// Where the prompt of `line` ends (see `split_prompt`), as a byte offset just past its last
+/// character, or `None` when the line has no recognisable prompt.
+pub fn prompt_end(line: &str) -> Option<usize> {
     let mut chars = line.char_indices().peekable();
     while let Some((i, c)) = chars.next() {
         if matches!(c, '$' | '#' | '>' | '%' | '❯' | '»') && chars.peek().is_none_or(|&(_, next)| next == ' ') {
-            let end = i + c.len_utf8();
-            return (line[..end].trim(), line[end..].trim());
+            return Some(i + c.len_utf8());
         }
     }
-    ("", line.trim())
+    None
 }
 
 #[cfg(test)]

@@ -2037,10 +2037,12 @@ struct Frame {
 /// Glyphs are put on the grid one cell at a time instead of trusting the shaper's advances:
 /// a character from a fallback font (CJK, emoji, symbols, Nerd Font icons) has its own
 /// width, and would shift everything after it on the line out of its column.
+#[allow(clippy::too_many_arguments)]
 fn layout_row(
     cells: &[SnapCell],
     extras: &[char],
     row: i32,
+    input: Option<InputRow>,
     ctx: &RowContext,
     glyphs: &mut GlyphCache,
     frame: &mut RowPaint,
@@ -2054,9 +2056,11 @@ fn layout_row(
     let RowScratch { text, starts, styles, backgrounds, selected, prims } = scratch;
     backgrounds.clear();
     selected.clear();
-    // Highlight rules match on the row's text; build it only when there are rules.
+    // Highlight rules match on the row's text; build it only when there are rules. What the
+    // user typed is left as the shell shows it.
     let styles = ctx
         .highlighter
+        .filter(|_| input != Some(InputRow::All))
         .is_some_and(|h| {
             text.clear();
             starts.clear();
@@ -2065,7 +2069,16 @@ fn layout_row(
                 text.push(cell.c);
                 text.extend(extra(cell).iter());
             }
-            h.styles_for_background_into(text, ctx.dark, styles)
+            // On a command line, rules see only the prompt, so the command can't colour it.
+            let end = match input {
+                Some(InputRow::AfterPrompt) => crate::marks::prompt_end(text).unwrap_or(text.len()),
+                _ => text.len(),
+            };
+            if !h.styles_for_background_into(&text[..end], ctx.dark, styles) {
+                return false;
+            }
+            styles.resize(text.len(), None);
+            true
         })
         .then_some(&*styles);
 
@@ -2191,6 +2204,18 @@ struct Snapshot {
     cells: Vec<SnapCell>,
     /// The zero-width characters of all cells (see `SnapCell::extra`).
     extras: Vec<char>,
+    /// The rows copied that are part of a command line, by row of the view.
+    input: Vec<(i32, InputRow)>,
+}
+
+/// How much of a row is a command the user typed, which highlight rules leave alone: the
+/// line at the cursor and lines entered earlier (Command Marks), after their prompt.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum InputRow {
+    /// The first row of the line: what follows the prompt.
+    AfterPrompt,
+    /// A row the line wrapped onto: all of it.
+    All,
 }
 
 impl Snapshot {
@@ -2207,8 +2232,21 @@ impl Snapshot {
         let colors = content.colors;
         let offset = view_offset(term) as i32;
         let selection = content.selection;
+        // The line at the cursor is being typed when it starts with a prompt.
+        let cursor_line = content.cursor.point.line;
+        let typing = (!content.mode.contains(TermMode::ALT_SCREEN) && cursor_line <= grid.bottommost_line())
+            .then(|| crate::marks::logical_start(term, cursor_line))
+            .filter(|&start| {
+                let row = &grid[start];
+                let text: String = (0..grid.columns()).map(|col| row[Column(col)].c).collect();
+                crate::marks::prompt_end(&text).is_some()
+            });
         for row in rows {
             let line = Line(row as i32 - offset);
+            let start = crate::marks::logical_start(term, line);
+            if Some(start) == typing || crate::marks::is_marked(&grid[start][Column(0)]) {
+                self.input.push((row as i32, if start == line { InputRow::AfterPrompt } else { InputRow::All }));
+            }
             let cells = &grid[line];
             for col in 0..grid.columns() {
                 let cell = &cells[Column(col)];
@@ -2243,6 +2281,11 @@ impl Snapshot {
     fn clear(&mut self) {
         self.cells.clear();
         self.extras.clear();
+        self.input.clear();
+    }
+
+    fn input(&self, row: i32) -> Option<InputRow> {
+        self.input.iter().find(|(r, _)| *r == row).map(|&(_, input)| input)
     }
 }
 
@@ -2477,7 +2520,8 @@ fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &
         let end = cells[start..].iter().position(|c| c.row != row).map_or(cells.len(), |n| start + n);
         let paint = &mut rows[row as usize];
         paint.clear();
-        layout_row(&cells[start..end], &snapshot.extras, row, &ctx, glyphs, paint, scratch);
+        let input = snapshot.input(row);
+        layout_row(&cells[start..end], &snapshot.extras, row, input, &ctx, glyphs, paint, scratch);
         for d in &mut paint.decorations {
             d.y += if d.kind == DecorationKind::Strike { ctx.strike_y } else { ctx.underline_y };
         }
@@ -3399,6 +3443,33 @@ mod tests {
             self.term.lock().selection = Some(selection);
         }
     }
+
+    #[test]
+    fn highlight_rules_leave_the_command_being_typed_alone() {
+        fn color(g: &Grid, row: usize, c: char) -> gpui::Hsla {
+            let glyphs = &g.cache.rows[row].glyphs;
+            glyphs.iter().find(|gl| gl.id == gpui::GlyphId(c as u32)).map(|gl| gl.color).unwrap()
+        }
+        let mut g = Grid::new(60, 5);
+        // Output that looks like a prompt, plain output, then the line being typed.
+        g.feed("$ OOM
+OOM
+$ cat OOM");
+        g.frame("typing");
+        let plain = color(&g, 2, 'c');
+        assert_ne!(color(&g, 1, 'O'), plain, "output is highlighted");
+        assert_ne!(color(&g, 0, 'O'), plain, "output after something like a prompt is highlighted");
+        assert_eq!(color(&g, 2, 'O'), plain, "the command being typed is not");
+        // Entered (a Command Mark), it stays as typed once the cursor moves on.
+        crate::marks::Marks::default().entered(&mut *g.term.lock());
+        g.feed("
+OOM
+$ ");
+        g.frame("entered");
+        assert_eq!(color(&g, 2, 'O'), plain, "an entered command is not highlighted");
+        assert_ne!(color(&g, 3, 'O'), plain, "its output is");
+    }
+
 
     #[test]
     fn grid_lays_out_only_the_rows_that_change() {
