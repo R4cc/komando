@@ -1,2 +1,6 @@
 target/
 *.msi
+
+# alacritty_terminal's reference test recordings (46 MB), copied in from the crates.io
+# source only to run its tests. See vendor/alacritty_terminal/KOMANDO.md.
+/vendor/alacritty_terminal/tests/ref/

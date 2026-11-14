@@ -61,5 +61,10 @@ winresource = "0.1"
 
 # russh with one change: a channel can keep a receive window of its own (the shell's is
 # paced, SFTP's stays large). See vendor/russh/KOMANDO.md.
+# vte and alacritty_terminal with one change: printable ASCII is parsed and written to the
+# grid in runs rather than one character at a time. See vendor/vte/KOMANDO.md and
+# vendor/alacritty_terminal/KOMANDO.md.
 [patch.crates-io]
 russh = { path = "vendor/russh" }
+vte = { path = "vendor/vte" }
+alacritty_terminal = { path = "vendor/alacritty_terminal" }
