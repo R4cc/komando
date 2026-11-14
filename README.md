@@ -5,9 +5,9 @@
   <img src="assets/logo-light.svg" width="292" height="42" alt="Komando">
 </picture>
 
-### A fast, lightweight SSH terminal for Windows 11
+### A fast, lightweight SSH terminal for Windows 11. Built with Rust.
 
-All your Linux servers in colour-coded projects, one click away. Written in Rust, drawn on the GPU.
+All your SSH servers in colour-coded projects, miliseconds away.
 
 [![Latest release](https://img.shields.io/github/v/release/R4cc/komando?label=release&color=f97316)](https://github.com/R4cc/komando/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/R4cc/komando/total?color=f97316)](https://github.com/R4cc/komando/releases)
