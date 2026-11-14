@@ -20,16 +20,14 @@ All your Linux servers in colour-coded projects, one click away. Written in Rust
 
 <br>
 
-<table align="center">
-  <tr>
-    <td align="center"><b>1.5×</b><br><sub>faster startup</sub></td>
-    <td align="center"><b>4.3×</b><br><sub>less memory with 10 SSH sessions</sub></td>
-    <td align="center"><b>29 MB</b><br><sub>for 10 open sessions</sub></td>
-    <td align="center"><b>13 MB</b><br><sub>installer, nothing else to install</sub></td>
-  </tr>
-</table>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-dark.svg">
+    <img src="assets/benchmark-light.svg" width="828" alt="Komando against Windows Terminal + OpenSSH: window on screen in 235 ms vs 351 ms (1.5× faster), 22 MB vs 29 MB with 1 SSH session, 29 MB vs 127 MB with 10 sessions (4.3× less)">
+  </picture>
+</p>
 
-<p align="center"><sub>Compared with Windows Terminal + the OpenSSH client built into Windows. <a href="#performance">Details below.</a></sub></p>
+<p align="center"><sub>Komando 0.3.6 compared with Windows Terminal + the OpenSSH client built into Windows. Each pair uses its own scale. 13 MB installer, nothing else to install. <a href="#performance">Details below.</a></sub></p>
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="assets/screenshot-light.png">
