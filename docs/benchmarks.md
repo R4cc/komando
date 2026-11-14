@@ -2,6 +2,23 @@
 
 The numbers in the README, how they were measured, and their limits.
 
+## Three-terminal overview
+
+| Application | Startup | Memory, 1 idle SSH Session | Memory, 10 idle SSH Sessions | Processes, 10 Sessions | A million log lines | Measured |
+|---|---:|---:|---:|---:|---:|---|
+| Komando 0.4.0 | 187 ms | 23.5 MB | 28.3 MB | 1 | 0.81 s | 2026-11-14 |
+| Windows Terminal + OpenSSH* | 351 ms | 29 MB | 127 MB | 21 | 1.4 s | 2026-11-13 |
+| Tabby 1.0.238 | 725 ms | 318.7 MB | 382.8 MB | 5 | 4.19 s | 2026-11-14 |
+
+\*The Windows Terminal row repeats the rounded historical figures below. Its version was not
+recorded, its window was approximately 1600 × 1000, its Scrollback was the default 9,001 lines,
+and its million-line fixture was reported as 95.6 MB. Komando and Tabby use the newer matched
+107 × 40 grid, 100,000-line Scrollback and 100,778,552-byte fixture described next. The earlier
+memory figures retain their originally reported MB units; original raw byte samples are not
+available here. This overview is not a controlled three-way benchmark or a basis for speed-up
+ratios against Windows Terminal. Its [historical summary](performance/2026-11-14/windows-terminal-historical.json)
+is kept separately from the new raw trials.
+
 ## Komando 0.4.0 versus Tabby 1.0.238
 
 Measured on 2026-11-14 on the Windows 11 machine described below, using the installed
@@ -98,7 +115,9 @@ The launcher refuses an existing data directory. The script terminates only the 
 started. If font metrics, display scaling or application layout differ, adjust the fixture
 window size to get the checked 107 × 40 grid before comparing results.
 [summarize.py](performance/2026-11-14/summarize.py) can collect the latest complete trials and
-regenerate the two Tabby comparison graphics. The checked-in environment file records this
+regenerate the light and dark three-terminal graphics. Pass `--charts-only` instead of a results
+directory to redraw them from the checked-in results and historical summary without collecting
+new trials. The checked-in environment file records this
 run; record the new machine and binary versions separately when repeating it.
 
 ## Earlier Windows Terminal comparison: Komando 0.3.6

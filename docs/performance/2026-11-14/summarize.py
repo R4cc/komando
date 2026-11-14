@@ -58,38 +58,46 @@ def summarize(source):
 def chart(summary, dark):
     fg, muted = ("#f0f3f6", "#a4afbc") if dark else ("#1f2328", "#59636e")
     primary, secondary = ("#fb923c", "#8da7c5") if dark else ("#c4510d", "#607b9c")
+    historical_color = "#8fb9a6" if dark else "#547e69"
+    historical = json.loads((HERE / "windows-terminal-historical.json").read_text())["metrics"]
+    windows = {"startup": historical["startup_ms"], "idle_1": historical["idle_1_mb"],
+               "idle_10": historical["idle_10_mb"], "throughput": historical["throughput_seconds"]}
     metrics = [("Window on screen after launch", "startup", 1, "ms", 0, "faster"),
                ("Memory with 1 SSH Session", "idle_1", 1e6, "MB", 1, "less memory"),
                ("Memory with 10 SSH Sessions", "idle_10", 1e6, "MB", 1, "less memory"),
                ("1,000,000 coloured log lines", "throughput", 1, "s", 2, "faster")]
     alt = "; ".join(f"{label}: Komando {summary['komando'][key]['median'] / divisor:.{digits}f} {unit}, "
+                    f"Windows Terminal {windows[key]:g} {unit} (historical), "
                     f"Tabby {summary['tabby'][key]['median'] / divisor:.{digits}f} {unit}"
                     for label, key, divisor, unit, digits, _ in metrics)
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 828 426" width="828" height="426" '
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 828 560" width="828" height="560" '
            f'font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="title desc">',
-           '<title id="title">Komando 0.4.0 compared with Tabby 1.0.238</title>',
+           '<title id="title">Komando, Windows Terminal and Tabby</title>',
            f'<desc id="desc">{escape(alt)}. Lower is better. Each metric has its own zero-based scale.</desc>',
-           f'<text x="0" y="19" fill="{fg}" font-size="14" font-weight="600">Komando 0.4.0 · Tabby 1.0.238</text>',
+           f'<text x="0" y="19" fill="{fg}" font-size="14" font-weight="600">Komando 0.4.0 · Windows Terminal* · Tabby 1.0.238</text>',
            f'<text x="820" y="19" text-anchor="end" fill="{muted}" font-size="12">Lower is better</text>']
     for index, (label, key, divisor, unit, digits, conclusion) in enumerate(metrics):
-        y = 52 + index * 94
+        y = 52 + index * 120
         a, b = (summary[app][key]["median"] / divisor for app in ("komando", "tabby"))
-        out += [f'<text x="0" y="{y}" fill="{fg}" font-size="13" font-weight="600">{escape(label)}</text>',
-                f'<text x="820" y="{y+36}" text-anchor="end" fill="{fg}" font-size="20" font-weight="700">{b/a:.1f}×</text>',
-                f'<text x="820" y="{y+54}" text-anchor="end" fill="{muted}" font-size="12">{conclusion}</text>']
-        for row, (app, value, color) in enumerate((("Komando", a, primary), ("Tabby", b, secondary))):
-            by, width = y + 10 + row * 27, 480 * value / max(a, b)
-            text = f"{value:.{digits}f} {unit}"
+        out += [f'<text x="0" y="{y}" fill="{fg}" font-size="13" font-weight="600">{escape(label)}</text>']
+        rows = (("Komando", a, primary), ("Windows Terminal*", windows[key], historical_color), ("Tabby", b, secondary))
+        for row, (app, value, color) in enumerate(rows):
+            by, width = y + 10 + row * 27, 590 * value / max(a, b, windows[key])
+            text = f"{value:g} {unit}*" if row == 1 else f"{value:.{digits}f} {unit}"
             out += [f'<text x="0" y="{by+15}" fill="{fg if row == 0 else muted}" font-size="12">{app}</text>',
-                    f'<rect x="78" y="{by}" width="{width:.2f}" height="20" rx="4" fill="{color}"><title>{app}: {text}</title></rect>',
-                    f'<text x="{86+width:.2f}" y="{by+15}" fill="{fg if row == 0 else muted}" font-size="13" font-weight="{700 if row == 0 else 400}">{text}</text>']
-    out += [f'<text x="0" y="418" fill="{muted}" font-size="11">Windows 11 · 2026-11-14 · matching 107 × 40 terminal grids · method and raw results linked below</text>', '</svg>']
+                    f'<rect x="144" y="{by}" width="{width:.2f}" height="20" rx="4" fill="{color}"><title>{app}: {text}</title></rect>',
+                    f'<text x="{152+width:.2f}" y="{by+15}" fill="{fg if row == 0 else muted}" font-size="13" font-weight="{700 if row == 0 else 400}">{text}</text>']
+    out += [f'<text x="0" y="531" fill="{muted}" font-size="11">Komando and Tabby: 2026-11-14. *Windows Terminal + OpenSSH: earlier measurements from 2026-11-13.</text>',
+            f'<text x="0" y="549" fill="{muted}" font-size="11">Windows Terminal used different settings and an earlier log fixture; it has not been re-measured. See method below.</text>', '</svg>']
     return "\n".join(out) + "\n"
 
 
 if __name__ == "__main__":
-    report = summarize(Path(sys.argv[1]))
-    (HERE / "results.json").write_text(json.dumps(report, indent=2) + "\n")
+    if sys.argv[1] == "--charts-only":
+        report = json.loads((HERE / "results.json").read_text())
+    else:
+        report = summarize(Path(sys.argv[1]))
+        (HERE / "results.json").write_text(json.dumps(report, indent=2) + "\n")
     for dark in (False, True):
         (ROOT / "assets" / f"benchmark-tabby-{'dark' if dark else 'light'}.svg").write_text(chart(report["summary"], dark))
     print(json.dumps(report["summary"], indent=2))

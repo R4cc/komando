@@ -23,11 +23,11 @@ All your Linux servers in colour-coded projects, one click away. Written in Rust
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-tabby-dark.svg">
-    <img src="assets/benchmark-tabby-light.svg" width="828" alt="Komando 0.4.0 compared with Tabby 1.0.238: window on screen in 187 ms vs 725 ms; 23.5 MB vs 318.7 MB with 1 SSH Session; 28.3 MB vs 382.8 MB with 10 Sessions; a million coloured log lines in 0.81 s vs 4.19 s">
+    <img src="assets/benchmark-tabby-light.svg" width="828" alt="Komando, Windows Terminal and Tabby, in that order: startup 187, 351 and 725 ms; memory with 1 SSH Session 23.5, 29 and 318.7 MB; memory with 10 Sessions 28.3, 127 and 382.8 MB; a million log lines in 0.81, 1.4 and 4.19 seconds. Windows Terminal figures are older measurements with different settings.">
   </picture>
 </p>
 
-<p align="center"><sub>Komando 0.4.0 compared with Tabby 1.0.238 on the same Windows 11 PC, 2026-11-14. Each pair uses its own scale. SSH tests use a launcher linked to the unchanged Komando 0.4.0 library. <a href="#performance">Method and earlier Windows Terminal results below.</a></sub></p>
+<p align="center"><sub>Komando 0.4.0, Windows Terminal + OpenSSH and Tabby 1.0.238 on the same Windows 11 PC. Each metric uses its own scale. Windows Terminal figures are from 2026-11-13 with different settings; Komando and Tabby were measured on 2026-11-14. <a href="#performance">Method and dates below.</a></sub></p>
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="assets/screenshot-light.png">
@@ -151,17 +151,22 @@ machine in `%APPDATA%\Komando`.
 
 ## Performance
 
-Komando 0.4.0 against Tabby 1.0.238, measured on 2026-11-14 with a Ryzen 7 9800X3D and
-Windows 11. Both embedded SSH clients connect to the same local test server, with matching
-107 × 40 terminal grids, Cascadia Mono at size 14 and 100,000 lines of Scrollback.
+Three terminals on the same Ryzen 7 9800X3D Windows 11 PC. Lower values are better.
 
-| | Komando 0.4.0 | Tabby 1.0.238 | |
-|---|---:|---:|---|
-| Window on screen after launch | **187 ms** | 725 ms | 3.9× faster |
-| Memory, 1 idle SSH Session | **23.5 MB** | 318.7 MB | 13.5× less |
-| Memory, 10 idle SSH Sessions | **28.3 MB** | 382.8 MB | 13.5× less |
-| Processes for 10 Sessions | **1** | 5 | |
-| A million coloured log lines | **0.81 s** | 4.19 s | 5.2× faster |
+| Application | Startup | Memory, 1 idle SSH Session | Memory, 10 idle SSH Sessions | Processes, 10 Sessions | A million log lines |
+|---|---:|---:|---:|---:|---:|
+| **Komando 0.4.0** | **187 ms** | **23.5 MB** | **28.3 MB** | **1** | **0.81 s** |
+| Windows Terminal + OpenSSH* | 351 ms | 29 MB | 127 MB | 21 | 1.4 s |
+| Tabby 1.0.238 | 725 ms | 318.7 MB | 382.8 MB | 5 | 4.19 s |
+
+\*Windows Terminal figures are the earlier results from **2026-11-13**, using a larger window,
+default Scrollback and an earlier log fixture; they have not been re-measured. The exact Windows
+Terminal version was not recorded. These figures provide historical context, not a controlled
+three-way ranking. The original measurements remain below.
+
+Komando and Tabby were measured on **2026-11-14**. Both embedded SSH clients connect to the
+same local test server, with matching 107 × 40 terminal grids, Cascadia Mono at size 14 and
+100,000 lines of Scrollback.
 
 Startup uses the installed executables and five warm launches. Komando's SSH tests use a
 release-built launcher that opens disposable Sessions through the unchanged 0.4.0 library;

@@ -1,43 +1,48 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 828 426" width="828" height="426" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="title desc">
-<title id="title">Komando 0.4.0 compared with Tabby 1.0.238</title>
-<desc id="desc">Window on screen after launch: Komando 187 ms, Tabby 725 ms; Memory with 1 SSH Session: Komando 23.5 MB, Tabby 318.7 MB; Memory with 10 SSH Sessions: Komando 28.3 MB, Tabby 382.8 MB; 1,000,000 coloured log lines: Komando 0.81 s, Tabby 4.19 s. Lower is better. Each metric has its own zero-based scale.</desc>
-<text x="0" y="19" fill="#f0f3f6" font-size="14" font-weight="600">Komando 0.4.0 · Tabby 1.0.238</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 828 560" width="828" height="560" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="title desc">
+<title id="title">Komando, Windows Terminal and Tabby</title>
+<desc id="desc">Window on screen after launch: Komando 187 ms, Windows Terminal 351 ms (historical), Tabby 725 ms; Memory with 1 SSH Session: Komando 23.5 MB, Windows Terminal 29 MB (historical), Tabby 318.7 MB; Memory with 10 SSH Sessions: Komando 28.3 MB, Windows Terminal 127 MB (historical), Tabby 382.8 MB; 1,000,000 coloured log lines: Komando 0.81 s, Windows Terminal 1.4 s (historical), Tabby 4.19 s. Lower is better. Each metric has its own zero-based scale.</desc>
+<text x="0" y="19" fill="#f0f3f6" font-size="14" font-weight="600">Komando 0.4.0 · Windows Terminal* · Tabby 1.0.238</text>
 <text x="820" y="19" text-anchor="end" fill="#a4afbc" font-size="12">Lower is better</text>
 <text x="0" y="52" fill="#f0f3f6" font-size="13" font-weight="600">Window on screen after launch</text>
-<text x="820" y="88" text-anchor="end" fill="#f0f3f6" font-size="20" font-weight="700">3.9×</text>
-<text x="820" y="106" text-anchor="end" fill="#a4afbc" font-size="12">faster</text>
 <text x="0" y="77" fill="#f0f3f6" font-size="12">Komando</text>
-<rect x="78" y="62" width="124.02" height="20" rx="4" fill="#fb923c"><title>Komando: 187 ms</title></rect>
-<text x="210.02" y="77" fill="#f0f3f6" font-size="13" font-weight="700">187 ms</text>
-<text x="0" y="104" fill="#a4afbc" font-size="12">Tabby</text>
-<rect x="78" y="89" width="480.00" height="20" rx="4" fill="#8da7c5"><title>Tabby: 725 ms</title></rect>
-<text x="566.00" y="104" fill="#a4afbc" font-size="13" font-weight="400">725 ms</text>
-<text x="0" y="146" fill="#f0f3f6" font-size="13" font-weight="600">Memory with 1 SSH Session</text>
-<text x="820" y="182" text-anchor="end" fill="#f0f3f6" font-size="20" font-weight="700">13.5×</text>
-<text x="820" y="200" text-anchor="end" fill="#a4afbc" font-size="12">less memory</text>
-<text x="0" y="171" fill="#f0f3f6" font-size="12">Komando</text>
-<rect x="78" y="156" width="35.46" height="20" rx="4" fill="#fb923c"><title>Komando: 23.5 MB</title></rect>
-<text x="121.46" y="171" fill="#f0f3f6" font-size="13" font-weight="700">23.5 MB</text>
-<text x="0" y="198" fill="#a4afbc" font-size="12">Tabby</text>
-<rect x="78" y="183" width="480.00" height="20" rx="4" fill="#8da7c5"><title>Tabby: 318.7 MB</title></rect>
-<text x="566.00" y="198" fill="#a4afbc" font-size="13" font-weight="400">318.7 MB</text>
-<text x="0" y="240" fill="#f0f3f6" font-size="13" font-weight="600">Memory with 10 SSH Sessions</text>
-<text x="820" y="276" text-anchor="end" fill="#f0f3f6" font-size="20" font-weight="700">13.5×</text>
-<text x="820" y="294" text-anchor="end" fill="#a4afbc" font-size="12">less memory</text>
-<text x="0" y="265" fill="#f0f3f6" font-size="12">Komando</text>
-<rect x="78" y="250" width="35.54" height="20" rx="4" fill="#fb923c"><title>Komando: 28.3 MB</title></rect>
-<text x="121.54" y="265" fill="#f0f3f6" font-size="13" font-weight="700">28.3 MB</text>
-<text x="0" y="292" fill="#a4afbc" font-size="12">Tabby</text>
-<rect x="78" y="277" width="480.00" height="20" rx="4" fill="#8da7c5"><title>Tabby: 382.8 MB</title></rect>
-<text x="566.00" y="292" fill="#a4afbc" font-size="13" font-weight="400">382.8 MB</text>
-<text x="0" y="334" fill="#f0f3f6" font-size="13" font-weight="600">1,000,000 coloured log lines</text>
-<text x="820" y="370" text-anchor="end" fill="#f0f3f6" font-size="20" font-weight="700">5.2×</text>
-<text x="820" y="388" text-anchor="end" fill="#a4afbc" font-size="12">faster</text>
-<text x="0" y="359" fill="#f0f3f6" font-size="12">Komando</text>
-<rect x="78" y="344" width="92.58" height="20" rx="4" fill="#fb923c"><title>Komando: 0.81 s</title></rect>
-<text x="178.58" y="359" fill="#f0f3f6" font-size="13" font-weight="700">0.81 s</text>
-<text x="0" y="386" fill="#a4afbc" font-size="12">Tabby</text>
-<rect x="78" y="371" width="480.00" height="20" rx="4" fill="#8da7c5"><title>Tabby: 4.19 s</title></rect>
-<text x="566.00" y="386" fill="#a4afbc" font-size="13" font-weight="400">4.19 s</text>
-<text x="0" y="418" fill="#a4afbc" font-size="11">Windows 11 · 2026-11-14 · matching 107 × 40 terminal grids · method and raw results linked below</text>
+<rect x="144" y="62" width="152.44" height="20" rx="4" fill="#fb923c"><title>Komando: 187 ms</title></rect>
+<text x="304.44" y="77" fill="#f0f3f6" font-size="13" font-weight="700">187 ms</text>
+<text x="0" y="104" fill="#a4afbc" font-size="12">Windows Terminal*</text>
+<rect x="144" y="89" width="285.73" height="20" rx="4" fill="#8fb9a6"><title>Windows Terminal*: 351 ms*</title></rect>
+<text x="437.73" y="104" fill="#a4afbc" font-size="13" font-weight="400">351 ms*</text>
+<text x="0" y="131" fill="#a4afbc" font-size="12">Tabby</text>
+<rect x="144" y="116" width="590.00" height="20" rx="4" fill="#8da7c5"><title>Tabby: 725 ms</title></rect>
+<text x="742.00" y="131" fill="#a4afbc" font-size="13" font-weight="400">725 ms</text>
+<text x="0" y="172" fill="#f0f3f6" font-size="13" font-weight="600">Memory with 1 SSH Session</text>
+<text x="0" y="197" fill="#f0f3f6" font-size="12">Komando</text>
+<rect x="144" y="182" width="43.58" height="20" rx="4" fill="#fb923c"><title>Komando: 23.5 MB</title></rect>
+<text x="195.58" y="197" fill="#f0f3f6" font-size="13" font-weight="700">23.5 MB</text>
+<text x="0" y="224" fill="#a4afbc" font-size="12">Windows Terminal*</text>
+<rect x="144" y="209" width="53.68" height="20" rx="4" fill="#8fb9a6"><title>Windows Terminal*: 29 MB*</title></rect>
+<text x="205.68" y="224" fill="#a4afbc" font-size="13" font-weight="400">29 MB*</text>
+<text x="0" y="251" fill="#a4afbc" font-size="12">Tabby</text>
+<rect x="144" y="236" width="590.00" height="20" rx="4" fill="#8da7c5"><title>Tabby: 318.7 MB</title></rect>
+<text x="742.00" y="251" fill="#a4afbc" font-size="13" font-weight="400">318.7 MB</text>
+<text x="0" y="292" fill="#f0f3f6" font-size="13" font-weight="600">Memory with 10 SSH Sessions</text>
+<text x="0" y="317" fill="#f0f3f6" font-size="12">Komando</text>
+<rect x="144" y="302" width="43.68" height="20" rx="4" fill="#fb923c"><title>Komando: 28.3 MB</title></rect>
+<text x="195.68" y="317" fill="#f0f3f6" font-size="13" font-weight="700">28.3 MB</text>
+<text x="0" y="344" fill="#a4afbc" font-size="12">Windows Terminal*</text>
+<rect x="144" y="329" width="195.74" height="20" rx="4" fill="#8fb9a6"><title>Windows Terminal*: 127 MB*</title></rect>
+<text x="347.74" y="344" fill="#a4afbc" font-size="13" font-weight="400">127 MB*</text>
+<text x="0" y="371" fill="#a4afbc" font-size="12">Tabby</text>
+<rect x="144" y="356" width="590.00" height="20" rx="4" fill="#8da7c5"><title>Tabby: 382.8 MB</title></rect>
+<text x="742.00" y="371" fill="#a4afbc" font-size="13" font-weight="400">382.8 MB</text>
+<text x="0" y="412" fill="#f0f3f6" font-size="13" font-weight="600">1,000,000 coloured log lines</text>
+<text x="0" y="437" fill="#f0f3f6" font-size="12">Komando</text>
+<rect x="144" y="422" width="113.80" height="20" rx="4" fill="#fb923c"><title>Komando: 0.81 s</title></rect>
+<text x="265.80" y="437" fill="#f0f3f6" font-size="13" font-weight="700">0.81 s</text>
+<text x="0" y="464" fill="#a4afbc" font-size="12">Windows Terminal*</text>
+<rect x="144" y="449" width="197.17" height="20" rx="4" fill="#8fb9a6"><title>Windows Terminal*: 1.4 s*</title></rect>
+<text x="349.17" y="464" fill="#a4afbc" font-size="13" font-weight="400">1.4 s*</text>
+<text x="0" y="491" fill="#a4afbc" font-size="12">Tabby</text>
+<rect x="144" y="476" width="590.00" height="20" rx="4" fill="#8da7c5"><title>Tabby: 4.19 s</title></rect>
+<text x="742.00" y="491" fill="#a4afbc" font-size="13" font-weight="400">4.19 s</text>
+<text x="0" y="531" fill="#a4afbc" font-size="11">Komando and Tabby: 2026-11-14. *Windows Terminal + OpenSSH: earlier measurements from 2026-11-13.</text>
+<text x="0" y="549" fill="#a4afbc" font-size="11">Windows Terminal used different settings and an earlier log fixture; it has not been re-measured. See method below.</text>
 </svg>
