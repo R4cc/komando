@@ -42,7 +42,7 @@ impl Workspace {
             }
             let _ = this.update(cx, |this, cx| {
                 this.update = match result {
-                    Ok(release) if release.is_newer() => UpdateState::Available(release),
+                    Ok(release) if release.is_available_for(&update::install_kind()) => UpdateState::Available(release),
                     Ok(_) => UpdateState::UpToDate,
                     Err(_) if quiet => UpdateState::Idle,
                     Err(err) => UpdateState::Failed(format!("{err:#}")),
@@ -59,11 +59,7 @@ impl Workspace {
         let UpdateState::Available(release) = &self.update else { return };
         let release = release.clone();
         let kind = update::install_kind();
-        let asset = match &kind {
-            InstallKind::Portable { .. } => release.exe.clone(),
-            InstallKind::Installer { .. } => release.msi.clone(),
-            InstallKind::Unsupported => None,
-        };
+        let asset = release.asset_for(&kind).cloned();
         let Some(asset) = asset else {
             self.update = UpdateState::Failed(match kind {
                 InstallKind::Unsupported => "Updates install on Windows only.".into(),

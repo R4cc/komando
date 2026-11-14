@@ -84,6 +84,26 @@ impl Release {
         self.version > current_version()
     }
 
+    /// A published release may still be building. Only offer an update once this copy's
+    /// download is attached; development platforms can open the release page instead.
+    pub fn is_available_for(&self, kind: &InstallKind) -> bool {
+        self.is_newer()
+            && match kind {
+                InstallKind::Unsupported => self.exe.iter().chain(self.msi.iter()).any(Asset::is_ready),
+                _ => self.asset_for(kind).is_some(),
+            }
+    }
+
+    /// The same download is used when checking availability and when installing.
+    pub fn asset_for(&self, kind: &InstallKind) -> Option<&Asset> {
+        match kind {
+            InstallKind::Portable { .. } => self.exe.as_ref(),
+            InstallKind::Installer { .. } => self.msi.as_ref(),
+            InstallKind::Unsupported => None,
+        }
+        .filter(|asset| asset.is_ready())
+    }
+
     pub fn version_text(&self) -> String {
         let (a, b, c) = self.version;
         format!("{a}.{b}.{c}")
@@ -125,6 +145,12 @@ impl Release {
                 short
             })
             .collect()
+    }
+}
+
+impl Asset {
+    fn is_ready(&self) -> bool {
+        self.size > 0 && !self.browser_download_url.trim().is_empty()
     }
 }
 
@@ -772,6 +798,64 @@ mod tests {
         assert_eq!(release.msi.unwrap().name, "Komando-x64.msi");
         assert!(!parse_release(api("v0.0.1", &[])).unwrap().is_newer());
         assert!(parse_release(api("nightly", &[])).is_err());
+    }
+
+    #[test]
+    fn updates_wait_for_the_download_for_each_install_type() {
+        let portable = InstallKind::Portable { exe: PathBuf::from("komando.exe") };
+        let per_user = InstallKind::Installer { all_users: false };
+        let all_users = InstallKind::Installer { all_users: true };
+        let kinds = [&portable, &per_user, &all_users, &InstallKind::Unsupported];
+
+        // Publishing the release starts the build; it is not an available update yet.
+        let release = parse_release(api("v9.0.1", &[])).unwrap();
+        assert!(release.is_newer());
+        for kind in kinds {
+            assert!(!release.is_available_for(kind), "{kind:?}");
+            assert!(release.asset_for(kind).is_none());
+        }
+
+        // The files can appear separately. An EXE cannot update an MSI installation.
+        let release = parse_release(api("v9.0.1", &["Komando-9.0.1-x64.exe"])).unwrap();
+        assert!(release.is_available_for(&portable));
+        assert!(release.is_available_for(&InstallKind::Unsupported));
+        assert!(!release.is_available_for(&per_user));
+        assert!(!release.is_available_for(&all_users));
+        assert_eq!(release.asset_for(&portable).unwrap().name, "Komando-9.0.1-x64.exe");
+
+        let release = parse_release(api("v9.0.1", &["Komando-x64.msi"])).unwrap();
+        assert!(!release.is_available_for(&portable));
+        assert!(release.is_available_for(&per_user));
+        assert!(release.is_available_for(&all_users));
+        assert_eq!(release.asset_for(&per_user).unwrap().name, "Komando-x64.msi");
+
+        let release = parse_release(api("v9.0.1", &["Komando-9.0.1-x64.exe", "Komando-9.0.1-x64.msi"])).unwrap();
+        for kind in kinds {
+            assert!(release.is_available_for(kind), "{kind:?}");
+        }
+
+        let old = parse_release(api("v0.0.1", &["Komando-x64.exe", "Komando-x64.msi"])).unwrap();
+        for kind in kinds {
+            assert!(!old.is_available_for(kind), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn empty_or_unrelated_assets_do_not_make_an_update_available() {
+        let portable = InstallKind::Portable { exe: PathBuf::from("komando.exe") };
+        let installer = InstallKind::Installer { all_users: true };
+        let unrelated = parse_release(api("v9.0.1", &["source.zip", "Komando-9.0.0-x64.exe", "Komando-9.0.0-x64.msi"])).unwrap();
+        for kind in [&portable, &installer, &InstallKind::Unsupported] {
+            assert!(!unrelated.is_available_for(kind));
+        }
+
+        let mut release = parse_release(api("v9.0.1", &["Komando-x64.exe", "Komando-x64.msi"])).unwrap();
+        release.exe.as_mut().unwrap().size = 0;
+        release.msi.as_mut().unwrap().browser_download_url.clear();
+        for kind in [&portable, &installer, &InstallKind::Unsupported] {
+            assert!(!release.is_available_for(kind));
+            assert!(release.asset_for(kind).is_none());
+        }
     }
 
     #[test]

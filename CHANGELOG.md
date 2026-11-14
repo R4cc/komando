@@ -6,6 +6,11 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Update checks wait until the new release has a download for your install type, so releases
+  that are still being built no longer offer an update that cannot be installed.
+
 ## [0.4.1] - 2026-11-14
 
 ### Fixed
