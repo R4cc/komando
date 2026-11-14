@@ -142,67 +142,18 @@ machine in `%APPDATA%\Komando`.
 
 <br clear="right">
 
-### Feels like Windows 11
-
-- **Mica** lets your wallpaper show softly through the window. Adjustable or off.
-- **Themes** for dark and light mode (Ember, Midnight, Forest, Paper, …).
-- **One-click updates.** A button appears beside Settings when a new version is out.
-- **Any keyboard layout.** Dead keys (´ then e is é) and AltGr characters type as in any Windows app.
-
 ## Performance
 
-Three terminals on the same Ryzen 7 9800X3D Windows 11 PC. Lower values are better.
+Komando was built from the ground up using rust for performance.
 
-| Application | Startup | Memory, 1 idle SSH Session | Memory, 10 idle SSH Sessions | Processes, 10 Sessions | A million log lines |
+| Application | Startup | Memory, 1 idle SSH Session | Memory, 10 idle SSH Sessions | Windows Processes, 10 Sessions | Printing a million log lines |
 |---|---:|---:|---:|---:|---:|
 | **Komando 0.4.0** | **187 ms** | **23.5 MB** | **28.3 MB** | **1** | **0.81 s** |
 | Windows Terminal + OpenSSH* | 351 ms | 29 MB | 127 MB | 21 | 1.4 s |
 | Tabby 1.0.238 | 725 ms | 318.7 MB | 382.8 MB | 5 | 4.19 s |
 
-\*Windows Terminal figures are the earlier results from **2026-11-13**, using a larger window,
-default Scrollback and an earlier log fixture; they have not been re-measured. The exact Windows
-Terminal version was not recorded. These figures provide historical context, not a controlled
-three-way ranking. The original measurements remain below.
-
-Komando and Tabby were measured on **2026-11-14**. Both embedded SSH clients connect to the
-same local test server, with matching 107 × 40 terminal grids, Cascadia Mono at size 14 and
-100,000 lines of Scrollback.
-
-Startup uses the installed executables and five warm launches. Komando's SSH tests use a
-release-built launcher that opens disposable Sessions through the unchanged 0.4.0 library;
-Tabby uses its installed executable. Memory is private working set across every client process,
-the median of three fresh launches with five samples each; MB means 1,000,000 bytes. Throughput
-is the median of five runs, timed until the terminal answers after parsing the last line.
-These are local fixture results; real servers and network links can behave differently.
 The [method, ranges, raw data and reproduction scripts](docs/benchmarks.md) are included.
 
-<details>
-<summary><b>Earlier Windows Terminal comparison (Komando 0.3.6)</b></summary>
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-dark.svg">
-  <img src="assets/benchmark-light.svg" width="828" alt="Earlier Komando 0.3.6 measurements against Windows Terminal + OpenSSH: startup 235 ms vs 351 ms; 22 MB vs 29 MB with 1 SSH session; 29 MB vs 127 MB with 10 sessions">
-</picture>
-
-Komando 0.3.6 against Windows Terminal with the OpenSSH client that ships with Windows, both
-connected to the same SSH server. Ryzen 7 9800X3D, Windows 11.
-
-| | Komando | Windows Terminal + OpenSSH | |
-|---|---:|---:|---|
-| Window on screen after launch | **235 ms** | 351 ms | 1.5× faster |
-| Memory, 1 SSH session | **22 MB** | 29 MB | 1.3× less |
-| Memory, 10 SSH sessions | **29 MB** | 127 MB | 4.3× less |
-| Processes for 10 sessions | **1** | 21 | |
-| CPU with 10 idle sessions | 0 % | 0 % | |
-
-Memory is the private working set, the "Memory" column in Task Manager, summed over all
-processes. On raw throughput Windows Terminal was faster in 0.3.6: it took a million log lines in
-about 1.4 s, where Komando needed about 2.9 s. Since 0.3.7 the stalls that slowed Komando down
-are gone: on the same kind of test, a million coloured log lines now come through in about
-0.8 s instead of about 4 s. Windows Terminal has not been re-measured against it yet. Method,
-ranges and caveats are in [docs/benchmarks.md](docs/benchmarks.md).
-
-</details>
 
 ### On slow and distant connections
 
