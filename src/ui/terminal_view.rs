@@ -41,6 +41,8 @@ use crate::ui::box_drawing::{self, Prim};
 use crate::ui::widgets::{button, icon_el, ButtonKind};
 
 mod search;
+#[cfg(all(test, target_os = "linux"))]
+mod render_bench;
 
 actions!(terminal, [
     Copy, Paste, ScrollPageUp, ScrollPageDown, Find, SearchOlder, SearchNewer, SendTab, SendBackTab,
@@ -237,7 +239,7 @@ pub struct TerminalView {
     /// Over the output: how long the pointer rests at the right edge before it opens.
     pub minimap_delay: Duration,
     minimap_state: Rc<crate::ui::minimap::MinimapState>,
-    glyph_cache: Rc<RefCell<GlyphCache>>,
+    grid_cache: Rc<RefCell<GridCache>>,
     marks: Marks,
     hovered_mark: Option<u64>,
     /// The mark jumped to last, lit until the timer with the same number runs out.
@@ -434,7 +436,7 @@ impl TerminalView {
             minimap_overlay: false,
             minimap_delay: Duration::from_millis(300),
             minimap_state: Rc::new(Default::default()),
-            glyph_cache: Rc::new(RefCell::new(GlyphCache::default())),
+            grid_cache: Rc::new(RefCell::new(GridCache::default())),
             marks: Marks::default(),
             hovered_mark: None,
             flash: None,
@@ -2115,6 +2117,167 @@ fn layout_row(
     }
 }
 
+/// Copy the cells on screen into `cells`, colours resolved with `palette`, a row at a time
+/// from the top. Returns the cursor, if it is on one of the `rows` rows, and the mode.
+fn snapshot<T: alacritty_terminal::event::EventListener>(
+    term: &Term<T>,
+    palette: &crate::theme::TerminalPalette,
+    rows: u16,
+    cells: &mut Vec<SnapCell>,
+) -> (Option<CursorSnap>, TermMode) {
+    let content = term.renderable_content();
+    let colors = content.colors;
+    let offset = content.display_offset as i32;
+    let selection = content.selection;
+    let cursor_point = content.cursor.point;
+    let mut cursor_wide = false;
+    for indexed in content.display_iter {
+        let cell = indexed.cell;
+        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            continue;
+        }
+        if indexed.point == cursor_point && cell.flags.contains(Flags::WIDE_CHAR) {
+            cursor_wide = true;
+        }
+        let mut fg = palette.resolve(cell.fg, colors);
+        let mut bg = palette.resolve(cell.bg, colors);
+        if cell.flags.contains(Flags::INVERSE) {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+        let hidden = cell.flags.contains(Flags::HIDDEN);
+        cells.push(SnapCell {
+            row: indexed.point.line.0 + offset,
+            col: indexed.point.column.0,
+            c: if hidden || cell.c == '\t' { ' ' } else { cell.c },
+            extra: cell.zerowidth().filter(|_| !hidden).map(Into::into),
+            fg,
+            bg,
+            underline: cell.underline_color().map(|c| palette.resolve(c, colors)),
+            flags: cell.flags,
+            selected: selection.is_some_and(|s| s.contains(indexed.point)),
+        });
+    }
+    let cursor_row = cursor_point.line.0 + offset;
+    let cursor = (content.cursor.shape != CursorShape::Hidden && (0..rows as i32).contains(&cursor_row)).then(|| {
+        CursorSnap {
+            row: cursor_row,
+            col: cursor_point.column.0,
+            shape: content.cursor.shape,
+            wide: cursor_wide,
+            color: palette.resolve(Color::Named(NamedColor::Cursor), colors),
+        }
+    });
+    (cursor, content.mode)
+}
+
+/// The terminal font at one size: what the grid is measured and laid out with.
+struct GridFont {
+    family: SharedString,
+    size: Pixels,
+    /// Regular, bold, italic, bold italic.
+    fonts: [gpui::Font; 4],
+    cell_w: Pixels,
+    line_h: Pixels,
+    metrics: RowTextMetrics,
+}
+
+impl GridFont {
+    fn new(text_system: &gpui::WindowTextSystem, family: SharedString, size: Pixels) -> Self {
+        let mut regular = gpui::font(family.clone());
+        regular.features = gpui::FontFeatures::disable_ligatures();
+        let font_id = text_system.resolve_font(&regular);
+        let cell_w = text_system.advance(font_id, size, 'm').map(|s| s.width).unwrap_or(px(8.));
+        let line_h = (size * 1.32).round();
+        let metrics = RowTextMetrics::new(line_h, text_system.ascent(font_id, size), text_system.descent(font_id, size));
+        let bold = |mut f: gpui::Font| {
+            f.weight = FontWeight::BOLD;
+            f
+        };
+        let italic = |mut f: gpui::Font| {
+            f.style = FontStyle::Italic;
+            f
+        };
+        let fonts = [regular.clone(), bold(regular.clone()), italic(regular.clone()), bold(italic(regular))];
+        Self { family, size, fonts, cell_w, line_h, metrics }
+    }
+}
+
+/// How the grid is drawn this frame, apart from what is in the terminal.
+struct GridLook<'a> {
+    font: &'a GridFont,
+    /// The top left corner of the grid's first cell.
+    origin: gpui::Point<Pixels>,
+    scale: f32,
+    /// Rows on screen.
+    rows: u16,
+    palette: &'a crate::theme::TerminalPalette,
+    highlighter: &'a highlight::Highlighter,
+    focused: bool,
+}
+
+/// What the grid keeps from one frame to the next.
+#[derive(Default)]
+struct GridCache {
+    glyphs: GlyphCache,
+}
+
+/// Lay out the grid for one frame into `frame`: copy what is on screen and let go of the
+/// terminal, then lay out its rows (the parser keeps reading output meanwhile).
+fn layout_grid(
+    term: &SharedTerm,
+    text_system: &gpui::WindowTextSystem,
+    look: &GridLook,
+    cache: &mut GridCache,
+    frame: &mut Frame,
+) {
+    let font = look.font;
+    let (cells, cursor, mode) = {
+        let term = term.lock();
+        let mut cells = Vec::with_capacity(term.columns() * look.rows as usize);
+        let (cursor, mode) = snapshot(&*term, look.palette, look.rows, &mut cells);
+        (cells, cursor, mode)
+    };
+    // Highlight rules colour plain output; full-screen programs (vim, htop) are left alone.
+    let highlight = !mode.contains(TermMode::ALT_SCREEN) && look.highlighter.rule_count() > 0;
+    let ctx = RowContext {
+        text_system,
+        fonts: font.fonts.clone(),
+        font_size: font.size,
+        origin: look.origin,
+        cell_w: font.cell_w,
+        line_h: font.line_h,
+        scale: look.scale,
+        baseline: font.metrics.baseline,
+        underline_y: font.metrics.underline_y,
+        strike_y: font.metrics.strike_y,
+        highlighter: highlight.then_some(look.highlighter),
+        dark: look.palette.dark,
+        default_bg: look.palette.background,
+        selection: look.palette.selection,
+        cursor,
+        focused: look.focused,
+    };
+    let mut scratch = RowScratch::default();
+    cache.glyphs.prepare(&font.family, font.size);
+    layout_rows(&cells, &ctx, &mut cache.glyphs, frame, &mut scratch);
+}
+
+/// Lay out every row of a snapshot into `frame`.
+fn layout_rows(cells: &[SnapCell], ctx: &RowContext, glyphs: &mut GlyphCache, frame: &mut Frame, scratch: &mut RowScratch) {
+    let mut start = 0;
+    while start < cells.len() {
+        let row = cells[start].row;
+        let end = cells[start..].iter().position(|c| c.row != row).map_or(cells.len(), |n| start + n);
+        if row >= 0 {
+            layout_row(&cells[start..end], row, ctx, glyphs, frame, scratch);
+        }
+        start = end;
+    }
+    for d in &mut frame.decorations {
+        d.y += if d.kind == DecorationKind::Strike { ctx.strike_y } else { ctx.underline_y };
+    }
+}
+
 /// One glyph of a shaped cell, relative to the cell's left edge and the baseline.
 #[derive(Clone, Copy)]
 struct CachedGlyph {
@@ -2150,6 +2313,8 @@ impl GlyphCache {
 
     fn get(&mut self, ctx: &RowContext, style: usize, cell: &SnapCell) -> &[CachedGlyph] {
         let shape = |text: &str| -> Box<[CachedGlyph]> {
+            #[cfg(test)]
+            SHAPED.with(|n| n.set(n.get() + 1));
             let run = TextRun {
                 len: text.len(),
                 font: ctx.fonts[style].clone(),
@@ -2184,6 +2349,17 @@ impl GlyphCache {
             }
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Clusters shaped on this thread, for tests and benchmarks of the glyph cache.
+    static SHAPED: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn shaped_count() -> usize {
+    SHAPED.with(Cell::get)
 }
 
 fn paint_prim(window: &mut Window, prim: &Prim, color: Hsla) {
@@ -2269,7 +2445,7 @@ impl Render for TerminalView {
         let bounds_state = self.minimap_state.clone();
         let origin_cell = self.origin.clone();
         let cell_cell = self.cell.clone();
-        let glyph_cache = self.glyph_cache.clone();
+        let grid_cache = self.grid_cache.clone();
         let marked = self.marked.clone();
         let input_view = cx.entity();
         let input_focus = self.focus.clone();
@@ -2314,14 +2490,8 @@ impl Render for TerminalView {
         let surface = canvas(
             move |bounds, window, cx| crate::perf::time("terminal grid prepaint", || {
                 let text_system = window.text_system().clone();
-                let mut regular = gpui::font(family.clone());
-                regular.features = gpui::FontFeatures::disable_ligatures();
-                let font_id = text_system.resolve_font(&regular);
-                let cell_w = text_system
-                    .advance(font_id, font_size, 'm')
-                    .map(|s| s.width)
-                    .unwrap_or(px(8.));
-                let line_h = (font_size * 1.32).round();
+                let font = GridFont::new(&text_system, family.clone(), font_size);
+                let (cell_w, line_h) = (font.cell_w, font.line_h);
                 let cw = f32::from(cell_w);
                 let lh = f32::from(line_h);
                 origin_cell.set(bounds.origin);
@@ -2377,106 +2547,21 @@ impl Render for TerminalView {
                     });
                 }
 
-                // Copy what is on screen and let go of the terminal before laying out text.
-                let (cells, cursor, mode) = {
-                    let term = term.lock();
-                    let content = term.renderable_content();
-                    let colors = content.colors;
-                    let offset = content.display_offset as i32;
-                    let selection = content.selection;
-                    let cursor_point = content.cursor.point;
-                    let mut cursor_wide = false;
-                    let mut cells = Vec::with_capacity(cols as usize * rows as usize);
-                    for indexed in content.display_iter {
-                        let cell = indexed.cell;
-                        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                            continue;
-                        }
-                        if indexed.point == cursor_point && cell.flags.contains(Flags::WIDE_CHAR) {
-                            cursor_wide = true;
-                        }
-                        let mut fg = palette.resolve(cell.fg, colors);
-                        let mut bg = palette.resolve(cell.bg, colors);
-                        if cell.flags.contains(Flags::INVERSE) {
-                            std::mem::swap(&mut fg, &mut bg);
-                        }
-                        let hidden = cell.flags.contains(Flags::HIDDEN);
-                        cells.push(SnapCell {
-                            row: indexed.point.line.0 + offset,
-                            col: indexed.point.column.0,
-                            c: if hidden || cell.c == '\t' { ' ' } else { cell.c },
-                            extra: cell.zerowidth().filter(|_| !hidden).map(Into::into),
-                            fg,
-                            bg,
-                            underline: cell.underline_color().map(|c| palette.resolve(c, colors)),
-                            flags: cell.flags,
-                            selected: selection.is_some_and(|s| s.contains(indexed.point)),
-                        });
-                    }
-                    let cursor_row = cursor_point.line.0 + offset;
-                    let cursor = (content.cursor.shape != CursorShape::Hidden && (0..rows as i32).contains(&cursor_row))
-                        .then(|| CursorSnap {
-                            row: cursor_row,
-                            col: cursor_point.column.0,
-                            shape: content.cursor.shape,
-                            wide: cursor_wide,
-                            color: palette.resolve(Color::Named(NamedColor::Cursor), colors),
-                        });
-                    (cells, cursor, content.mode)
-                };
-
-                let ascent = text_system.ascent(font_id, font_size);
-                let descent = text_system.descent(font_id, font_size);
-                let metrics = RowTextMetrics::new(line_h, ascent, descent);
-                let bold = |mut f: gpui::Font| {
-                    f.weight = FontWeight::BOLD;
-                    f
-                };
-                let italic = |mut f: gpui::Font| {
-                    f.style = FontStyle::Italic;
-                    f
-                };
-                // Highlight rules colour plain output; full-screen programs (vim, htop) are left alone.
-                let highlight = !mode.contains(TermMode::ALT_SCREEN) && highlighter.rule_count() > 0;
-                let ctx = RowContext {
-                    text_system: &text_system,
-                    fonts: [regular.clone(), bold(regular.clone()), italic(regular.clone()), bold(italic(regular))],
-                    font_size,
-                    origin: bounds.origin,
-                    cell_w,
-                    line_h,
-                    scale: window.scale_factor(),
-                    baseline: metrics.baseline,
-                    underline_y: metrics.underline_y,
-                    strike_y: metrics.strike_y,
-                    highlighter: highlight.then_some(&*highlighter),
-                    dark: palette.dark,
-                    default_bg: palette.background,
-                    selection: palette.selection,
-                    cursor,
-                    focused,
-                };
-
                 let mut frame = Frame { font_size, ..Frame::default() };
                 if let Some(row) = flash_row {
                     let y = bounds.origin.y + line_h * row as f32;
                     frame.rects.push((Bounds::new(point(bounds.origin.x, y), size(bounds.size.width, line_h)), flash_color));
                 }
-                let mut scratch = RowScratch::default();
-                let mut glyphs = glyph_cache.borrow_mut();
-                glyphs.prepare(&family, font_size);
-                let mut start = 0;
-                while start < cells.len() {
-                    let row = cells[start].row;
-                    let end = cells[start..].iter().position(|c| c.row != row).map_or(cells.len(), |n| start + n);
-                    if row >= 0 {
-                        layout_row(&cells[start..end], row, &ctx, &mut glyphs, &mut frame, &mut scratch);
-                    }
-                    start = end;
-                }
-                for d in &mut frame.decorations {
-                    d.y += if d.kind == DecorationKind::Strike { ctx.strike_y } else { ctx.underline_y };
-                }
+                let look = GridLook {
+                    font: &font,
+                    origin: bounds.origin,
+                    scale: window.scale_factor(),
+                    rows,
+                    palette: &palette,
+                    highlighter: &highlighter,
+                    focused,
+                };
+                layout_grid(&term, &text_system, &look, &mut grid_cache.borrow_mut(), &mut frame);
                 // Search matches: over the cells' backgrounds and the selection, under the text.
                 let (match_bg, current_bg, current_edge) = search_colors;
                 for (row, cols, current) in &search_marks {
@@ -2496,7 +2581,7 @@ impl Render for TerminalView {
                     let fg = rgb_to_hsla(palette.foreground);
                     let run = TextRun {
                         len: text.len(),
-                        font: ctx.fonts[0].clone(),
+                        font: font.fonts[0].clone(),
                         color: fg,
                         background_color: None,
                         underline: Some(UnderlineStyle { thickness: px(1.), color: Some(fg), wavy: false }),

@@ -3859,6 +3859,7 @@ dependencies = [
  "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-platform",
+ "gpui-pre-wgpu",
  "log",
  "rand 0.8.8",
  "raw-window-handle",
