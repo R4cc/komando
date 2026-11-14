@@ -112,6 +112,17 @@ new russh release. It also builds against patched vte and alacritty_terminal in 
 than one character at a time; their `KOMANDO.md` files say what changed, how to run their tests
 and how to carry the change over to new releases.
 
+`src/ui/terminal_view/render_bench.rs` times the terminal's per-frame work without a window: copying
+the screen out of the terminal and laying out its rows with GPUI's real text system, for a
+static screen, typing, a log flood, a TUI redrawing a few rows, Unicode-heavy screens and a
+screen of thousands of distinct glyph clusters. It reports the median and p95 per frame and how
+many clusters were shaped (`KOMANDO_RENDER_FRAMES` sets the frame count, default 400). It runs on
+Linux only:
+
+```sh
+cargo test --release --lib render_bench_ -- --ignored --nocapture --test-threads=1
+```
+
 To include rendering, run the whole app against `examples/logserver.rs`. It writes a key pair
 for `examples/demo.rs`, floods each shell it opens and prints how long the terminal took to take
 in the output. It also logs the size each terminal opens at and each size the app sends, with

@@ -6,8 +6,24 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-14
+
+### Changed
+
+- Output reaches the screen faster. Komando now takes in plain text a whole run at a time
+  instead of one character at a time: a million coloured log lines over SSH arrive about a
+  quarter sooner, and plain or full-screen output can take in up to twice as much per second.
+- Less work for every frame. Komando lays out again only the lines that changed, so typing,
+  a still screen and programs such as vim or htop that redraw a few lines take a small fraction
+  of the time they used to per frame.
+- Screens full of different characters (many scripts, emoji, accents) no longer slow every frame
+  down: Komando keeps the shapes of the characters on screen instead of working them out again
+  each time.
+
 ### Fixed
 
+- While scrolled up, output from a program that scrolls only part of the screen could make the
+  view show the wrong lines.
 - Update checks wait until the new release has a download for your install type, so releases
   that are still being built no longer offer an update that cannot be installed.
 
@@ -907,7 +923,9 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/R4cc/komando/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/R4cc/komando/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/R4cc/komando/compare/v0.3.7...v0.4.0
 [0.3.4]: https://github.com/R4cc/komando/compare/v0.3.3...v0.3.4
 [0.3.0]: https://github.com/R4cc/komando/compare/v0.2.8...v0.3.0

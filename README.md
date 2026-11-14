@@ -154,6 +154,24 @@ Komando was built from the ground up using rust for performance.
 
 The [method, ranges, raw data and reproduction scripts](docs/benchmarks.md) are included.
 
+### Faster in 0.4.2
+
+Komando 0.4.2 takes in plain text a whole run at a time instead of one character at a time.
+Each frame, it lays out again only the lines that changed, and it remembers the shapes of the
+characters on screen. Measured on a Linux development machine, not the Windows PC above, with the
+0.4.1 and 0.4.2 code taking turns:
+
+| | 0.4.1 | 0.4.2 |
+|---|---:|---:|
+| A million coloured log lines over SSH | 1.77 s | **1.30 s** |
+| Taking in coloured log lines, no Scrollback | 75 MB/s | **130 MB/s** |
+| Work per frame while typing | 438 µs | **9 µs** |
+| Work per frame while vim or htop redraws a few lines | 367 µs | **29 µs** |
+| Work per frame during a full-screen log flood | 445 µs | **385 µs** |
+| Work per frame, screen of 7,434 different characters | 20.5 ms | **0.37 ms** |
+
+The table above still shows 0.4.0 until it's measured again on the same Windows PC.
+
 
 ### On slow and distant connections
 
