@@ -1,7 +1,7 @@
 # russh 0.65.1, patched for Komando
 
-This is russh 0.65.1 from crates.io with one change, used through `[patch.crates-io]` in
-Komando's `Cargo.toml`. `komando.patch` holds the change as a diff against the published crate.
+This is russh 0.65.1 from crates.io with two changes, used through `[patch.crates-io]` in
+Komando's `Cargo.toml`. `komando.patch` holds the changes as a diff against the published crate.
 
 ## The change: a receive window per channel
 
@@ -35,7 +35,16 @@ them two new methods and the plumbing to reach them, plus comments; the new
 items are marked `Komando patch`, the other changed lines only add `window_target: None`). Everything else here is the published crate as it is, with `Cargo.lock` and
 the registry's bookkeeping files left out.
 
-## Why not without a patch
+## The change: taking a message without waiting
+
+`Channel::try_wait` and `ChannelReadHalf::try_wait` return the next `ChannelMsg` if one has
+already arrived, and `None` otherwise, where `wait` would wait (`tokio`'s `try_recv` on the
+same queue). Komando's shell loop uses it to parse all the output that is already waiting in
+one go, under one lock of the terminal and with one Wakeup, instead of one message at a time
+(`src/session/ssh.rs`, `BATCH`). That made `throughput_coloured_log_lines_over_ssh` about 7%
+faster (0.442 s to 0.410 s, Windows 11, Ryzen 7 9800X3D).
+
+## Why the receive window needs a patch
 
 russh 0.65.1 (and its main branch as of November 2026) gives a client no say over window
 adjustments: the target is always `Config::window_size`, applied to every channel, and the

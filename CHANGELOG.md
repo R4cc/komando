@@ -10,6 +10,17 @@ All notable changes to Komando are listed here. The format follows
 
 - Coloured output is taken in faster: Komando reads a whole colour code at once instead of one
   character at a time, up to a tenth less time for a million coloured log lines.
+- Fast output with a large Scrollback is taken in faster. Komando loads the oldest Scrollback
+  line it is about to reuse ahead of time, and takes in all output that has already arrived at
+  once rather than a few kilobytes at a time. A million coloured log lines over SSH with a
+  100,000-line Scrollback arrive in about 30% less time.
+- Connections now prefer AES-GCM encryption when the server offers it: on current PCs it takes
+  several times less work to decrypt than ChaCha20-Poly1305, which stays the choice for servers
+  without it.
+- Highlight Rules with word boundaries (`\b`) no longer slow every frame down while lines with
+  accented, Cyrillic or CJK text are on screen. A word boundary now works as in JavaScript and
+  Tabby: only ASCII letters, digits and `_` count as word characters.
+- The minimap no longer holds up output while it works out the colours of new lines.
 
 ### Fixed
 

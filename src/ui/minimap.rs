@@ -273,14 +273,51 @@ struct Run {
 #[derive(Default)]
 struct LineCache {
     lines: HashMap<u64, Rc<[Run]>>,
+    /// The generation before `lines`: kept for one more round so lines still on the minimap
+    /// aren't worked out again just because `lines` filled up. Moved back to `lines` when used.
+    old: HashMap<u64, Rc<[Run]>>,
     /// What the runs depend on besides the line itself (the Highlight Rules and the theme);
     /// when it changes, everything is worked out again.
     /// The `Arc` itself rather than its address: a freed address can be reused by new rules.
     key: Option<(Arc<Highlighter>, bool)>,
 }
 
-/// Lines kept in the cache before it starts over; a few screens' worth of minimap.
+/// Lines kept in a cache generation before it becomes the old one; a few screens' worth.
 const CACHE_LINES: usize = 8192;
+
+impl LineCache {
+    fn get(&mut self, hash: u64) -> Option<Rc<[Run]>> {
+        if let Some(runs) = self.lines.get(&hash) {
+            return Some(runs.clone());
+        }
+        let runs = self.old.remove(&hash)?;
+        self.insert(hash, runs.clone());
+        Some(runs)
+    }
+
+    fn insert(&mut self, hash: u64, runs: Rc<[Run]>) {
+        if self.lines.len() >= CACHE_LINES {
+            self.old = std::mem::take(&mut self.lines);
+        }
+        self.lines.insert(hash, runs);
+    }
+}
+
+/// A minimap line as read from the terminal: its runs, or its cells to work them out from
+/// once the terminal is unlocked.
+enum Pending {
+    Ready(Rc<[Run]>),
+    New { hash: u64, cells: std::ops::Range<usize> },
+}
+
+/// What `collect` reads under the terminal lock, for `finish` to turn into rectangles after it.
+struct Collected {
+    geometry: Geometry,
+    lines: Vec<Pending>,
+    /// The cells of the new lines, one after another.
+    cells: Vec<(usize, char, Rgb)>,
+    slider: Option<Bounds<Pixels>>,
+}
 
 #[derive(Default)]
 pub struct MinimapState {
@@ -501,6 +538,7 @@ fn handle_ticks(bounds: Bounds<Pixels>, marks: &SearchMarks, lines: usize, app: 
 /// What the minimap shows for `bounds`: where it starts in the Scrollback, one rectangle per
 /// run of characters, and the slider over the lines on screen (none while there is nothing to
 /// scroll, as in VS Code).
+#[cfg(test)]
 fn layout<T>(
     term: &Term<T>,
     cache: &mut LineCache,
@@ -508,6 +546,21 @@ fn layout<T>(
     highlighter: &Arc<Highlighter>,
     bounds: Bounds<Pixels>,
 ) -> (Geometry, Quads, Option<Bounds<Pixels>>) {
+    let collected = collect(term, cache, palette, highlighter, bounds);
+    finish(collected, cache, palette, highlighter, bounds)
+}
+
+/// The part of `layout` that reads the terminal, kept short because the parser waits for the
+/// lock meanwhile: lines already in the cache are looked up, new ones only copied. Running the
+/// Highlight Rules on them (`finish`) waits until the lock is released; during a flood nearly
+/// every line on the minimap is new at every repaint.
+fn collect<T>(
+    term: &Term<T>,
+    cache: &mut LineCache,
+    palette: &TerminalPalette,
+    highlighter: &Arc<Highlighter>,
+    bounds: Bounds<Pixels>,
+) -> Collected {
     let grid = term.grid();
     let history = grid.history_size();
     let screen = grid.screen_lines();
@@ -526,8 +579,9 @@ fn layout<T>(
     let mut geometry = Geometry { top: f32::from(bounds.origin.y), start, history, screen, total, capacity, slider: None };
 
     let same = cache.key.as_ref().is_some_and(|(h, dark)| Arc::ptr_eq(h, highlighter) && *dark == palette.dark);
-    if !same || cache.lines.len() > CACHE_LINES {
+    if !same {
         cache.lines.clear();
+        cache.old.clear();
         cache.key = Some((highlighter.clone(), palette.dark));
     }
 
@@ -535,9 +589,9 @@ fn layout<T>(
     // The start of a line (prompt, timestamp, log level) is what you scan for.
     let shown_cols = (((f32::from(bounds.size.width) - PAD_X * 2.) / CHAR_W).floor() as usize).min(cols);
     let colors = term.colors();
-    let mut rects: Quads = Vec::new();
     let end = total.min(start + capacity);
-    let mut cells: Vec<(usize, char, Rgb)> = Vec::with_capacity(shown_cols);
+    let mut lines = Vec::with_capacity(end.saturating_sub(start));
+    let mut cells: Vec<(usize, char, Rgb)> = Vec::new();
     for abs in start..end {
         let row = &grid[Line(abs as i32 - history as i32)];
         // Identify the line by its raw cells: characters, colours as the terminal stores them
@@ -559,10 +613,10 @@ fn layout<T>(
                 hash = (hash ^ word).wrapping_mul(0x0000_0100_0000_01b3).rotate_left(23);
             }
         }
-        let runs = match cache.lines.get(&hash) {
-            Some(runs) => runs.clone(),
+        match cache.get(hash) {
+            Some(runs) => lines.push(Pending::Ready(runs)),
             None => {
-                cells.clear();
+                let from = cells.len();
                 for col in 0..shown_cols {
                     let cell = &row[Column(col)];
                     if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
@@ -575,18 +629,8 @@ fn layout<T>(
                     let ch = if cell.flags.contains(Flags::HIDDEN) { ' ' } else { cell.c };
                     cells.push((col, ch, fg));
                 }
-                let runs = line_runs(&cells, palette, highlighter);
-                cache.lines.insert(hash, runs.clone());
-                runs
+                lines.push(Pending::New { hash, cells: from..cells.len() });
             }
-        };
-        let y = f32::from(bounds.origin.y) + (abs - start) as f32 * LINE_H;
-        for run in runs.iter() {
-            let x = f32::from(bounds.origin.x) + PAD_X + run.from as f32 * CHAR_W;
-            rects.push((
-                Bounds::new(point(px(x), px(y)), size(px((run.to - run.from) as f32 * CHAR_W), px(LINE_H - 0.5))),
-                run.color,
-            ));
         }
     }
 
@@ -601,6 +645,38 @@ fn layout<T>(
             size(bounds.size.width, px(box_bottom - box_top)),
         )
     });
+    Collected { geometry, lines, cells, slider }
+}
+
+/// The rest of `layout`, with the terminal unlocked: the runs of new lines, then a rectangle
+/// per run.
+fn finish(
+    collected: Collected,
+    cache: &mut LineCache,
+    palette: &TerminalPalette,
+    highlighter: &Highlighter,
+    bounds: Bounds<Pixels>,
+) -> (Geometry, Quads, Option<Bounds<Pixels>>) {
+    let Collected { geometry, lines, cells, slider } = collected;
+    let mut rects: Quads = Vec::new();
+    for (i, line) in lines.into_iter().enumerate() {
+        let runs = match line {
+            Pending::Ready(runs) => runs,
+            Pending::New { hash, cells: range } => {
+                let runs = line_runs(&cells[range], palette, highlighter);
+                cache.insert(hash, runs.clone());
+                runs
+            }
+        };
+        let y = f32::from(bounds.origin.y) + i as f32 * LINE_H;
+        for run in runs.iter() {
+            let x = f32::from(bounds.origin.x) + PAD_X + run.from as f32 * CHAR_W;
+            rects.push((
+                Bounds::new(point(px(x), px(y)), size(px((run.to - run.from) as f32 * CHAR_W), px(LINE_H - 0.5))),
+                run.color,
+            ));
+        }
+    }
     (geometry, rects, slider)
 }
 
@@ -674,12 +750,18 @@ fn strip(
     let paint_state = state.clone();
     canvas(
         move |bounds, _window, _cx| {
-            let term = term.lock();
             let mut cache = state.cache.borrow_mut();
+            let (collected, found) = {
+                let term = term.lock();
+                let collected =
+                    crate::perf::time("minimap layout", || collect(&term, &mut cache, &palette, &highlighter, bounds));
+                let geometry = collected.geometry;
+                let found = marks.map(|marks| match_quads(&term, &geometry, bounds, &marks, &app)).unwrap_or_default();
+                (collected, found)
+            };
             let (geometry, rects, slider) =
-                crate::perf::time("minimap layout", || layout(&term, &mut cache, &palette, &highlighter, bounds));
+                crate::perf::time("minimap runs", || finish(collected, &mut cache, &palette, &highlighter, bounds));
             state.geometry.set(geometry);
-            let found = marks.map(|marks| match_quads(&term, &geometry, bounds, &marks, &app)).unwrap_or_default();
             (rects, slider, found)
         },
         move |_bounds, (rects, slider, found), window, _cx| {
@@ -1216,5 +1298,61 @@ mod tests {
         let (fresh, quads) = run(false);
         let (cached, _) = run(true);
         println!("per repaint: {fresh:?} without the cache, {cached:?} with it, {quads} rectangles");
+    }
+
+    /// A flood: between repaints, 300 new lines arrive, so nearly every minimap line is new.
+    /// Times the part of a repaint that holds the terminal lock (`collect`) and the rest
+    /// (`finish`); before they were split, the lock was held for both. `KOMANDO_HIGHLIGHT_RULES`
+    /// names another rules file. `cargo test --release --lib minimap_during_a_flood -- --ignored
+    /// --nocapture` prints the numbers.
+    #[test]
+    #[ignore]
+    fn minimap_during_a_flood() {
+        let rules = match std::env::var("KOMANDO_HIGHLIGHT_RULES") {
+            Ok(path) => {
+                let sets = crate::highlight::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
+                Arc::new(Highlighter::from_sets(&sets, &[]))
+            }
+            Err(_) => bundled_rules(),
+        };
+        for (name, message) in [("ascii", "http GET /v1/orders"), ("non-ascii", "Größe prüfen ЗАПРОС 获取")] {
+            let config = Config { scrolling_history: 10_000, ..Config::default() };
+            let mut term = Term::new(config, &TermSize::new(177, 42), VoidListener);
+            let mut parser: Processor = Processor::new();
+            let palette = TerminalPalette::dark();
+            let mut cache = LineCache::default();
+            let (mut locked, mut unlocked) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+            let frames = 60;
+            let mut i = 0u64;
+            for frame in 0..frames + 10 {
+                let mut text = String::new();
+                for _ in 0..300 {
+                    i += 1;
+                    let level = if i % 37 == 0 { "\x1b[31mERROR\x1b[0m" } else { "\x1b[32mINFO \x1b[0m" };
+                    text.push_str(&format!(
+                        "\x1b[2m2026-11-11T09:{:02}:{:02}Z\x1b[0m {level} {message} page={i} took {}ms trace={:x}\r\n",
+                        i / 60 % 60,
+                        i % 60,
+                        5 + i % 40,
+                        i * 2654435761 % 1_000_003
+                    ));
+                }
+                parser.advance(&mut term, text.as_bytes());
+                let t = Instant::now();
+                let collected = collect(&term, &mut cache, &palette, &rules, strip());
+                let t1 = Instant::now();
+                std::hint::black_box(finish(collected, &mut cache, &palette, &rules, strip()));
+                if frame >= 10 {
+                    locked += t1 - t;
+                    unlocked += t1.elapsed();
+                }
+            }
+            println!(
+                "{name}: {} rules, per repaint {:?} under the lock, {:?} after it",
+                rules.rule_count(),
+                locked / frames,
+                unlocked / frames
+            );
+        }
     }
 }

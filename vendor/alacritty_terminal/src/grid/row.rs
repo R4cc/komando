@@ -112,6 +112,35 @@ impl<T: Default> Row<T> {
 
 #[allow(clippy::len_without_is_empty)]
 impl<T> Row<T> {
+    /// Komando patch: ask the CPU to start loading the cells `reset` will touch (the occupied
+    /// ones and the last one, whose discriminant it checks). A row recycled from a full
+    /// Scrollback was last touched a whole Scrollback ago and is no longer in any cache; loaded
+    /// one scroll ahead, the reset that recycles it doesn't wait for main memory.
+    /// Kept out of line so it doesn't weigh on the inlining of the scroll it's called from.
+    #[inline(never)]
+    pub fn prefetch(&self) {
+        #[cfg(target_arch = "x86_64")]
+        {
+            use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+            let len = self.inner.len();
+            if len == 0 {
+                return;
+            }
+            let base = self.inner.as_ptr().cast::<i8>();
+            let size = std::mem::size_of::<T>();
+            let occupied = self.occ.min(len) * size;
+            let mut offset = 0;
+            // SAFETY: prefetching never faults, and every address is inside the row's cells.
+            unsafe {
+                while offset < occupied {
+                    _mm_prefetch::<_MM_HINT_T0>(base.add(offset));
+                    offset += 64;
+                }
+                _mm_prefetch::<_MM_HINT_T0>(base.add((len - 1) * size));
+            }
+        }
+    }
+
     #[inline]
     pub fn from_vec(vec: Vec<T>, occ: usize) -> Row<T> {
         Row { inner: vec, occ }

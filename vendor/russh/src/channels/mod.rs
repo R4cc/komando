@@ -159,6 +159,11 @@ impl ChannelReadHalf {
         self.receiver.recv().await
     }
 
+    /// Komando patch: the next [`ChannelMsg`] if one has already arrived, without waiting.
+    pub fn try_wait(&mut self) -> Option<ChannelMsg> {
+        self.receiver.try_recv().ok()
+    }
+
     /// Make a reader for the [`Channel`] to receive [`ChannelMsg::Data`]
     /// through the `AsyncRead` trait.
     pub fn make_reader(&mut self) -> impl AsyncRead + '_ {
@@ -656,6 +661,11 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
     /// Awaits an incoming [`ChannelMsg`], this method returns [`None`] if the channel has been closed.
     pub async fn wait(&mut self) -> Option<ChannelMsg> {
         self.read_half.wait().await
+    }
+
+    /// Komando patch: the next [`ChannelMsg`] if one has already arrived, without waiting.
+    pub fn try_wait(&mut self) -> Option<ChannelMsg> {
+        self.read_half.try_wait()
     }
 
     /// Consume the [`Channel`] to produce a bidirectionnal stream,

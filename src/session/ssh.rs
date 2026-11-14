@@ -213,8 +213,22 @@ fn client_config(window: u32) -> Arc<client::Config> {
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 4,
         window_size: window,
+        preferred: russh::Preferred { cipher: std::borrow::Cow::Borrowed(ciphers()), ..Default::default() },
         ..Default::default()
     })
+}
+
+/// The ciphers to offer, best first. russh puts ChaCha20-Poly1305 first, as OpenSSH does; with
+/// AES instructions in the CPU (every PC that runs Windows 11 has them), AES-GCM decrypts
+/// several times faster and is just as safe, so it goes first there. The server still picks
+/// ChaCha20 if it doesn't offer AES-GCM.
+fn ciphers() -> &'static [russh::cipher::Name] {
+    use russh::cipher::{AES_128_CTR, AES_128_GCM, AES_192_CTR, AES_256_CTR, AES_256_GCM, CHACHA20_POLY1305};
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("aes") && std::arch::is_x86_feature_detected!("pclmulqdq") {
+        return &[AES_256_GCM, AES_128_GCM, CHACHA20_POLY1305, AES_256_CTR, AES_192_CTR, AES_128_CTR];
+    }
+    &[CHACHA20_POLY1305, AES_256_GCM, AES_128_GCM, AES_256_CTR, AES_192_CTR, AES_128_CTR]
 }
 
 /// A TCP connection to `address:port`, trying each address it resolves to in turn, with a
@@ -514,20 +528,48 @@ async fn shell(
     proxy.send(SessionEvent::Status(Status::Connected));
 
     let mut output = Output::default();
+    // Output that arrived in several messages, parsed in one go (see `BATCH`), and the message
+    // that ended it, handled next.
+    let mut batch = Vec::new();
+    let mut held: Option<ChannelMsg> = None;
     let mut exit_status = None;
     // The answer to the ping on its way, if any.
     let mut ping = (paced && pace.started(Instant::now())).then(|| send_ping(handle));
     let reason = loop {
         let sync_deadline = output.sync_deadline();
         tokio::select! {
-            msg = channel.wait() => match msg {
+            msg = async { match held.take() { Some(msg) => Some(msg), None => channel.wait().await } } => match msg {
                 Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                    if paced && pace.output(data.len(), Instant::now()) {
+                    // Output that is already waiting is parsed with this message, under one lock
+                    // and with one Wakeup: a server sends output in packets of a few KiB, and
+                    // each paid for those on its own.
+                    let mut bytes: &[u8] = &data;
+                    if sudo.is_none() {
+                        batch.clear();
+                        while batch.len().max(bytes.len()) < BATCH {
+                            match channel.try_wait() {
+                                Some(ChannelMsg::Data { data: more }) | Some(ChannelMsg::ExtendedData { data: more, .. }) => {
+                                    if batch.is_empty() {
+                                        batch.extend_from_slice(bytes);
+                                    }
+                                    batch.extend_from_slice(&more);
+                                }
+                                other => {
+                                    held = other;
+                                    break;
+                                }
+                            }
+                        }
+                        if !batch.is_empty() {
+                            bytes = &batch;
+                        }
+                    }
+                    if paced && pace.output(bytes.len(), Instant::now()) {
                         ping = Some(send_ping(handle));
                     }
                     match &mut sudo {
-                        Some(sudo) => show_watching_sudo(&mut output, term, proxy, sudo, &data),
-                        None => output.feed(term, proxy, &data),
+                        Some(sudo) => show_watching_sudo(&mut output, term, proxy, sudo, bytes),
+                        None => output.feed(term, proxy, bytes),
                     }
                 }
                 Some(ChannelMsg::ExitStatus { exit_status: code }) => exit_status = Some(code),
@@ -671,6 +713,10 @@ const TERMINAL_MODES: &[(Pty, u32)] = &[
     (Pty::TTY_OP_ISPEED, 38400),
     (Pty::TTY_OP_OSPEED, 38400),
 ];
+
+/// The most output parsed in one go when several messages are already waiting: enough to
+/// take a burst at once, little enough that the UI's next frame doesn't wait long for the lock.
+const BATCH: usize = 256 * 1024;
 
 async fn sleep_until(deadline: Option<std::time::Instant>) {
     match deadline {
