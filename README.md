@@ -27,7 +27,7 @@ All your SSH servers in colour-coded projects, miliseconds away.
   </picture>
 </p>
 
-<p align="center"><sub>Komando 0.4.0, Windows Terminal + OpenSSH and Tabby 1.0.238 on the same Windows 11 PC. Each metric uses its own scale. Windows Terminal figures are from 2026-11-13 with different settings; Komando and Tabby were measured on 2026-11-14. <a href="#performance">Method and dates below.</a></sub></p>
+<p align="center"><sub>Komando, Windows Terminal + OpenSSH and Tabby on the same Windows 11 PC. Each metric uses its own scale. Windows Terminal figures are from 2026-11-13 with different settings; Komando and Tabby were measured on 2026-11-14. <a href="docs/benchmarks.md">Method and raw data.</a></sub></p>
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="assets/screenshot-light.png">
@@ -145,47 +145,43 @@ machine in `%APPDATA%\Komando`.
 
 ## Performance
 
-Komando was built from the ground up using rust for performance.
+Komando is built in Rust for fast startup, low memory use and responsive SSH sessions.
 
 | Application | Startup | Memory, 1 idle SSH Session | Memory, 10 idle SSH Sessions | Windows Processes, 10 Sessions | Printing a million log lines |
 |---|---:|---:|---:|---:|---:|
-| **Komando 0.4.0** | **187 ms** | **23.5 MB** | **28.3 MB** | **1** | **0.81 s** |
+| **Komando** | **187 ms** | **23.5 MB** | **28.3 MB** | **1** | **0.81 s** |
 | Windows Terminal + OpenSSH* | 351 ms | 29 MB | 127 MB | 21 | 1.4 s |
-| Tabby 1.0.238 | 725 ms | 318.7 MB | 382.8 MB | 5 | 4.19 s |
+| Tabby | 725 ms | 318.7 MB | 382.8 MB | 5 | 4.19 s |
 
-The [method, ranges, raw data and reproduction scripts](docs/benchmarks.md) are included.
+Measured on Windows 11 on 2026-11-14. *Windows Terminal figures are from 2026-11-13 with
+different settings. The [tested versions, method, ranges, raw data and reproduction scripts](docs/benchmarks.md)
+are included.
 
-### Faster in 0.4.2
+### Terminal throughput and rendering
 
-Komando 0.4.2 takes in plain text a whole run at a time instead of one character at a time.
-Each frame, it lays out again only the lines that changed, and it remembers the shapes of the
-characters on screen. Measured on a Linux development machine, not the Windows PC above, with the
-0.4.1 and 0.4.2 code taking turns:
+Measured on a Linux development machine, separately from the Windows results above:
 
-| | 0.4.1 | 0.4.2 |
-|---|---:|---:|
-| A million coloured log lines over SSH | 1.77 s | **1.30 s** |
-| Taking in coloured log lines, no Scrollback | 75 MB/s | **130 MB/s** |
-| Work per frame while typing | 438 µs | **9 µs** |
-| Work per frame while vim or htop redraws a few lines | 367 µs | **29 µs** |
-| Work per frame during a full-screen log flood | 445 µs | **385 µs** |
-| Work per frame, screen of 7,434 different characters | 20.5 ms | **0.37 ms** |
-
-The table above still shows 0.4.0 until it's measured again on the same Windows PC.
-
+| Metric | Result |
+|---|---:|
+| A million coloured log lines over SSH | **1.30 s** |
+| Taking in coloured log lines, no Scrollback | **130 MB/s** |
+| Work per frame while typing | **9 µs** |
+| Work per frame while vim or htop redraws a few lines | **29 µs** |
+| Work per frame during a full-screen log flood | **385 µs** |
+| Work per frame, screen of 7,434 different characters | **0.37 ms** |
 
 ### On slow and distant connections
 
-Measured over simulated links in Komando 0.4.0:
+Measured over simulated links:
 
-| | 0.3.7 | 0.4.0 |
-|---|---:|---:|
-| Output after Ctrl+C during a flood, 10 Mbit/s, 30 ms | 3.8 s | **0.1 s** |
-| Output after Ctrl+C during a flood, 100 Mbit/s, 50 ms | 0.4 s | **0.1 s** |
-| Extra delay on each key while a file uploads, 10 Mbit/s, 30 ms | over 0.5 s | **25 ms** |
-| A million log lines from a Host 25 ms behind a Jump Host 25 ms away | 2.5 s | **1.5 s** |
+| Metric | Result |
+|---|---:|
+| Output after Ctrl+C during a flood, 10 Mbit/s, 30 ms | **0.1 s** |
+| Output after Ctrl+C during a flood, 100 Mbit/s, 50 ms | **0.1 s** |
+| Extra delay on each key while a file uploads, 10 Mbit/s, 30 ms | **25 ms** |
+| A million log lines from a Host 25 ms behind a Jump Host 25 ms away | **1.5 s** |
 
-Transfers stay as fast as before while keys keep showing promptly: Komando paces how much
+Keys keep showing promptly during transfers: Komando paces how much
 output and file data it lets the server send ahead, from the delay it measures on the
 connection.
 

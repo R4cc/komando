@@ -74,7 +74,7 @@ def chart(summary, dark):
            f'font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="title desc">',
            '<title id="title">Komando, Windows Terminal and Tabby</title>',
            f'<desc id="desc">{escape(alt)}. Lower is better. Each metric has its own zero-based scale.</desc>',
-           f'<text x="0" y="19" fill="{fg}" font-size="14" font-weight="600">Komando 0.4.0 · Windows Terminal* · Tabby 1.0.238</text>',
+           f'<text x="0" y="19" fill="{fg}" font-size="14" font-weight="600">Komando · Windows Terminal* · Tabby</text>',
            f'<text x="820" y="19" text-anchor="end" fill="{muted}" font-size="12">Lower is better</text>']
     for index, (label, key, divisor, unit, digits, conclusion) in enumerate(metrics):
         y = 52 + index * 120

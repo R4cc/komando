@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 828 560" width="828" height="560" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="title desc">
 <title id="title">Komando, Windows Terminal and Tabby</title>
 <desc id="desc">Window on screen after launch: Komando 187 ms, Windows Terminal 351 ms (historical), Tabby 725 ms; Memory with 1 SSH Session: Komando 23.5 MB, Windows Terminal 29 MB (historical), Tabby 318.7 MB; Memory with 10 SSH Sessions: Komando 28.3 MB, Windows Terminal 127 MB (historical), Tabby 382.8 MB; 1,000,000 coloured log lines: Komando 0.81 s, Windows Terminal 1.4 s (historical), Tabby 4.19 s. Lower is better. Each metric has its own zero-based scale.</desc>
-<text x="0" y="19" fill="#f0f3f6" font-size="14" font-weight="600">Komando 0.4.0 · Windows Terminal* · Tabby 1.0.238</text>
+<text x="0" y="19" fill="#f0f3f6" font-size="14" font-weight="600">Komando · Windows Terminal* · Tabby</text>
 <text x="820" y="19" text-anchor="end" fill="#a4afbc" font-size="12">Lower is better</text>
 <text x="0" y="52" fill="#f0f3f6" font-size="13" font-weight="600">Window on screen after launch</text>
 <text x="0" y="77" fill="#f0f3f6" font-size="12">Komando</text>
