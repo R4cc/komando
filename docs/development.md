@@ -81,7 +81,12 @@ take: live heap bytes (counted by an allocator that only counts during this test
 process's private bytes, per row and in total, how many cells hold anything, and what widening by
 a column, halving the width and compacting the rows cost. Each case runs in a process of its own
 (`KOMANDO_THROUGHPUT_MEMORY=500000x350` runs one), since Windows' heap keeps freed memory for
-about a second before giving it back. They run on Windows too:
+about a second before giving it back. A seventh floods a shell with coloured logs until Ctrl+C arrives, directly and through the same simulated links,
+and reports how long the prompt took to show after Ctrl+C, how much output still arrived after
+it, and how fast the flood ran; it compares the shell's paced SSH window (`src/session/pace.rs`)
+with the fixed windows Komando used before (2 MiB, and 8 MiB). The simulated links queue
+without limit, so how much output is still on its way when Ctrl+C is pressed is up to the SSH
+window alone (`KOMANDO_THROUGHPUT_LINK` picks links by name). They run on Windows too:
 
 ```sh
 cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1
@@ -89,6 +94,11 @@ cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1
 
 `KOMANDO_THROUGHPUT_LINES` and `KOMANDO_THROUGHPUT_RUNS` change the size and the number of runs.
 `KOMANDO_THROUGHPUT_PORT` uses an SSH server already listening on that port instead.
+`KOMANDO_PACE_DEBUG=1` prints each ping the shell's window pacing takes into account.
+
+Komando builds against a patched russh in `vendor/russh` that lets a channel keep a receive
+window of its own; `vendor/russh/KOMANDO.md` says what changed and how to carry it over to a
+new russh release.
 
 To include rendering, run the whole app against `examples/logserver.rs`. It writes a key pair
 for `examples/demo.rs`, floods each shell it opens and prints how long the terminal took to take

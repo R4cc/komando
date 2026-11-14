@@ -6,6 +6,7 @@
 //! costs one repaint per frame, not one per chunk.
 
 pub mod local;
+mod pace;
 pub mod ssh;
 mod sudo;
 

@@ -1,0 +1,252 @@
+diff -ruN a/src/client/encrypted.rs b/src/client/encrypted.rs
+--- a/src/client/encrypted.rs
++++ b/src/client/encrypted.rs
+@@ -855,6 +855,7 @@
+                     pending_data: std::collections::VecDeque::new(),
+                     pending_eof: false,
+                     pending_close: false,
++                    window_target: None,
+                 };
+ 
+                 let (channel, channel_ref) = Channel::new(
+diff -ruN a/src/client/mod.rs b/src/client/mod.rs
+--- a/src/client/mod.rs
++++ b/src/client/mod.rs
+@@ -178,6 +178,16 @@
+     ChannelOpenSession {
+         channel_ref: ChannelRef,
+     },
++    /// Komando patch: see [`Handle::channel_open_session_with_window`].
++    ChannelOpenSessionWithWindow {
++        channel_ref: ChannelRef,
++        window: u32,
++    },
++    /// Komando patch: see [`Handle::set_channel_window`].
++    SetChannelWindow {
++        id: ChannelId,
++        window: u32,
++    },
+     ChannelOpenX11 {
+         originator_address: String,
+         originator_port: u32,
+@@ -854,6 +864,36 @@
+             .await
+     }
+ 
++    /// Komando patch: open a session channel whose receive window is `window` rather than
++    /// `Config::window_size`, so it can be smaller than the connection's other channels'.
++    pub async fn channel_open_session_with_window(
++        &self,
++        window: u32,
++    ) -> Result<Channel<Msg>, crate::Error> {
++        let (sender, receiver) = channel(self.channel_buffer_size);
++        let channel_ref = ChannelRef::new(sender);
++        let window_size_ref = channel_ref.window_size().clone();
++
++        self.sender
++            .send(Msg::ChannelOpenSessionWithWindow {
++                channel_ref,
++                window,
++            })
++            .await
++            .map_err(|_| crate::Error::SendError)?;
++        self.wait_channel_confirmation(receiver, window_size_ref)
++            .await
++    }
++
++    /// Komando patch: from now on, keep the receive window of channel `id` topped up to
++    /// `window` instead of `Config::window_size`.
++    pub async fn set_channel_window(&self, id: ChannelId, window: u32) -> Result<(), crate::Error> {
++        self.sender
++            .send(Msg::SetChannelWindow { id, window })
++            .await
++            .map_err(|_| crate::Error::SendError)
++    }
++
+     /// Request an X11 channel, on which the X11 protocol may be tunneled.
+     pub async fn channel_open_x11<A: Into<String>>(
+         &self,
+@@ -1646,6 +1686,16 @@
+                 let id = self.channel_open_session()?;
+                 self.channels.insert(id, channel_ref);
+             }
++            Msg::ChannelOpenSessionWithWindow {
++                channel_ref,
++                window,
++            } => {
++                let id = self.channel_open_session_with_window(window)?;
++                self.channels.insert(id, channel_ref);
++            }
++            Msg::SetChannelWindow { id, window } => {
++                self.set_channel_window(id, window)?;
++            }
+             Msg::ChannelOpenX11 {
+                 originator_address,
+                 originator_port,
+diff -ruN a/src/client/session.rs b/src/client/session.rs
+--- a/src/client/session.rs
++++ b/src/client/session.rs
+@@ -15,12 +15,28 @@
+     where
+         F: FnOnce(&mut Vec<u8>) -> Result<(), crate::Error>,
+     {
++        self.channel_open_generic_with_window(kind, None, write_suffix)
++    }
++
++    /// Komando patch: `window` replaces `Config::window_size` for this channel, both as the
++    /// initial window and as the one it is kept topped up to.
++    fn channel_open_generic_with_window<F>(
++        &mut self,
++        kind: &[u8],
++        window: Option<u32>,
++        write_suffix: F,
++    ) -> Result<ChannelId, crate::Error>
++    where
++        F: FnOnce(&mut Vec<u8>) -> Result<(), crate::Error>,
++    {
++        let window_size = window.unwrap_or(self.common.config.window_size);
+         let result = if let Some(ref mut enc) = self.common.encrypted {
+             match enc.state {
+                 EncryptedState::Authenticated => {
+-                    let sender_channel = enc.new_channel(
+-                        self.common.config.window_size,
++                    let sender_channel = enc.new_channel_with_target(
++                        window_size,
+                         self.common.config.maximum_packet_size,
++                        window,
+                     );
+                     push_packet!(enc.write, {
+                         msg::CHANNEL_OPEN.encode(&mut enc.write)?;
+@@ -30,11 +46,7 @@
+                         sender_channel.encode(&mut enc.write)?;
+ 
+                         // window.
+-                        self.common
+-                            .config
+-                            .as_ref()
+-                            .window_size
+-                            .encode(&mut enc.write)?;
++                        window_size.encode(&mut enc.write)?;
+ 
+                         // max packet size.
+                         self.common
+@@ -59,6 +71,31 @@
+         self.channel_open_generic(b"session", |_| Ok(()))
+     }
+ 
++    /// Komando patch: a session channel with a receive window of its own.
++    pub fn channel_open_session_with_window(
++        &mut self,
++        window: u32,
++    ) -> Result<ChannelId, crate::Error> {
++        self.channel_open_generic_with_window(b"session", Some(window), |_| Ok(()))
++    }
++
++    /// Komando patch: keep `channel`'s receive window topped up to `window` from now on, and
++    /// top it up at once if it is below half of that. A smaller window takes effect as the
++    /// server uses up what it was already allowed: a window can not be taken back.
++    pub fn set_channel_window(
++        &mut self,
++        channel: ChannelId,
++        window: u32,
++    ) -> Result<(), crate::Error> {
++        if let Some(ref mut enc) = self.common.encrypted {
++            if let Some(params) = enc.channels.get_mut(&channel) {
++                params.window_target = Some(window);
++            }
++            enc.adjust_window_size(channel, &[], window)?;
++        }
++        Ok(())
++    }
++
+     pub fn channel_open_x11(
+         &mut self,
+         originator_address: &str,
+diff -ruN a/src/lib_inner.rs b/src/lib_inner.rs
+--- a/src/lib_inner.rs
++++ b/src/lib_inner.rs
+@@ -512,6 +512,9 @@
+     pending_data: std::collections::VecDeque<(bytes::Bytes, Option<u32>, usize)>,
+     pending_eof: bool,
+     pending_close: bool,
++    /// Komando patch: the receive window this channel is kept topped up to, instead of
++    /// `Config::window_size`. Set with `Handle::set_channel_window`.
++    pub(crate) window_target: Option<u32>,
+ }
+ 
+ impl ChannelParams {
+diff -ruN a/src/server/encrypted.rs b/src/server/encrypted.rs
+--- a/src/server/encrypted.rs
++++ b/src/server/encrypted.rs
+@@ -2051,6 +2051,7 @@
+             pending_data: std::collections::VecDeque::new(),
+             pending_eof: false,
+             pending_close: false,
++            window_target: None,
+         };
+ 
+         let (channel, channel_ref) = Channel::new(
+diff -ruN a/src/session.rs b/src/session.rs
+--- a/src/session.rs
++++ b/src/session.rs
+@@ -318,7 +318,17 @@
+             if data.len() as u32 <= channel.sender_window_size {
+                 channel.sender_window_size -= data.len() as u32;
+             }
+-            if channel.sender_window_size < target / 2 {
++            // Komando patch: a channel may have a window of its own, which is topped up once an
++            // eighth of it (at least a packet's worth) is used rather than half, so the peer
++            // keeps close to all of it in flight: such a window is sized to what the link needs.
++            let threshold = match channel.window_target {
++                Some(target) => {
++                    target.saturating_sub((target / 8).max(channel.sender_maximum_packet_size))
++                }
++                None => target / 2,
++            };
++            let target = channel.window_target.unwrap_or(target);
++            if channel.sender_window_size < threshold {
+                 debug!(
+                     "sender_window_size {:?}, target {:?}",
+                     channel.sender_window_size, target
+@@ -766,6 +776,17 @@
+         ChannelId(self.last_channel_id.0)
+     }
+     pub fn new_channel(&mut self, window_size: u32, maxpacket: u32) -> ChannelId {
++        self.new_channel_with_target(window_size, maxpacket, None)
++    }
++
++    /// Komando patch: a channel that keeps a receive window of its own
++    /// (see `ChannelParams::window_target`).
++    pub fn new_channel_with_target(
++        &mut self,
++        window_size: u32,
++        maxpacket: u32,
++        window_target: Option<u32>,
++    ) -> ChannelId {
+         loop {
+             self.last_channel_id += Wrapping(1);
+             if let std::collections::hash_map::Entry::Vacant(vacant_entry) =
+@@ -783,6 +804,7 @@
+                     pending_data: std::collections::VecDeque::new(),
+                     pending_eof: false,
+                     pending_close: false,
++                    window_target,
+                 });
+                 return ChannelId(self.last_channel_id.0);
+             }
+@@ -912,6 +934,7 @@
+             pending_data: VecDeque::from([(Bytes::from_static(b"hello"), None, 0)]),
+             pending_eof,
+             pending_close,
++            window_target: None,
+         }
+     }
+ 
+@@ -966,6 +989,7 @@
+             pending_data: VecDeque::from([(Bytes::from_static(b"hello"), None, 0)]),
+             pending_eof,
+             pending_close,
++            window_target: None,
+         }
+     }
+ 

@@ -156,6 +156,10 @@ impl server::Handler for LogServer {
     async fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Self::Error> {
         session.channel_success(channel)?;
         let Some(mut channel) = self.channels.lock().await.remove(&channel) else { return Ok(()) };
+        if self.user == "flood" {
+            flood(channel);
+            return Ok(());
+        }
         if self.user == "quiet" {
             tokio::spawn(async move {
                 while let Some(msg) = channel.wait().await {
@@ -1261,4 +1265,219 @@ fn memory_case(scrollback: usize, cols: u16) {
     drop((term, proxy, output));
     eprintln!("  closed: heap {:.1} MiB, process settled {}", mib(heap::live() as f64), settled());
     heap::counting(false);
+}
+
+/// The prompt the `flood` user's shell prints once Ctrl+C stopped it.
+const FLOOD_PROMPT: &str = "flood-stopped$";
+
+/// When the `flood` user's shell got Ctrl+C.
+fn ctrl_c_arrived() -> &'static std::sync::Mutex<Option<Instant>> {
+    static AT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    &AT
+}
+
+/// A shell that, once Enter is typed, prints coloured logs like `yes` until Ctrl+C (byte 3)
+/// arrives on the channel, then stops at once, the way a terminal driver drops its output queue
+/// on an interrupt, and prints a prompt. Blocks of 32 KiB, the size of one SSH packet, so at
+/// most one is under way when it stops.
+fn flood(channel: Channel<Msg>) {
+    *ctrl_c_arrived().lock().unwrap() = None;
+    let (mut read, write) = channel.split();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let enter = Arc::new(tokio::sync::Notify::new());
+    {
+        let (stop, enter) = (stop.clone(), enter.clone());
+        tokio::spawn(async move {
+            while let Some(msg) = read.wait().await {
+                let russh::ChannelMsg::Data { data } = msg else { continue };
+                if data.contains(&b'\r') {
+                    enter.notify_one();
+                }
+                if data.contains(&3) && !stop.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    *ctrl_c_arrived().lock().unwrap() = Some(Instant::now());
+                }
+            }
+        });
+    }
+    tokio::spawn(async move {
+        enter.notified().await;
+        let mut block = Vec::with_capacity(40 * 1024);
+        let mut i = 0u64;
+        while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+            block.clear();
+            while block.len() < 32 * 1024 - 200 {
+                log_line(i, &mut block);
+                i += 1;
+            }
+            if write.data(&block[..]).await.is_err() {
+                return;
+            }
+        }
+        let _ = write.data(format!("^C\r\n{FLOOD_PROMPT} ").as_bytes()).await;
+        // An idle shell at its prompt until the Session closes.
+        std::future::pending::<()>().await;
+        drop(write);
+    });
+}
+
+/// The index of the log line on screen row `line`, read back from its timestamp.
+fn log_index_on(term: &alacritty_terminal::Term<EventProxy>, line: i32) -> Option<u64> {
+    let grid = term.grid();
+    let row = &grid[Line(line)];
+    let text: String = (0..grid.columns().min(23)).map(|col| row[Column(col)].c).collect();
+    let time = text.strip_prefix("2026-11-13 ")?;
+    let (h, rest) = time.split_once(':')?;
+    let (m, rest) = rest.split_once(':')?;
+    let (s, ms) = rest.split_once('.')?;
+    let ms = ms.get(..3)?;
+    Some(h.parse::<u64>().ok()? * 3_600_000 + m.parse::<u64>().ok()? * 60_000 + s.parse::<u64>().ok()? * 1000 + ms.parse::<u64>().ok()?)
+}
+
+/// The bytes of log lines `from..to`.
+fn log_bytes(from: u64, to: u64) -> u64 {
+    let mut bytes = Vec::new();
+    (from..to)
+        .map(|i| {
+            bytes.clear();
+            log_line(i, &mut bytes);
+            bytes.len() as u64
+        })
+        .sum()
+}
+
+/// The newest complete log line above the cursor.
+fn last_log_index(term: &alacritty_terminal::Term<EventProxy>) -> Option<u64> {
+    let cursor = term.grid().cursor.point.line.0;
+    (1..6).find_map(|back| log_index_on(term, cursor - back))
+}
+
+struct CtrlC {
+    /// From typing Ctrl+C until the prompt after it was on screen.
+    to_prompt: Duration,
+    /// From typing Ctrl+C until the server had it.
+    to_server: Duration,
+    /// Output parsed after Ctrl+C was typed, all of it printed before the server stopped.
+    bytes_after: u64,
+    /// Output parsed per second during the flood's last two seconds before Ctrl+C.
+    rate: f64,
+}
+
+/// Type Enter to start a flood, let it run for three seconds, press Ctrl+C and wait for the
+/// prompt, with a UI stand-in that draws once per frame.
+fn ctrl_c_once(port: u16, known_hosts: &std::path::Path) -> CtrlC {
+    let mut bench = connect(port, "flood", known_hosts);
+    bench.wait_connected();
+    // A moment at the prompt, then the command.
+    std::thread::sleep(Duration::from_millis(300));
+    bench.sink.write(b"\r".to_vec());
+    let frame = Duration::from_micros(16_667);
+    let start = Instant::now();
+    let mut first: Option<(Instant, u64)> = None;
+    let mut sent: Option<(Instant, u64)> = None;
+    loop {
+        match bench.next() {
+            Some(SessionEvent::Wakeup) => {
+                std::thread::sleep(frame);
+                bench.proxy.clear_dirty();
+                let term = bench.term.lock();
+                let mut cells = 0usize;
+                for indexed in term.renderable_content().display_iter {
+                    cells += indexed.cell.c as usize & 1;
+                }
+                std::hint::black_box(cells);
+                if let Some((at, index)) = sent {
+                    let cursor = term.grid().cursor.point.line.0;
+                    let row: String = (0..term.columns()).map(|col| term.grid()[Line(cursor)][Column(col)].c).collect();
+                    if row.starts_with(FLOOD_PROMPT) {
+                        let to_prompt = at.elapsed();
+                        let last = last_log_index(&term).expect("log lines before the prompt");
+                        drop(term);
+                        bench.sink.close();
+                        let arrived = ctrl_c_arrived().lock().unwrap().expect("the server got Ctrl+C");
+                        let (first_at, first_index) = first.expect("output before Ctrl+C");
+                        return CtrlC {
+                            to_prompt,
+                            to_server: arrived - at,
+                            bytes_after: log_bytes(index + 1, last + 1),
+                            rate: log_bytes(first_index + 1, index + 1) as f64 / (at - first_at).as_secs_f64(),
+                        };
+                    }
+                } else if first.is_none() && start.elapsed() > Duration::from_secs(1) {
+                    first = last_log_index(&term).map(|i| (Instant::now(), i));
+                }
+            }
+            Some(SessionEvent::Status(Status::Disconnected(reason))) => panic!("{reason}"),
+            Some(_) => {}
+            None => std::thread::sleep(Duration::from_millis(1)),
+        }
+        if sent.is_none() && start.elapsed() > Duration::from_secs(3) {
+            let index = last_log_index(&bench.term.lock()).expect("flooding");
+            let at = Instant::now();
+            bench.sink.write(vec![3]);
+            sent = Some((at, index));
+        }
+        assert!(start.elapsed() < Duration::from_secs(60), "the prompt never came");
+    }
+}
+
+/// How long output keeps coming after Ctrl+C during a flood: everything the server sent before
+/// it stopped still arrives and scrolls past. Directly and through simulated links, with the
+/// shell's paced SSH window and, for comparison, with the fixed windows Komando used before:
+/// 2 MiB with the operating system's receive buffer (up to 0.3.6), and 8 MiB with an 8 MiB
+/// buffer (0.3.7). The links queue without limit, like a router with plenty of buffer: how much
+/// queues is up to the window alone.
+///
+/// `KOMANDO_THROUGHPUT_RUNS` sets the runs per link and setting (default 3), and
+/// `KOMANDO_THROUGHPUT_LINK` picks the links whose names contain it.
+#[test]
+#[ignore]
+fn throughput_ctrl_c_during_a_flood() {
+    let runs: usize = std::env::var("KOMANDO_THROUGHPUT_RUNS").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+    let only = std::env::var("KOMANDO_THROUGHPUT_LINK").ok();
+    let settings: [(&str, Option<(u32, bool)>); 3] = [
+        ("paced", None),
+        ("fixed 2 MiB", Some((2 * 1024 * 1024, false))),
+        ("fixed 8 MiB", Some((8 * 1024 * 1024, true))),
+    ];
+    let dir = std::env::temp_dir().join(format!("komando-throughput-ctrlc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let known_hosts = dir.join("known_hosts");
+    let links: [(&str, Duration, Option<u64>); 4] = [
+        ("direct", Duration::ZERO, None),
+        ("25 ms each way, 1 Gbit/s", Duration::from_millis(25), Some(125_000_000)),
+        ("25 ms each way, 100 Mbit/s", Duration::from_millis(25), Some(12_500_000)),
+        ("15 ms each way, 10 Mbit/s", Duration::from_millis(15), Some(1_250_000)),
+    ];
+    let (server_port, _server) = start_server(0, 4);
+    for (label, one_way, rate) in links {
+        if only.as_deref().is_some_and(|only| !label.contains(only)) {
+            continue;
+        }
+        let proxy = (one_way > Duration::ZERO || rate.is_some()).then(|| DelayProxy::start(server_port, one_way, rate));
+        let port = proxy.as_ref().map_or(server_port, |p| p.port);
+        let mut results: Vec<Vec<CtrlC>> = settings.iter().map(|_| Vec::new()).collect();
+        for _ in 0..runs {
+            // Each setting in turn, so load from elsewhere on the machine hits them alike.
+            for ((_, fixed), results) in settings.iter().zip(&mut results) {
+                *crate::session::ssh::FIXED_WINDOW.lock().unwrap() = *fixed;
+                results.push(ctrl_c_once(port, &known_hosts));
+            }
+        }
+        *crate::session::ssh::FIXED_WINDOW.lock().unwrap() = None;
+        for ((name, _), runs) in settings.iter().zip(results) {
+            let stats = |key: fn(&CtrlC) -> f64| {
+                let mut values: Vec<f64> = runs.iter().map(key).collect();
+                values.sort_by(f64::total_cmp);
+                (values[values.len() / 2], values[0], values[values.len() - 1])
+            };
+            let (prompt, prompt_lo, prompt_hi) = stats(|r| r.to_prompt.as_secs_f64() * 1e3);
+            let (server, _, _) = stats(|r| r.to_server.as_secs_f64() * 1e3);
+            let (bytes, bytes_lo, bytes_hi) = stats(|r| r.bytes_after as f64 / 1e6);
+            let (rate, rate_lo, rate_hi) = stats(|r| r.rate / 1e6);
+            eprintln!(
+                "[{label}] [{name}] prompt {prompt:.0} ms after Ctrl+C ({prompt_lo:.0}-{prompt_hi:.0}), {bytes:.2} MB of output after it ({bytes_lo:.2}-{bytes_hi:.2}); Ctrl+C took {server:.0} ms to reach the server; flood {rate:.1} MB/s ({rate_lo:.1}-{rate_hi:.1})"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

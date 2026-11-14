@@ -31,6 +31,14 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- Output stops soon after you press Ctrl+C during a flood of output, such as `cat` of a large
+  file, also on slower connections. Since 0.3.7, everything the server had already sent kept
+  scrolling past: on a 10 Mbit/s link with 30 ms latency for almost 4 seconds (1.3 seconds
+  before 0.3.7), and on a 100 Mbit/s link with 50 ms latency for almost half a second. SSH
+  Sessions now let the server send ahead only as much output as the connection needs, so the
+  prompt comes back after about a tenth of a second on both. Floods are as fast as before, and
+  faster on fast distant links: about 110 MB/s instead of 80 MB/s at 1 Gbit/s with 50 ms
+  latency.
 - When an SSH Session signs in after earlier attempts failed or were cancelled, the
   connection log of those attempts is now cleared too, so the shell starts on a clean screen.
 
