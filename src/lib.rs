@@ -234,5 +234,6 @@ mod tests {
         let logo = super::Assets.load(super::LOGO_SVG).unwrap().expect("logo");
         assert!(std::str::from_utf8(&logo).unwrap().starts_with("<svg"));
         assert!(super::Assets.load("icons/server.svg").unwrap().is_some());
+        assert!(super::Assets.load("icons/eraser.svg").unwrap().is_some(), "the Unhighlight menu entry");
     }
 }

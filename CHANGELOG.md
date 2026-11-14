@@ -10,6 +10,9 @@ All notable changes to Komando are listed here. The format follows
 
 - Drag a host up or down in the sidebar to change its place within its project. A blue line
   shows where it will go; drop it on the project's name to put it at the top.
+- Right-click a highlighted word in a terminal and choose Unhighlight to turn off the rule that
+  colours it. The rule is switched off, not deleted, so you can turn it back on in
+  Settings → Highlights.
 
 ### Changed
 

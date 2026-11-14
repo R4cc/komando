@@ -179,6 +179,8 @@ pub enum TerminalEvent {
     /// A line was entered at a prompt (prompt included), for the Command History. Sent only
     /// while `command_history` is on.
     Entered { line: String, at: chrono::DateTime<chrono::Local> },
+    /// Turn off the highlight rule that coloured a word (from the right-click menu).
+    Unhighlight { rule: highlight::RuleHit },
 }
 
 enum ActivePrompt {
@@ -252,6 +254,8 @@ pub struct TerminalView {
     minimap_state: Rc<crate::ui::minimap::MinimapState>,
     grid_cache: Rc<RefCell<GridCache>>,
     marks: Marks,
+    /// Where the last right-click landed, for the menu it opens.
+    menu_point: Option<GridPoint>,
     hovered_mark: Option<u64>,
     /// The mark jumped to last, lit until the timer with the same number runs out.
     flash: Option<(u64, u64)>,
@@ -450,6 +454,7 @@ impl TerminalView {
             minimap_state: Rc::new(Default::default()),
             grid_cache: Rc::new(RefCell::new(GridCache::default())),
             marks: Marks::default(),
+            menu_point: None,
             hovered_mark: None,
             flash: None,
             compaction: None,
@@ -1111,6 +1116,9 @@ impl TerminalView {
             self.report_mouse(mode, button, MouseAction::Press, event.position, &event.modifiers);
             return;
         }
+        if event.button == MouseButton::Right {
+            self.menu_point = Some(self.grid_point(event.position).0);
+        }
         match event.button {
             MouseButton::Left => {
                 let (pt, side) = self.grid_point(event.position);
@@ -1137,14 +1145,27 @@ impl TerminalView {
     /// selecting everything, searching, and copying the whole output.
     fn context_menu(view: gpui::WeakEntity<Self>, focus: FocusHandle, menu: PopupMenu, cx: &mut App) -> PopupMenu {
         let Some(this) = view.upgrade() else { return menu };
-        let (selected, can_type) = {
+        let highlighter = cx.try_global::<ActiveHighlights>().map(|h| h.0.clone());
+        let (selected, can_type, hit) = {
             let this = this.read(cx);
             let selected = this.term.lock().selection_to_string().is_some_and(|t| !t.is_empty());
-            (selected, this.sink.is_some() && !this.is_disconnected())
+            let hit = highlighter.zip(this.menu_point).and_then(|(h, at)| highlighted_at(&*this.term.lock(), &h, at));
+            (selected, this.sink.is_some() && !this.is_disconnected(), hit)
         };
         let icon = |name: &str| Icon::empty().path(format!("icons/{name}.svg"));
         let run = |label: &str, icon_name: &str, f: fn(&mut Self, &mut Window, &mut Context<Self>)| {
             crate::ui::popup::item(label, icon_name, &view, f)
+        };
+        // A highlighted word was right-clicked: its rule can be turned off from here.
+        let menu = match hit {
+            Some(hit) => {
+                let label = format!("Unhighlight “{}”", ellipsize(&hit.matched, 32));
+                let item = crate::ui::popup::item(label, "eraser", &view, move |_, _, cx| {
+                    cx.emit(TerminalEvent::Unhighlight { rule: hit.clone() })
+                });
+                menu.item(item).separator()
+            }
+            None => menu,
         };
         menu.action_context(focus)
             .menu_with_icon_and_disabled("Copy", icon("copy"), Box::new(Copy), !selected)
@@ -2232,20 +2253,11 @@ impl Snapshot {
         let colors = content.colors;
         let offset = view_offset(term) as i32;
         let selection = content.selection;
-        // The line at the cursor is being typed when it starts with a prompt.
-        let cursor_line = content.cursor.point.line;
-        let typing = (!content.mode.contains(TermMode::ALT_SCREEN) && cursor_line <= grid.bottommost_line())
-            .then(|| crate::marks::logical_start(term, cursor_line))
-            .filter(|&start| {
-                let row = &grid[start];
-                let text: String = (0..grid.columns()).map(|col| row[Column(col)].c).collect();
-                crate::marks::prompt_end(&text).is_some()
-            });
+        let typing = typing_start(term);
         for row in rows {
             let line = Line(row as i32 - offset);
-            let start = crate::marks::logical_start(term, line);
-            if Some(start) == typing || crate::marks::is_marked(&grid[start][Column(0)]) {
-                self.input.push((row as i32, if start == line { InputRow::AfterPrompt } else { InputRow::All }));
+            if let Some(input) = input_row(term, line, typing) {
+                self.input.push((row as i32, input));
             }
             let cells = &grid[line];
             for col in 0..grid.columns() {
@@ -2286,6 +2298,68 @@ impl Snapshot {
 
     fn input(&self, row: i32) -> Option<InputRow> {
         self.input.iter().find(|(r, _)| *r == row).map(|&(_, input)| input)
+    }
+}
+
+/// The first row of the line at the cursor, when it is being typed at a prompt.
+fn typing_start<T>(term: &Term<T>) -> Option<Line> {
+    let grid = term.grid();
+    let cursor = grid.cursor.point.line;
+    (!term.mode().contains(TermMode::ALT_SCREEN) && cursor <= grid.bottommost_line())
+        .then(|| crate::marks::logical_start(term, cursor))
+        .filter(|&start| {
+            let row = &grid[start];
+            let text: String = (0..grid.columns()).map(|col| row[Column(col)].c).collect();
+            crate::marks::prompt_end(&text).is_some()
+        })
+}
+
+/// Whether row `line` is part of a command line (see `InputRow`): the one being typed, which
+/// starts at `typing`, or one entered earlier.
+fn input_row<T>(term: &Term<T>, line: Line, typing: Option<Line>) -> Option<InputRow> {
+    let start = crate::marks::logical_start(term, line);
+    (Some(start) == typing || crate::marks::is_marked(&term.grid()[start][Column(0)]))
+        .then_some(if start == line { InputRow::AfterPrompt } else { InputRow::All })
+}
+
+/// The highlight rule colouring the cell at `at`, read the way rows are drawn (`layout_row`).
+fn highlighted_at<T>(term: &Term<T>, highlighter: &highlight::Highlighter, at: GridPoint) -> Option<highlight::RuleHit> {
+    let grid = term.grid();
+    if term.mode().contains(TermMode::ALT_SCREEN) || at.line < grid.topmost_line() || at.line > grid.bottommost_line() {
+        return None;
+    }
+    let row = &grid[at.line];
+    let mut text = String::new();
+    let mut byte = None;
+    for col in 0..grid.columns() {
+        let cell = &row[Column(col)];
+        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            continue;
+        }
+        if col <= at.column.0 {
+            byte = Some(text.len());
+        }
+        let hidden = cell.flags.contains(Flags::HIDDEN);
+        text.push(if hidden || cell.c == '\t' { ' ' } else { cell.c });
+        if let Some(extra) = cell.zerowidth().filter(|_| !hidden) {
+            text.extend(extra.iter());
+        }
+    }
+    let byte = byte?;
+    let end = match input_row(term, at.line, typing_start(term)) {
+        Some(InputRow::All) => return None,
+        Some(InputRow::AfterPrompt) => crate::marks::prompt_end(&text).unwrap_or(text.len()),
+        None => text.len(),
+    };
+    (byte < end).then(|| highlighter.rule_at(&text[..end], byte)).flatten()
+}
+
+/// `text` cut to `max` characters, with an ellipsis when it was longer.
+fn ellipsize(text: &str, max: usize) -> String {
+    let text = text.trim();
+    match text.char_indices().nth(max) {
+        Some((i, _)) => format!("{}…", &text[..i]),
+        None => text.to_string(),
     }
 }
 
@@ -3442,6 +3516,20 @@ mod tests {
             selection.update(GridPoint::new(Line(to.0), Column(to.1)), Side::Right);
             self.term.lock().selection = Some(selection);
         }
+    }
+
+    #[test]
+    fn a_right_click_finds_the_rule_colouring_the_word() {
+        let mut g = Grid::new(60, 5);
+        g.feed("got OOM\r\n$ cat OOM");
+        let term = g.term.lock();
+        let at = |line: i32, col: usize| super::highlighted_at(&*term, &g.highlighter, GridPoint::new(Line(line), Column(col)));
+        let hit = at(0, 5).expect("OOM is highlighted");
+        assert_eq!(hit.matched, "OOM");
+        assert!(g.highlighter.rule_at("OOM", 0).is_some_and(|h| h.source == hit.source));
+        assert_eq!(at(0, 1), None, "plain text");
+        assert_eq!(at(1, 7), None, "the command being typed isn't highlighted");
+        assert_eq!(at(0, 50), None, "past the end of the line");
     }
 
     #[test]

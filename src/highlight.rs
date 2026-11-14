@@ -144,6 +144,22 @@ struct Rule {
     group: Group,
     style: Style,
     display: [Style; 2],
+    /// The keyword it was compiled from, when it came from a set.
+    source: Option<RuleSource>,
+}
+
+/// Where a rule came from: keyword `index` of the set `set`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuleSource {
+    pub set: String,
+    pub index: usize,
+}
+
+/// The rule that colours a spot of a line, and the text it colours there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuleHit {
+    pub source: RuleSource,
+    pub matched: String,
 }
 
 /// The highlighter every terminal uses; replaced when rules change.
@@ -163,16 +179,16 @@ pub struct Highlighter {
 
 impl Highlighter {
     pub fn new<'a>(keywords: impl IntoIterator<Item = &'a Keyword>) -> Self {
-        Self::compile(keywords, true)
+        Self::compile(keywords.into_iter().map(|kw| (None, kw)), true)
     }
 
     /// `ascii_boundaries`: compile word boundaries as ASCII ones (see `ascii_word_boundaries`);
     /// off only in tests, to compare with the rules as written.
-    fn compile<'a>(keywords: impl IntoIterator<Item = &'a Keyword>, ascii_boundaries: bool) -> Self {
+    fn compile<'a>(keywords: impl IntoIterator<Item = (Option<RuleSource>, &'a Keyword)>, ascii_boundaries: bool) -> Self {
         let mut rules = Vec::new();
         let mut patterns = Vec::new();
         let mut skipped = Vec::new();
-        for kw in keywords {
+        for (source, kw) in keywords {
             if !kw.enabled || kw.text.is_empty() {
                 continue;
             }
@@ -209,7 +225,7 @@ impl Highlighter {
                 fg: style.fg.map(|c| if style.bg.is_some() { c } else { readable_on(c, dark) }),
                 ..style
             });
-            rules.push(Rule { regex, group, style, display });
+            rules.push(Rule { regex, group, style, display, source });
         }
         // Each pattern compiled on its own above; the combined set can still fail (size limit).
         // Without it nothing is highlighted, so say why instead of failing silently.
@@ -226,7 +242,30 @@ impl Highlighter {
     }
 
     pub fn from_sets(sets: &[HighlightSet], disabled_sets: &[String]) -> Self {
-        Self::new(sets.iter().filter(|s| !disabled_sets.contains(&s.id)).flat_map(|s| s.keywords.iter()))
+        let keywords = sets.iter().filter(|s| !disabled_sets.contains(&s.id)).flat_map(|s| {
+            s.keywords.iter().enumerate().map(|(index, kw)| (Some(RuleSource { set: s.id.clone(), index }), kw))
+        });
+        Self::compile(keywords, true)
+    }
+
+    /// The rule whose colour shows at byte `at` of `line` (the first one that covers it, as
+    /// when painting), with the text it matched there. `None` when nothing colours it, or the
+    /// rule came from no set.
+    pub fn rule_at(&self, line: &str, at: usize) -> Option<RuleHit> {
+        let set = self.set.as_ref()?;
+        for index in set.matches(line).iter() {
+            let rule = &self.rules[index];
+            let mut hit = None;
+            rule.spans(line, |start, end| {
+                if hit.is_none() && (start..end).contains(&at) {
+                    hit = Some(line[start..end].to_string());
+                }
+            });
+            if let Some(matched) = hit {
+                return rule.source.clone().map(|source| RuleHit { source, matched });
+            }
+        }
+        None
     }
 
     pub fn rule_count(&self) -> usize {
@@ -262,36 +301,42 @@ impl Highlighter {
         out.resize(line.len(), None);
         for index in matched.iter() {
             let rule = &self.rules[index];
-            let mut paint = |start: usize, end: usize| {
+            rule.spans(line, |start, end| {
                 for slot in &mut out[start..end] {
                     if slot.is_none() {
                         *slot = Some(style(rule));
                     }
                 }
-            };
-            match &rule.group {
-                Group::Whole => {
-                    for m in rule.regex.find_iter(line) {
-                        paint(m.start(), m.end());
+            });
+        }
+        true
+    }
+}
+
+impl Rule {
+    /// Each stretch of `line` this rule colours, as byte ranges.
+    fn spans(&self, line: &str, mut each: impl FnMut(usize, usize)) {
+        match &self.group {
+            Group::Whole => {
+                for m in self.regex.find_iter(line) {
+                    each(m.start(), m.end());
+                }
+            }
+            Group::Index(i) => {
+                for caps in self.regex.captures_iter(line) {
+                    if let Some(m) = caps.get(*i) {
+                        each(m.start(), m.end());
                     }
                 }
-                Group::Index(i) => {
-                    for caps in rule.regex.captures_iter(line) {
-                        if let Some(m) = caps.get(*i) {
-                            paint(m.start(), m.end());
-                        }
-                    }
-                }
-                Group::Name(name) => {
-                    for caps in rule.regex.captures_iter(line) {
-                        if let Some(m) = caps.name(name) {
-                            paint(m.start(), m.end());
-                        }
+            }
+            Group::Name(name) => {
+                for caps in self.regex.captures_iter(line) {
+                    if let Some(m) = caps.name(name) {
+                        each(m.start(), m.end());
                     }
                 }
             }
         }
-        true
     }
 }
 
@@ -518,7 +563,7 @@ mod tests {
         let sets = parse(DEFAULT_SET).unwrap();
         let keywords: Vec<&Keyword> = sets.iter().flat_map(|s| s.keywords.iter()).collect();
         let rewritten = Highlighter::new(keywords.iter().copied());
-        let unicode = Highlighter::compile(keywords.iter().copied(), false);
+        let unicode = Highlighter::compile(keywords.iter().map(|kw| (None, *kw)), false);
         assert!(rewritten.skipped.is_empty(), "{:?}", rewritten.skipped);
         assert_eq!(rewritten.rule_count(), unicode.rule_count());
         let lines = [
@@ -550,7 +595,7 @@ mod tests {
             })
             .collect();
         for (name, ascii) in [("unicode \\b", false), ("ascii \\b", true)] {
-            let h = Highlighter::compile(keywords.iter().copied(), ascii);
+            let h = Highlighter::compile(keywords.iter().map(|kw| (None, *kw)), ascii);
             let start = std::time::Instant::now();
             let frames = 50;
             for _ in 0..frames {
@@ -764,6 +809,28 @@ mod tests {
         let mut k = kw("x", "#fff");
         k.enabled = false;
         assert_eq!(Highlighter::new(&[k]).rule_count(), 0);
+    }
+
+    #[test]
+    fn the_rule_at_a_spot_is_the_one_painting_it() {
+        let set = |id: &str, keywords: Vec<Keyword>| HighlightSet {
+            id: id.into(),
+            name: id.into(),
+            keywords,
+            extra: Default::default(),
+        };
+        let mut off = kw("fail", "#f00");
+        off.enabled = false;
+        let sets = [set("a", vec![off, kw("failed", "#f00")]), set("b", vec![kw("fail", "#0f0"), kw("ok", "#0f0")])];
+        let h = Highlighter::from_sets(&sets, &[]);
+        let line = "it failed, ok";
+        // "failed" from set a comes first and paints the word, so it is the one named.
+        let hit = h.rule_at(line, line.find("led").unwrap()).unwrap();
+        assert_eq!(hit.source, RuleSource { set: "a".into(), index: 1 });
+        assert_eq!(hit.matched, "failed");
+        assert_eq!(h.rule_at(line, line.find("ok").unwrap()).unwrap().source, RuleSource { set: "b".into(), index: 1 });
+        assert_eq!(h.rule_at(line, 0), None, "nothing colours it");
+        assert_eq!(Highlighter::new(&[kw("ok", "#fff")]).rule_at("ok", 0), None, "no set to point to");
     }
 
     #[test]

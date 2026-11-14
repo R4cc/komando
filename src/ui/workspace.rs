@@ -587,6 +587,31 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Turn off the rule that coloured a word right-clicked in a terminal. It stays in its
+    /// set, off, so it can be turned back on in Settings → Highlights.
+    fn unhighlight(&mut self, hit: &highlight::RuleHit, cx: &mut Context<Self>) {
+        let source = &hit.source;
+        let Some(rule) = self.highlights.iter_mut().find(|s| s.id == source.set).and_then(|s| s.keywords.get_mut(source.index))
+        else {
+            return;
+        };
+        if !rule.enabled {
+            return;
+        }
+        rule.enabled = false;
+        // A rule written for just this word, or one that also colours other text.
+        let just_this = !rule.is_regex() && rule.text.eq_ignore_ascii_case(hit.matched.trim());
+        self.save_highlights(cx);
+        let word = hit.matched.trim();
+        let message = if just_this {
+            format!("“{word}” is no longer highlighted. Turn it back on in Settings → Highlights.")
+        } else {
+            format!("Turned off the rule that highlighted “{word}”, along with what else it matched. Turn it back on in Settings → Highlights.")
+        };
+        self.show_toast_for(message, Duration::from_secs(6), cx);
+        cx.notify();
+    }
+
     fn delete_highlight_set(&mut self, id: &str, cx: &mut Context<Self>) {
         self.highlights.retain(|s| s.id != id);
         self.settings.disabled_highlight_sets.retain(|d| d != id);
@@ -976,6 +1001,7 @@ impl Workspace {
                 this.start_waiting(cx);
             }
             TerminalEvent::Entered { line, at } => this.record_command(id, line, *at, cx),
+            TerminalEvent::Unhighlight { rule } => this.unhighlight(rule, cx),
             TerminalEvent::StartupStopped { waited_for } => this.show_toast_for(
                 format!("Startup commands stopped: \"{}\" didn't appear within a minute.", waited_for.trim()),
                 Duration::from_secs(8),
