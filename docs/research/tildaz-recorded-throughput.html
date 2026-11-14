@@ -1,0 +1,32 @@
+<section id="tildaz-recorded-throughput" data-viz-composition>
+  <div data-viz-container></div>
+  <p style="color:var(--muted-foreground)">Separate experiments: different hardware, inputs, terminal settings and timing endpoints. These values do not establish an SSH performance winner.</p>
+  <script type="application/json" data-viz-chart>
+    {
+      "id": "tildaz-recorded-throughput",
+      "title": "Recorded coloured-output throughput on Windows",
+      "description": "Separate experiments, not a controlled head-to-head: different PCs, inputs, terminal settings and timing endpoints. Komando includes loopback SSH; TildaZ uses a local ConPTY producer.",
+      "summary": "TildaZ's published value is about 16% higher numerically. This does not establish faster SSH performance.",
+      "height": 180,
+      "spec": {
+        "type": "horizontalBar",
+        "y": "Application",
+        "x": "MiB/s",
+        "xLabel": "MiB/s · higher is faster",
+        "xDomain": [0, 160],
+        "showValues": true,
+        "showLegend": false,
+        "sortOrder": "original",
+        "valueFormat": {"style": "decimal", "maximumFractionDigits": 1}
+      },
+      "columns": ["Application", "MiB/s"],
+      "rows": [["Komando 0.4.0", 118.93974694442342], ["TildaZ 0.10.9", 137.8]]
+    }
+  </script>
+</section>
+<script type="module">
+  import { mountChart } from "https://persistent.oaistatic.com/plugins/visualize/charts/1.2.3/element.js";
+  const root = document.getElementById("tildaz-recorded-throughput");
+  const config = JSON.parse(root.querySelector("[data-viz-chart]").textContent);
+  mountChart(root.querySelector("[data-viz-container]"), config);
+</script>
