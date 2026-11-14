@@ -245,8 +245,7 @@ Komando use Windows features directly instead of going through cross-platform la
 
 ## Coming soon
 
-Search in output (<kbd>Ctrl</kbd>+<kbd>F</kbd>), split view, Windows Hello unlock and changing the
-master password.
+Split view, Windows Hello unlock and changing the master password.
 
 ## Building and contributing
 
