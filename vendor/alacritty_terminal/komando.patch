@@ -1,5 +1,3 @@
-diff -ruN a/src/grid/mod.rs b/src/grid/mod.rs
-<<<<<<< HEAD
 --- a/src/grid/mod.rs
 +++ b/src/grid/mod.rs
 @@ -2,6 +2,7 @@
@@ -10,10 +8,11 @@ diff -ruN a/src/grid/mod.rs b/src/grid/mod.rs
  
  #[cfg(feature = "serde")]
  use serde::{Deserialize, Serialize};
-@@ -19,6 +20,18 @@
+@@ -18,6 +19,18 @@
+ 
  pub use self::row::Row;
  use self::storage::Storage;
- 
++
 +/// Komando patch: where a grid's new rows come from.
 +///
 +/// While the history grows, the grid asks its row source for the fresh rows it would otherwise
@@ -25,10 +24,9 @@ diff -ruN a/src/grid/mod.rs b/src/grid/mod.rs
 +    /// `columns` and `rows_left` after a resize or a change of the history's size.
 +    fn take_rows(&self, columns: usize, count: usize, rows_left: usize, rows: &mut Vec<Row<T>>);
 +}
-+
+ 
  pub trait GridCell: Sized {
      /// Check if the cell contains any content.
-     fn is_empty(&self) -> bool;
 @@ -158,6 +171,7 @@
          }
          self.display_offset = min(self.display_offset, history_size);
@@ -37,7 +35,17 @@ diff -ruN a/src/grid/mod.rs b/src/grid/mod.rs
      }
  
      pub fn scroll_display(&mut self, scroll: Scroll) {
-@@ -353,6 +367,18 @@
+@@ -293,6 +307,9 @@
+             for i in (region.end.0..screen_lines).rev().map(Line::from) {
+                 self.raw.swap(i, i - positions);
+             }
++
++            // Komando patch: start loading the row the next scroll recycles.
++            self.raw.prefetch_next_recycled();
+         } else {
+             // Rotate lines without moving anything into history.
+             for i in (region.start.0..region.end.0 - positions as i32).map(Line::from) {
+@@ -353,6 +370,18 @@
  }
  
  impl<T> Grid<T> {
@@ -56,7 +64,6 @@ diff -ruN a/src/grid/mod.rs b/src/grid/mod.rs
      /// Reset a visible region within the grid.
      pub fn reset_region<D, R: RangeBounds<Line>>(&mut self, bounds: R)
      where
-diff -ruN a/src/grid/resize.rs b/src/grid/resize.rs
 --- a/src/grid/resize.rs
 +++ b/src/grid/resize.rs
 @@ -33,6 +33,9 @@
@@ -69,7 +76,44 @@ diff -ruN a/src/grid/resize.rs b/src/grid/resize.rs
      }
  
      /// Add lines to the visible area.
-diff -ruN a/src/grid/storage.rs b/src/grid/storage.rs
+--- a/src/grid/row.rs
++++ b/src/grid/row.rs
+@@ -112,6 +112,35 @@
+ 
+ #[allow(clippy::len_without_is_empty)]
+ impl<T> Row<T> {
++    /// Komando patch: ask the CPU to start loading the cells `reset` will touch (the occupied
++    /// ones and the last one, whose discriminant it checks). A row recycled from a full
++    /// Scrollback was last touched a whole Scrollback ago and is no longer in any cache; loaded
++    /// one scroll ahead, the reset that recycles it doesn't wait for main memory.
++    /// Kept out of line so it doesn't weigh on the inlining of the scroll it's called from.
++    #[inline(never)]
++    pub fn prefetch(&self) {
++        #[cfg(target_arch = "x86_64")]
++        {
++            use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
++            let len = self.inner.len();
++            if len == 0 {
++                return;
++            }
++            let base = self.inner.as_ptr().cast::<i8>();
++            let size = std::mem::size_of::<T>();
++            let occupied = self.occ.min(len) * size;
++            let mut offset = 0;
++            // SAFETY: prefetching never faults, and every address is inside the row's cells.
++            unsafe {
++                while offset < occupied {
++                    _mm_prefetch::<_MM_HINT_T0>(base.add(offset));
++                    offset += 64;
++                }
++                _mm_prefetch::<_MM_HINT_T0>(base.add((len - 1) * size));
++            }
++        }
++    }
++
+     #[inline]
+     pub fn from_vec(vec: Vec<T>, occ: usize) -> Row<T> {
+         Row { inner: vec, occ }
 --- a/src/grid/storage.rs
 +++ b/src/grid/storage.rs
 @@ -2,11 +2,12 @@
@@ -106,7 +150,7 @@ diff -ruN a/src/grid/storage.rs b/src/grid/storage.rs
      }
  
      /// Increase the number of lines in the buffer.
-@@ -131,12 +136,45 @@
+@@ -131,10 +136,43 @@
              self.rezero();
  
              let realloc_size = self.inner.len() + max(additional_rows, MAX_CACHE_SIZE);
@@ -118,8 +162,8 @@ diff -ruN a/src/grid/storage.rs b/src/grid/storage.rs
          }
  
          self.len += additional_rows;
-     }
- 
++    }
++
 +    /// Komando patch: take new rows from `source`, or build them all here with `None`.
 +    pub fn set_row_source(&mut self, source: Option<Arc<dyn RowSource<T>>>) {
 +        self.row_source = source.map(|source| (source, usize::MAX));
@@ -146,232 +190,16 @@ diff -ruN a/src/grid/storage.rs b/src/grid/storage.rs
 +        let taken = &self.inner[start..];
 +        if taken.len() > realloc_size - start || taken.iter().any(|row| row.len() != columns) {
 +            self.inner.truncate(start);
-=======
---- a/src/grid/mod.rs	2026-11-14 20:18:26.273119400 +0100
-+++ b/src/grid/mod.rs	2026-11-14 20:18:26.340992000 +0100
-@@ -293,6 +293,9 @@
-             for i in (region.end.0..screen_lines).rev().map(Line::from) {
-                 self.raw.swap(i, i - positions);
-             }
-+
-+            // Komando patch: start loading the row the next scroll recycles.
-+            self.raw.prefetch_next_recycled();
-         } else {
-             // Rotate lines without moving anything into history.
-             for i in (region.start.0..region.end.0 - positions as i32).map(Line::from) {
-diff -ruN a/src/grid/row.rs b/src/grid/row.rs
---- a/src/grid/row.rs	2026-11-14 20:18:26.282719200 +0100
-+++ b/src/grid/row.rs	2026-11-14 20:18:26.342551000 +0100
-@@ -112,6 +112,35 @@
- 
- #[allow(clippy::len_without_is_empty)]
- impl<T> Row<T> {
-+    /// Komando patch: ask the CPU to start loading the cells `reset` will touch (the occupied
-+    /// ones and the last one, whose discriminant it checks). A row recycled from a full
-+    /// Scrollback was last touched a whole Scrollback ago and is no longer in any cache; loaded
-+    /// one scroll ahead, the reset that recycles it doesn't wait for main memory.
-+    /// Kept out of line so it doesn't weigh on the inlining of the scroll it's called from.
-+    #[inline(never)]
-+    pub fn prefetch(&self) {
-+        #[cfg(target_arch = "x86_64")]
-+        {
-+            use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-+            let len = self.inner.len();
-+            if len == 0 {
-+                return;
-+            }
-+            let base = self.inner.as_ptr().cast::<i8>();
-+            let size = std::mem::size_of::<T>();
-+            let occupied = self.occ.min(len) * size;
-+            let mut offset = 0;
-+            // SAFETY: prefetching never faults, and every address is inside the row's cells.
-+            unsafe {
-+                while offset < occupied {
-+                    _mm_prefetch::<_MM_HINT_T0>(base.add(offset));
-+                    offset += 64;
-+                }
-+                _mm_prefetch::<_MM_HINT_T0>(base.add((len - 1) * size));
-+            }
->>>>>>> perf/survey-quick-wins
 +        }
-+    }
-+
-     #[inline]
-<<<<<<< HEAD
-     pub fn len(&self) -> usize {
-         self.len
-@@ -354,6 +392,7 @@
-             zero: 0,
-             visible_lines: 3,
-             len: 3,
-+            row_source: None,
-         };
- 
-         // Grow buffer.
-@@ -365,6 +404,7 @@
-             zero: 0,
-             visible_lines: 4,
-             len: 4,
-+            row_source: None,
-         };
-         expected.inner.append(&mut vec![filled_row('\0'); MAX_CACHE_SIZE]);
- 
-@@ -395,6 +435,7 @@
-             zero: 1,
-             visible_lines: 3,
-             len: 3,
-+            row_source: None,
-         };
- 
-         // Grow buffer.
-@@ -406,6 +447,7 @@
-             zero: 0,
-             visible_lines: 4,
-             len: 4,
-+            row_source: None,
-         };
-         expected.inner.append(&mut vec![filled_row('\0'); MAX_CACHE_SIZE]);
- 
-@@ -433,6 +475,7 @@
-             zero: 1,
-             visible_lines: 3,
-             len: 3,
-+            row_source: None,
-         };
- 
-         // Shrink buffer.
-@@ -444,6 +487,7 @@
-             zero: 1,
-             visible_lines: 2,
-             len: 2,
-+            row_source: None,
-         };
-         assert_eq!(storage.visible_lines, expected.visible_lines);
-         assert_eq!(storage.inner, expected.inner);
-@@ -469,6 +513,7 @@
-             zero: 0,
-             visible_lines: 3,
-             len: 3,
-+            row_source: None,
-         };
- 
-         // Shrink buffer.
-@@ -480,6 +525,7 @@
-             zero: 0,
-             visible_lines: 2,
-             len: 2,
-+            row_source: None,
-         };
-         assert_eq!(storage.visible_lines, expected.visible_lines);
-         assert_eq!(storage.inner, expected.inner);
-@@ -518,6 +564,7 @@
-             zero: 2,
-             visible_lines: 6,
-             len: 6,
-+            row_source: None,
-         };
- 
-         // Shrink buffer.
-@@ -536,6 +583,7 @@
-             zero: 2,
-             visible_lines: 2,
-             len: 2,
-+            row_source: None,
-         };
-         assert_eq!(storage.visible_lines, expected.visible_lines);
-         assert_eq!(storage.inner, expected.inner);
-@@ -570,6 +618,7 @@
-             zero: 2,
-             visible_lines: 1,
-             len: 2,
-+            row_source: None,
-         };
- 
-         // Truncate buffer.
-@@ -581,6 +630,7 @@
-             zero: 0,
-             visible_lines: 1,
-             len: 2,
-+            row_source: None,
-         };
-         assert_eq!(storage.visible_lines, expected.visible_lines);
-         assert_eq!(storage.inner, expected.inner);
-@@ -605,6 +655,7 @@
-             zero: 2,
-             visible_lines: 1,
-             len: 2,
-+            row_source: None,
-         };
- 
-         // Truncate buffer.
-@@ -616,6 +667,7 @@
-             zero: 0,
-             visible_lines: 1,
-             len: 2,
-+            row_source: None,
-         };
-         assert_eq!(storage.visible_lines, expected.visible_lines);
-         assert_eq!(storage.inner, expected.inner);
-@@ -662,6 +714,7 @@
-             zero: 2,
-             visible_lines: 0,
-             len: 6,
-+            row_source: None,
-         };
- 
-         // Shrink buffer.
-@@ -680,6 +733,7 @@
-             zero: 2,
-             visible_lines: 0,
-             len: 3,
-+            row_source: None,
-         };
-         assert_eq!(storage.inner, shrinking_expected.inner);
-         assert_eq!(storage.zero, shrinking_expected.zero);
-@@ -701,6 +755,7 @@
-             zero: 2,
-             visible_lines: 0,
-             len: 4,
-+            row_source: None,
-         };
- 
-         assert_eq!(storage.inner, growing_expected.inner);
-@@ -723,6 +778,7 @@
-             zero: 2,
-             visible_lines: 0,
-             len: 6,
-+            row_source: None,
-         };
- 
-         // Initialize additional lines.
-@@ -740,7 +796,8 @@
-         ];
-         let expected_init_size = std::cmp::max(init_size, MAX_CACHE_SIZE);
-         expected_inner.append(&mut vec![filled_row('\0'); expected_init_size]);
--        let expected_storage = Storage { inner: expected_inner, zero: 0, visible_lines: 0, len: 9 };
-+        let expected_storage =
-+            Storage { inner: expected_inner, zero: 0, visible_lines: 0, len: 9, row_source: None };
- 
-         assert_eq!(storage.len, expected_storage.len);
-         assert_eq!(storage.zero, expected_storage.zero);
-@@ -754,6 +811,7 @@
-             zero: 2,
-             visible_lines: 0,
-             len: 3,
-+            row_source: None,
-         };
- 
-         storage.rotate(2);
-=======
-     pub fn from_vec(vec: Vec<T>, occ: usize) -> Row<T> {
-         Row { inner: vec, occ }
-diff -ruN a/src/grid/storage.rs b/src/grid/storage.rs
---- a/src/grid/storage.rs	2026-11-14 20:18:26.284222200 +0100
-+++ b/src/grid/storage.rs	2026-11-14 20:18:26.344098300 +0100
-@@ -184,6 +184,18 @@
-         self.zero = (self.zero as isize + count + len as isize) as usize % len;
      }
  
+     #[inline]
+@@ -182,6 +220,18 @@
+ 
+         let len = self.inner.len();
+         self.zero = (self.zero as isize + count + len as isize) as usize % len;
++    }
++
 +    /// Komando patch: prefetch the row the next `rotate(-1)` brings to the bottom of the
 +    /// screen (see `Row::prefetch`). Not worth it while all rows fit in the CPU's caches
 +    /// (a small Scrollback): there it would only cost the instructions.
@@ -382,15 +210,173 @@ diff -ruN a/src/grid/storage.rs b/src/grid/storage.rs
 +        if len >= MIN_ROWS {
 +            self.inner[(self.zero + len - 1) % len].prefetch();
 +        }
-+    }
-+
+     }
+ 
      /// Rotate all existing lines down in history.
-     ///
-     /// This is a faster, specialized version of [`rotate_left`].
->>>>>>> perf/survey-quick-wins
-diff -ruN a/src/term/komando_tests.rs b/src/term/komando_tests.rs
---- a/src/term/komando_tests.rs	1970-01-01 01:00:00.000000000 +0100
-+++ b/src/term/komando_tests.rs	2026-11-14 20:18:26.353615400 +0100
+@@ -354,6 +404,7 @@
+             zero: 0,
+             visible_lines: 3,
+             len: 3,
++            row_source: None,
+         };
+ 
+         // Grow buffer.
+@@ -365,6 +416,7 @@
+             zero: 0,
+             visible_lines: 4,
+             len: 4,
++            row_source: None,
+         };
+         expected.inner.append(&mut vec![filled_row('\0'); MAX_CACHE_SIZE]);
+ 
+@@ -395,6 +447,7 @@
+             zero: 1,
+             visible_lines: 3,
+             len: 3,
++            row_source: None,
+         };
+ 
+         // Grow buffer.
+@@ -406,6 +459,7 @@
+             zero: 0,
+             visible_lines: 4,
+             len: 4,
++            row_source: None,
+         };
+         expected.inner.append(&mut vec![filled_row('\0'); MAX_CACHE_SIZE]);
+ 
+@@ -433,6 +487,7 @@
+             zero: 1,
+             visible_lines: 3,
+             len: 3,
++            row_source: None,
+         };
+ 
+         // Shrink buffer.
+@@ -444,6 +499,7 @@
+             zero: 1,
+             visible_lines: 2,
+             len: 2,
++            row_source: None,
+         };
+         assert_eq!(storage.visible_lines, expected.visible_lines);
+         assert_eq!(storage.inner, expected.inner);
+@@ -469,6 +525,7 @@
+             zero: 0,
+             visible_lines: 3,
+             len: 3,
++            row_source: None,
+         };
+ 
+         // Shrink buffer.
+@@ -480,6 +537,7 @@
+             zero: 0,
+             visible_lines: 2,
+             len: 2,
++            row_source: None,
+         };
+         assert_eq!(storage.visible_lines, expected.visible_lines);
+         assert_eq!(storage.inner, expected.inner);
+@@ -518,6 +576,7 @@
+             zero: 2,
+             visible_lines: 6,
+             len: 6,
++            row_source: None,
+         };
+ 
+         // Shrink buffer.
+@@ -536,6 +595,7 @@
+             zero: 2,
+             visible_lines: 2,
+             len: 2,
++            row_source: None,
+         };
+         assert_eq!(storage.visible_lines, expected.visible_lines);
+         assert_eq!(storage.inner, expected.inner);
+@@ -570,6 +630,7 @@
+             zero: 2,
+             visible_lines: 1,
+             len: 2,
++            row_source: None,
+         };
+ 
+         // Truncate buffer.
+@@ -581,6 +642,7 @@
+             zero: 0,
+             visible_lines: 1,
+             len: 2,
++            row_source: None,
+         };
+         assert_eq!(storage.visible_lines, expected.visible_lines);
+         assert_eq!(storage.inner, expected.inner);
+@@ -605,6 +667,7 @@
+             zero: 2,
+             visible_lines: 1,
+             len: 2,
++            row_source: None,
+         };
+ 
+         // Truncate buffer.
+@@ -616,6 +679,7 @@
+             zero: 0,
+             visible_lines: 1,
+             len: 2,
++            row_source: None,
+         };
+         assert_eq!(storage.visible_lines, expected.visible_lines);
+         assert_eq!(storage.inner, expected.inner);
+@@ -662,6 +726,7 @@
+             zero: 2,
+             visible_lines: 0,
+             len: 6,
++            row_source: None,
+         };
+ 
+         // Shrink buffer.
+@@ -680,6 +745,7 @@
+             zero: 2,
+             visible_lines: 0,
+             len: 3,
++            row_source: None,
+         };
+         assert_eq!(storage.inner, shrinking_expected.inner);
+         assert_eq!(storage.zero, shrinking_expected.zero);
+@@ -701,6 +767,7 @@
+             zero: 2,
+             visible_lines: 0,
+             len: 4,
++            row_source: None,
+         };
+ 
+         assert_eq!(storage.inner, growing_expected.inner);
+@@ -723,6 +790,7 @@
+             zero: 2,
+             visible_lines: 0,
+             len: 6,
++            row_source: None,
+         };
+ 
+         // Initialize additional lines.
+@@ -740,7 +808,8 @@
+         ];
+         let expected_init_size = std::cmp::max(init_size, MAX_CACHE_SIZE);
+         expected_inner.append(&mut vec![filled_row('\0'); expected_init_size]);
+-        let expected_storage = Storage { inner: expected_inner, zero: 0, visible_lines: 0, len: 9 };
++        let expected_storage =
++            Storage { inner: expected_inner, zero: 0, visible_lines: 0, len: 9, row_source: None };
+ 
+         assert_eq!(storage.len, expected_storage.len);
+         assert_eq!(storage.zero, expected_storage.zero);
+@@ -754,6 +823,7 @@
+             zero: 2,
+             visible_lines: 0,
+             len: 3,
++            row_source: None,
+         };
+ 
+         storage.rotate(2);
+--- a/src/term/komando_tests.rs
++++ b/src/term/komando_tests.rs
 @@ -0,0 +1,337 @@
 +//! Komando patch: tests that `Term::input_ascii` leaves the terminal exactly as calling
 +//! `Term::input` for each character does.
@@ -729,13 +715,15 @@ diff -ruN a/src/term/komando_tests.rs b/src/term/komando_tests.rs
 +    assert_eq!(term.grid.cursor.point.column, Column(2));
 +    assert_eq!(term.grid[Line(1)][Column(2)], Cell::default());
 +}
-diff -ruN a/src/term/mod.rs b/src/term/mod.rs
---- a/src/term/mod.rs	2026-11-14 20:18:26.300907800 +0100
-+++ b/src/term/mod.rs	2026-11-14 20:18:26.355614200 +0100
-@@ -1137,6 +1137,83 @@
-         }
-     }
- 
+--- a/src/term/mod.rs
++++ b/src/term/mod.rs
+@@ -1134,6 +1134,83 @@
+             self.grid.cursor.point.column += 1;
+         } else {
+             self.grid.cursor.input_needs_wrap = true;
++        }
++    }
++
 +    /// Komando patch: a run of printable ASCII to be displayed.
 +    ///
 +    /// Does exactly what calling [`Self::input`] for each character would, but
@@ -810,12 +798,9 @@ diff -ruN a/src/term/mod.rs b/src/term/mod.rs
 +                self.grid.cursor.input_needs_wrap = true;
 +            }
 +            bytes = &bytes[count..];
-+        }
-+    }
-+
-     #[inline]
-     fn decaln(&mut self) {
-         trace!("Decalnning");
+         }
+     }
+ 
 @@ -2504,6 +2581,10 @@
      }
  }
