@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{point, px};
 
-use super::{Frame, GridCache, GridFont, GridLook, layout_grid};
+use super::{GridCache, GridFont, GridLook, layout_grid};
 use crate::highlight::{self, Highlighter};
 use crate::session::ssh::Output;
 use crate::session::{EventProxy, GridSize, SharedTerm, new_term};
@@ -74,24 +74,16 @@ impl Harness {
     }
 
     /// Lay out one frame, as the terminal view's prepaint does.
-    pub fn frame(&mut self) -> Frame {
+    pub fn frame(&mut self) {
         let look = GridLook {
             font: &self.font,
             origin: point(px(12.), px(8.)),
             scale: 1.5,
-            rows: self.size.rows,
             palette: &self.palette,
             highlighter: &self.highlighter,
             focused: self.focused,
         };
-        let mut frame = Frame { font_size: self.font.size, ..Frame::default() };
-        layout_grid(&self.term, &self.text_system, &look, &mut self.cache, &mut frame);
-        frame
-    }
-
-    /// Lay out one frame and let it go, as painting it does.
-    fn frame_and_drop(&mut self) {
-        drop(self.frame());
+        layout_grid(&self.term, &self.text_system, &look, &mut self.cache);
     }
 }
 
@@ -206,7 +198,7 @@ fn run(name: &str, h: &mut Harness, mut between: impl FnMut(&mut Harness, usize)
     // Warm up: the glyph cache fills, allocations reach their size.
     for i in 0..20 {
         between(h, i);
-        h.frame_and_drop();
+        h.frame();
     }
     let frames = frames();
     let mut samples = Vec::with_capacity(frames);
@@ -214,7 +206,7 @@ fn run(name: &str, h: &mut Harness, mut between: impl FnMut(&mut Harness, usize)
     for i in 0..frames {
         between(h, 20 + i);
         let start = Instant::now();
-        h.frame_and_drop();
+        h.frame();
         samples.push(start.elapsed());
     }
     report(name, samples, super::shaped_count() - shaped_before);

@@ -223,22 +223,31 @@ impl Highlighter {
 
     /// One entry per byte of `line`: the style of the first rule that covers it.
     pub fn styles(&self, line: &str) -> Option<Vec<Option<Style>>> {
-        self.match_styles(line, |rule| rule.style)
+        let mut out = Vec::new();
+        self.match_styles(line, |rule| rule.style, &mut out).then_some(out)
     }
 
     /// Colours adjusted once when rules compile, rather than for every matched character
     /// on every repaint. Rules with their own background retain their original colours.
     pub fn styles_for_background(&self, line: &str, dark: bool) -> Option<Vec<Option<Style>>> {
-        self.match_styles(line, |rule| rule.display[usize::from(dark)])
+        let mut out = Vec::new();
+        self.styles_for_background_into(line, dark, &mut out).then_some(out)
     }
 
-    fn match_styles(&self, line: &str, style: impl Fn(&Rule) -> Style) -> Option<Vec<Option<Style>>> {
-        let set = self.set.as_ref()?;
+    /// `styles_for_background` into `out`, a buffer reused from line to line. False when no
+    /// rule matches, `out` then left as it was.
+    pub fn styles_for_background_into(&self, line: &str, dark: bool, out: &mut Vec<Option<Style>>) -> bool {
+        self.match_styles(line, |rule| rule.display[usize::from(dark)], out)
+    }
+
+    fn match_styles(&self, line: &str, style: impl Fn(&Rule) -> Style, out: &mut Vec<Option<Style>>) -> bool {
+        let Some(set) = self.set.as_ref() else { return false };
         let matched = set.matches(line);
         if !matched.matched_any() {
-            return None;
+            return false;
         }
-        let mut out: Vec<Option<Style>> = vec![None; line.len()];
+        out.clear();
+        out.resize(line.len(), None);
         for index in matched.iter() {
             let rule = &self.rules[index];
             let mut paint = |start: usize, end: usize| {
@@ -270,7 +279,7 @@ impl Highlighter {
                 }
             }
         }
-        Some(out)
+        true
     }
 }
 
