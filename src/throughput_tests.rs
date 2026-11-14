@@ -597,6 +597,30 @@ fn throughput_parser_only() {
         let secs = start.elapsed().as_secs_f64();
         eprintln!("scrollback {scrollback:>6}: {:.3} s = {:.1} MB/s", secs, data.len() as f64 / 1e6 / secs);
     }
+
+    // The same log lines with the message in other scripts, at a Scrollback of 10,000 lines.
+    let text = String::from_utf8(data).unwrap();
+    let scripts = [
+        ("accented", "GET /api/items/", "Größe prüfen: Bestätigung für Einträge "),
+        ("cyrillic", "GET /api/items/", "ЗАПРОС /апи/товары/ обработан "),
+        ("cjk", "GET /api/items/", "获取 /接口/项目/ 已完成 "),
+    ];
+    for (name, from, to) in scripts {
+        let data = text.replace(from, to).into_bytes();
+        let chunks: Vec<&[u8]> = data.chunks(32 * 1024).collect();
+        let (tx, _rx) = futures::channel::mpsc::unbounded();
+        let proxy = EventProxy::new(tx);
+        let size = GridSize { cols: 177, rows: 42, cell_width: 9, cell_height: 17 };
+        let term = new_term(size, 10_000, proxy.clone());
+        let mut output = crate::session::ssh::Output::default();
+        let start = Instant::now();
+        for chunk in &chunks {
+            output.feed(&term, &proxy, chunk);
+            proxy.clear_dirty();
+        }
+        let secs = start.elapsed().as_secs_f64();
+        eprintln!("{name:<16}: {:.3} s = {:.1} MB/s", secs, data.len() as f64 / 1e6 / secs);
+    }
 }
 
 /// A Session to the benchmark server as `user`, at the size of a 1600 x 1000 pixel window.

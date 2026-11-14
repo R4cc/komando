@@ -6,6 +6,16 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Coloured output is taken in faster: Komando reads a whole colour code at once instead of one
+  character at a time, up to a tenth less time for a million coloured log lines.
+
+### Fixed
+
+- A character could go missing from output when it came right after a non-ASCII character that
+  arrived split across two network packets.
+
 ## [0.4.2] - 2026-11-14
 
 ### Changed

@@ -68,7 +68,7 @@ throwaway data folder and opens a few sessions; it's what produced the README sc
 `src/throughput_tests.rs` measures how fast SSH output gets into the terminal: an SSH server in
 the test process prints 1,000,000 coloured log lines through the real Session path, while a
 stand-in for the UI copies the screen every frame. A second test feeds the same output straight
-into the parser, without SSH. A third runs several busy Sessions at once while it types in a
+into the parser, without SSH, and then the same lines with accented, Cyrillic and CJK messages. A third runs several busy Sessions at once while it types in a
 quiet one, and reports how long the output took and how long each typed key took to show
 (`KOMANDO_THROUGHPUT_SESSIONS`, default 8). A fourth types in a Session while a large file and
 a folder of small files download, then upload, over SFTP on its connection, directly and through simulated
@@ -109,8 +109,9 @@ Komando builds against a patched russh in `vendor/russh` that lets a channel kee
 window of its own; `vendor/russh/KOMANDO.md` says what changed and how to carry it over to a
 new russh release. It also builds against patched vte and alacritty_terminal in `vendor/vte` and
 `vendor/alacritty_terminal`, which parse printable ASCII and write it to the grid in runs rather
-than one character at a time; their `KOMANDO.md` files say what changed, how to run their tests
-and how to carry the change over to new releases.
+than one character at a time, and read simple CSI sequences such as colour changes in one go;
+their `KOMANDO.md` files say what changed, how to run their tests and how to carry the changes
+over to new releases.
 
 `src/ui/terminal_view/render_bench.rs` times the terminal's per-frame work without a window: copying
 the screen out of the terminal and laying out its rows with GPUI's real text system, for a

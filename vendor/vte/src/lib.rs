@@ -117,6 +117,14 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
         while i != bytes.len() {
             match self.state {
                 State::Ground => i += self.advance_ground(performer, &bytes[i..]),
+                // Komando patch: a whole CSI sequence of digits, `;` and `:` at once.
+                State::Escape if bytes[i] == b'[' => match self.advance_csi_fast(performer, &bytes[i..]) {
+                    Some(len) => i += len,
+                    None => {
+                        self.change_state(performer, b'[');
+                        i += 1;
+                    },
+                },
                 _ => {
                     // Inlining it results in worse codegen.
                     let byte = bytes[i];
@@ -152,6 +160,14 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
         while i != bytes.len() && !performer.terminated() {
             match self.state {
                 State::Ground => i += self.advance_ground(performer, &bytes[i..]),
+                // Komando patch: a whole CSI sequence of digits, `;` and `:` at once.
+                State::Escape if bytes[i] == b'[' => match self.advance_csi_fast(performer, &bytes[i..]) {
+                    Some(len) => i += len,
+                    None => {
+                        self.change_state(performer, b'[');
+                        i += 1;
+                    },
+                },
                 _ => {
                     // Inlining it results in worse codegen.
                     let byte = bytes[i];
@@ -162,6 +178,37 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
         }
 
         i
+    }
+
+    /// Komando patch: parse a CSI sequence in one go when, after the `[` that
+    /// starts `bytes`, it holds only parameters (digits, `;` and `:`) and its
+    /// final byte, all within `bytes`, the shape of nearly every SGR sequence
+    /// (`ESC [ 3 1 m`). Returns how many bytes it took, `[` included, or `None`
+    /// to leave anything else (private markers, intermediates, controls in the
+    /// middle, a sequence cut off by the end of `bytes`) to the state machine.
+    ///
+    /// It takes the same actions as the state machine would for these bytes,
+    /// only without going through `change_state` for each of them.
+    #[inline(always)]
+    fn advance_csi_fast<P: Perform>(&mut self, performer: &mut P, bytes: &[u8]) -> Option<usize> {
+        let end = 1 + bytes[1..].iter().position(|byte| !(0x30..=0x3B).contains(byte))?;
+        let final_byte = bytes[end];
+        if !(0x40..=0x7E).contains(&final_byte) {
+            return None;
+        }
+
+        // Escape: `[` enters CsiEntry.
+        self.reset_params();
+        // CsiEntry and CsiParam treat parameter bytes alike.
+        for &byte in &bytes[1..end] {
+            match byte {
+                b';' => self.action_param(),
+                b':' => self.action_subparam(),
+                _ => self.action_paramnext(byte),
+            }
+        }
+        self.action_csi_dispatch(performer, final_byte);
+        Some(end + 1)
     }
 
     #[inline(always)]
@@ -698,7 +745,11 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                     performer.print(c);
 
                     self.partial_utf8_len = 0;
-                    return valid_bytes - old_bytes;
+                    // Komando patch: only the first character is taken. Upstream
+                    // returns `valid_bytes - old_bytes`, which also skips any whole
+                    // characters copied after it (`é` split, then `a` and part of
+                    // another character: the `a` was lost).
+                    return c.len_utf8() - old_bytes;
                 }
 
                 match err.error_len() {
@@ -1741,6 +1792,68 @@ mod tests {
                 }
                 assert_eq!(dispatcher.inner.dispatched, expected.dispatched, "{bytes:?}");
             }
+        }
+    }
+
+    // Komando patch: the CSI fast path takes the same actions as the state
+    // machine. Fed one byte at a time, no CSI sequence is ever complete within
+    // one `advance` call, so the state machine handles all of them.
+    #[test]
+    fn csi_fast_path_matches_state_machine() {
+        const PIECES: &[&[u8]] = &[
+            b"\x1b[", b"m", b"H", b"J", b"K", b"b", b"@", b"~", b"0", b"1", b"31", b"38", b"5",
+            b"65535", b"65536", b"999999", b";", b";;", b":", b"::", b"?", b">", b"=", b"<", b" ",
+            b"$", b"!", b"\x07", b"\x08", b"\x18", b"\x1a", b"\x1b", b"\x7f", b"x", b"\xc3\xa9",
+            b"\x1b]0;t\x07", b"\x1bP1$qm\x1b\\", b"\x1b[?2026h", b"\x1b[?2026l",
+        ];
+        let mut rng = Rng(0x0123_4567_89ab_cdef);
+        for case in 0..3000 {
+            let mut bytes = Vec::new();
+            for _ in 0..rng.below(80) {
+                if rng.below(8) == 0 {
+                    // Long parameter lists, past the 32 parameters vte keeps.
+                    bytes.extend_from_slice(b"\x1b[");
+                    for _ in 0..rng.below(40) {
+                        bytes.extend_from_slice([&b"1;"[..], b"2:", b";"][rng.below(3)]);
+                    }
+                    bytes.push(b'm');
+                } else {
+                    bytes.extend_from_slice(PIECES[rng.below(PIECES.len())]);
+                }
+            }
+
+            let mut expected = Dispatcher::default();
+            let mut parser = Parser::new();
+            for byte in &bytes {
+                parser.advance(&mut expected, &[*byte]);
+            }
+
+            for whole in [true, false] {
+                let mut dispatcher = Dispatcher::default();
+                let mut parser = Parser::new();
+                let mut rest = &bytes[..];
+                while !rest.is_empty() {
+                    let len = if whole { rest.len() } else { 1 + rng.below(rest.len()) };
+                    parser.advance(&mut dispatcher, &rest[..len]);
+                    rest = &rest[len..];
+                }
+                assert_eq!(dispatcher.dispatched, expected.dispatched, "case {case}: {bytes:?}");
+            }
+        }
+    }
+
+    // Komando patch: a character after a split one, followed by part of
+    // another, is printed (vte 0.15.0 dropped it).
+    #[test]
+    fn character_after_split_utf8_is_kept() {
+        for (first, second) in [(&b"\xc3"[..], &b"\xa9a\xc3\xa9"[..]), (b"\xe4\xb8", b"\xad\x7f\xc3\xa9")] {
+            let mut dispatcher = Dispatcher::default();
+            let mut parser = Parser::new();
+            parser.advance(&mut dispatcher, first);
+            parser.advance(&mut dispatcher, second);
+            let mut expected = Dispatcher::default();
+            Parser::new().advance(&mut expected, &[first, second].concat());
+            assert_eq!(dispatcher.dispatched, expected.dispatched);
         }
     }
 }
