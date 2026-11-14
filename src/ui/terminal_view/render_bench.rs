@@ -277,4 +277,6 @@ fn render_bench_grid() {
     let mut h = Harness::new(cols, rows, ts());
     h.feed(&distinct_clusters_screen(cols, rows, 0));
     run("distinct clusters static", &mut h, |_, _| {});
+    h.highlighter = Arc::new(Highlighter::default());
+    run("distinct clusters, no hl", &mut h, |_, _| {});
 }

@@ -1,7 +1,9 @@
 //! One terminal pane: paints the grid on the GPU and turns input into bytes for its Session.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::hash_map::Entry;
+use std::collections::VecDeque;
+use std::hash::Hash;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -13,6 +15,7 @@ use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use futures::StreamExt as _;
+use rustc_hash::FxHashMap;
 use futures::channel::{mpsc, oneshot};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -2055,7 +2058,7 @@ fn layout_row(
         }
         if !drawn && (cell.c != ' ' || cell.extra.is_some()) {
             let style = bold as usize + 2 * cell.flags.contains(Flags::ITALIC) as usize;
-            for g in glyphs.get(ctx, style, cell).iter() {
+            for g in glyphs.get(ctx, style, cell.c, cell.extra.as_deref().unwrap_or_default()) {
                 frame.glyphs.push(GlyphPaint {
                     origin: point(x + g.x, y + ctx.baseline + g.y),
                     font_id: g.font_id,
@@ -2288,67 +2291,180 @@ struct CachedGlyph {
     emoji: bool,
 }
 
+/// Clusters of up to this many characters (a base character and the zero-width ones on its cell)
+/// are looked up without allocating. Longer ones, such as family emoji joined with ZWJ, are rare.
+const INLINE_CLUSTER: usize = 8;
+
+/// Entries a generation of the glyph cache grows to before it ages (see `Generations`). Two
+/// generations are kept, so this many entries or more are always there: a screen in four styles
+/// with thousands of different characters, CJK or combining marks fits many times over.
+const GLYPH_GENERATION: usize = 16_384;
+
+/// A cluster and its style, inline.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct ClusterKey {
+    style: u8,
+    len: u8,
+    chars: [char; INLINE_CLUSTER],
+}
+
+/// Cache entries in two generations: those used since the cache last aged, and those before.
+/// Aging drops the older generation and starts a new one, so whatever was used in the last
+/// frame is still there in the next, however many it was: a screen with more different
+/// characters than a generation holds is never shaped again frame after frame.
+struct Generations<K> {
+    current: FxHashMap<K, Box<[CachedGlyph]>>,
+    previous: FxHashMap<K, Box<[CachedGlyph]>>,
+}
+
+impl<K> Default for Generations<K> {
+    fn default() -> Self {
+        Self { current: FxHashMap::default(), previous: FxHashMap::default() }
+    }
+}
+
+impl<K: Hash + Eq> Generations<K> {
+    /// Start a new generation once the current one has more than `limit` entries.
+    fn age(&mut self, limit: usize) {
+        if self.current.len() > limit {
+            // The old generation's table is cleared and reused for the new one.
+            std::mem::swap(&mut self.current, &mut self.previous);
+            self.current.clear();
+        }
+    }
+
+    fn clear(&mut self) {
+        self.current.clear();
+        self.previous.clear();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.current.len() + self.previous.len()
+    }
+}
+
 /// The glyphs for each character (or base character with its combining marks) in each style,
 /// shaped once and reused. Text is placed cell by cell, so shaping whole rows every frame
 /// would be thrown away; during heavy output, when every row is new each frame, that
 /// shaping was most of the time spent drawing.
-#[derive(Default)]
+///
+/// Whatever shaping gives is kept, including a character no font has (drawn as the missing
+/// glyph): it is not looked for in the fonts again.
 struct GlyphCache {
     /// The font family and size the entries were shaped with.
     font: Option<(SharedString, Pixels)>,
-    chars: HashMap<(usize, char), Box<[CachedGlyph]>>,
-    clusters: HashMap<(usize, String), Box<[CachedGlyph]>>,
+    /// ASCII characters in each style, by style and code: most cells of most screens.
+    ascii: Box<[Option<Box<[CachedGlyph]>>]>,
+    clusters: Generations<ClusterKey>,
+    /// Clusters longer than `INLINE_CLUSTER`, the style first (as a character).
+    long: Generations<Box<[char]>>,
+    /// Where a long cluster's key is put together for a lookup.
+    long_key: Vec<char>,
+    /// Entries a generation grows to before it ages.
+    limit: usize,
+}
+
+impl Default for GlyphCache {
+    fn default() -> Self {
+        Self {
+            font: None,
+            ascii: std::iter::repeat_with(|| None).take(4 * 128).collect(),
+            clusters: Generations::default(),
+            long: Generations::default(),
+            long_key: Vec::new(),
+            limit: GLYPH_GENERATION,
+        }
+    }
 }
 
 impl GlyphCache {
     /// Start a frame: forget everything if the font changed, and keep the cache bounded.
     fn prepare(&mut self, family: &SharedString, size: Pixels) {
-        let font = Some((family.clone(), size));
-        if self.font != font || self.chars.len() > 20_000 || self.clusters.len() > 5_000 {
-            self.font = font;
-            self.chars.clear();
+        if self.font.as_ref().is_none_or(|(f, s)| f != family || *s != size) {
+            self.font = Some((family.clone(), size));
+            self.ascii.iter_mut().for_each(|slot| *slot = None);
             self.clusters.clear();
+            self.long.clear();
         }
+        self.clusters.age(self.limit);
+        self.long.age(self.limit / 16);
     }
 
-    fn get(&mut self, ctx: &RowContext, style: usize, cell: &SnapCell) -> &[CachedGlyph] {
-        let shape = |text: &str| -> Box<[CachedGlyph]> {
-            #[cfg(test)]
-            SHAPED.with(|n| n.set(n.get() + 1));
-            let run = TextRun {
-                len: text.len(),
-                font: ctx.fonts[style].clone(),
-                color: Hsla::black(),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            let layout = ctx.text_system.layout_line(text, ctx.font_size, &[run], None);
-            let base = layout.runs.iter().flat_map(|r| r.glyphs.first()).next().map_or(px(0.), |g| g.position.x);
-            layout
-                .runs
-                .iter()
-                .flat_map(|r| {
-                    r.glyphs.iter().map(move |g| CachedGlyph {
-                        font_id: r.font_id,
-                        id: g.id,
-                        x: g.position.x - base,
-                        y: g.position.y,
-                        emoji: g.is_emoji,
-                    })
-                })
-                .collect()
-        };
-        match &cell.extra {
-            None => self.chars.entry((style, cell.c)).or_insert_with(|| shape(cell.c.encode_utf8(&mut [0; 4]))),
-            Some(extra) => {
-                let mut text = String::with_capacity(16);
-                text.push(cell.c);
-                text.extend(extra.iter());
-                self.clusters.entry((style, text)).or_insert_with_key(|(_, text)| shape(text))
-            }
-        }
+    /// The glyphs of a cell's text (`c` and the zero-width characters on its cell) in a style,
+    /// shaped if they aren't cached yet.
+    fn get(&mut self, ctx: &RowContext, style: usize, c: char, extra: &[char]) -> &[CachedGlyph] {
+        self.get_with(style, c, extra, |text| shape_cluster(ctx, style, text))
     }
+
+    fn get_with(
+        &mut self,
+        style: usize,
+        c: char,
+        extra: &[char],
+        shape: impl FnOnce(&str) -> Box<[CachedGlyph]>,
+    ) -> &[CachedGlyph] {
+        let text = || std::iter::once(c).chain(extra.iter().copied()).collect::<String>();
+        if extra.is_empty() && c.is_ascii() {
+            return self.ascii[style * 128 + c as usize].get_or_insert_with(|| shape(c.encode_utf8(&mut [0; 4])));
+        }
+        let len = 1 + extra.len();
+        if len <= INLINE_CLUSTER {
+            let mut chars = ['\0'; INLINE_CLUSTER];
+            chars[0] = c;
+            chars[1..len].copy_from_slice(extra);
+            let key = ClusterKey { style: style as u8, len: len as u8, chars };
+            let Generations { current, previous } = &mut self.clusters;
+            return match current.entry(key) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => entry.insert(previous.remove(&key).unwrap_or_else(|| shape(&text()))),
+            };
+        }
+        self.long_key.clear();
+        self.long_key.push(char::from(style as u8));
+        self.long_key.push(c);
+        self.long_key.extend_from_slice(extra);
+        let Generations { current, previous } = &mut self.long;
+        if !current.contains_key(self.long_key.as_slice()) {
+            let glyphs = previous.remove(self.long_key.as_slice()).unwrap_or_else(|| shape(&text()));
+            current.insert(self.long_key.as_slice().into(), glyphs);
+        }
+        &current[self.long_key.as_slice()]
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.ascii.iter().flatten().count() + self.clusters.len() + self.long.len()
+    }
+}
+
+/// Shape one cell's text in a style, its glyphs placed relative to the first one.
+fn shape_cluster(ctx: &RowContext, style: usize, text: &str) -> Box<[CachedGlyph]> {
+    #[cfg(test)]
+    SHAPED.with(|n| n.set(n.get() + 1));
+    let run = TextRun {
+        len: text.len(),
+        font: ctx.fonts[style].clone(),
+        color: Hsla::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let layout = ctx.text_system.layout_line(text, ctx.font_size, &[run], None);
+    let base = layout.runs.iter().flat_map(|r| r.glyphs.first()).next().map_or(px(0.), |g| g.position.x);
+    layout
+        .runs
+        .iter()
+        .flat_map(|r| {
+            r.glyphs.iter().map(move |g| CachedGlyph {
+                font_id: r.font_id,
+                id: g.id,
+                x: g.position.x - base,
+                y: g.position.y,
+                emoji: g.is_emoji,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -2746,7 +2862,8 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Activity, RowTextMetrics, asks_for_secret};
+    use super::{Activity, CachedGlyph, GlyphCache, INLINE_CLUSTER, RowTextMetrics, asks_for_secret};
+    use std::cell::Cell;
     use gpui::px;
     use std::time::{Duration, Instant};
 
@@ -2847,5 +2964,95 @@ mod tests {
         assert!(asks_for_secret("Password:"));
         assert!(!asks_for_secret("ana@web01:~$ "));
         assert!(!asks_for_secret("export PASSWORD_FILE=/tmp/x"));
+    }
+
+    /// A stand-in for shaping: one glyph per character, numbered by the character, counted.
+    fn fake_shape(count: &Cell<usize>) -> impl Fn(&str) -> Box<[CachedGlyph]> + '_ {
+        move |text| {
+            count.set(count.get() + 1);
+            text.chars()
+                .map(|c| CachedGlyph { font_id: gpui::FontId(0), id: gpui::GlyphId(c as u32), x: px(0.), y: px(0.), emoji: false })
+                .collect()
+        }
+    }
+
+    fn ids(glyphs: &[CachedGlyph]) -> Vec<u32> {
+        glyphs.iter().map(|g| g.id.0).collect()
+    }
+
+    #[test]
+    fn glyph_cache_shapes_each_cell_text_once_per_style() {
+        let shaped = Cell::new(0);
+        let shape = fake_shape(&shaped);
+        let mut cache = GlyphCache::default();
+        let family = ['\u{1f468}', '\u{200d}', '\u{1f469}', '\u{200d}', '\u{1f467}', '\u{200d}', '\u{1f466}'];
+        let long: Vec<char> = std::iter::repeat_n('\u{0301}', INLINE_CLUSTER + 3).collect();
+        let cells: [(char, &[char]); 6] = [
+            ('a', &[]),
+            ('\u{65e5}', &[]),
+            ('e', &['\u{0301}']),
+            ('\u{2764}', &['\u{fe0f}']),
+            ('\u{1f468}', &family[1..]),
+            ('x', &long),
+        ];
+        for _ in 0..3 {
+            cache.prepare(&"Mono".into(), px(14.));
+            for style in 0..4 {
+                for (c, extra) in cells {
+                    let glyphs = cache.get_with(style, c, extra, &shape);
+                    let want: Vec<u32> = std::iter::once(c).chain(extra.iter().copied()).map(|c| c as u32).collect();
+                    assert_eq!(ids(glyphs), want);
+                }
+            }
+        }
+        assert_eq!(shaped.get(), 6 * 4, "every text in every style is shaped once, then found");
+        assert_eq!(cache.len(), 6 * 4);
+        // A base character alone and with a mark are different entries.
+        assert_eq!(ids(cache.get_with(0, 'e', &[], &shape)), vec!['e' as u32]);
+        assert_eq!(shaped.get(), 6 * 4 + 1);
+
+        // Another font or size starts over.
+        cache.prepare(&"Mono".into(), px(15.));
+        assert_eq!(cache.len(), 0);
+        cache.get_with(0, 'a', &[], &shape);
+        cache.get_with(0, 'x', &long, &shape);
+        assert_eq!(shaped.get(), 6 * 4 + 3);
+    }
+
+    #[test]
+    fn glyph_cache_keeps_a_frame_bigger_than_its_limit_and_stays_bounded() {
+        let shaped = Cell::new(0);
+        let shape = fake_shape(&shaped);
+        let mut cache = GlyphCache { limit: 100, ..GlyphCache::default() };
+        let marks: Vec<char> = ('\u{0300}'..='\u{036f}').collect();
+        let marks = &marks;
+        let screen = |seed: usize| (seed..seed + 1000).map(move |i| (char::from(b'a' + (i % 26) as u8), marks[i / 26 % marks.len()]));
+
+        // The same 1,000 clusters on screen frame after frame, ten times the limit: shaped once.
+        for _ in 0..5 {
+            cache.prepare(&"Mono".into(), px(14.));
+            for (c, mark) in screen(0) {
+                cache.get_with(0, c, &[mark], &shape);
+            }
+        }
+        assert_eq!(shaped.get(), 1000);
+
+        // New clusters every frame: those no longer on screen go two generations later.
+        for frame in 1..=20 {
+            cache.prepare(&"Mono".into(), px(14.));
+            for (c, mark) in screen(frame * 1000 % 2912) {
+                cache.get_with(1, c, &[mark], &shape);
+            }
+            assert!(cache.len() <= 2 * 1000 + 100 + 1, "{} entries", cache.len());
+        }
+        // Long clusters age the same way.
+        let long: Vec<char> = std::iter::repeat_n('\u{0301}', INLINE_CLUSTER).collect();
+        for frame in 0..20u32 {
+            cache.prepare(&"Mono".into(), px(14.));
+            for i in 0..50u32 {
+                cache.get_with(2, char::from_u32(0x4e00 + frame * 50 + i).unwrap(), &long, &shape);
+            }
+            assert!(cache.long.len() <= 2 * 50 + 100 / 16 + 1, "{} entries", cache.long.len());
+        }
     }
 }
