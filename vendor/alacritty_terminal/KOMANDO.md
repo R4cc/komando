@@ -31,6 +31,36 @@ module declaration) and adds `src/term/komando_tests.rs`. The second change (bel
 `Komando patch`. Everything else here is the published crate as it is, with `Cargo.lock`, the registry's
 bookkeeping files and the reference test recordings (`tests/ref/`, 46 MB) left out.
 
+## The change: the next recycled row is loaded ahead
+
+Once the Scrollback is full, every new line reuses its oldest row: `Grid::scroll_up` rotates
+the ring and `Row::reset` clears the row. That row was last written a whole Scrollback ago
+(about 425 MB earlier with 100,000 lines of 177 columns), so it is in no CPU cache, and the
+reset and the text written after it waited for main memory. After each rotation,
+`Storage::prefetch_next_recycled` asks the CPU to start loading the row the next rotation
+reuses (`Row::prefetch`: its occupied cells and the last one, which `reset` reads), so the
+memory arrives while the current line is parsed. kitty does the same for its history buffer.
+
+It only issues prefetch instructions, which never fault and change no state, and only with
+at least 4,096 rows in the ring: smaller ones stay in the caches anyway. `Row::prefetch` is
+kept out of line: inlined into `scroll_up` it made output without Scrollback about 6% slower,
+although it never ran there. On other architectures than x86-64 it does nothing.
+
+The change touches `src/grid/mod.rs` (one call in `scroll_up`), `src/grid/storage.rs` and
+`src/grid/row.rs` (the two methods).
+
+Measured with `throughput_parser_only` on Windows 11 (Ryzen 7 9800X3D), medians of 3 runs
+alternating with the build without it:
+
+| Scrollback | Before | After |
+|---|---|---|
+| 100,000 lines | 0.481 s | 0.341 s (1.41x) |
+| 10,000 lines | 0.283 s | 0.269 s |
+| 0 | 0.249 s | 0.250 s |
+
+Over SSH (`throughput_coloured_log_lines_over_ssh`, 100,000 lines of Scrollback): 0.548 s
+before, 0.443 s after.
+
 ## Tests
 
 `src/term/komando_tests.rs` checks that `input_ascii` leaves a `Term` exactly as `input` does:
@@ -54,7 +84,7 @@ cargo test --manifest-path vendor/alacritty_terminal/Cargo.toml --config "patch.
 rm vendor/alacritty_terminal/Cargo.lock
 ```
 
-## Why
+## Why runs of ASCII
 
 Parsing is most of what a fast stream of output costs. `throughput_parser_only` (one million
 coloured log lines, 130 MB, fed straight into a 177 x 42 terminal) on a 4-core Linux VM, median

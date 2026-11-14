@@ -222,6 +222,18 @@ impl<T> Storage<T> {
         self.zero = (self.zero as isize + count + len as isize) as usize % len;
     }
 
+    /// Komando patch: prefetch the row the next `rotate(-1)` brings to the bottom of the
+    /// screen (see `Row::prefetch`). Not worth it while all rows fit in the CPU's caches
+    /// (a small Scrollback): there it would only cost the instructions.
+    #[inline]
+    pub fn prefetch_next_recycled(&self) {
+        const MIN_ROWS: usize = 4096;
+        let len = self.inner.len();
+        if len >= MIN_ROWS {
+            self.inner[(self.zero + len - 1) % len].prefetch();
+        }
+    }
+
     /// Rotate all existing lines down in history.
     ///
     /// This is a faster, specialized version of [`rotate_left`].

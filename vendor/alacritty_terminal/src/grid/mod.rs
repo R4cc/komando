@@ -307,6 +307,9 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             for i in (region.end.0..screen_lines).rev().map(Line::from) {
                 self.raw.swap(i, i - positions);
             }
+
+            // Komando patch: start loading the row the next scroll recycles.
+            self.raw.prefetch_next_recycled();
         } else {
             // Rotate lines without moving anything into history.
             for i in (region.start.0..region.end.0 - positions as i32).map(Line::from) {

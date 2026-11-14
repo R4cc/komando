@@ -163,6 +163,12 @@ pub struct Highlighter {
 
 impl Highlighter {
     pub fn new<'a>(keywords: impl IntoIterator<Item = &'a Keyword>) -> Self {
+        Self::compile(keywords, true)
+    }
+
+    /// `ascii_boundaries`: compile word boundaries as ASCII ones (see `ascii_word_boundaries`);
+    /// off only in tests, to compare with the rules as written.
+    fn compile<'a>(keywords: impl IntoIterator<Item = &'a Keyword>, ascii_boundaries: bool) -> Self {
         let mut rules = Vec::new();
         let mut patterns = Vec::new();
         let mut skipped = Vec::new();
@@ -178,7 +184,11 @@ impl Highlighter {
             if style.fg.is_none() && style.bg.is_none() && !style.bold {
                 continue;
             }
-            let pattern = if kw.is_regex() { kw.text.clone() } else { regex::escape(&kw.text) };
+            let pattern = match (kw.is_regex(), ascii_boundaries) {
+                (true, true) => ascii_word_boundaries(&kw.text),
+                (true, false) => kw.text.clone(),
+                (false, _) => regex::escape(&kw.text),
+            };
             let regex = match RegexBuilder::new(&pattern).case_insensitive(!kw.case_sensitive()).build() {
                 Ok(regex) => regex,
                 Err(err) => {
@@ -283,6 +293,71 @@ impl Highlighter {
         }
         true
     }
+}
+
+/// `pattern` with each word boundary (`\b`, `\B`, and their `{...}` forms) made an ASCII one,
+/// `(?-u:\b)`, as in JavaScript, where Tabby's rules come from. Everything else stays Unicode.
+///
+/// A Unicode word boundary keeps the regex engine from using its fast DFA on text with any
+/// non-ASCII character: it falls back to a far slower engine for the whole rule set, which
+/// made highlighting rows with accented, Cyrillic or CJK text several milliseconds per frame.
+/// On ASCII text the two kinds of boundary match the same places.
+fn ascii_word_boundaries(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len() + 16);
+    let mut chars = pattern.chars().peekable();
+    // Nesting depth of character classes (`[a[b]]`, `[[:alpha:]]`); there `\b` is no boundary.
+    let mut class = 0usize;
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some(b @ ('b' | 'B')) if class == 0 => {
+                    out.push_str("(?-u:\\");
+                    out.push(b);
+                    if chars.peek() == Some(&'{') {
+                        for c in chars.by_ref() {
+                            out.push(c);
+                            if c == '}' {
+                                break;
+                            }
+                        }
+                    }
+                    out.push(')');
+                }
+                Some(next) => {
+                    out.push('\\');
+                    out.push(next);
+                }
+                None => out.push('\\'),
+            },
+            '[' => {
+                out.push('[');
+                // POSIX classes (`[:alpha:]`) are not nested classes.
+                if class > 0 && chars.peek() == Some(&':') {
+                    for c in chars.by_ref() {
+                        out.push(c);
+                        if c == ']' {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                class += 1;
+                // A `]` straight after `[` or `[^` is a literal one.
+                if chars.peek() == Some(&'^') {
+                    out.push(chars.next().unwrap());
+                }
+                if chars.peek() == Some(&']') {
+                    out.push(chars.next().unwrap());
+                }
+            }
+            ']' if class > 0 => {
+                class -= 1;
+                out.push(']');
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn first_line(s: &str) -> String {
@@ -415,6 +490,77 @@ mod tests {
         assert!(h.skipped.is_empty(), "{:?}", h.skipped);
         assert_eq!(h.rule_count(), sets[0].keywords.len());
         assert!(sets[0].keywords.iter().all(|rule| rule.bg().is_none()));
+    }
+
+    #[test]
+    fn word_boundaries_become_ascii() {
+        let cases = [
+            (r"\bhealthy\b", r"(?-u:\b)healthy(?-u:\b)"),
+            (r"\Bx\b{start}y\b{end-half}", r"(?-u:\B)x(?-u:\b{start})y(?-u:\b{end-half})"),
+            (r"a\\b", r"a\\b"), // An escaped backslash, then `b`.
+            (r"[\b]\b", r"[\b](?-u:\b)"), // Inside a class it isn't a boundary.
+            (r"[]\b]\b", r"[]\b](?-u:\b)"), // `]` first in a class is literal.
+            (r"[^]a]\b", r"[^]a](?-u:\b)"),
+            (r"[[:alpha:]\b]\b", r"[[:alpha:]\b](?-u:\b)"),
+            (r"[a[b\b]]\b", r"[a[b\b]](?-u:\b)"),
+            (r"\d+\s\w\p{L}", r"\d+\s\w\p{L}"),
+            (r"trailing\", r"trailing\"),
+        ];
+        for (from, to) in cases {
+            assert_eq!(ascii_word_boundaries(from), to, "{from}");
+        }
+    }
+
+    /// The rewritten bundled rules compile, use the fast engine, and colour ASCII text exactly as
+    /// the rules as written do.
+    #[test]
+    fn ascii_word_boundaries_match_the_same_on_ascii_text() {
+        let sets = parse(DEFAULT_SET).unwrap();
+        let keywords: Vec<&Keyword> = sets.iter().flat_map(|s| s.keywords.iter()).collect();
+        let rewritten = Highlighter::new(keywords.iter().copied());
+        let unicode = Highlighter::compile(keywords.iter().copied(), false);
+        assert!(rewritten.skipped.is_empty(), "{:?}", rewritten.skipped);
+        assert_eq!(rewritten.rule_count(), unicode.rule_count());
+        let lines = [
+            "2026-11-14 container web is healthy, db unhealthy; WARNING: timeout",
+            "healthyish unhealthy_x xhealthy ERROR: connection refused (exited 1)",
+            "Active: active (running) since Fri; sshd[42]: Started OpenSSH; kernel: OOM",
+            "a-healthy-b healthy.healthy (healthy) [unhealthy] health: starting",
+        ];
+        for line in lines {
+            assert_eq!(rewritten.styles(line), unicode.styles(line), "{line}");
+        }
+    }
+
+    /// Highlighting a screen of non-ASCII log rows with Unicode and with ASCII word boundaries.
+    /// `KOMANDO_HIGHLIGHT_RULES` names another rules file to use instead of the bundled one.
+    #[test]
+    #[ignore]
+    fn bench_word_boundaries_on_non_ascii_rows() {
+        let text = std::env::var("KOMANDO_HIGHLIGHT_RULES")
+            .map(|path| fs::read_to_string(path).unwrap())
+            .unwrap_or_else(|_| DEFAULT_SET.to_string());
+        let sets = parse(&text).unwrap();
+        let keywords: Vec<&Keyword> = sets.iter().flat_map(|s| s.keywords.iter()).collect();
+        let rows: Vec<String> = (0..42)
+            .map(|i| {
+                format!(
+                    "2026-11-14T09:00:{i:02}Z INFO  Größe prüfen: Bestätigung für Einträge {i} ЗАПРОС обработан 获取 已完成 user=müller{i} took {i}ms"
+                )
+            })
+            .collect();
+        for (name, ascii) in [("unicode \\b", false), ("ascii \\b", true)] {
+            let h = Highlighter::compile(keywords.iter().copied(), ascii);
+            let start = std::time::Instant::now();
+            let frames = 50;
+            for _ in 0..frames {
+                for row in &rows {
+                    std::hint::black_box(h.styles(row));
+                }
+            }
+            let per_frame = start.elapsed() / frames;
+            eprintln!("{name}: {} rules, {per_frame:?} per 42-row frame", h.rule_count());
+        }
     }
 
     #[test]

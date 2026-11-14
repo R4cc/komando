@@ -1,6 +1,33 @@
+diff -ruN a/src/channels/mod.rs b/src/channels/mod.rs
+--- a/src/channels/mod.rs	2026-11-14 20:18:26.522261800 +0100
++++ b/src/channels/mod.rs	2026-11-14 20:18:26.590795100 +0100
+@@ -159,6 +159,11 @@
+         self.receiver.recv().await
+     }
+ 
++    /// Komando patch: the next [`ChannelMsg`] if one has already arrived, without waiting.
++    pub fn try_wait(&mut self) -> Option<ChannelMsg> {
++        self.receiver.try_recv().ok()
++    }
++
+     /// Make a reader for the [`Channel`] to receive [`ChannelMsg::Data`]
+     /// through the `AsyncRead` trait.
+     pub fn make_reader(&mut self) -> impl AsyncRead + '_ {
+@@ -658,6 +663,11 @@
+         self.read_half.wait().await
+     }
+ 
++    /// Komando patch: the next [`ChannelMsg`] if one has already arrived, without waiting.
++    pub fn try_wait(&mut self) -> Option<ChannelMsg> {
++        self.read_half.try_wait()
++    }
++
+     /// Consume the [`Channel`] to produce a bidirectionnal stream,
+     /// sending and receiving [`ChannelMsg::Data`] as `AsyncRead` + `AsyncWrite`.
+     pub fn into_stream(self) -> ChannelStream<S> {
 diff -ruN a/src/client/encrypted.rs b/src/client/encrypted.rs
---- a/src/client/encrypted.rs
-+++ b/src/client/encrypted.rs
+--- a/src/client/encrypted.rs	2026-11-14 20:18:26.531572000 +0100
++++ b/src/client/encrypted.rs	2026-11-14 20:18:26.601396000 +0100
 @@ -855,6 +855,7 @@
                      pending_data: std::collections::VecDeque::new(),
                      pending_eof: false,
@@ -10,8 +37,8 @@ diff -ruN a/src/client/encrypted.rs b/src/client/encrypted.rs
  
                  let (channel, channel_ref) = Channel::new(
 diff -ruN a/src/client/mod.rs b/src/client/mod.rs
---- a/src/client/mod.rs
-+++ b/src/client/mod.rs
+--- a/src/client/mod.rs	2026-11-14 20:18:26.534573500 +0100
++++ b/src/client/mod.rs	2026-11-14 20:18:26.603913700 +0100
 @@ -178,6 +178,16 @@
      ChannelOpenSession {
          channel_ref: ChannelRef,
@@ -84,8 +111,8 @@ diff -ruN a/src/client/mod.rs b/src/client/mod.rs
                  originator_address,
                  originator_port,
 diff -ruN a/src/client/session.rs b/src/client/session.rs
---- a/src/client/session.rs
-+++ b/src/client/session.rs
+--- a/src/client/session.rs	2026-11-14 20:18:26.535572100 +0100
++++ b/src/client/session.rs	2026-11-14 20:18:26.605916200 +0100
 @@ -15,12 +15,28 @@
      where
          F: FnOnce(&mut Vec<u8>) -> Result<(), crate::Error>,
@@ -163,8 +190,8 @@ diff -ruN a/src/client/session.rs b/src/client/session.rs
          &mut self,
          originator_address: &str,
 diff -ruN a/src/lib_inner.rs b/src/lib_inner.rs
---- a/src/lib_inner.rs
-+++ b/src/lib_inner.rs
+--- a/src/lib_inner.rs	2026-11-14 20:18:26.562971900 +0100
++++ b/src/lib_inner.rs	2026-11-14 20:18:26.631704400 +0100
 @@ -512,6 +512,9 @@
      pending_data: std::collections::VecDeque<(bytes::Bytes, Option<u32>, usize)>,
      pending_eof: bool,
@@ -176,8 +203,8 @@ diff -ruN a/src/lib_inner.rs b/src/lib_inner.rs
  
  impl ChannelParams {
 diff -ruN a/src/server/encrypted.rs b/src/server/encrypted.rs
---- a/src/server/encrypted.rs
-+++ b/src/server/encrypted.rs
+--- a/src/server/encrypted.rs	2026-11-14 20:18:26.573988700 +0100
++++ b/src/server/encrypted.rs	2026-11-14 20:18:26.642609100 +0100
 @@ -2051,6 +2051,7 @@
              pending_data: std::collections::VecDeque::new(),
              pending_eof: false,
@@ -187,8 +214,8 @@ diff -ruN a/src/server/encrypted.rs b/src/server/encrypted.rs
  
          let (channel, channel_ref) = Channel::new(
 diff -ruN a/src/session.rs b/src/session.rs
---- a/src/session.rs
-+++ b/src/session.rs
+--- a/src/session.rs	2026-11-14 20:18:26.579135600 +0100
++++ b/src/session.rs	2026-11-14 20:18:26.648406900 +0100
 @@ -318,7 +318,17 @@
              if data.len() as u32 <= channel.sender_window_size {
                  channel.sender_window_size -= data.len() as u32;

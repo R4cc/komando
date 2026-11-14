@@ -1,4 +1,5 @@
 diff -ruN a/src/grid/mod.rs b/src/grid/mod.rs
+<<<<<<< HEAD
 --- a/src/grid/mod.rs
 +++ b/src/grid/mod.rs
 @@ -2,6 +2,7 @@
@@ -145,10 +146,58 @@ diff -ruN a/src/grid/storage.rs b/src/grid/storage.rs
 +        let taken = &self.inner[start..];
 +        if taken.len() > realloc_size - start || taken.iter().any(|row| row.len() != columns) {
 +            self.inner.truncate(start);
+=======
+--- a/src/grid/mod.rs	2026-11-14 20:18:26.273119400 +0100
++++ b/src/grid/mod.rs	2026-11-14 20:18:26.340992000 +0100
+@@ -293,6 +293,9 @@
+             for i in (region.end.0..screen_lines).rev().map(Line::from) {
+                 self.raw.swap(i, i - positions);
+             }
++
++            // Komando patch: start loading the row the next scroll recycles.
++            self.raw.prefetch_next_recycled();
+         } else {
+             // Rotate lines without moving anything into history.
+             for i in (region.start.0..region.end.0 - positions as i32).map(Line::from) {
+diff -ruN a/src/grid/row.rs b/src/grid/row.rs
+--- a/src/grid/row.rs	2026-11-14 20:18:26.282719200 +0100
++++ b/src/grid/row.rs	2026-11-14 20:18:26.342551000 +0100
+@@ -112,6 +112,35 @@
+ 
+ #[allow(clippy::len_without_is_empty)]
+ impl<T> Row<T> {
++    /// Komando patch: ask the CPU to start loading the cells `reset` will touch (the occupied
++    /// ones and the last one, whose discriminant it checks). A row recycled from a full
++    /// Scrollback was last touched a whole Scrollback ago and is no longer in any cache; loaded
++    /// one scroll ahead, the reset that recycles it doesn't wait for main memory.
++    /// Kept out of line so it doesn't weigh on the inlining of the scroll it's called from.
++    #[inline(never)]
++    pub fn prefetch(&self) {
++        #[cfg(target_arch = "x86_64")]
++        {
++            use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
++            let len = self.inner.len();
++            if len == 0 {
++                return;
++            }
++            let base = self.inner.as_ptr().cast::<i8>();
++            let size = std::mem::size_of::<T>();
++            let occupied = self.occ.min(len) * size;
++            let mut offset = 0;
++            // SAFETY: prefetching never faults, and every address is inside the row's cells.
++            unsafe {
++                while offset < occupied {
++                    _mm_prefetch::<_MM_HINT_T0>(base.add(offset));
++                    offset += 64;
++                }
++                _mm_prefetch::<_MM_HINT_T0>(base.add((len - 1) * size));
++            }
+>>>>>>> perf/survey-quick-wins
 +        }
 +    }
 +
      #[inline]
+<<<<<<< HEAD
      pub fn len(&self) -> usize {
          self.len
 @@ -354,6 +392,7 @@
@@ -313,9 +362,35 @@ diff -ruN a/src/grid/storage.rs b/src/grid/storage.rs
          };
  
          storage.rotate(2);
+=======
+     pub fn from_vec(vec: Vec<T>, occ: usize) -> Row<T> {
+         Row { inner: vec, occ }
+diff -ruN a/src/grid/storage.rs b/src/grid/storage.rs
+--- a/src/grid/storage.rs	2026-11-14 20:18:26.284222200 +0100
++++ b/src/grid/storage.rs	2026-11-14 20:18:26.344098300 +0100
+@@ -184,6 +184,18 @@
+         self.zero = (self.zero as isize + count + len as isize) as usize % len;
+     }
+ 
++    /// Komando patch: prefetch the row the next `rotate(-1)` brings to the bottom of the
++    /// screen (see `Row::prefetch`). Not worth it while all rows fit in the CPU's caches
++    /// (a small Scrollback): there it would only cost the instructions.
++    #[inline]
++    pub fn prefetch_next_recycled(&self) {
++        const MIN_ROWS: usize = 4096;
++        let len = self.inner.len();
++        if len >= MIN_ROWS {
++            self.inner[(self.zero + len - 1) % len].prefetch();
++        }
++    }
++
+     /// Rotate all existing lines down in history.
+     ///
+     /// This is a faster, specialized version of [`rotate_left`].
+>>>>>>> perf/survey-quick-wins
 diff -ruN a/src/term/komando_tests.rs b/src/term/komando_tests.rs
---- a/src/term/komando_tests.rs
-+++ b/src/term/komando_tests.rs
+--- a/src/term/komando_tests.rs	1970-01-01 01:00:00.000000000 +0100
++++ b/src/term/komando_tests.rs	2026-11-14 20:18:26.353615400 +0100
 @@ -0,0 +1,337 @@
 +//! Komando patch: tests that `Term::input_ascii` leaves the terminal exactly as calling
 +//! `Term::input` for each character does.
@@ -655,8 +730,8 @@ diff -ruN a/src/term/komando_tests.rs b/src/term/komando_tests.rs
 +    assert_eq!(term.grid[Line(1)][Column(2)], Cell::default());
 +}
 diff -ruN a/src/term/mod.rs b/src/term/mod.rs
---- a/src/term/mod.rs
-+++ b/src/term/mod.rs
+--- a/src/term/mod.rs	2026-11-14 20:18:26.300907800 +0100
++++ b/src/term/mod.rs	2026-11-14 20:18:26.355614200 +0100
 @@ -1137,6 +1137,83 @@
          }
      }
