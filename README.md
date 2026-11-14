@@ -161,10 +161,25 @@ connected to the same SSH server. Ryzen 7 9800X3D, Windows 11.
 
 Memory is the private working set, the "Memory" column in Task Manager, summed over all
 processes. On raw throughput Windows Terminal was faster in 0.3.6: it took a million log lines in
-about 1.4 s, where Komando needed about 2.9 s. The next version removes the stalls that slowed
-Komando down: on the same kind of test, a million coloured log lines now come through in about
+about 1.4 s, where Komando needed about 2.9 s. Since 0.3.7 the stalls that slowed Komando down
+are gone: on the same kind of test, a million coloured log lines now come through in about
 0.8 s instead of about 4 s. Windows Terminal has not been re-measured against it yet. Method,
 ranges and caveats are in [docs/benchmarks.md](docs/benchmarks.md).
+
+### On slow and distant connections
+
+Measured over simulated links in Komando 0.4.0:
+
+| | 0.3.7 | 0.4.0 |
+|---|---:|---:|
+| Output after Ctrl+C during a flood, 10 Mbit/s, 30 ms | 3.8 s | **0.1 s** |
+| Output after Ctrl+C during a flood, 100 Mbit/s, 50 ms | 0.4 s | **0.1 s** |
+| Extra delay on each key while a file uploads, 10 Mbit/s, 30 ms | over 0.5 s | **25 ms** |
+| A million log lines from a Host 25 ms behind a Jump Host 25 ms away | 2.5 s | **1.5 s** |
+
+Transfers stay as fast as before while keys keep showing promptly: Komando paces how much
+output and file data it lets the server send ahead, from the delay it measures on the
+connection.
 
 ## Keyboard shortcuts
 

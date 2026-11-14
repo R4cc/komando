@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-14
+
 ### Changed
 
 - Loading indicators no longer flash when work finishes almost at once. In the file browser,
@@ -852,7 +854,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/R4cc/komando/compare/v0.3.7...v0.4.0
 [0.3.4]: https://github.com/R4cc/komando/compare/v0.3.3...v0.3.4
 [0.3.0]: https://github.com/R4cc/komando/compare/v0.2.8...v0.3.0
 [0.1.17]: https://github.com/R4cc/komando/compare/v0.1.16...v0.1.17
