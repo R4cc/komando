@@ -254,6 +254,17 @@ fn render_bench_grid() {
         next += 100;
     });
 
+    // A full-screen program (top, htop) updating a few rows of the alternate screen per frame.
+    let mut h = Harness::new(cols, rows, ts());
+    h.feed(b"\x1b[?1049h\x1b[2J\x1b[H");
+    h.feed(&log_lines(0, rows as u64 - 1));
+    run("tui, 3 rows per frame", &mut h, |h, i| {
+        for k in 0..3 {
+            let row = 2 + (i * 3 + k) % (rows as usize - 3);
+            h.feed(format!("\x1b[{row};1H\x1b[1m{:>6}\x1b[0m root 20 0 {:>8} {:>5.1}%", 1000 + i, i * 37 % 99_999, (i % 1000) as f32 / 10.).as_bytes());
+        }
+    });
+
     // (d) Many scripts and emoji on screen, static and scrolling.
     let mut h = Harness::new(cols, rows, ts());
     h.feed(&unicode_screen(rows));

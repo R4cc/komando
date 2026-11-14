@@ -6,12 +6,13 @@ use std::collections::VecDeque;
 use std::hash::Hash;
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::grid::{Dimensions as _, Scroll};
 use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
-use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::{Term, TermMode};
+use alacritty_terminal::selection::{Selection, SelectionRange, SelectionType};
+use alacritty_terminal::term::{Term, TermDamage, TermMode};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use futures::StreamExt as _;
@@ -2171,7 +2172,7 @@ impl Snapshot {
     ) {
         let grid = term.grid();
         let colors = content.colors;
-        let offset = content.display_offset as i32;
+        let offset = view_offset(term) as i32;
         let selection = content.selection;
         for row in rows {
             let line = Line(row as i32 - offset);
@@ -2212,6 +2213,15 @@ impl Snapshot {
     }
 }
 
+/// How far the view is scrolled up into the Scrollback.
+///
+/// Not always the terminal's display offset: while the view is scrolled up, a program scrolling
+/// a region that doesn't start at the top raises the offset without adding to the Scrollback
+/// (alacritty_terminal 0.26), and the view would start above the oldest line.
+fn view_offset<T>(term: &Term<T>) -> usize {
+    term.grid().display_offset().min(term.grid().history_size())
+}
+
 /// The cursor, if it is shown in the view.
 fn cursor_snap<T: alacritty_terminal::event::EventListener>(
     term: &Term<T>,
@@ -2219,7 +2229,7 @@ fn cursor_snap<T: alacritty_terminal::event::EventListener>(
     palette: &crate::theme::TerminalPalette,
 ) -> Option<CursorSnap> {
     let point = content.cursor.point;
-    let row = point.line.0 + content.display_offset as i32;
+    let row = point.line.0 + view_offset(term) as i32;
     (content.cursor.shape != CursorShape::Hidden && (0..term.screen_lines() as i32).contains(&row)).then(|| CursorSnap {
         row,
         col: point.column.0,
@@ -2242,12 +2252,16 @@ struct GridFont {
 
 impl GridFont {
     fn new(text_system: &gpui::WindowTextSystem, family: SharedString, size: Pixels) -> Self {
-        let mut regular = gpui::font(family.clone());
+        let mut regular = gpui::font(family);
         regular.features = gpui::FontFeatures::disable_ligatures();
         let font_id = text_system.resolve_font(&regular);
         let cell_w = text_system.advance(font_id, size, 'm').map(|s| s.width).unwrap_or(px(8.));
         let line_h = (size * 1.32).round();
         let metrics = RowTextMetrics::new(line_h, text_system.ascent(font_id, size), text_system.descent(font_id, size));
+        Self::with_metrics(regular, size, cell_w, line_h, metrics)
+    }
+
+    fn with_metrics(regular: gpui::Font, size: Pixels, cell_w: Pixels, line_h: Pixels, metrics: RowTextMetrics) -> Self {
         let bold = |mut f: gpui::Font| {
             f.weight = FontWeight::BOLD;
             f
@@ -2256,6 +2270,7 @@ impl GridFont {
             f.style = FontStyle::Italic;
             f
         };
+        let family = regular.family.clone();
         let fonts = [regular.clone(), bold(regular.clone()), italic(regular.clone()), bold(italic(regular))];
         Self { family, size, fonts, cell_w, line_h, metrics }
     }
@@ -2268,11 +2283,18 @@ struct GridLook<'a> {
     origin: gpui::Point<Pixels>,
     scale: f32,
     palette: &'a crate::theme::TerminalPalette,
-    highlighter: &'a highlight::Highlighter,
+    highlighter: &'a Arc<highlight::Highlighter>,
     focused: bool,
 }
 
 /// What the grid keeps from one frame to the next: the rows laid out, and buffers reused.
+///
+/// A row is laid out again only when something it shows has changed: its cells (the terminal's
+/// damage), the selection on it, or the cursor on it or leaving it. Anything else that changes
+/// how rows look (font, theme, highlight rules, size, position, scrolling) lays out every row.
+///
+/// The view paints its rows from here, so each view draws one grid per frame (as its `origin`
+/// and `cell` already assume).
 #[derive(Default)]
 struct GridCache {
     glyphs: GlyphCache,
@@ -2280,24 +2302,122 @@ struct GridCache {
     scratch: RowScratch,
     /// The rows of the view, laid out.
     rows: Vec<RowPaint>,
+    /// What `rows` were laid out with, besides the cells (`None` until the first frame).
+    looked: Option<LaidOutWith>,
+    /// The selection and the row of the cursor that `rows` show.
+    selection: Option<SelectionRange>,
+    cursor_row: Option<usize>,
+    /// The rows to lay out this frame.
+    dirty: Vec<bool>,
 }
 
-/// Lay out the grid for one frame into `cache.rows`: copy what is on screen and let go of the
-/// terminal, then lay out its rows (the parser keeps reading output meanwhile).
+/// What every row's layout depends on besides its cells, the selection and the cursor.
+#[derive(PartialEq)]
+struct LaidOutWith {
+    family: SharedString,
+    font_size: Pixels,
+    cell_w: Pixels,
+    line_h: Pixels,
+    origin: gpui::Point<Pixels>,
+    scale: f32,
+    palette: crate::theme::TerminalPalette,
+    /// The rules colouring output, `None` while highlighting is off; compared by identity
+    /// (and held, so the address cannot come back with other rules).
+    highlighter: Option<ByAddress<highlight::Highlighter>>,
+    columns: usize,
+    lines: usize,
+    /// How far the view is scrolled up (see `view_offset`).
+    offset: usize,
+}
+
+/// An `Arc` compared by what it points to, not by value.
+struct ByAddress<T>(Arc<T>);
+
+impl<T> PartialEq for ByAddress<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// Lay out the grid for one frame into `cache.rows`: copy what changed on screen and let go of
+/// the terminal, then lay out those rows (the parser keeps reading output meanwhile).
+///
+/// This is the only reader of the terminal's damage, and resets it: the rows of a `GridCache`
+/// are only right if nothing else does.
 fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &mut GridCache) {
-    let GridCache { glyphs, snapshot, scratch, rows } = cache;
-    snapshot.clear();
-    let (cursor, mode) = {
-        let term = term.lock();
-        let content = term.renderable_content();
-        let lines = term.screen_lines();
-        snapshot.copy_rows(&term, &content, look.palette, 0..lines);
-        rows.resize_with(lines, RowPaint::default);
-        (cursor_snap(&term, &content, look.palette), content.mode)
-    };
+    let GridCache { glyphs, snapshot, scratch, rows, looked, selection, cursor_row, dirty } = cache;
     let font = look.font;
-    // Highlight rules colour plain output; full-screen programs (vim, htop) are left alone.
-    let highlight = !mode.contains(TermMode::ALT_SCREEN) && look.highlighter.rule_count() > 0;
+    snapshot.clear();
+    let (cursor, highlight) = {
+        let mut term = term.lock();
+        let lines = term.screen_lines();
+        dirty.clear();
+        dirty.resize(lines, false);
+        // Rows the terminal changed since the last frame (it covers the cursor's moves too).
+        let mut all = match term.damage() {
+            TermDamage::Full => true,
+            TermDamage::Partial(damaged) => {
+                for line in damaged {
+                    if let Some(row) = dirty.get_mut(line.line) {
+                        *row = true;
+                    }
+                }
+                false
+            }
+        };
+        term.reset_damage();
+        let content = term.renderable_content();
+        let offset = view_offset(&*term);
+        // The damage is for the terminal's own offset (see `view_offset`).
+        all |= offset != content.display_offset;
+        // Highlight rules colour plain output; full-screen programs (vim, htop) are left alone.
+        let highlight = (!content.mode.contains(TermMode::ALT_SCREEN) && look.highlighter.rule_count() > 0)
+            .then(|| look.highlighter.clone());
+        let now = LaidOutWith {
+            family: font.family.clone(),
+            font_size: font.size,
+            cell_w: font.cell_w,
+            line_h: font.line_h,
+            origin: look.origin,
+            scale: look.scale,
+            palette: look.palette.clone(),
+            highlighter: highlight.clone().map(ByAddress),
+            columns: term.columns(),
+            lines,
+            offset,
+        };
+        if looked.as_ref() != Some(&now) {
+            *looked = Some(now);
+            all = true;
+        }
+        let cursor = cursor_snap(&term, &content, look.palette);
+        if all {
+            dirty.fill(true);
+        } else {
+            // The selection isn't part of the damage: the rows it covered and covers.
+            if content.selection != *selection {
+                for range in [*selection, content.selection].into_iter().flatten() {
+                    let first = (range.start.line.0 + offset as i32).max(0);
+                    let last = (range.end.line.0 + offset as i32).min(lines as i32 - 1);
+                    for row in first..=last {
+                        dirty[row as usize] = true;
+                    }
+                }
+            }
+            // Nor is the cursor's look (shape, colour, focus): the row it was drawn on, and its row.
+            for row in [*cursor_row, cursor.map(|k| k.row as usize)].into_iter().flatten() {
+                if let Some(row) = dirty.get_mut(row) {
+                    *row = true;
+                }
+            }
+        }
+        *selection = content.selection;
+        *cursor_row = cursor.map(|k| k.row as usize);
+        rows.resize_with(lines, RowPaint::default);
+        let changed = dirty.iter().enumerate().filter_map(|(row, dirty)| dirty.then_some(row));
+        snapshot.copy_rows(&term, &content, look.palette, changed);
+        (cursor, highlight)
+    };
     let ctx = RowContext {
         shaper,
         fonts: font.fonts.clone(),
@@ -2309,7 +2429,7 @@ fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &
         baseline: font.metrics.baseline,
         underline_y: font.metrics.underline_y,
         strike_y: font.metrics.strike_y,
-        highlighter: highlight.then_some(look.highlighter),
+        highlighter: highlight.as_deref(),
         dark: look.palette.dark,
         default_bg: look.palette.background,
         selection: look.palette.selection,
@@ -2928,9 +3048,20 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Activity, CachedGlyph, GlyphCache, INLINE_CLUSTER, RowTextMetrics, asks_for_secret};
+    use super::{
+        Activity, CachedGlyph, GlyphCache, GridCache, GridFont, GridLook, INLINE_CLUSTER, RowTextMetrics, Shaper,
+        asks_for_secret, layout_grid,
+    };
+    use crate::highlight::Highlighter;
+    use crate::session::ssh::Output;
+    use crate::session::{EventProxy, GridSize, SharedTerm, new_term};
+    use crate::theme::TerminalPalette;
+    use alacritty_terminal::grid::{Dimensions as _, Scroll};
+    use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
+    use alacritty_terminal::selection::{Selection, SelectionType};
+    use gpui::{Pixels, px};
     use std::cell::Cell;
-    use gpui::px;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     /// Output every `every` ms from `from` to `to` (ms after `t0`).
@@ -3120,5 +3251,265 @@ mod tests {
             }
             assert!(cache.long.len() <= 2 * 50 + 100 / 16 + 1, "{} entries", cache.long.len());
         }
+    }
+
+    /// Shapes every character as a glyph numbered by it, in a font numbered by the style.
+    struct FakeShaper;
+
+    impl Shaper for FakeShaper {
+        fn shape(&self, font: &gpui::Font, _: Pixels, text: &str) -> Box<[CachedGlyph]> {
+            let style = (font.weight == gpui::FontWeight::BOLD) as usize + 2 * (font.style == gpui::FontStyle::Italic) as usize;
+            text.chars()
+                .enumerate()
+                .map(|(i, c)| CachedGlyph {
+                    font_id: gpui::FontId(style),
+                    id: gpui::GlyphId(c as u32),
+                    x: px(i as f32),
+                    y: px(0.),
+                    emoji: false,
+                })
+                .collect()
+        }
+    }
+
+    fn grid_font(size: f32) -> GridFont {
+        let metrics = RowTextMetrics::new(px(size * 1.32).round(), px(size * 0.9), px(-size * 0.25));
+        GridFont::with_metrics(gpui::font("Mono"), px(size), px(size * 0.6), px(size * 1.32).round(), metrics)
+    }
+
+    /// A terminal and its grid, laid out frame after frame. Every frame is checked against
+    /// laying out every row afresh.
+    struct Grid {
+        term: SharedTerm,
+        proxy: EventProxy,
+        output: Output,
+        font: GridFont,
+        origin: gpui::Point<Pixels>,
+        scale: f32,
+        palette: TerminalPalette,
+        highlighter: Arc<Highlighter>,
+        focused: bool,
+        cache: GridCache,
+    }
+
+    impl Grid {
+        fn new(cols: u16, rows: u16) -> Self {
+            let (tx, _rx) = futures::channel::mpsc::unbounded();
+            let proxy = EventProxy::new(tx);
+            let term = new_term(GridSize { cols, rows, cell_width: 8, cell_height: 18 }, 1000, proxy.clone());
+            let sets = crate::highlight::load(std::path::Path::new("/nonexistent/komando-grid-test"));
+            Self {
+                term,
+                proxy,
+                output: Output::default(),
+                font: grid_font(14.),
+                origin: gpui::point(px(12.), px(8.)),
+                scale: 1.5,
+                palette: TerminalPalette::dark(),
+                highlighter: Arc::new(Highlighter::from_sets(&sets, &[])),
+                focused: true,
+                cache: GridCache::default(),
+            }
+        }
+
+        fn feed(&mut self, bytes: impl AsRef<[u8]>) {
+            self.output.feed(&self.term, &self.proxy, bytes.as_ref());
+        }
+
+        /// Lay out a frame and check it against a fresh layout. Returns how many rows it laid out.
+        fn frame(&mut self, what: &str) -> usize {
+            let Grid { term, font, origin, scale, palette, highlighter, focused, cache, .. } = self;
+            let look = GridLook { font, origin: *origin, scale: *scale, palette, highlighter, focused: *focused };
+            layout_grid(term, &FakeShaper, &look, cache);
+            let mut laid_out: Vec<i32> = cache.snapshot.cells.iter().map(|c| c.row).collect();
+            laid_out.dedup();
+            let mut fresh = GridCache::default();
+            layout_grid(term, &FakeShaper, &look, &mut fresh);
+            assert_eq!(cache.rows.len(), fresh.rows.len(), "{what}: rows");
+            assert_eq!(fresh.rows.len(), term.lock().screen_lines(), "{what}: rows");
+            for (row, (kept, new)) in cache.rows.iter().zip(&fresh.rows).enumerate() {
+                assert!(kept == new, "{what}: row {row} is not what it shows now\nkept: {kept:?}\nnow: {new:?}");
+            }
+            laid_out.len()
+        }
+
+        fn select(&mut self, ty: SelectionType, from: (i32, usize), to: (i32, usize)) {
+            let mut selection = Selection::new(ty, GridPoint::new(Line(from.0), Column(from.1)), Side::Left);
+            selection.update(GridPoint::new(Line(to.0), Column(to.1)), Side::Right);
+            self.term.lock().selection = Some(selection);
+        }
+    }
+
+    #[test]
+    fn grid_lays_out_only_the_rows_that_change() {
+        let mut g = Grid::new(40, 10);
+        for i in 0..30 {
+            g.feed(format!("line {i} INFO \x1b[32mok\x1b[0m ERROR healthy\r\n"));
+        }
+        g.feed("\x1b[1;32muser@host\x1b[0m:~$ ");
+        assert_eq!(g.frame("first frame"), 10);
+        assert!(g.frame("nothing changed") <= 1);
+        for c in "ls -la".chars() {
+            g.feed(c.to_string());
+            assert!(g.frame("typing") <= 1);
+        }
+        // A program redraws one line elsewhere and puts the cursor back.
+        g.feed("\x1b7\x1b[3;5Hstatus: \x1b[1;31mERROR\x1b[0m\x1b8");
+        assert!(g.frame("redraw") <= 2);
+        g.feed("\x1b[5;1H");
+        assert!(g.frame("cursor moved") <= 2);
+        g.feed("\x1b[7mreverse\x1b[0m \x1b[4munder\x1b[9mstrike\x1b[0m e\u{301} \u{65e5}\u{672c} \u{2764}\u{fe0f} \u{2500}\u{2524}");
+        assert!(g.frame("attributes, marks, wide characters") <= 1);
+        g.feed("\x1b[5;3H");
+        assert!(g.frame("cursor on a wide character") <= 1);
+
+        g.focused = false;
+        assert!(g.frame("unfocused") <= 1);
+        g.focused = true;
+        assert!(g.frame("focused") <= 1);
+        g.feed("\x1b[6 q");
+        assert!(g.frame("bar cursor") <= 1);
+        g.feed("\x1b[?25l");
+        assert!(g.frame("cursor hidden") <= 1);
+        g.feed("\x1b[?25h\x1b[2 q");
+        assert!(g.frame("cursor shown") <= 1);
+
+        g.select(SelectionType::Simple, (2, 3), (4, 7));
+        assert!(g.frame("selection") <= 4);
+        g.select(SelectionType::Block, (6, 1), (7, 9));
+        assert!(g.frame("other selection") <= 6);
+        g.select(SelectionType::Lines, (-3, 0), (0, 0));
+        g.frame("selection into the Scrollback");
+        g.term.lock().selection = None;
+        assert!(g.frame("no selection") <= 2);
+
+        // Output at the bottom scrolls every row.
+        g.feed("\x1b[10;1H\r\nnext");
+        assert_eq!(g.frame("scrolled by output"), 10);
+
+        g.term.lock().scroll_display(Scroll::Delta(5));
+        assert_eq!(g.frame("view scrolled up"), 10);
+        assert!(g.frame("still scrolled up") <= 1);
+        g.feed("x");
+        g.frame("typing below the view");
+        g.feed("\r\nmore output\r\n");
+        g.frame("output while scrolled up");
+        g.term.lock().scroll_display(Scroll::Delta(2));
+        g.feed("\x1b[1;1Hy");
+        g.frame("a change on screen while scrolled up");
+        g.term.lock().grid_mut().clear_history();
+        g.frame("Scrollback dropped while scrolled up");
+        g.term.lock().scroll_display(Scroll::Bottom);
+        g.frame("back at the bottom");
+        // Scrolled up, a region below the top scrolling raises the terminal's offset past its
+        // Scrollback (see `view_offset`).
+        g.feed("\r\none\r\ntwo\r\n");
+        g.term.lock().scroll_display(Scroll::Top);
+        g.frame("scrolled to the top");
+        g.feed("\x1b7\x1b[3;8r\x1b[8;1H\n\n\n\n\n\n\x1b[r\x1b8");
+        g.frame("a region scrolled while scrolled up");
+        g.feed("z");
+        g.frame("typing with the offset past the Scrollback");
+        g.term.lock().scroll_display(Scroll::Bottom);
+        g.frame("back at the bottom again");
+
+        crate::session::resize(&mut *g.term.lock(), GridSize { cols: 30, rows: 8, cell_width: 8, cell_height: 18 });
+        assert_eq!(g.frame("narrower and shorter"), 8);
+        crate::session::resize(&mut *g.term.lock(), GridSize { cols: 50, rows: 12, cell_width: 8, cell_height: 18 });
+        assert_eq!(g.frame("wider and taller"), 12);
+
+        g.palette = TerminalPalette::light();
+        assert_eq!(g.frame("light theme"), 12);
+        g.highlighter = Arc::new(Highlighter::default());
+        assert_eq!(g.frame("no highlight rules"), 12);
+        let sets = crate::highlight::load(std::path::Path::new("/nonexistent/komando-grid-test"));
+        g.highlighter = Arc::new(Highlighter::from_sets(&sets, &[]));
+        assert_eq!(g.frame("highlight rules back"), 12);
+        g.font = grid_font(16.);
+        assert_eq!(g.frame("bigger font"), 12);
+        g.origin = gpui::point(px(40.), px(8.));
+        assert_eq!(g.frame("moved"), 12);
+        g.scale = 2.;
+        assert_eq!(g.frame("other display"), 12);
+        assert!(g.frame("nothing changed") <= 1);
+
+        g.feed("\x1b]4;1;rgb:12/34/56\x07\x1b[31mred\x1b[0m");
+        g.frame("palette colour changed by the program");
+        g.feed("\x1b]12;rgb:ff/00/00\x07");
+        g.frame("cursor colour changed by the program");
+
+        g.feed("\x1b[?1049h\x1b[2J\x1b[1;1Htop - 10:00 ERROR\x1b[3;1HPID USER");
+        assert_eq!(g.frame("alternate screen"), 12);
+        g.feed("\x1b[3;5H99");
+        assert!(g.frame("full-screen program updates a cell") <= 2);
+        g.feed("\x1b[?1049l");
+        assert_eq!(g.frame("back from the alternate screen"), 12);
+
+        g.feed("\x1b[?2026h\x1b[2;1Hhalf drawn");
+        g.frame("inside a synchronized update");
+        g.feed("\x1b[?2026l");
+        g.frame("synchronized update done");
+        g.feed("\x1b[4hins\x1b[4l");
+        g.frame("insert mode");
+        g.feed("\x1b[2;5r\x1b[5;1H\n\n\x1b[r");
+        g.frame("scroll region");
+        g.feed("\x1b[3;1H\x1b[K\x1b[1J");
+        g.frame("erased");
+        g.feed("\x1bc");
+        g.frame("reset");
+    }
+
+    #[test]
+    fn grid_rows_from_damage_match_a_full_layout_under_random_output() {
+        let mut g = Grid::new(24, 8);
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let pieces: &[&str] = &[
+            "hello", " ", "\r\n", "\n", "\r", "\t", "\x08", "ERROR", "INFO healthy", "e\u{301}", "\u{65e5}\u{672c}",
+            "\u{2764}\u{fe0f}", "\u{2500}\u{2502}", "\x1b[K", "\x1b[1K", "\x1b[2K", "\x1b[J", "\x1b[1J", "\x1b[2J",
+            "\x1b[3L", "\x1b[2M", "\x1b[4@", "\x1b[3P", "\x1b[5X", "\x1bM", "\x1bD", "\x1bE", "\x1b[2S", "\x1b[T",
+            "\x1b[3;6r", "\x1b[r", "\x1b[1;31m", "\x1b[0m", "\x1b[7m", "\x1b[4:3m", "\x1b[8m", "\x1b[2m", "\x1b[3m",
+            "\x1b[48;5;22m", "\x1b[?25l", "\x1b[?25h", "\x1b[4h", "\x1b[4l", "\x1b[?1049h", "\x1b[?1049l", "\x1b[2 q",
+            "\x1b[5 q", "\x1b#8", "\x1b[?2026hsync\x1b[?2026l", "\x1b]4;2;rgb:aa/bb/cc\x07", "\x1b]104\x07",
+            "\x1b]11;rgb:10/20/30\x07", "\x1b[3G", "\x1b[10C", "\x1b[2A", "\x1b[3B", "\x1b[2D", "\x1b7", "\x1b8",
+            "\x1b[?6h", "\x1b[?6l", "\x1b[?7l", "\x1b[?7h", "\x1b[3g", "\x1b[3J", "\x1bc",
+        ];
+        let mut partial = 0;
+        for step in 0..3000 {
+            for _ in 0..next() % 4 + 1 {
+                let n = next();
+                match n % 40 {
+                    0 => g.feed(format!("\x1b[{};{}H", n / 40 % 10, n / 400 % 30)),
+                    1 => {
+                        let delta = (n / 40 % 7) as i32 - 3;
+                        g.term.lock().scroll_display(Scroll::Delta(delta));
+                    }
+                    2 => {
+                        let row = |n: u64| (n % 12) as i32 - 4;
+                        let ty = [SelectionType::Simple, SelectionType::Block, SelectionType::Lines][(n / 40 % 3) as usize];
+                        g.select(ty, (row(n / 120), (n / 1440 % 24) as usize), (row(n / 17280), (n / 207360 % 24) as usize));
+                    }
+                    3 => g.term.lock().selection = None,
+                    4 => g.focused = !g.focused,
+                    5 if n / 40 % 8 == 0 => {
+                        let size = GridSize { cols: 10 + (n / 320 % 20) as u16, rows: 3 + (n / 6400 % 8) as u16, cell_width: 8, cell_height: 18 };
+                        crate::session::resize(&mut *g.term.lock(), size);
+                    }
+                    6 if n / 40 % 8 == 0 => g.palette = if g.palette.dark { TerminalPalette::light() } else { TerminalPalette::dark() },
+                    _ => g.feed(pieces[(n / 40) as usize % pieces.len()]),
+                }
+            }
+            let lines = g.term.lock().screen_lines();
+            if g.frame(&format!("step {step}")) < lines {
+                partial += 1;
+            }
+        }
+        // Many frames kept rows: the test is about those.
+        assert!(partial > 3000 / 4, "{partial} of 3000 frames kept rows");
     }
 }
