@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-14
+
 ### Added
 
 - Command history for each host: every command you enter in a host's SSH sessions is kept on
@@ -979,7 +981,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/R4cc/komando/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/R4cc/komando/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/R4cc/komando/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/R4cc/komando/compare/v0.3.7...v0.4.0
