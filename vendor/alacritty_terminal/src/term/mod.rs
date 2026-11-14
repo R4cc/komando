@@ -1137,6 +1137,83 @@ impl<T: EventListener> Handler for Term<T> {
         }
     }
 
+    /// Komando patch: a run of printable ASCII to be displayed.
+    ///
+    /// Does exactly what calling [`Self::input`] for each character would, but
+    /// writes the cells of each row in one tight loop. Every printable ASCII
+    /// character is one cell wide, so there is no width lookup, and the cursor
+    /// template is read once per row rather than per character. Insert mode, a
+    /// charset other than ASCII and cells holding (parts of) wide characters go
+    /// through `input` instead.
+    #[inline(never)]
+    fn input_ascii(&mut self, text: &str) {
+        debug_assert!(text.bytes().all(|b| (0x20..=0x7e).contains(&b)));
+
+        if self.mode.contains(TermMode::INSERT)
+            || self.grid.cursor.charsets[self.active_charset] != StandardCharset::Ascii
+        {
+            for c in text.chars() {
+                self.input(c);
+            }
+            return;
+        }
+
+        let columns = self.columns();
+        let mut bytes = text.as_bytes();
+        while let Some(&last) = bytes.last() {
+            // Move cursor to next line.
+            if self.grid.cursor.input_needs_wrap {
+                self.wrapline();
+
+                // Line wrapping is off: every character left lands on the last column, so
+                // only the last of them is still there afterwards.
+                if self.grid.cursor.input_needs_wrap {
+                    self.write_at_cursor(last as char);
+                    return;
+                }
+            }
+
+            let point = self.grid.cursor.point;
+            let start = point.column.0;
+            let count = bytes.len().min(columns - start);
+
+            let template = &self.grid.cursor.template;
+            let (fg, bg, flags) = (template.fg, template.bg, template.flags);
+            let extra = template.extra.clone();
+
+            // Write cells until one holds part of a wide character: overwriting that takes
+            // clearing up its other half, which `input` does.
+            let mut written = 0;
+            let cells = &mut self.grid[point.line][point.column..Column(start + count)];
+            for (cell, &byte) in cells.iter_mut().zip(&bytes[..count]) {
+                if cell.flags.intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER) {
+                    break;
+                }
+                cell.c = byte as char;
+                cell.fg = fg;
+                cell.bg = bg;
+                cell.flags = flags;
+                cell.extra = extra.clone();
+                written += 1;
+            }
+
+            if written < count {
+                self.grid.cursor.point.column = Column(start + written);
+                self.input(bytes[written] as char);
+                bytes = &bytes[written + 1..];
+                continue;
+            }
+
+            if start + count < columns {
+                self.grid.cursor.point.column = Column(start + count);
+            } else {
+                self.grid.cursor.point.column = Column(columns - 1);
+                self.grid.cursor.input_needs_wrap = true;
+            }
+            bytes = &bytes[count..];
+        }
+    }
+
     #[inline]
     fn decaln(&mut self) {
         trace!("Decalnning");
@@ -2503,6 +2580,10 @@ pub mod test {
         term
     }
 }
+
+// Komando patch.
+#[cfg(test)]
+mod komando_tests;
 
 #[cfg(test)]
 mod tests {

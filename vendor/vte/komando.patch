@@ -1,0 +1,330 @@
+diff -ruN a/src/ansi.rs b/src/ansi.rs
+--- a/src/ansi.rs
++++ b/src/ansi.rs
+@@ -505,6 +505,18 @@
+     /// A character to be displayed.
+     fn input(&mut self, _c: char) {}
+ 
++    /// A run of printable ASCII characters (`0x20..=0x7e`) to be displayed.
++    ///
++    /// Komando patch: must behave exactly like calling [`Handler::input`] for
++    /// each character in turn, which is what the default does; override it
++    /// only to do the same faster.
++    #[inline]
++    fn input_ascii(&mut self, text: &str) {
++        for c in text.chars() {
++            self.input(c);
++        }
++    }
++
+     /// Set cursor to position.
+     fn goto(&mut self, _line: i32, _col: usize) {}
+ 
+@@ -1292,6 +1304,15 @@
+         self.state.preceding_char = Some(c);
+     }
+ 
++    /// Komando patch: hand the whole run to the handler at once.
++    #[inline]
++    fn print_ascii(&mut self, text: &str) {
++        if let Some(&last) = text.as_bytes().last() {
++            self.handler.input_ascii(text);
++            self.state.preceding_char = Some(last as char);
++        }
++    }
++
+     #[inline]
+     fn execute(&mut self, byte: u8) {
+         match byte {
+@@ -2092,6 +2113,53 @@
+         }
+     }
+ 
++    // Komando patch: what reaches the handler for printable ASCII.
++    #[derive(Default)]
++    struct InputHandler {
++        input: Vec<char>,
++        runs: Vec<String>,
++    }
++
++    impl Handler for InputHandler {
++        fn input(&mut self, c: char) {
++            self.input.push(c);
++        }
++
++        fn input_ascii(&mut self, text: &str) {
++            self.runs.push(text.into());
++            self.input.extend(text.chars());
++        }
++    }
++
++    #[test]
++    fn input_ascii_runs_and_repeat() {
++        let mut parser = Processor::<TestSyncHandler>::new();
++        let mut handler = InputHandler::default();
++
++        parser.advance(&mut handler, b"abc\x1b[3bd\xc3\xa9\x1b[2bxy");
++        parser.advance(&mut handler, b"z\x1b[b");
++
++        assert_eq!(handler.runs, ["abc", "d", "xy", "z"]);
++        assert_eq!(handler.input.iter().collect::<String>(), "abccccd\u{e9}\u{e9}\u{e9}xyzz");
++    }
++
++    #[test]
++    fn input_ascii_default_calls_input() {
++        #[derive(Default)]
++        struct Chars(Vec<char>);
++
++        impl Handler for Chars {
++            fn input(&mut self, c: char) {
++                self.0.push(c);
++            }
++        }
++
++        let mut parser = Processor::<TestSyncHandler>::new();
++        let mut handler = Chars::default();
++        parser.advance(&mut handler, b"ab\x1b[1mc d\x1b[2b");
++        assert_eq!(handler.0.iter().collect::<String>(), "abc ddd");
++    }
++
+     #[test]
+     fn parse_control_attribute() {
+         static BYTES: &[u8] = &[0x1B, b'[', b'1', b'm'];
+diff -ruN a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -718,17 +718,46 @@
+     }
+ 
+     /// Handle ground dispatch of print/execute for all characters in a string.
++    ///
++    /// Komando patch: maximal runs of printable ASCII go to
++    /// [`Perform::print_ascii`] in one call; everything else is dispatched one
++    /// character at a time as before.
+     #[inline]
+     fn ground_dispatch<P: Perform>(performer: &mut P, text: &str) {
+-        for c in text.chars() {
++        let bytes = text.as_bytes();
++        let mut i = 0;
++        while i < bytes.len() {
++            let start = i;
++            while i < bytes.len() && is_printable_ascii(bytes[i]) {
++                i += 1;
++            }
++            if i > start {
++                // SAFETY: `start..i` holds only ASCII bytes, so both ends are on
++                // character boundaries.
++                performer.print_ascii(unsafe { text.get_unchecked(start..i) });
++                if i == bytes.len() {
++                    break;
++                }
++            }
++
++            // SAFETY: `i` is on a character boundary: it is either where a run of
++            // ASCII ended or just past the previous whole character.
++            let c = unsafe { text.get_unchecked(i..).chars().next().unwrap_unchecked() };
+             match c {
+                 '\x00'..='\x1f' | '\u{80}'..='\u{9f}' => performer.execute(c as u8),
+                 _ => performer.print(c),
+             }
++            i += c.len_utf8();
+         }
+     }
+ }
+ 
++/// Komando patch: whether `byte` is printable ASCII (space to tilde).
++#[inline(always)]
++fn is_printable_ascii(byte: u8) -> bool {
++    (0x20..=0x7e).contains(&byte)
++}
++
+ #[derive(PartialEq, Eq, Debug, Default, Copy, Clone)]
+ enum State {
+     CsiEntry,
+@@ -762,6 +791,19 @@
+     /// Draw a character to the screen and update states.
+     fn print(&mut self, _c: char) {}
+ 
++    /// Draw a run of printable ASCII characters (`0x20..=0x7e`) to the screen.
++    ///
++    /// Komando patch: the parser calls this instead of [`Perform::print`] for
++    /// consecutive printable ASCII characters in the ground state. It must
++    /// behave exactly like calling `print` for each character in turn, which
++    /// is what the default does; override it only to do the same faster.
++    #[inline]
++    fn print_ascii(&mut self, text: &str) {
++        for c in text.chars() {
++            self.print(c);
++        }
++    }
++
+     /// Execute a C0 or C1 control function.
+     fn execute(&mut self, _byte: u8) {}
+ 
+@@ -1539,4 +1581,166 @@
+         assert_eq!(dispatcher.dispatched[0], Sequence::Execute(0x18));
+         assert_eq!(dispatcher.dispatched[1], Sequence::Execute(0x1A));
+     }
++
++    // Komando patch: tests for `Perform::print_ascii`.
++
++    /// Records runs passed to `print_ascii` and, like the default, a `Print`
++    /// for each of their characters.
++    #[derive(Default)]
++    struct RunDispatcher {
++        inner: Dispatcher,
++        runs: Vec<std::string::String>,
++    }
++
++    impl Perform for RunDispatcher {
++        fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
++            self.inner.osc_dispatch(params, bell_terminated);
++        }
++
++        fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], ignore: bool, c: char) {
++            self.inner.csi_dispatch(params, intermediates, ignore, c);
++        }
++
++        fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
++            self.inner.esc_dispatch(intermediates, ignore, byte);
++        }
++
++        fn hook(&mut self, params: &Params, intermediates: &[u8], ignore: bool, c: char) {
++            self.inner.hook(params, intermediates, ignore, c);
++        }
++
++        fn put(&mut self, byte: u8) {
++            self.inner.put(byte);
++        }
++
++        fn unhook(&mut self) {
++            self.inner.unhook();
++        }
++
++        fn print(&mut self, c: char) {
++            self.inner.print(c);
++        }
++
++        fn print_ascii(&mut self, text: &str) {
++            assert!(!text.is_empty());
++            assert!(text.bytes().all(is_printable_ascii), "{text:?}");
++            self.runs.push(text.into());
++            for c in text.chars() {
++                self.inner.print(c);
++            }
++        }
++
++        fn execute(&mut self, byte: u8) {
++            self.inner.execute(byte);
++        }
++    }
++
++    /// `ground_dispatch` as it is in vte 0.15.0, before the Komando patch.
++    fn upstream_ground_dispatch<P: Perform>(performer: &mut P, text: &str) {
++        for c in text.chars() {
++            match c {
++                '\x00'..='\x1f' | '\u{80}'..='\u{9f}' => performer.execute(c as u8),
++                _ => performer.print(c),
++            }
++        }
++    }
++
++    /// xorshift64*: a small deterministic random number generator.
++    struct Rng(u64);
++
++    impl Rng {
++        fn below(&mut self, n: usize) -> usize {
++            self.0 ^= self.0 >> 12;
++            self.0 ^= self.0 << 25;
++            self.0 ^= self.0 >> 27;
++            (self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) % n as u64) as usize
++        }
++    }
++
++    /// Random bytes, mostly printable ASCII, with escapes, controls, UTF-8
++    /// (valid, invalid and, if `c1`, C1 controls) mixed in.
++    fn random_bytes(rng: &mut Rng, c1: bool) -> Vec<u8> {
++        const PIECES: &[&[u8]] = &[
++            b"\x1b[31m", b"\x1b[0m", b"\x1b[?2026h", b"\x1b]0;title\x07", b"\x1b]8;;u\x1b\\",
++            b"\x1bP1$qm\x1b\\", b"\x1b(0", b"\x1b[5b", b"\r\n", b"\t", b"\x08", b"\x7f", b"\x00",
++            b"\xc3\xa9", b"\xe4\xb8\xad", b"\xf0\x9f\x98\x80", b"\xff", b"\xe4\xb8", b"\x1b",
++            b"\x18",
++        ];
++        let mut bytes = Vec::new();
++        for _ in 0..rng.below(60) {
++            if c1 && rng.below(10) == 0 {
++                bytes.extend_from_slice([&b"\xc2\x85"[..], b"\xc2\x9b"][rng.below(2)]);
++            } else if rng.below(3) == 0 {
++                bytes.extend_from_slice(PIECES[rng.below(PIECES.len())]);
++            } else {
++                for _ in 0..1 + rng.below(20) {
++                    bytes.push(0x20 + rng.below(0x5f) as u8);
++                }
++            }
++        }
++        bytes
++    }
++
++    #[test]
++    fn print_ascii_runs() {
++        let mut dispatcher = RunDispatcher::default();
++        let mut parser = Parser::new();
++
++        parser.advance(&mut dispatcher, "ab\x1b[1mcd~\u{e9}e f\n\x7fg".as_bytes());
++
++        assert_eq!(dispatcher.runs, ["ab", "cd~", "e f", "g"]);
++        let printed: std::string::String = dispatcher
++            .inner
++            .dispatched
++            .iter()
++            .filter_map(|sequence| match sequence {
++                Sequence::Print(c) => Some(*c),
++                _ => None,
++            })
++            .collect();
++        assert_eq!(printed, "abcd~\u{e9}e f\x7fg");
++    }
++
++    #[test]
++    fn ground_dispatch_matches_upstream() {
++        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
++        for _ in 0..2000 {
++            let bytes = random_bytes(&mut rng, true);
++            let text = std::string::String::from_utf8_lossy(&bytes);
++            let mut patched = RunDispatcher::default();
++            let mut upstream = Dispatcher::default();
++            Parser::<0>::ground_dispatch(&mut patched, &text);
++            upstream_ground_dispatch(&mut upstream, &text);
++            assert_eq!(patched.inner.dispatched, upstream.dispatched, "{text:?}");
++        }
++    }
++
++    #[test]
++    fn print_ascii_matches_print_however_split() {
++        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
++        for _ in 0..2000 {
++            // Without C1 controls: upstream executes them only when the whole
++            // character arrives in one `advance` call, and prints them otherwise.
++            let bytes = random_bytes(&mut rng, false);
++
++            // One byte at a time: no run is longer than one character.
++            let mut expected = Dispatcher::default();
++            let mut parser = Parser::new();
++            for byte in &bytes {
++                parser.advance(&mut expected, &[*byte]);
++            }
++
++            for whole in [true, false] {
++                let mut dispatcher = RunDispatcher::default();
++                let mut parser = Parser::new();
++                let mut rest = &bytes[..];
++                while !rest.is_empty() {
++                    let len = if whole { rest.len() } else { 1 + rng.below(rest.len()) };
++                    parser.advance(&mut dispatcher, &rest[..len]);
++                    rest = &rest[len..];
++                }
++                assert_eq!(dispatcher.inner.dispatched, expected.dispatched, "{bytes:?}");
++            }
++        }
++    }
+ }

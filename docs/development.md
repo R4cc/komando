@@ -107,7 +107,10 @@ cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1
 
 Komando builds against a patched russh in `vendor/russh` that lets a channel keep a receive
 window of its own; `vendor/russh/KOMANDO.md` says what changed and how to carry it over to a
-new russh release.
+new russh release. It also builds against patched vte and alacritty_terminal in `vendor/vte` and
+`vendor/alacritty_terminal`, which parse printable ASCII and write it to the grid in runs rather
+than one character at a time; their `KOMANDO.md` files say what changed, how to run their tests
+and how to carry the change over to new releases.
 
 To include rendering, run the whole app against `examples/logserver.rs`. It writes a key pair
 for `examples/demo.rs`, floods each shell it opens and prints how long the terminal took to take

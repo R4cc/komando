@@ -505,6 +505,18 @@ pub trait Handler {
     /// A character to be displayed.
     fn input(&mut self, _c: char) {}
 
+    /// A run of printable ASCII characters (`0x20..=0x7e`) to be displayed.
+    ///
+    /// Komando patch: must behave exactly like calling [`Handler::input`] for
+    /// each character in turn, which is what the default does; override it
+    /// only to do the same faster.
+    #[inline]
+    fn input_ascii(&mut self, text: &str) {
+        for c in text.chars() {
+            self.input(c);
+        }
+    }
+
     /// Set cursor to position.
     fn goto(&mut self, _line: i32, _col: usize) {}
 
@@ -1290,6 +1302,15 @@ where
     fn print(&mut self, c: char) {
         self.handler.input(c);
         self.state.preceding_char = Some(c);
+    }
+
+    /// Komando patch: hand the whole run to the handler at once.
+    #[inline]
+    fn print_ascii(&mut self, text: &str) {
+        if let Some(&last) = text.as_bytes().last() {
+            self.handler.input_ascii(text);
+            self.state.preceding_char = Some(last as char);
+        }
     }
 
     #[inline]
@@ -2090,6 +2111,53 @@ mod tests {
                 reset_colors: Vec::new(),
             }
         }
+    }
+
+    // Komando patch: what reaches the handler for printable ASCII.
+    #[derive(Default)]
+    struct InputHandler {
+        input: Vec<char>,
+        runs: Vec<String>,
+    }
+
+    impl Handler for InputHandler {
+        fn input(&mut self, c: char) {
+            self.input.push(c);
+        }
+
+        fn input_ascii(&mut self, text: &str) {
+            self.runs.push(text.into());
+            self.input.extend(text.chars());
+        }
+    }
+
+    #[test]
+    fn input_ascii_runs_and_repeat() {
+        let mut parser = Processor::<TestSyncHandler>::new();
+        let mut handler = InputHandler::default();
+
+        parser.advance(&mut handler, b"abc\x1b[3bd\xc3\xa9\x1b[2bxy");
+        parser.advance(&mut handler, b"z\x1b[b");
+
+        assert_eq!(handler.runs, ["abc", "d", "xy", "z"]);
+        assert_eq!(handler.input.iter().collect::<String>(), "abccccd\u{e9}\u{e9}\u{e9}xyzz");
+    }
+
+    #[test]
+    fn input_ascii_default_calls_input() {
+        #[derive(Default)]
+        struct Chars(Vec<char>);
+
+        impl Handler for Chars {
+            fn input(&mut self, c: char) {
+                self.0.push(c);
+            }
+        }
+
+        let mut parser = Processor::<TestSyncHandler>::new();
+        let mut handler = Chars::default();
+        parser.advance(&mut handler, b"ab\x1b[1mc d\x1b[2b");
+        assert_eq!(handler.0.iter().collect::<String>(), "abc ddd");
     }
 
     #[test]

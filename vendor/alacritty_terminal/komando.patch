@@ -1,0 +1,439 @@
+diff -ruN a/src/term/komando_tests.rs b/src/term/komando_tests.rs
+--- a/src/term/komando_tests.rs
++++ b/src/term/komando_tests.rs
+@@ -0,0 +1,337 @@
++//! Komando patch: tests that `Term::input_ascii` leaves the terminal exactly as calling
++//! `Term::input` for each character does.
++
++use crate::event::VoidListener;
++use crate::grid::Dimensions;
++use crate::index::{Column, Line};
++use crate::term::cell::{Cell, Flags};
++use crate::term::test::TermSize;
++use crate::term::{Config, Term, TermDamage};
++use crate::vte::ansi::cursor_icon::CursorIcon;
++use crate::vte::ansi::*;
++
++/// A terminal that receives runs of ASCII one character at a time: it forwards everything to
++/// the `Term` except `input_ascii`, which is left to the trait's default (calling `input` for
++/// each character).
++struct Scalar<'a>(&'a mut Term<VoidListener>);
++
++#[rustfmt::skip]
++impl Handler for Scalar<'_> {
++    fn set_title(&mut self, a0: Option<String>) { Handler::set_title(&mut *self.0, a0) }
++    fn set_cursor_style(&mut self, a0: Option<CursorStyle>) { Handler::set_cursor_style(&mut *self.0, a0) }
++    fn set_cursor_shape(&mut self, a0: CursorShape) { Handler::set_cursor_shape(&mut *self.0, a0) }
++    fn input(&mut self, a0: char) { Handler::input(&mut *self.0, a0) }
++    fn goto(&mut self, a0: i32, a1: usize) { Handler::goto(&mut *self.0, a0, a1) }
++    fn goto_line(&mut self, a0: i32) { Handler::goto_line(&mut *self.0, a0) }
++    fn goto_col(&mut self, a0: usize) { Handler::goto_col(&mut *self.0, a0) }
++    fn insert_blank(&mut self, a0: usize) { Handler::insert_blank(&mut *self.0, a0) }
++    fn move_up(&mut self, a0: usize) { Handler::move_up(&mut *self.0, a0) }
++    fn move_down(&mut self, a0: usize) { Handler::move_down(&mut *self.0, a0) }
++    fn identify_terminal(&mut self, a0: Option<char>) { Handler::identify_terminal(&mut *self.0, a0) }
++    fn device_status(&mut self, a0: usize) { Handler::device_status(&mut *self.0, a0) }
++    fn move_forward(&mut self, a0: usize) { Handler::move_forward(&mut *self.0, a0) }
++    fn move_backward(&mut self, a0: usize) { Handler::move_backward(&mut *self.0, a0) }
++    fn move_down_and_cr(&mut self, a0: usize) { Handler::move_down_and_cr(&mut *self.0, a0) }
++    fn move_up_and_cr(&mut self, a0: usize) { Handler::move_up_and_cr(&mut *self.0, a0) }
++    fn put_tab(&mut self, a0: u16) { Handler::put_tab(&mut *self.0, a0) }
++    fn backspace(&mut self) { Handler::backspace(&mut *self.0) }
++    fn carriage_return(&mut self) { Handler::carriage_return(&mut *self.0) }
++    fn linefeed(&mut self) { Handler::linefeed(&mut *self.0) }
++    fn bell(&mut self) { Handler::bell(&mut *self.0) }
++    fn substitute(&mut self) { Handler::substitute(&mut *self.0) }
++    fn newline(&mut self) { Handler::newline(&mut *self.0) }
++    fn set_horizontal_tabstop(&mut self) { Handler::set_horizontal_tabstop(&mut *self.0) }
++    fn scroll_up(&mut self, a0: usize) { Handler::scroll_up(&mut *self.0, a0) }
++    fn scroll_down(&mut self, a0: usize) { Handler::scroll_down(&mut *self.0, a0) }
++    fn insert_blank_lines(&mut self, a0: usize) { Handler::insert_blank_lines(&mut *self.0, a0) }
++    fn delete_lines(&mut self, a0: usize) { Handler::delete_lines(&mut *self.0, a0) }
++    fn erase_chars(&mut self, a0: usize) { Handler::erase_chars(&mut *self.0, a0) }
++    fn delete_chars(&mut self, a0: usize) { Handler::delete_chars(&mut *self.0, a0) }
++    fn move_backward_tabs(&mut self, a0: u16) { Handler::move_backward_tabs(&mut *self.0, a0) }
++    fn move_forward_tabs(&mut self, a0: u16) { Handler::move_forward_tabs(&mut *self.0, a0) }
++    fn save_cursor_position(&mut self) { Handler::save_cursor_position(&mut *self.0) }
++    fn restore_cursor_position(&mut self) { Handler::restore_cursor_position(&mut *self.0) }
++    fn clear_line(&mut self, a0: LineClearMode) { Handler::clear_line(&mut *self.0, a0) }
++    fn clear_screen(&mut self, a0: ClearMode) { Handler::clear_screen(&mut *self.0, a0) }
++    fn clear_tabs(&mut self, a0: TabulationClearMode) { Handler::clear_tabs(&mut *self.0, a0) }
++    fn set_tabs(&mut self, a0: u16) { Handler::set_tabs(&mut *self.0, a0) }
++    fn reset_state(&mut self) { Handler::reset_state(&mut *self.0) }
++    fn reverse_index(&mut self) { Handler::reverse_index(&mut *self.0) }
++    fn terminal_attribute(&mut self, a0: Attr) { Handler::terminal_attribute(&mut *self.0, a0) }
++    fn set_mode(&mut self, a0: Mode) { Handler::set_mode(&mut *self.0, a0) }
++    fn unset_mode(&mut self, a0: Mode) { Handler::unset_mode(&mut *self.0, a0) }
++    fn report_mode(&mut self, a0: Mode) { Handler::report_mode(&mut *self.0, a0) }
++    fn set_private_mode(&mut self, a0: PrivateMode) { Handler::set_private_mode(&mut *self.0, a0) }
++    fn unset_private_mode(&mut self, a0: PrivateMode) { Handler::unset_private_mode(&mut *self.0, a0) }
++    fn report_private_mode(&mut self, a0: PrivateMode) { Handler::report_private_mode(&mut *self.0, a0) }
++    fn set_scrolling_region(&mut self, a0: usize, a1: Option<usize>) { Handler::set_scrolling_region(&mut *self.0, a0, a1) }
++    fn set_keypad_application_mode(&mut self) { Handler::set_keypad_application_mode(&mut *self.0) }
++    fn unset_keypad_application_mode(&mut self) { Handler::unset_keypad_application_mode(&mut *self.0) }
++    fn set_active_charset(&mut self, a0: CharsetIndex) { Handler::set_active_charset(&mut *self.0, a0) }
++    fn configure_charset(&mut self, a0: CharsetIndex, a1: StandardCharset) { Handler::configure_charset(&mut *self.0, a0, a1) }
++    fn set_color(&mut self, a0: usize, a1: Rgb) { Handler::set_color(&mut *self.0, a0, a1) }
++    fn dynamic_color_sequence(&mut self, a0: String, a1: usize, a2: &str) { Handler::dynamic_color_sequence(&mut *self.0, a0, a1, a2) }
++    fn reset_color(&mut self, a0: usize) { Handler::reset_color(&mut *self.0, a0) }
++    fn clipboard_store(&mut self, a0: u8, a1: &[u8]) { Handler::clipboard_store(&mut *self.0, a0, a1) }
++    fn clipboard_load(&mut self, a0: u8, a1: &str) { Handler::clipboard_load(&mut *self.0, a0, a1) }
++    fn decaln(&mut self) { Handler::decaln(&mut *self.0) }
++    fn push_title(&mut self) { Handler::push_title(&mut *self.0) }
++    fn pop_title(&mut self) { Handler::pop_title(&mut *self.0) }
++    fn text_area_size_pixels(&mut self) { Handler::text_area_size_pixels(&mut *self.0) }
++    fn text_area_size_chars(&mut self) { Handler::text_area_size_chars(&mut *self.0) }
++    fn set_hyperlink(&mut self, a0: Option<Hyperlink>) { Handler::set_hyperlink(&mut *self.0, a0) }
++    fn set_mouse_cursor_icon(&mut self, a0: CursorIcon) { Handler::set_mouse_cursor_icon(&mut *self.0, a0) }
++    fn report_keyboard_mode(&mut self) { Handler::report_keyboard_mode(&mut *self.0) }
++    fn push_keyboard_mode(&mut self, a0: KeyboardModes) { Handler::push_keyboard_mode(&mut *self.0, a0) }
++    fn pop_keyboard_modes(&mut self, a0: u16) { Handler::pop_keyboard_modes(&mut *self.0, a0) }
++    fn set_keyboard_mode(&mut self, a0: KeyboardModes, a1: KeyboardModesApplyBehavior) { Handler::set_keyboard_mode(&mut *self.0, a0, a1) }
++    fn set_modify_other_keys(&mut self, a0: ModifyOtherKeys) { Handler::set_modify_other_keys(&mut *self.0, a0) }
++    fn report_modify_other_keys(&mut self) { Handler::report_modify_other_keys(&mut *self.0) }
++    fn set_scp(&mut self, a0: ScpCharPath, a1: ScpUpdateMode) { Handler::set_scp(&mut *self.0, a0, a1) }
++}
++
++/// xorshift64*: a small deterministic random number generator.
++struct Rng(u64);
++
++impl Rng {
++    fn next(&mut self) -> u64 {
++        self.0 ^= self.0 >> 12;
++        self.0 ^= self.0 << 25;
++        self.0 ^= self.0 >> 27;
++        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
++    }
++
++    fn below(&mut self, n: usize) -> usize {
++        (self.next() % n as u64) as usize
++    }
++
++    fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
++        items[self.below(items.len())]
++    }
++}
++
++/// Append a random piece of terminal output, biased towards what `input_ascii` must get right.
++fn token(rng: &mut Rng, columns: usize, lines: usize, out: &mut Vec<u8>) {
++    let n = |rng: &mut Rng, max: usize| rng.below(max + 1);
++    let text: String = match rng.below(40) {
++        // Printable ASCII, often longer than a row.
++        0..=11 => {
++            let len = 1 + rng.below(3 * columns + 2);
++            for _ in 0..len {
++                out.push(0x20 + rng.below(0x5f) as u8);
++            }
++            return;
++        },
++        12 => "\r".into(),
++        13 => "\n".into(),
++        14 => "\r\n".into(),
++        15 => "\x08".into(),
++        16 => "\t".into(),
++        // Wide characters.
++        17 | 18 => rng.pick(&["中", "😀", "ｗ", "中文", "a中"]).into(),
++        // Zero width characters.
++        19 => rng.pick(&["\u{301}", "\u{200d}", "\u{fe0f}"]).into(),
++        // Other one cell wide characters.
++        20 => rng.pick(&["é", "ß", "→", "ä"]).into(),
++        // Charsets: DEC line drawing in G0 or G1, back to ASCII, shift out and in.
++        21 => rng.pick(&["\x1b(0", "\x1b(B", "\x1b)0", "\x1b)B", "\x0e", "\x0f"]).into(),
++        // Insert mode.
++        22 => rng.pick(&["\x1b[4h", "\x1b[4l"]).into(),
++        // Line wrapping (DECAWM).
++        23 => rng.pick(&["\x1b[?7l", "\x1b[?7h"]).into(),
++        // Repeat the preceding character (REP).
++        24 => format!("\x1b[{}b", n(rng, 2 * columns)),
++        // Scroll region.
++        25 => match rng.below(3) {
++            0 => "\x1b[r".into(),
++            _ => format!("\x1b[{};{}r", 1 + n(rng, lines), 1 + n(rng, lines)),
++        },
++        // Origin mode.
++        26 => rng.pick(&["\x1b[?6h", "\x1b[?6l"]).into(),
++        // Cursor position, sometimes past the edges.
++        27 => format!("\x1b[{};{}H", n(rng, lines + 1), n(rng, columns + 1)),
++        // Erase in line or display.
++        28 => format!("\x1b[{}{}", n(rng, 3), rng.pick(&["K", "J"])),
++        // Attributes, including one that gives cells extra storage (underline colour).
++        29 => format!(
++            "\x1b[{}m",
++            rng.pick(&["0", "1", "7", "31", "42", "38;5;99", "48;2;1;2;3", "58;5;3", "59", "4:3"])
++        ),
++        // Hyperlinks (extra storage too).
++        30 => rng.pick(&["\x1b]8;id=a;http://a\x1b\\", "\x1b]8;;\x1b\\"]).into(),
++        // Save and restore the cursor.
++        31 => rng.pick(&["\x1b7", "\x1b8", "\x1b[s", "\x1b[u"]).into(),
++        // Index, reverse index, next line.
++        32 => rng.pick(&["\x1bD", "\x1bM", "\x1bE"]).into(),
++        // Insert and delete lines and characters, erase characters.
++        33 => format!("\x1b[{}{}", n(rng, columns), rng.pick(&["L", "M", "@", "P", "X"])),
++        // Alternate screen.
++        34 => rng.pick(&["\x1b[?1049h", "\x1b[?1049l"]).into(),
++        // DEL, a C1 control in UTF-8, invalid UTF-8.
++        35 => {
++            out.extend_from_slice(match rng.below(3) {
++                0 => b"\x7f",
++                1 => "\u{85}".as_bytes(),
++                _ => b"\xff",
++            });
++            return;
++        },
++        // Cursor movement.
++        36 => format!("\x1b[{}{}", n(rng, columns), rng.pick(&["A", "B", "C", "D", "G", "d"])),
++        // Screen alignment test: fill the screen with E.
++        37 => "\x1b#8".into(),
++        // Scroll up or down.
++        38 => format!("\x1b[{}{}", n(rng, lines), rng.pick(&["S", "T"])),
++        // Full reset, or a single character.
++        _ => rng.pick(&["\x1bc", "a"]).into(),
++    };
++    out.extend_from_slice(text.as_bytes());
++}
++
++#[derive(Debug, PartialEq)]
++enum Damage {
++    Full,
++    Lines(Vec<(usize, usize, usize)>),
++}
++
++fn take_damage(term: &mut Term<VoidListener>) -> Damage {
++    let damage = match term.damage() {
++        TermDamage::Full => Damage::Full,
++        TermDamage::Partial(lines) => {
++            Damage::Lines(lines.map(|line| (line.line, line.left, line.right)).collect())
++        },
++    };
++    term.reset_damage();
++    damage
++}
++
++fn assert_same(batched: &Term<VoidListener>, scalar: &Term<VoidListener>, context: &str) {
++    for (a, b, name) in [
++        (&batched.grid, &scalar.grid, "grid"),
++        (&batched.inactive_grid, &scalar.inactive_grid, "inactive grid"),
++    ] {
++        assert_eq!(a.cursor, b.cursor, "{name} cursor: {context}");
++        assert_eq!(a.saved_cursor, b.saved_cursor, "{name} saved cursor: {context}");
++        assert_eq!(a.total_lines(), b.total_lines(), "{name} lines: {context}");
++        assert_eq!(a.display_offset(), b.display_offset(), "{name} offset: {context}");
++        for line in a.topmost_line().0..=a.bottommost_line().0 {
++            let (row_a, row_b) = (&a[Line(line)], &b[Line(line)]);
++            assert_eq!(row_a, row_b, "{name} line {line}: {context}");
++            assert_eq!(row_a.occ, row_b.occ, "{name} line {line} occupied: {context}");
++        }
++    }
++    assert_eq!(batched.mode, scalar.mode, "mode: {context}");
++    assert_eq!(batched.active_charset, scalar.active_charset, "charset: {context}");
++    assert_eq!(batched.scroll_region, scalar.scroll_region, "scroll region: {context}");
++}
++
++/// Feed `chunks` to a terminal through `Term::input_ascii` and to another one character at a
++/// time, and check they are the same after every chunk, damage included.
++///
++/// No terminal here is one column wide: `Term::input` panics on a wide character there, with
++/// or without the patch.
++fn check(columns: usize, lines: usize, history: usize, chunks: &[&[u8]], context: &str) {
++    let size = TermSize::new(columns, lines);
++    let config = || Config { scrolling_history: history, ..Config::default() };
++    let mut batched = Term::new(config(), &size, VoidListener);
++    let mut scalar = Term::new(config(), &size, VoidListener);
++    let mut batched_parser: Processor = Processor::new();
++    let mut scalar_parser: Processor = Processor::new();
++
++    for (i, chunk) in chunks.iter().enumerate() {
++        batched_parser.advance(&mut batched, chunk);
++        scalar_parser.advance(&mut Scalar(&mut scalar), chunk);
++        let context = format!("{context}, after chunk {i} {:?}", String::from_utf8_lossy(chunk));
++        assert_same(&batched, &scalar, &context);
++        assert_eq!(take_damage(&mut batched), take_damage(&mut scalar), "damage: {context}");
++    }
++}
++
++#[test]
++fn printable_ascii_is_one_cell_wide() {
++    use unicode_width::UnicodeWidthChar;
++    for byte in 0x20..=0x7eu8 {
++        assert_eq!((byte as char).width(), Some(1), "{byte:#x}");
++    }
++}
++
++#[test]
++fn input_ascii_matches_input_on_tricky_cases() {
++    let cases: &[(&str, &[&str])] = &[
++        ("run wraps at the last column", &["abcdefghijklmnopqrstuvwxyz"]),
++        ("run ends exactly at the last column", &["0123456789", "x"]),
++        ("wrap pending at run start", &["012345678", "9", "abc"]),
++        ("DECAWM off", &["\x1b[?7l", "0123456789abcdef", "gh", "\x1b[?7h", "ij"]),
++        ("DECAWM off, wide char at the end", &["\x1b[?7l", "012345678中", "abc"]),
++        ("insert mode", &["0123456789", "\r\x1b[4h", "abc", "\x1b[4l", "de"]),
++        ("DEC line drawing", &["\x1b(0", "lqqk", "\x1b(B", "lqqk", "\x1b)0\x0e", "xx\x0f", "x"]),
++        ("REP after a run", &["abc\x1b[5b", "\x1b[20b", "x\x1b[b"]),
++        ("REP after a wide char", &["中\x1b[3b", "ab\x1b[2b"]),
++        ("overwrite a wide char", &["中中中中中", "\r", "a", "\x1b[3G", "bc"]),
++        ("overwrite a wide char spacer", &["中中中中中", "\x1b[2G", "a", "\x1b[5G", "bcd"]),
++        ("wide char wrapped with a leading spacer", &["012345678中", "\r", "ab", "\x1bM\r", "x"]),
++        ("leading spacer above", &["012345678中", "\x1b[1G", "q", "\x1b[2G", "r"]),
++        ("split mid escape", &["ab\x1b", "[3", "1mcd", "\x1b[", "0m", "e\x1b]8;id=x;x", "\x1b\\g"]),
++        ("scroll region", &["\x1b[2;3r", "\x1b[3;1H", "0123456789012345678901234567890123"]),
++        ("origin mode", &["\x1b[2;4r\x1b[?6h", "\x1b[3;5H", "0123456789abcdefghijklmnopqrst"]),
++        ("underline colour, hyperlink", &["\x1b[58;5;3mab", "\x1b]8;id=u;u\x1b\\cd", "efghijklm"]),
++        ("zero width after a run", &["abc\u{301}", "0123456789\u{301}"]),
++        ("alternate screen", &["ab\x1b[?1049h", "0123456789abc", "\x1b[?1049l", "de"]),
++    ];
++    let split_utf8: &[&[u8]] = &[b"ab\xe4", b"\xb8", b"\xadcd", b"\xf0\x9f", b"\x98\x80ef"];
++    let cases = cases
++        .iter()
++        .map(|(name, chunks)| (*name, chunks.iter().map(|chunk| chunk.as_bytes()).collect()))
++        .chain([("split mid UTF-8", split_utf8.to_vec())]);
++    for (name, chunks) in cases {
++        for (columns, lines, history) in [(10, 4, 0), (10, 4, 3), (2, 1, 0), (3, 3, 2)] {
++            check(columns, lines, history, &chunks, &format!("{name} ({columns}x{lines})"));
++        }
++    }
++}
++
++#[test]
++fn input_ascii_matches_input_on_random_output() {
++    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
++    for case in 0..4000 {
++        let columns = [2, 3, 5, 8, 13, 21, 80][rng.below(7)];
++        let lines = [1, 2, 3, 5, 8][rng.below(5)];
++        let history = [0, 3, 50][rng.below(3)];
++        let mut bytes = Vec::new();
++        for _ in 0..1 + rng.below(80) {
++            token(&mut rng, columns, lines, &mut bytes);
++        }
++
++        // Split it anywhere, including inside escapes and UTF-8 sequences.
++        let mut chunks = Vec::new();
++        let mut rest = &bytes[..];
++        while !rest.is_empty() {
++            let len = match rng.below(4) {
++                0 => rest.len(),
++                1 => 1,
++                _ => 1 + rng.below(rest.len().min(40)),
++            };
++            let (chunk, tail) = rest.split_at(len.min(rest.len()));
++            chunks.push(chunk);
++            rest = tail;
++        }
++
++        check(columns, lines, history, &chunks, &format!("case {case} ({columns}x{lines})"));
++    }
++}
++
++#[test]
++fn input_ascii_writes_cells() {
++    // The cells themselves, independent of the scalar path.
++    let mut term = Term::new(Config::default(), &TermSize::new(5, 2), VoidListener);
++    let mut parser: Processor = Processor::new();
++    parser.advance(&mut term, b"\x1b[31mabcdefg");
++    let row0: String = (0..5).map(|column| term.grid[Line(0)][Column(column)].c).collect();
++    let row1: String = (0..2).map(|column| term.grid[Line(1)][Column(column)].c).collect();
++    assert_eq!(row0, "abcde");
++    assert_eq!(row1, "fg");
++    assert!(term.grid[Line(0)][Column(4)].flags.contains(Flags::WRAPLINE));
++    assert_eq!(term.grid[Line(1)][Column(0)].fg, Color::Named(NamedColor::Red));
++    assert_eq!(term.grid.cursor.point.column, Column(2));
++    assert_eq!(term.grid[Line(1)][Column(2)], Cell::default());
++}
+diff -ruN a/src/term/mod.rs b/src/term/mod.rs
+--- a/src/term/mod.rs
++++ b/src/term/mod.rs
+@@ -1137,6 +1137,83 @@
+         }
+     }
+ 
++    /// Komando patch: a run of printable ASCII to be displayed.
++    ///
++    /// Does exactly what calling [`Self::input`] for each character would, but
++    /// writes the cells of each row in one tight loop. Every printable ASCII
++    /// character is one cell wide, so there is no width lookup, and the cursor
++    /// template is read once per row rather than per character. Insert mode, a
++    /// charset other than ASCII and cells holding (parts of) wide characters go
++    /// through `input` instead.
++    #[inline(never)]
++    fn input_ascii(&mut self, text: &str) {
++        debug_assert!(text.bytes().all(|b| (0x20..=0x7e).contains(&b)));
++
++        if self.mode.contains(TermMode::INSERT)
++            || self.grid.cursor.charsets[self.active_charset] != StandardCharset::Ascii
++        {
++            for c in text.chars() {
++                self.input(c);
++            }
++            return;
++        }
++
++        let columns = self.columns();
++        let mut bytes = text.as_bytes();
++        while let Some(&last) = bytes.last() {
++            // Move cursor to next line.
++            if self.grid.cursor.input_needs_wrap {
++                self.wrapline();
++
++                // Line wrapping is off: every character left lands on the last column, so
++                // only the last of them is still there afterwards.
++                if self.grid.cursor.input_needs_wrap {
++                    self.write_at_cursor(last as char);
++                    return;
++                }
++            }
++
++            let point = self.grid.cursor.point;
++            let start = point.column.0;
++            let count = bytes.len().min(columns - start);
++
++            let template = &self.grid.cursor.template;
++            let (fg, bg, flags) = (template.fg, template.bg, template.flags);
++            let extra = template.extra.clone();
++
++            // Write cells until one holds part of a wide character: overwriting that takes
++            // clearing up its other half, which `input` does.
++            let mut written = 0;
++            let cells = &mut self.grid[point.line][point.column..Column(start + count)];
++            for (cell, &byte) in cells.iter_mut().zip(&bytes[..count]) {
++                if cell.flags.intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER) {
++                    break;
++                }
++                cell.c = byte as char;
++                cell.fg = fg;
++                cell.bg = bg;
++                cell.flags = flags;
++                cell.extra = extra.clone();
++                written += 1;
++            }
++
++            if written < count {
++                self.grid.cursor.point.column = Column(start + written);
++                self.input(bytes[written] as char);
++                bytes = &bytes[written + 1..];
++                continue;
++            }
++
++            if start + count < columns {
++                self.grid.cursor.point.column = Column(start + count);
++            } else {
++                self.grid.cursor.point.column = Column(columns - 1);
++                self.grid.cursor.input_needs_wrap = true;
++            }
++            bytes = &bytes[count..];
++        }
++    }
++
+     #[inline]
+     fn decaln(&mut self) {
+         trace!("Decalnning");
+@@ -2504,6 +2581,10 @@
+     }
+ }
+ 
++// Komando patch.
++#[cfg(test)]
++mod komando_tests;
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
