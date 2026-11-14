@@ -440,6 +440,7 @@ mod tests {
         assert_eq!(to_bytes("f1", None, Mods { shift: true, ..NONE }, false), Some(b"\x1b[1;2P".to_vec()));
         assert_eq!(to_bytes("f5", None, NONE, false), Some(b"\x1b[15~".to_vec()));
         assert_eq!(to_bytes("f12", None, CTRL, false), Some(b"\x1b[24;5~".to_vec()));
+        assert_eq!(to_bytes("tab", None, NONE, false), Some(b"\t".to_vec()));
         assert_eq!(to_bytes("tab", None, Mods { shift: true, ..NONE }, false), Some(b"\x1b[Z".to_vec()));
     }
 

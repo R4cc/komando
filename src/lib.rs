@@ -29,7 +29,9 @@ use std::path::PathBuf;
 
 use gpui::{App, AppContext as _, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 
-use crate::ui::terminal_view::{self, Copy, Find, Paste, ScrollPageDown, ScrollPageUp, SearchNewer, SearchOlder};
+use crate::ui::terminal_view::{
+    self, Copy, Find, Paste, ScrollPageDown, ScrollPageUp, SearchNewer, SearchOlder, SendBackTab, SendTab,
+};
 use crate::ui::workspace::{
     CloseSession, CopyOutputFile, CopyOutputText, LockVault, NewSession, NextSession, OpenSettings, PrevSession, QuickConnect,
     ToggleSftp, Workspace,
@@ -52,8 +54,15 @@ pub fn init(cx: &mut App) {
     perf::startup("fonts added");
     gpui_component::init(cx);
     perf::startup("component library ready");
+    cx.bind_keys(key_bindings());
+}
+
+fn key_bindings() -> Vec<KeyBinding> {
     let t = Some(terminal_view::CONTEXT);
-    cx.bind_keys([
+    vec![
+        // Key bindings run before on_key_down; override Root's focus traversal in a terminal.
+        KeyBinding::new("tab", SendTab, t),
+        KeyBinding::new("shift-tab", SendBackTab, t),
         KeyBinding::new("ctrl-shift-c", Copy, t),
         KeyBinding::new("ctrl-shift-v", Paste, t),
         KeyBinding::new("shift-pageup", ScrollPageUp, t),
@@ -74,7 +83,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-shift-l", LockVault, None),
         KeyBinding::new("ctrl-,", OpenSettings, None),
         KeyBinding::new("ctrl-shift-e", ToggleSftp, None),
-    ]);
+    ]
 }
 
 /// The Komando logo (">_Komando."), one shape so it can be drawn in any colour.
@@ -146,6 +155,48 @@ pub fn run(options: Options) {
 #[cfg(test)]
 mod tests {
     use gpui::AssetSource as _;
+
+    #[test]
+    fn terminal_tab_bindings_precede_focus_navigation_and_keep_its_fallback() {
+        use gpui::{KeyBinding, KeyContext, Keymap, Keystroke};
+        use super::{OpenSettings, SendBackTab, SendTab};
+
+        // Root registers these keys before Komando's bindings. Use a distinct action to
+        // identify its focus-navigation fallback without depending on its private action type.
+        let mut keymap = Keymap::new(vec![
+            KeyBinding::new("tab", OpenSettings, Some("Root")),
+            KeyBinding::new("shift-tab", OpenSettings, Some("Root")),
+        ]);
+        keymap.add_bindings(super::key_bindings());
+        let terminal = [KeyContext::parse("Root").unwrap(), KeyContext::parse("Terminal").unwrap()];
+        for (key, backwards) in [("tab", false), ("shift-tab", true)] {
+            let keystroke = Keystroke::parse(key).unwrap();
+            let (bindings, pending) = keymap.bindings_for_input(&[keystroke.clone()], &terminal);
+            assert!(!pending);
+            assert_eq!(bindings.len(), 2);
+            if backwards {
+                assert!(bindings[0].action().as_any().is::<SendBackTab>());
+            } else {
+                assert!(bindings[0].action().as_any().is::<SendTab>());
+            }
+            // A child field/button makes send_tab propagate, so Root must remain available.
+            assert!(bindings[1].action().as_any().is::<OpenSettings>());
+
+            let settings = [KeyContext::parse("Root").unwrap(), KeyContext::parse("Input").unwrap()];
+            let (bindings, _) = keymap.bindings_for_input(&[keystroke], &settings);
+            assert_eq!(bindings.len(), 1);
+            assert!(bindings[0].action().as_any().is::<OpenSettings>());
+        }
+        for (key, next) in [("ctrl-tab", true), ("ctrl-shift-tab", false)] {
+            let (bindings, _) = keymap.bindings_for_input(&[Keystroke::parse(key).unwrap()], &terminal);
+            assert_eq!(bindings.len(), 1);
+            if next {
+                assert!(bindings[0].action().as_any().is::<super::NextSession>());
+            } else {
+                assert!(bindings[0].action().as_any().is::<super::PrevSession>());
+            }
+        }
+    }
 
     #[test]
     fn the_logo_is_served_alongside_the_icons() {

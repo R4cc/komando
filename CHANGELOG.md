@@ -6,6 +6,14 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-14
+
+### Fixed
+
+- Tab completes commands and paths in the terminal again instead of moving keyboard focus
+  through the app. Shift+Tab also reaches the shell; Ctrl+Tab and Ctrl+Shift+Tab still switch
+  Sessions.
+
 ## [0.4.0] - 2026-11-14
 
 ### Added

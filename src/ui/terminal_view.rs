@@ -42,7 +42,9 @@ use crate::ui::widgets::{button, icon_el, ButtonKind};
 
 mod search;
 
-actions!(terminal, [Copy, Paste, ScrollPageUp, ScrollPageDown, Find, SearchOlder, SearchNewer]);
+actions!(terminal, [
+    Copy, Paste, ScrollPageUp, ScrollPageDown, Find, SearchOlder, SearchNewer, SendTab, SendBackTab,
+]);
 
 pub const CONTEXT: &str = "Terminal";
 /// The search bar's key context, for Up and Down in its field.
@@ -867,13 +869,33 @@ impl TerminalView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.key_pressed(&event.keystroke, window, cx);
+    }
+
+    fn send_tab(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // A field or button over the terminal keeps the component library's Tab navigation.
+        if !self.focus.is_focused(window) {
+            cx.propagate();
+            return;
+        }
+        self.key_pressed(
+            &gpui::Keystroke {
+                key: "tab".into(),
+                key_char: None,
+                modifiers: Modifiers { shift: backwards, ..Default::default() },
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn key_pressed(&mut self, ks: &gpui::Keystroke, window: &mut Window, cx: &mut Context<Self>) {
         // Keys typed into a field on top of the terminal (a connection question's user name or
         // password) bubble up to here. They belong to that field: sending them to the session
         // and stopping propagation would also stop the field from receiving the text.
         if !self.focus.is_focused(window) {
             return;
         }
-        let ks = &event.keystroke;
         let m = &ks.modifiers;
         let mods = Mods { ctrl: m.control, alt: m.alt, shift: m.shift };
         // Application shortcuts are all ctrl+shift+… (and ctrl+tab); plain ctrl+letter keys
@@ -2586,6 +2608,8 @@ impl Render for TerminalView {
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
+            .on_action(cx.listener(|this, _: &SendTab, window, cx| this.send_tab(false, window, cx)))
+            .on_action(cx.listener(|this, _: &SendBackTab, window, cx| this.send_tab(true, window, cx)))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(|this, _: &ScrollPageUp, _, cx| this.scroll_page(true, cx)))
