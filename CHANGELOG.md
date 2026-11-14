@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-14
+
 ### Added
 
 - Search the output: press Ctrl+Shift+F, or right-click and choose "Find in output…". Komando
@@ -59,13 +61,30 @@ All notable changes to Komando are listed here. The format follows
   to a new width used to take most of every frame; now the text rewraps a few times a second
   while you drag and catches up when you let go. Shorter Scrollbacks still rewrap every frame.
 - Copy output takes about 40% less time with a full Scrollback.
+- Making a window or pane wider uses much less memory while the text rewraps. With a full
+  Scrollback, a Session briefly needed up to three times its usual memory after becoming
+  wider: with 500,000 lines at 350 columns, about 12.8 GB instead of 4.2 GB for a moment.
+  Now it needs little more than usual. Becoming wider also takes up to a third less time with
+  a long Scrollback, and tidying up afterwards takes up to two thirds less.
 - Typing stays responsive while files upload in the file browser, as it already did for
   downloads. On a 10 Mbit/s link with 30 ms latency, keys showed over half a second late
   during an upload and now show about 25 ms late; on a 100 Mbit/s link with 50 ms latency,
   about 65 ms late before and 15 ms now. Uploads are about as fast as before.
+- Hosts far behind Jump Hosts print output up to twice as fast. With 25 ms each way to a
+  Jump Host and 25 ms more from there to the Host, 1,000,000 log lines took 2.5 s and now
+  take 1.5 s; through two such Jump Hosts, 3.7 s before and 2.0 s now. Hosts reached
+  directly, and Hosts next to their Jump Host, are as fast as before.
 
 ### Fixed
 
+- Output stops soon after you press Ctrl+C during a flood of output, such as `cat` of a large
+  file, also on slower connections. Since 0.3.7, everything the server had already sent kept
+  scrolling past: on a 10 Mbit/s link with 30 ms latency for almost 4 seconds (1.3 seconds
+  before 0.3.7), and on a 100 Mbit/s link with 50 ms latency for almost half a second. SSH
+  Sessions now let the server send ahead only as much output as the connection needs, so the
+  prompt comes back after about a tenth of a second on both. Floods are as fast as before, and
+  faster on fast distant links: about 110 MB/s instead of 80 MB/s at 1 Gbit/s with 50 ms
+  latency. Through Jump Hosts, output stops within about a fifth of a second too.
 - When an SSH Session signs in after earlier attempts failed or were cancelled, the
   connection log of those attempts is now cleared too, so the shell starts on a clean screen.
 
@@ -875,7 +894,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/R4cc/komando/compare/v0.3.7...v0.4.0
 [0.3.4]: https://github.com/R4cc/komando/compare/v0.3.3...v0.3.4
 [0.3.0]: https://github.com/R4cc/komando/compare/v0.2.8...v0.3.0
 [0.1.17]: https://github.com/R4cc/komando/compare/v0.1.16...v0.1.17

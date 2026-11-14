@@ -25,7 +25,8 @@ pub(crate) const MAX_REQUEST: u32 = 255 * 1024;
 const MIN_REQUEST: u32 = 16 * 1024;
 /// Never less than this in flight.
 const MIN_WINDOW: u64 = 64 * 1024;
-/// Never more: the SSH window (`window_size` in `session::ssh`) stops the server there anyway.
+/// Never more: the SSH window (`WINDOW` in `session::ssh`) stops the server there anyway. A Host
+/// far behind Jump Hosts gets a larger SSH window, but its downloads still stop here.
 const MAX_WINDOW: u64 = 8 * 1024 * 1024;
 const START_WINDOW: u64 = 128 * 1024;
 /// How long one lowest-delay record covers, and how many are kept: the link's own delay is

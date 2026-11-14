@@ -497,7 +497,7 @@ impl TerminalView {
     pub fn assume_size(&mut self, size: GridSize) {
         if self.grid.get().is_none() {
             self.grid.set(Some(size));
-            self.term.lock().resize(size.term_size());
+            crate::session::resize(&mut *self.term.lock(), size);
             self.proxy.set_size(size);
         }
     }
@@ -2331,7 +2331,7 @@ impl Render for TerminalView {
                     {
                         let mut term = term.lock();
                         let start = Instant::now();
-                        term.resize(new_size.term_size());
+                        crate::session::resize(&mut *term, new_size);
                         if width_changed {
                             reflow.set(Reflow { at: Some(start), took: start.elapsed(), ..reflow.get() });
                         }
