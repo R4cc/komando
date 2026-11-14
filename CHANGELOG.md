@@ -23,6 +23,12 @@ All notable changes to Komando are listed here. The format follows
   downloads. On a 10 Mbit/s link with 30 ms latency, keys showed over half a second late
   during an upload and now show about 25 ms late; on a 100 Mbit/s link with 50 ms latency,
   about 65 ms late before and 15 ms now. Uploads are about as fast as before.
+- Hosts far behind Jump Hosts print output about twice as fast. With 25 ms each way to a
+  Jump Host and 25 ms more from there to the Host, 1,000,000 log lines took 2.5 s and now
+  take 1.3 s; through two such Jump Hosts, 3.7 s before and about 1.4 s now, close to a Host
+  reached directly at 25 ms. On a slow link, Ctrl+C in such a Session takes longer to stop the
+  output already on its way: at 100 Mbit/s, about 1.2 s instead of 0.5 s. Hosts reached
+  directly, and Hosts next to their Jump Host, behave as before.
 
 ### Fixed
 

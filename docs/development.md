@@ -74,8 +74,16 @@ quiet one, and reports how long the output took and how long each typed key took
 a folder of small files download, then upload, over SFTP on its connection, directly and through simulated
 links with latency and limited bandwidth (`KOMANDO_THROUGHPUT_SFTP_MB` sets the direct file's
 size, default 512). A fifth fills Scrollbacks of 100,000 and 500,000 lines and times what
-holds the terminal locked: Copy output, resizes, and finding Command Marks. They run on Windows
-too:
+holds the terminal locked: Copy output, resizes, and finding Command Marks. The
+`throughput_through_jump_hosts_*` tests do the same through one and two Jump Hosts, next to the
+same without one: the benchmark server also forwards `direct-tcpip` channels, so a chain of
+them stands in for Jump Hosts, with simulated links (25 ms each way, 1 Gbit/s or 100 Mbit/s)
+to the first hop or between every hop. `_log_lines` times the 1,000,000 log lines, `_typing`
+types in one Session while four others print through the same Jump Host and then times how
+long Ctrl+C takes to stop a Session that prints, and `_sftp` downloads a large file while it
+types (`KOMANDO_THROUGHPUT_JUMPS` sets the most Jump Hosts, default 2). All of these servers
+run on this machine, so its processors are shared and each simulated link limits a single
+connection. They run on Windows too:
 
 ```sh
 cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1
