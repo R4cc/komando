@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-11-14
+
 ### Added
 
 - Drag a host up or down in the sidebar to change its place within its project. A blue line
