@@ -87,7 +87,8 @@ machine in `%APPDATA%\Komando`.
 
 - **Projects with colours and icons.** A coloured strip above the terminal shows which
   environment you're in.
-- **Quick connect.** <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>K</kbd>, type a few letters, Enter.
+- **Quick connect.** <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>K</kbd>, type a few letters, pick with
+  <kbd>↑</kbd>/<kbd>↓</kbd>, Enter.
 - **Shared settings per project.** Default user, key or password, jump hosts and startup commands
   set once and inherited by every host.
 - **Jump hosts.** Reach servers that sit behind others. Komando shows each hop while connecting.

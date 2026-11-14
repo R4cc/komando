@@ -6,6 +6,7 @@ mod compat_tests;
 pub mod export;
 pub mod favorites;
 pub mod highlight;
+pub mod history;
 pub mod import;
 pub mod keys;
 pub mod logging;
@@ -33,8 +34,8 @@ use crate::ui::terminal_view::{
     self, Copy, Find, Paste, ScrollPageDown, ScrollPageUp, SearchNewer, SearchOlder, SendBackTab, SendTab,
 };
 use crate::ui::workspace::{
-    CloseSession, CopyOutputFile, CopyOutputText, LockVault, NewSession, NextSession, OpenSettings, PrevSession, QuickConnect,
-    ToggleSftp, Workspace,
+    CloseSession, CopyOutputFile, CopyOutputText, LockVault, NewSession, NextSession, OpenSettings, PickerDown, PickerUp,
+    PrevSession, QuickConnect, ToggleSftp, Workspace,
 };
 
 pub const FONTS: [&[u8]; 6] = [
@@ -73,6 +74,9 @@ fn key_bindings() -> Vec<KeyBinding> {
         // the component library's own, so in that field they win.
         KeyBinding::new("up", SearchOlder, Some("TerminalSearch > Input")),
         KeyBinding::new("down", SearchNewer, Some("TerminalSearch > Input")),
+        // In quick connect's field Up and Down move through the results.
+        KeyBinding::new("up", PickerUp, Some("QuickConnect > Input")),
+        KeyBinding::new("down", PickerDown, Some("QuickConnect > Input")),
         KeyBinding::new("ctrl-shift-k", QuickConnect, None),
         KeyBinding::new("ctrl-shift-t", NewSession, None),
         KeyBinding::new("ctrl-shift-w", CloseSession, None),
@@ -196,6 +200,33 @@ mod tests {
                 assert!(bindings[0].action().as_any().is::<super::PrevSession>());
             }
         }
+    }
+
+    #[test]
+    fn up_and_down_in_quick_connect_move_its_selection() {
+        use gpui::{KeyBinding, KeyContext, Keymap, Keystroke};
+        use super::{OpenSettings, PickerDown, PickerUp};
+
+        // Stands in for the field's own Up and Down, registered before Komando's bindings.
+        let mut keymap = Keymap::new(vec![
+            KeyBinding::new("up", OpenSettings, Some("Input")),
+            KeyBinding::new("down", OpenSettings, Some("Input")),
+        ]);
+        keymap.add_bindings(super::key_bindings());
+        let picker = [
+            KeyContext::parse("Workspace").unwrap(),
+            KeyContext::parse(crate::ui::workspace::PICKER_CONTEXT).unwrap(),
+            KeyContext::parse("Input").unwrap(),
+        ];
+        let (bindings, _) = keymap.bindings_for_input(&[Keystroke::parse("up").unwrap()], &picker);
+        assert!(bindings[0].action().as_any().is::<PickerUp>());
+        let (bindings, _) = keymap.bindings_for_input(&[Keystroke::parse("down").unwrap()], &picker);
+        assert!(bindings[0].action().as_any().is::<PickerDown>());
+
+        // Other fields keep theirs.
+        let form = [KeyContext::parse("Workspace").unwrap(), KeyContext::parse("Input").unwrap()];
+        let (bindings, _) = keymap.bindings_for_input(&[Keystroke::parse("up").unwrap()], &form);
+        assert!(bindings[0].action().as_any().is::<OpenSettings>());
     }
 
     #[test]

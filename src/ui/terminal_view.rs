@@ -42,7 +42,7 @@ use crate::session::{
 };
 use crate::theme::{Appearance, UI_FONT, rgb_to_hsla};
 use crate::ui::box_drawing::{self, Prim};
-use crate::ui::widgets::{button, icon_el, ButtonKind};
+use crate::ui::widgets::{button, caps_lock_indicator, icon_el, password_input, ButtonKind};
 
 mod search;
 #[cfg(all(test, target_os = "linux"))]
@@ -176,6 +176,9 @@ pub enum TerminalEvent {
     Sized,
     /// A Startup Command's text didn't appear in time; it and the ones after it were dropped.
     StartupStopped { waited_for: String },
+    /// A line was entered at a prompt (prompt included), for the Command History. Sent only
+    /// while `command_history` is on.
+    Entered { line: String, at: chrono::DateTime<chrono::Local> },
 }
 
 enum ActivePrompt {
@@ -183,6 +186,7 @@ enum ActivePrompt {
     HostKeyChanged { fingerprint: String },
     Input {
         label: String,
+        secret: bool,
         error: Option<String>,
         input: Entity<InputState>,
         /// The "Remember for this host" checkbox, when shown.
@@ -236,6 +240,9 @@ pub struct TerminalView {
     pub putty_clipboard: bool,
     /// Show the command rail and record entered lines for it.
     pub command_rail: bool,
+    /// Record entered lines for the Command History (`TerminalEvent::Entered`), with or
+    /// without the rail.
+    pub command_history: bool,
     /// Show the minimap (see `ui::minimap`).
     pub minimap: bool,
     /// Lay the minimap over the output instead of giving it a column of its own.
@@ -436,6 +443,7 @@ impl TerminalView {
             confirm_multiline_paste: true,
             putty_clipboard: false,
             command_rail: true,
+            command_history: false,
             minimap: true,
             minimap_overlay: false,
             minimap_delay: Duration::from_millis(300),
@@ -598,6 +606,7 @@ impl TerminalView {
                 }
                 if self.marks.is_pending() {
                     self.marks.output(&mut *self.term.lock());
+                    self.emit_entered(cx);
                 } else {
                     crate::session::drop_blank_scrollback(&mut *self.term.lock());
                 }
@@ -694,7 +703,7 @@ impl TerminalView {
                 if self.focus.is_focused(window) || window.focused(cx).is_none() {
                     input.update(cx, |state, cx| state.focus(window, cx));
                 }
-                ActivePrompt::Input { label, error, input, remember, reply: Some(reply) }
+                ActivePrompt::Input { label, secret, error, input, remember, reply: Some(reply) }
             }
         });
         cx.notify();
@@ -796,12 +805,29 @@ impl TerminalView {
         self.scroll_to_bottom();
         {
             let mut term = self.term.lock();
-            if self.command_rail && !term.mode().contains(TermMode::ALT_SCREEN) {
+            if self.records_lines() && !term.mode().contains(TermMode::ALT_SCREEN) {
                 self.marks.entered(&mut term);
             }
         }
+        self.emit_entered(cx);
         self.write(format!("{line}\r").into_bytes());
         cx.notify();
+    }
+
+    /// Entered lines are read for the command rail or the Command History.
+    fn records_lines(&self) -> bool {
+        self.command_rail || self.command_history
+    }
+
+    /// Hand the lines read since last time to the Command History.
+    fn emit_entered(&mut self, cx: &mut Context<Self>) {
+        let lines = self.marks.take_new();
+        if !self.command_history {
+            return;
+        }
+        for mark in lines {
+            cx.emit(TerminalEvent::Entered { line: mark.line, at: mark.at });
+        }
     }
 
     /// Type `line` into the shell and run it, replacing anything typed but not yet entered.
@@ -816,10 +842,11 @@ impl TerminalView {
             if term.mode().contains(TermMode::ALT_SCREEN) {
                 return false;
             }
-            if self.command_rail {
+            if self.records_lines() {
                 self.marks.entered(&mut term);
             }
         }
+        self.emit_entered(cx);
         self.scroll_to_bottom();
         // Ctrl+U clears a half-typed command so it doesn't run together with `line`.
         self.write(format!("\x15{line}\r").into_bytes());
@@ -935,10 +962,11 @@ impl TerminalView {
                 let mut term = self.term.lock();
                 term.selection = None;
                 // Full-screen programs (vim, htop) take Enter for themselves: nothing to mark.
-                if ks.key == "enter" && !m.control && !m.alt && self.command_rail && !mode.contains(TermMode::ALT_SCREEN) {
+                if ks.key == "enter" && !m.control && !m.alt && self.records_lines() && !mode.contains(TermMode::ALT_SCREEN) {
                     self.marks.entered(&mut term);
                 }
             }
+            self.emit_entered(cx);
             // The user answered the question that paused the Startup Commands.
             if ks.key == "enter" && self.startup.paused {
                 self.startup.paused = false;
@@ -1479,7 +1507,8 @@ impl TerminalView {
     }
 
     /// The command rail: one short line per entered command along the left edge, inside the
-    /// terminal's padding so it takes no columns. Returns the view row to light up, if any.
+    /// terminal's padding so it takes no columns. Hidden until there is output to scroll back
+    /// through. Returns the view row to light up, if any.
     fn render_rail(&mut self, cx: &mut Context<Self>) -> (Option<gpui::AnyElement>, Option<i32>) {
         if !self.command_rail || self.marks.list().is_empty() {
             return (None, None);
@@ -1490,6 +1519,10 @@ impl TerminalView {
                 return (None, None);
             }
             let grid = term.grid();
+            if grid.history_size() == 0 {
+                self.hovered_mark = None;
+                return (None, None);
+            }
             (self.marks.rows(&term), grid.display_offset() as i32, grid.screen_lines() as i32)
         };
         if rows.is_empty() {
@@ -1736,13 +1769,13 @@ impl TerminalView {
                     .on_click(cx.listener(|this, _, window, cx| this.dismiss(window, cx)))
                     .into_any_element()],
             ),
-            ActivePrompt::Input { label, error, input, remember, .. } => card(
+            ActivePrompt::Input { label, secret, error, input, remember, .. } => card(
                 label,
                 div()
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(Input::new(input))
+                    .child(if *secret { password_input(input, p).into_any_element() } else { Input::new(input).into_any_element() })
                     .when_some(error.clone(), |el, error| {
                         el.child(div().text_size(px(12.)).text_color(p.danger).child(error))
                     })
@@ -2757,6 +2790,15 @@ impl Render for TerminalView {
         let beside = self.minimap && !self.minimap_overlay;
         let pad_right = if beside { 0. } else { PADDING_X };
         let app = cx.global::<Appearance>().app;
+        let caps_lock = window.capslock().on;
+        let password_prompt = focused && self.status == Status::Connected && {
+            let term = self.term.lock();
+            !term.mode().contains(TermMode::ALT_SCREEN) && {
+                let row = &term.grid()[term.grid().cursor.point.line];
+                let line: String = (0..term.columns()).map(|c| row[Column(c)].c).collect();
+                asks_for_secret(&line)
+            }
+        };
         let (minimap_column, minimap_overlay) = if !self.minimap {
             (None, None)
         } else if beside {
@@ -2992,6 +3034,11 @@ impl Render for TerminalView {
 
         div()
             .id("terminal")
+            .on_modifiers_changed(move |event, window, _| {
+                if password_prompt && event.capslock.on != caps_lock {
+                    window.refresh();
+                }
+            })
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
@@ -3032,6 +3079,19 @@ impl Render for TerminalView {
                     .pr(px(pad_right))
                     .py(px(PADDING_Y))
                     .child(surface)
+                    .when(password_prompt && caps_lock, |el| el.child(
+                        div()
+                            .absolute()
+                            .bottom(px(12.))
+                            .right(px(16.))
+                            .px(px(8.))
+                            .py(px(5.))
+                            .rounded(px(6.))
+                            .bg(app.surface)
+                            .border_1()
+                            .border_color(app.border)
+                            .child(caps_lock_indicator("terminal-caps-lock", app)),
+                    ))
                     .children(search_bar),
             )
             .children(minimap_column)

@@ -27,6 +27,8 @@ use crate::model::write_atomic;
 
 pub const FILE: &str = "highlights.json";
 const DEFAULT_SET: &str = include_str!("../assets/highlights/default.json");
+/// Kept only to recognise saved, unedited copies when upgrading the bundled rules.
+const LEGACY_DEFAULT_SET: &str = include_str!("../assets/highlights/legacy-default.json");
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HighlightSet {
@@ -307,10 +309,24 @@ pub fn parse(text: &str) -> Result<Vec<HighlightSet>> {
 
 pub fn load(dir: &Path) -> Vec<HighlightSet> {
     match fs::read_to_string(dir.join(FILE)) {
-        Ok(text) => parse(&text).unwrap_or_else(|err| {
-            log::error!("{FILE}: {err:#}");
-            vec![]
-        }),
+        Ok(text) => match parse(&text) {
+            Ok(mut sets) => {
+                // Compare the whole set, not just its id: toggles, renames, imported fields
+                // and edited rules all belong to the user and must survive an update.
+                if let (Ok(legacy), Ok(bundled)) = (parse(LEGACY_DEFAULT_SET), parse(DEFAULT_SET)) {
+                    for set in &mut sets {
+                        if legacy.first() == Some(set) {
+                            *set = bundled[0].clone();
+                        }
+                    }
+                }
+                sets
+            }
+            Err(err) => {
+                log::error!("{FILE}: {err:#}");
+                vec![]
+            }
+        },
         // First run: start with the bundled set.
         Err(_) => parse(DEFAULT_SET).unwrap_or_default(),
     }
@@ -394,11 +410,11 @@ mod tests {
     fn bundled_set_parses_and_compiles() {
         let sets = parse(DEFAULT_SET).unwrap();
         assert_eq!(sets.len(), 1);
-        assert_eq!(sets[0].name, "ADJUSTED");
-        assert_eq!(sets[0].keywords.len(), 69);
+        assert_eq!(sets[0].name, "Linux & RHEL");
         let h = Highlighter::from_sets(&sets, &[]);
         assert!(h.skipped.is_empty(), "{:?}", h.skipped);
-        assert_eq!(h.rule_count(), 69);
+        assert_eq!(h.rule_count(), sets[0].keywords.len());
+        assert!(sets[0].keywords.iter().all(|rule| rule.bg().is_none()));
     }
 
     #[test]
@@ -412,11 +428,129 @@ mod tests {
     fn real_set_prefers_specific_rules() {
         let sets = parse(DEFAULT_SET).unwrap();
         let h = Highlighter::from_sets(&sets, &[]);
-        assert_eq!(color_at(&h, "   Active: inactive (dead)", "Active"), parse_hex("#FF4500"));
-        assert_eq!(color_at(&h, "   Active: active (running)", "Active"), parse_hex("#00FF00"));
-        assert_eq!(color_at(&h, "2026 ERROR pay timeout", "ERROR"), parse_hex("#FF0000"));
-        assert_eq!(color_at(&h, "container is healthy", "healthy"), parse_hex("#00FF00"));
-        assert_eq!(color_at(&h, "container is unhealthy", "unhealthy"), parse_hex("#FF4500"));
+        assert_eq!(color_at(&h, "   Active: inactive (dead)", "inactive"), parse_hex("#A6ADB9"));
+        assert_eq!(color_at(&h, "   Active: active (running)", "active"), parse_hex("#87C999"));
+        assert_eq!(color_at(&h, "2026 ERROR pay timeout", "ERROR"), parse_hex("#F28B82"));
+        assert_eq!(color_at(&h, "container is healthy", "healthy"), parse_hex("#87C999"));
+        assert_eq!(color_at(&h, "container is unhealthy", "unhealthy"), parse_hex("#F28B82"));
+    }
+
+    #[test]
+    fn rhel_diagnostics_highlight_values_and_keep_context_quiet() {
+        let sets = parse(DEFAULT_SET).unwrap();
+        let h = Highlighter::from_sets(&sets, &[]);
+        for (line, needle, color) in [
+            ("Nov 14 04:04:23 rhel-01 kernel: ACPI: INT_SRC_OVR", "kernel", "#B6A0D9"),
+            ("systemd[1]: Starting OpenSSH server daemon...", "Starting", "#87BFEA"),
+            ("systemd[1]: Started OpenSSH server daemon.", "Started", "#87C999"),
+            ("   Active: failed (Result: exit-code)", "failed", "#F28B82"),
+            ("   Active: active (exited)", "active (exited)", "#87C999"),
+            ("   Active: inactive (dead)", "inactive (dead)", "#A6ADB9"),
+            ("   Active: activating (start)", "activating", "#87BFEA"),
+            ("sshd.service loaded active running OpenSSH server daemon", "active", "#87C999"),
+            ("× httpd.service loaded failed failed The Apache HTTP Server", "failed", "#F28B82"),
+            ("   Main PID: 123 (code=exited, status=0/SUCCESS)", "status=0/SUCCESS", "#87C999"),
+            ("   Main PID: 123 (code=exited, status=1/FAILURE)", "status=1/FAILURE", "#F28B82"),
+            ("type=AVC msg=audit(1:2): avc:  denied  { read } permissive=0", "avc:  denied", "#F28B82"),
+            ("type=AVC msg=audit(1:2): avc:  denied  { read } permissive=1", "avc:  denied", "#E2B365"),
+            ("Current mode:                   enforcing", "enforcing", "#87C999"),
+            ("SELINUX=permissive", "permissive", "#E2B365"),
+            ("SELinux status:                 disabled", "disabled", "#E2B365"),
+            ("Overall Status: Disabled", "Disabled", "#87BFEA"),
+            ("Overall Status: Not Registered", "Not Registered", "#E2B365"),
+            ("Overall Status: Registered", "Registered", "#87C999"),
+            ("This system is not registered with an entitlement server.", "not registered", "#E2B365"),
+            ("Error: GPG check FAILED", "GPG check FAILED", "#F28B82"),
+            ("Failed to download metadata for repo 'appstream'", "Failed to download metadata", "#F28B82"),
+            ("  Installing : httpd-2.4.62-1.el9.x86_64", "Installing", "#87BFEA"),
+            ("  Removing : old-package-1.0-1.el9.x86_64", "Removing", "#E2B365"),
+            ("Complete!", "Complete!", "#87C999"),
+            ("RHSA-2026:12345 Critical/Sec. kernel-core", "RHSA-2026:12345", "#E2B365"),
+            ("RHBA-2026:12345 bug fix", "RHBA-2026:12345", "#87BFEA"),
+            ("CVE-2026-12345", "CVE-2026-12345", "#E2B365"),
+            ("NetworkManager[10]: state change: ip-config -> activated", "activated", "#87C999"),
+            ("NetworkManager[10]: state change: activated -> failed", "failed", "#F28B82"),
+            ("ens192 ethernet disconnected --", "disconnected", "#E2B365"),
+            ("sshd[20]: Failed password for invalid user test from 192.0.2.1", "Failed password", "#F28B82"),
+            ("kernel: Out of memory: Killed process 123 (java)", "Out of memory", "#F28B82"),
+            ("kernel: BUG: unable to handle page fault", "BUG:", "#F28B82"),
+            ("kernel: XFS (dm-0): Corruption detected. Unmount and run xfs_repair", "Corruption detected", "#F28B82"),
+            ("app: ERROR unexpected failure", "ERROR", "#F28B82"),
+            ("app: warning request timed out", "warning", "#E2B365"),
+            ("app: errors=0 failed=0", "failed=0", "#A6ADB9"),
+        ] {
+            let styles = h.styles(line).unwrap_or_else(|| panic!("no highlight for {line:?}"));
+            let start = line.find(needle).unwrap();
+            assert!(styles[start..start + needle.len()].iter().all(|s| s.and_then(|s| s.fg) == parse_hex(color)), "{needle:?} in {line:?}");
+        }
+        for (line, plain) in [
+            ("   Active: active (running)", "Active:"),
+            ("Main PID: 123 (code=exited, status=0/SUCCESS)", "code=exited"),
+            ("Nov 14 04:04:23 rhel-01 kernel: ACPI: INT_SRC_OVR", "ACPI: INT_SRC_OVR"),
+            ("  Installing : httpd-2.4.62-1.el9.x86_64", "httpd-2.4.62-1.el9.x86_64"),
+            ("health: starting", "health:"),
+            ("RHBA-2026:12345 bug fix", "bug fix"),
+            ("systemd-shutdown[1]: Remounting filesystem read-only", "Remounting filesystem read-only"),
+        ] {
+            let styles = h.styles(line).unwrap();
+            let start = line.find(plain).unwrap();
+            assert!(styles[start..start + plain.len()].iter().all(Option::is_none), "{plain:?} in {line:?}");
+        }
+    }
+
+    #[test]
+    fn default_rules_do_not_match_inside_unrelated_words() {
+        let sets = parse(DEFAULT_SET).unwrap();
+        let h = Highlighter::from_sets(&sets, &[]);
+        for line in ["ERRATA", "TERROR", "WARNINGS", "information", "DEBUGGER", "isActive", "exited", "healthyish", "kernelish"] {
+            assert!(h.styles(line).is_none(), "unexpected highlight in {line:?}");
+        }
+    }
+
+    #[test]
+    fn default_colours_read_on_every_terminal_theme() {
+        let sets = parse(DEFAULT_SET).unwrap();
+        for theme in crate::theme::DARK_THEMES.iter().chain(crate::theme::LIGHT_THEMES) {
+            for rule in &sets[0].keywords {
+                let c = readable_on(rule.fg().unwrap(), theme.dark);
+                let fg = (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
+                let contrast = crate::theme::contrast(fg, theme.term_background);
+                assert!(contrast >= 4.5, "{}: {fg:06x} has {contrast:.2}:1 contrast", theme.name);
+            }
+        }
+    }
+
+    #[test]
+    fn only_untouched_saved_defaults_are_upgraded() {
+        let dir = std::env::temp_dir().join(format!("komando-highlights-{}", uuid::Uuid::new_v4()));
+        let legacy = parse(LEGACY_DEFAULT_SET).unwrap();
+        let bundled = parse(DEFAULT_SET).unwrap();
+        assert_eq!(legacy[0].id, bundled[0].id, "disabled-set preferences must keep working");
+        assert_eq!(load(&dir), bundled, "first run uses the current bundle");
+        save(&dir, &legacy).unwrap();
+        assert_eq!(load(&dir), bundled);
+
+        let mut renamed = legacy[0].clone();
+        renamed.name = "My Linux rules".into();
+        let mut toggled = legacy[0].clone();
+        toggled.keywords[0].enabled = false;
+        let mut recoloured = legacy[0].clone();
+        recoloured.keywords[0].foreground_color = Some("#abcdef".into());
+        let mut reordered = legacy[0].clone();
+        reordered.keywords.swap(0, 1);
+        let mut imported = legacy[0].clone();
+        imported.extra.insert("custom".into(), Value::Bool(true));
+        for modified in [renamed, toggled, recoloured, reordered, imported, bundled[0].clone()] {
+            save(&dir, &[modified.clone()]).unwrap();
+            assert_eq!(load(&dir), vec![modified]);
+        }
+        let mut custom = legacy[0].clone();
+        custom.id = "custom".into();
+        save(&dir, &[legacy[0].clone(), custom.clone()]).unwrap();
+        assert_eq!(load(&dir), vec![bundled[0].clone(), custom]);
+        save(&dir, &[]).unwrap();
+        assert!(load(&dir).is_empty(), "deleted sets must stay deleted");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -456,7 +590,9 @@ mod tests {
 
     #[test]
     fn export_keeps_fields_and_reimports_identically() {
-        let sets = parse(DEFAULT_SET).unwrap();
+        // Imported legacy/Tabby fields must still round-trip even though the new bundle
+        // no longer carries these unused options.
+        let sets = parse(LEGACY_DEFAULT_SET).unwrap();
         let exported = export(&sets[0]).unwrap();
         assert!(exported.contains("\"isJS\": false"));
         assert!(exported.contains("\"backgroundColor\": \"0\""));

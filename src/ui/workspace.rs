@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, KeyDownEvent,
-    SharedString, Subscription, Window, WindowAppearance, actions, div, prelude::*, px, WindowControlArea, MouseButton, ListState, ListAlignment, list,
+    ScrollHandle, SharedString, Subscription, Window, WindowAppearance, actions, div, prelude::*, px, WindowControlArea, MouseButton, ListState, ListAlignment, list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
@@ -28,10 +28,11 @@ use crate::ui::terminal_view::{TerminalEvent, TerminalView};
 use crate::ui::transfers::{Activity, Transfers, TransfersChanged};
 use crate::ui::widgets::{
     Busy, BusyPhase, ButtonKind, ISLAND_GAP, ISLAND_RADIUS, badge, busy_done, button, elevation, icon_button, icon_el, icon_text_button, island,
-    is_artwork, progress_ring, section_label, shell_icon, spinner, status_dot, wordmark,
+    is_artwork, password_input, progress_ring, section_label, shell_icon, spinner, status_dot, wordmark,
 };
 use crate::vault::{Credential, Secret, Vault};
 
+mod command_history;
 mod forms;
 mod import;
 mod settings;
@@ -53,9 +54,14 @@ actions!(
         CopyOutputFile,
         LockVault,
         OpenSettings,
-        ToggleSftp
+        ToggleSftp,
+        PickerUp,
+        PickerDown
     ]
 );
+
+/// The key context of the quick connect dialog, for its Up and Down bindings.
+pub const PICKER_CONTEXT: &str = "QuickConnect";
 
 /// What fills the window: the sessions, or the full-window Settings page.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -172,6 +178,9 @@ struct SessionEntry {
     sftp_busy: Busy,
     /// Opened before any terminal pane was laid out: the shell starts once one is, at its size.
     waiting_for_size: bool,
+    /// SSH: the Host's address as it connected (see `history::address_label`). Commands go
+    /// into the history with it, even if the Host is edited while the Session is open.
+    history_on: Option<String>,
     _subscription: Subscription,
     _browser_subscription: Option<Subscription>,
     _browser_observer: Option<Subscription>,
@@ -184,19 +193,24 @@ impl SessionEntry {
 }
 
 enum Overlay {
-    Picker { query: Entity<InputState> },
+    /// Quick connect. `selected` is the result Enter opens, moved with Up and Down.
+    Picker { query: Entity<InputState>, selected: usize, scroll: ScrollHandle },
     /// Add a Host to a Project, or edit one.
     HostForm(forms::HostForm),
     /// Create a Project, or edit one.
     ProjectForm(forms::ProjectForm),
     /// Ask before something that can't be undone.
     Confirm { title: String, body: String, action: ConfirmAction },
+    /// A Host's Command History.
+    History(command_history::HistoryPanel),
 }
 
 #[derive(Clone)]
 enum ConfirmAction {
     DeleteHost(String),
     DeleteProject(String),
+    /// Every Host's Command History (Settings → Security).
+    DeleteAllHistory,
 }
 
 /// What waits for the Vault: done once the master password is entered.
@@ -894,6 +908,8 @@ impl Workspace {
         let confirm_paste = self.settings.confirm_multiline_paste;
         let putty = self.settings.putty_clipboard;
         let command_rail = self.settings.command_rail;
+        // Kept per Host: Local Sessions have their shell's own history.
+        let command_history = self.settings.command_history && matches!(kind, SessionKind::Ssh { .. });
         let minimap = self.settings.minimap;
         let minimap_overlay = self.settings.minimap_placement == crate::model::MinimapPlacement::Over;
         let minimap_delay = std::time::Duration::from_millis(self.settings.minimap_delay_ms.into());
@@ -902,6 +918,7 @@ impl Workspace {
             view.confirm_multiline_paste = confirm_paste;
             view.putty_clipboard = putty;
             view.command_rail = command_rail;
+            view.command_history = command_history;
             view.minimap = minimap;
             view.minimap_overlay = minimap_overlay;
             view.minimap_delay = minimap_delay;
@@ -958,6 +975,7 @@ impl Workspace {
                 }
                 this.start_waiting(cx);
             }
+            TerminalEvent::Entered { line, at } => this.record_command(id, line, *at, cx),
             TerminalEvent::StartupStopped { waited_for } => this.show_toast_for(
                 format!("Startup commands stopped: \"{}\" didn't appear within a minute.", waited_for.trim()),
                 Duration::from_secs(8),
@@ -997,6 +1015,7 @@ impl Workspace {
             sftp_open: false,
             sftp_busy: Busy::default(),
             waiting_for_size: false,
+            history_on: None,
             _subscription: sub,
             _browser_subscription: None,
             _browser_observer: None,
@@ -1122,6 +1141,13 @@ impl Workspace {
                         user: j.jump.user.clone(),
                     })
                     .collect();
+                let history_on = crate::history::address_label(&host.address, host.port);
+                if let Some(entry) = self.sessions.iter_mut().find(|s| &s.view == view) {
+                    entry.history_on = Some(history_on);
+                }
+                let secret = |credential: Option<&str>| {
+                    credential.and_then(|id| self.vault.as_ref()?.get(id)).map(|c| c.secret.clone())
+                };
                 hops.push(ssh::Hop {
                     secret: secret(host.credential.as_deref()),
                     name: host.name,
@@ -1549,23 +1575,51 @@ impl Workspace {
         }
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search hosts and shells…"));
         let sub = cx.subscribe_in(&query, window, |this, _, event: &InputEvent, window, cx| match event {
-            InputEvent::Change => cx.notify(),
+            // A new query starts again at its best match.
+            InputEvent::Change => {
+                if let Some(Overlay::Picker { selected, scroll, .. }) = &mut this.overlay {
+                    *selected = 0;
+                    scroll.scroll_to_item(0);
+                }
+                cx.notify()
+            }
             InputEvent::PressEnter { .. } => {
-                if let Some(first) = this.picker_items(cx).into_iter().next() {
-                    this.pick(first, window, cx);
+                let selected = match &this.overlay {
+                    Some(Overlay::Picker { selected, .. }) => *selected,
+                    _ => 0,
+                };
+                let mut items = this.picker_items(cx);
+                if !items.is_empty() {
+                    let item = items.swap_remove(selected.min(items.len() - 1));
+                    this.pick(item, window, cx);
                 }
             }
             _ => {}
         });
         self._subscriptions.push(sub);
         query.update(cx, |q, cx| q.focus(window, cx));
-        self.overlay = Some(Overlay::Picker { query });
+        self.overlay = Some(Overlay::Picker { query, selected: 0, scroll: ScrollHandle::new() });
         cx.notify();
     }
 
-    /// Quick connect: every sidebar item, filtered by name, address, user or Project.
+    /// Move quick connect's selection one result down (or up), wrapping at the ends, and
+    /// scroll it into view.
+    fn step_picker(&mut self, down: bool, cx: &mut Context<Self>) {
+        let count = self.picker_items(cx).len();
+        let Some(Overlay::Picker { selected, scroll, .. }) = &mut self.overlay else { return };
+        if count == 0 {
+            return;
+        }
+        let current = (*selected).min(count - 1);
+        *selected = if down { (current + 1) % count } else { (current + count - 1) % count };
+        scroll.scroll_to_item(*selected);
+        cx.notify();
+    }
+
+    /// Quick connect: every sidebar item, filtered by name, address (with its port), user or
+    /// Project.
     fn picker_items(&self, cx: &App) -> Vec<SidebarItem> {
-        let Some(Overlay::Picker { query }) = &self.overlay else { return vec![] };
+        let Some(Overlay::Picker { query, .. }) = &self.overlay else { return vec![] };
         let needle = query.read(cx).value().to_lowercase();
         self.sidebar_items()
             .into_iter()
@@ -1573,7 +1627,8 @@ impl Workspace {
                 let hay = match item {
                     SidebarItem::Host { project, host } => {
                         let r = model::resolve(host, project);
-                        format!("{} {} {} {}", host.name, host.address, project.name, r.user.unwrap_or_default())
+                        // `user@address:port` as shown, so a pasted destination finds its Host.
+                        format!("{} {} {} {}", host.name, destination(&r), project.name, r.port)
                     }
                     SidebarItem::Shell { project, shell } => {
                         format!("{} {} local", shell.name, project.as_ref().map(|p| p.name.as_str()).unwrap_or(""))
@@ -1645,6 +1700,11 @@ impl Workspace {
         match &action {
             ConfirmAction::DeleteHost(id) => library.remove_host(id),
             ConfirmAction::DeleteProject(id) => library.remove_project(id),
+            ConfirmAction::DeleteAllHistory => {
+                self.delete_all_history(cx);
+                self.focus_active(window, cx);
+                return;
+            }
         }
         // Persist before closing Sessions or removing sidebar state: a failed deletion
         // should leave the saved library and its running Sessions intact.
@@ -1652,6 +1712,12 @@ impl Workspace {
             self.show_toast(format!("Could not delete: {err:#}"), cx);
             self.focus_active(window, cx);
             return;
+        }
+        // A deleted Host's Command History goes with it.
+        for gone in self.library.hosts.iter().filter(|h| library.host(&h.id).is_none()) {
+            if let Err(err) = crate::history::forget(&self.data_dir, &gone.id) {
+                log::warn!("deleting the history of {}: {err:#}", gone.id);
+            }
         }
         self.library = library;
         match action {
@@ -1662,6 +1728,7 @@ impl Workspace {
                 self.discard_sessions(|s| s.project_id.as_deref() == Some(id.as_str()), cx);
                 self.collapsed.remove(&id);
             }
+            ConfirmAction::DeleteAllHistory => {}
         }
         self.focus_active(window, cx);
         cx.notify();
@@ -1683,10 +1750,18 @@ impl Workspace {
 
     fn copy_host_address(&mut self, project_id: &str, host_id: &str, cx: &mut Context<Self>) {
         let Some(r) = self.library.resolve(project_id, host_id) else { return };
-        let user = r.user.map(|u| format!("{u}@")).unwrap_or_default();
-        let text = if r.port == 22 { format!("{user}{}", r.address) } else { format!("{user}{}:{}", r.address, r.port) };
+        let text = destination(&r);
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
         self.show_toast(format!("Copied {text}"), cx);
+    }
+
+    /// A press on the backdrop beside a dialog. Quick connect, a question and the history
+    /// close; a host or project form stays, since a stray click would throw away what was
+    /// typed into it. Escape, Cancel and the close button still close it.
+    fn backdrop_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.overlay, Some(Overlay::HostForm(_) | Overlay::ProjectForm(_))) {
+            self.close_overlay(window, cx);
+        }
     }
 
     fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1731,13 +1806,18 @@ fn jump_card(jump: &model::JumpHost, color: &str) -> RouteCard {
     RouteCard { name: jump.address.clone(), detail: jump.label(), icon: "network".into(), color: project_color(color) }
 }
 
-/// How the Host at the end of the way shows on the route page.
-fn route_card(hop: &model::ResolvedHost) -> RouteCard {
+/// Where a Host connects to: `user@address`, with `:port` when it isn't 22.
+fn destination(hop: &model::ResolvedHost) -> String {
     let user = hop.user.as_deref().map(|u| format!("{u}@")).unwrap_or_default();
     let port = if hop.port == 22 { String::new() } else { format!(":{}", hop.port) };
+    format!("{user}{}{port}", hop.address)
+}
+
+/// How the Host at the end of the way shows on the route page.
+fn route_card(hop: &model::ResolvedHost) -> RouteCard {
     RouteCard {
         name: hop.name.clone(),
-        detail: format!("{user}{}{port}", hop.address),
+        detail: destination(hop),
         icon: hop.icon.clone(),
         color: project_color(&hop.color),
     }
@@ -1764,8 +1844,8 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .child(Input::new(&state.password))
-            .when(creating, |el| el.child(Input::new(&state.confirm)))
+            .child(password_input(&state.password, p))
+            .when(creating, |el| el.child(password_input(&state.confirm, p)))
             .when_some(state.error.clone(), |el, e| el.child(div().text_size(px(12.)).text_color(p.danger).child(e)));
         let header = div()
             .flex()
@@ -2345,6 +2425,7 @@ impl Workspace {
         let count = sessions.len();
         // Beside the Session shown, unless that is the one this would show.
         let can_split = self.active.is_some() && self.placement_possible(&key);
+        let history = self.settings.command_history;
         let item_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
             let item = menu_item_src.clone();
             let (open, another) = (item.clone(), item.clone());
@@ -2392,7 +2473,14 @@ impl Workspace {
                     .item(menu_item("Duplicate host…", "copy-plus", &ws, move |this, window, cx| {
                         this.duplicate_host(pd.clone(), hd.clone(), window, cx)
                     }))
-                    .item(menu_item("Copy address", "copy", &ws, move |this, _, cx| this.copy_host_address(&pb, &hb, cx)))
+                    .item(menu_item("Copy address", "copy", &ws, move |this, _, cx| this.copy_host_address(&pb, &hb, cx)));
+                if history {
+                    let hh = host.id.clone();
+                    menu = menu.item(menu_item("Command history…", command_history::ICON, &ws, move |this, window, cx| {
+                        this.open_history(&hh, window, cx)
+                    }));
+                }
+                menu = menu
                     .separator()
                     .item(menu_item("Delete host…", "trash", &ws, move |this, _, cx| this.confirm_delete_host(hc.clone(), cx)));
             }
@@ -2681,6 +2769,10 @@ impl Workspace {
         };
         let id = entry.id;
         let is_ssh = matches!(entry.kind, SessionKind::Ssh { .. });
+        let history_host = match &entry.kind {
+            SessionKind::Ssh { host_id } if self.settings.command_history => Some(host_id.clone()),
+            _ => None,
+        };
         let sftp_open = entry.sftp_open;
         let sftp_phase = if sftp_open { entry.sftp_busy.phase() } else { BusyPhase::Idle };
         // SFTP runs over the session's connection: until it is connected the button only looks
@@ -2787,6 +2879,12 @@ impl Workspace {
                     el.child(
                         strip_action("close-split", "columns-2", "Close split view", false, p)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_split(window, cx))),
+                    )
+                })
+                .when_some(history_host, |el, host_id| {
+                    el.child(
+                        strip_action("command-history", command_history::ICON, "Command history", false, p)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_history(&host_id, window, cx))),
                     )
                 })
                 .child(
@@ -3087,26 +3185,41 @@ impl Workspace {
     fn render_overlay(&self, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let overlay = self.overlay.as_ref()?;
         let body = match overlay {
-            Overlay::Picker { query } => {
+            Overlay::Picker { query, selected, scroll } => {
                 let items = self.picker_items(cx);
+                let count = items.len();
+                let selected = (*selected).min(count.saturating_sub(1));
                 let title = "Quick connect".to_string();
-                let mut list = div().id("picker-list").flex().flex_col().gap(px(2.)).max_h(px(380.)).overflow_y_scroll().p(px(6.));
+                let mut list = div()
+                    .id("picker-list")
+                    .role(gpui::Role::ListBox)
+                    .aria_label("Hosts and local shells")
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .max_h(px(380.))
+                    .overflow_y_scroll()
+                    .track_scroll(scroll)
+                    .p(px(6.));
                 if items.is_empty() {
-                    list = list.child(
-                        div().p(px(16.)).text_size(px(13.)).text_color(p.text_faint).child("Nothing matches. Add hosts with the + next to a project."),
-                    );
+                    // A typo, or nothing to find yet: say which, and how to go on.
+                    let hint = if self.library.hosts.is_empty() {
+                        "No match. Hosts you add show up here too: add one with the + next to a project."
+                    } else {
+                        "No host or local shell matches. Search by name, address, port, user or project."
+                    };
+                    list = list.child(div().p(px(16.)).text_size(px(13.)).text_color(p.text_faint).child(hint));
                 }
                 for (i, item) in items.into_iter().enumerate() {
                     let (icon, color, name, detail) = match &item {
                         SidebarItem::Host { project, host } => {
                             let r = model::resolve(host, project);
-                            let user = r.user.clone().map(|u| format!("{u}@")).unwrap_or_default();
                             let via = match r.jump_hosts.as_slice() {
                                 [] => String::new(),
                                 [one] => format!(" · via {}", one.jump.address),
                                 more => format!(" · via {} jump hosts", more.len()),
                             };
-                            (r.icon.clone(), project_color(&r.color), host.name.clone(), format!("{user}{}{via} · {}", host.address, project.name))
+                            (r.icon.clone(), project_color(&r.color), host.name.clone(), format!("{}{via} · {}", destination(&r), project.name))
                         }
                         SidebarItem::Shell { project, shell } => (
                             shell_icon(&shell.program).unwrap_or("square-terminal").to_string(),
@@ -3128,7 +3241,12 @@ impl Workspace {
                             .gap(px(12.))
                             .rounded(px(8.))
                             .cursor_pointer()
-                            .when(i == 0, |el| el.bg(p.hover))
+                            .role(gpui::Role::ListBoxOption)
+                            .aria_label(format!("{name}, {detail}"))
+                            .aria_selected(i == selected)
+                            .aria_position_in_set(i + 1)
+                            .aria_size_of_set(count)
+                            .when(i == selected, |el| el.bg(p.hover))
                             .hover(|s| s.bg(p.active))
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.pick(item.clone(), window, cx)))
                             .child(badge(&icon, color, 26.))
@@ -3143,6 +3261,9 @@ impl Workspace {
                     );
                 }
                 div()
+                    .key_context(PICKER_CONTEXT)
+                    .on_action(cx.listener(|this, _: &PickerUp, _, cx| this.step_picker(false, cx)))
+                    .on_action(cx.listener(|this, _: &PickerDown, _, cx| this.step_picker(true, cx)))
                     .w(px(520.))
                     .flex()
                     .flex_col()
@@ -3164,6 +3285,7 @@ impl Workspace {
             }
             Overlay::HostForm(form) => self.render_host_form(form, wide, p, cx),
             Overlay::ProjectForm(form) => self.render_project_form(form, wide, p, cx),
+            Overlay::History(panel) => self.render_history(panel, p, cx),
             Overlay::Confirm { title, body, .. } => form_card(
                 p,
                 title,
@@ -3196,9 +3318,9 @@ impl Workspace {
                 .pt(px(56.))
                 .pb(px(24.))
                 .bg(alpha(0x000000, if p.dark { 0.5 } else { 0.2 }))
-                // Close on a press outside the card. Not on click: selecting text in a field by
+                // Close on a press outside the card (not a form's). Not on click: selecting text in a field by
                 // dragging past the card's edge ends outside it, and that must not close it.
-                .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, window, cx| this.close_overlay(window, cx)))
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &gpui::MouseDownEvent, window, cx| this.backdrop_pressed(window, cx)))
                 .child(
                     div()
                         .id("overlay-card")
@@ -3874,5 +3996,22 @@ mod icon_search_tests {
         assert_eq!(hits[0], "hard-drive");
         let (hits, total) = search_icons("zzzz-no-such-icon");
         assert!(hits.is_empty() && total == 0);
+    }
+}
+
+#[cfg(test)]
+mod destination_tests {
+    use super::*;
+
+    #[test]
+    fn a_destination_names_its_port_unless_it_is_22() {
+        let project = Project::new("Lab", "blue", "folder");
+        let mut host = Host::new("web", "10.0.0.5");
+        host.user = model::Inherited::Own("deploy".into());
+        assert_eq!(destination(&model::resolve(&host, &project)), "deploy@10.0.0.5");
+        host.port = 2222;
+        assert_eq!(destination(&model::resolve(&host, &project)), "deploy@10.0.0.5:2222");
+        host.user = model::Inherited::Off;
+        assert_eq!(destination(&model::resolve(&host, &project)), "10.0.0.5:2222");
     }
 }

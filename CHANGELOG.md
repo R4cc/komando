@@ -6,13 +6,48 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Command history for each host: every command you enter in a host's SSH sessions is kept on
+  this PC with its date and time, so you can see what *you* did there even after others have
+  used the server. Open it from the clock button above the terminal or by right-clicking the
+  host. Filter it, click a command to copy it, or copy the history as text or as a .txt file.
+  If you change a host's address, older commands stay listed under the address they ran on.
+  Commands typed after an extra space are left out, as in bash. Turn it off, or delete it,
+  in Settings → Security; switched off, nothing is recorded. Deleting a host deletes its history.
+- A small Caps Lock warning appears in focused password and passphrase fields, including
+  the vault and jump hosts, and beside recognized password prompts in the terminal.
+- Quick connect: Up and Down move through the results and Enter opens the selected one, so a
+  host no longer has to be the first match to open it from the keyboard.
+- Hovering a highlight rule in Settings shows its whole pattern when it is cut short.
+
 ### Changed
 
+- The Highlights page uses Komando's own terminology without naming another application.
+- The default highlight set now uses a calmer, consistent palette and more precise matches,
+  with added RHEL coverage for SELinux, DNF, subscriptions, NetworkManager and Red Hat
+  advisories. Normal service exits and zero-error counters no longer look like failures.
+  Untouched saved defaults update automatically; customized sets are preserved.
 - Coloured output is taken in faster: Komando reads a whole colour code at once instead of one
   character at a time, up to a tenth less time for a million coloured log lines.
+- Fast output fills a large Scrollback sooner: the memory for new Scrollback lines is prepared
+  in the background while output arrives, instead of in between reading it. With a
+  100,000-line Scrollback, the first 100,000 lines of a flood are taken in about twice as fast.
+  Nothing is held in reserve once the Scrollback is full or the output stops.
+- Quick connect shows a host's port when it isn't 22, and finds hosts by port or by a pasted
+  `user@address:port`.
+- Clicking beside an open host or project form no longer closes it and loses what you typed.
+  Close it with Cancel, the close button or Escape.
+- Quick connect's message for no results says what can be searched, instead of always
+  pointing to adding a host.
 
 ### Fixed
 
+- The command rail stays hidden while all output fits in the terminal window.
+- PowerShell and Command Prompt icons use artwork made for small sizes, selected for the
+  display's scaling, so they remain clearer at the same sidebar size.
+- The command rail no longer mistakes log output for a command when Enter is pressed in a
+  pager or a pending command's line has been overwritten.
 - A character could go missing from output when it came right after a non-ASCII character that
   arrived split across two network packets.
 

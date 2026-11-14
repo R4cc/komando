@@ -10,6 +10,7 @@ use alacritty_terminal::Term;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Flags, Hyperlink};
+use alacritty_terminal::term::TermMode;
 use chrono::{DateTime, Local};
 
 /// Identifies Komando's tags among hyperlinks that programs print themselves (OSC 8).
@@ -40,6 +41,8 @@ impl Mark {
 /// (PSReadLine dropping a prediction, for example) are not captured.
 struct Pending {
     id: u64,
+    /// Prompt seen at Enter, so a lost tag cannot turn unrelated output into a command.
+    prompt: String,
     /// Row of the line's start as `history_size + line` at Enter, used if the tag was overwritten.
     abs: i64,
     /// Cursor row as `history_size + line` at Enter.
@@ -51,9 +54,16 @@ pub struct Marks {
     marks: Vec<Mark>,
     pending: Option<Pending>,
     next_id: u64,
+    /// Lines read since `take_new` was last called, for the Command History.
+    new: Vec<Mark>,
 }
 
 impl Marks {
+    /// The lines read since the last call, oldest first.
+    pub fn take_new(&mut self) -> Vec<Mark> {
+        std::mem::take(&mut self.new)
+    }
+
     pub fn list(&self) -> &[Mark] {
         &self.marks
     }
@@ -68,20 +78,36 @@ impl Marks {
     }
 
     /// Enter was pressed on the line under the cursor. Call before the key reaches the shell.
+    /// Only recognisable prompts are marked; Enter in a pager or other program is ignored.
     pub fn entered<T>(&mut self, term: &mut Term<T>) {
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return;
+        }
         self.finish(term);
         let grid = term.grid();
         let history = grid.history_size() as i64;
         let cursor = grid.cursor.point.line;
         let start = logical_start(term, cursor);
+        let text = logical_text(term, start);
+        let (prompt, _) = split_prompt(&text);
+        // Enter also scrolls pagers and answers interactive programs. Only a line with a
+        // recognisable prompt is evidence of a command; plain output is not.
+        if prompt.is_empty() {
+            return;
+        }
         self.next_id += 1;
         let id = self.next_id;
         stamp(term, start, id);
-        self.pending = Some(Pending { id, abs: history + start.0 as i64, cursor_abs: history + cursor.0 as i64 });
+        self.pending = Some(Pending { id, prompt: prompt.to_string(), abs: history + start.0 as i64, cursor_abs: history + cursor.0 as i64 });
     }
 
     /// New output arrived. Reads the pending line once the cursor has moved below it.
     pub fn output<T>(&mut self, term: &mut Term<T>) {
+        // A pager may have replaced the screen before the UI handles the command's echo.
+        // Its rows are not the pending command's rows; wait for the normal screen again.
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            return;
+        }
         let Some(pending) = &self.pending else { return };
         let grid = term.grid();
         let cursor = grid.cursor.point.line;
@@ -106,17 +132,24 @@ impl Marks {
                 if line < term.grid().topmost_line() || line > term.grid().bottommost_line() {
                     return;
                 }
-                stamp(term, line, pending.id);
                 line
             }
         };
         let text = logical_text(term, line);
-        if !worth_marking(&text) {
-            term.grid_mut()[line][Column(0)].set_hyperlink(None);
+        if split_prompt(&text).0 != pending.prompt || !worth_marking(&text) {
+            if tag_id(&term.grid()[line][Column(0)]) == Some(pending.id) {
+                term.grid_mut()[line][Column(0)].set_hyperlink(None);
+            }
             return;
         }
+        stamp(term, line, pending.id);
         let abs = term.grid().history_size() as i64 + line.0 as i64;
-        self.marks.push(Mark { id: pending.id, line: text, at: Local::now(), abs });
+        let mark = Mark { id: pending.id, line: text, at: Local::now(), abs };
+        // Unread, the list is only a backlog: keep it bounded like the marks themselves.
+        if self.new.len() < MAX_MARKS {
+            self.new.push(mark.clone());
+        }
+        self.marks.push(mark);
         if self.marks.len() > MAX_MARKS {
             self.marks.remove(0);
         }
@@ -257,10 +290,10 @@ fn logical_text<T>(term: &Term<T>, start: Line) -> String {
     text.trim().to_string()
 }
 
-/// Skips Enter on an empty prompt and answers to password prompts.
+/// Skips output, Enter on an empty prompt and answers to password prompts.
 fn worth_marking(line: &str) -> bool {
-    let (_, command) = split_prompt(line);
-    if command.is_empty() {
+    let (prompt, command) = split_prompt(line);
+    if prompt.is_empty() || command.is_empty() {
         return false;
     }
     let lower = line.to_lowercase();
@@ -339,7 +372,7 @@ mod tests {
         assert!(worth_marking("$ ls"));
         assert!(!worth_marking("[ops@web01 ~]$"));
         assert!(!worth_marking("[sudo] password for ops:"));
-        assert!(worth_marking("plain input"));
+        assert!(!worth_marking("plain input"));
     }
 
     #[test]
@@ -384,10 +417,80 @@ mod tests {
     }
 
     #[test]
+    fn entered_lines_are_handed_out_once() {
+        let mut shell = Shell::new(40, 5, 100);
+        shell.run("uptime", &["up"]);
+        shell.run("", &[]);
+        shell.run("df -h", &[]);
+        shell.print("$ ");
+        let lines: Vec<String> = shell.marks.take_new().into_iter().map(|m| m.line).collect();
+        assert_eq!(lines, ["$ uptime", "$ df -h"]);
+        assert!(shell.marks.take_new().is_empty());
+    }
+
+    #[test]
     fn enter_on_an_empty_prompt_is_not_marked() {
         let mut shell = Shell::new(40, 5, 100);
         shell.run("", &[]);
         assert!(shell.commands().is_empty());
+    }
+
+    #[test]
+    fn enter_on_journal_output_is_not_marked() {
+        let mut shell = Shell::new(120, 5, 100);
+        shell.print("root@rhel-01:/home/lxadm# journalctl -ex");
+        shell.marks.entered(&mut *shell.term.lock());
+        shell.print("\r\nNov 14 04:04:23 rhel-01 kernel: ACPI: INT_SRC_OVR (bus 0 bus_irq 10 global_irq 10 high level");
+        shell.marks.entered(&mut *shell.term.lock());
+        assert!(!shell.marks.is_pending());
+        shell.print("\r\nnext log line\r\n");
+        assert_eq!(shell.commands(), vec![("journalctl -ex".into(), 0)]);
+    }
+
+    #[test]
+    fn overwritten_pending_command_does_not_mark_output() {
+        let mut shell = Shell::new(120, 5, 100);
+        shell.print("$ journalctl -ex");
+        shell.marks.entered(&mut *shell.term.lock());
+        shell.print("\r\x1b[2KNov 14 04:04:23 rhel-01 kernel: ACPI: INT_SRC_OVR\r\n");
+        assert!(shell.commands().is_empty());
+        assert!(tag_id(&shell.term.lock().grid()[Line(0)][Column(0)]).is_none());
+    }
+
+    #[test]
+    fn pending_command_dropped_from_scrollback_does_not_mark_output() {
+        let mut shell = Shell::new(120, 5, 10);
+        shell.print("$ journalctl -ex");
+        shell.marks.entered(&mut *shell.term.lock());
+        // The backend parses a whole burst before the UI gets to read the pending command.
+        let output: String = (0..30).map(|i| format!("\r\nNov 14 04:04:23 rhel-01 kernel: log {i}")).collect();
+        shell.print(&output);
+        assert!(shell.commands().is_empty());
+        assert!(!shell.marks.is_pending());
+        assert!(find_tag(&*shell.term.lock(), 1).is_none());
+    }
+
+    #[test]
+    fn command_echo_can_arrive_after_enter() {
+        let mut shell = Shell::new(40, 5, 100);
+        shell.print("$ ");
+        shell.marks.entered(&mut *shell.term.lock());
+        shell.print("uptime\r\nup 3 days\r\n$ ");
+        assert_eq!(shell.commands(), vec![("uptime".into(), 0)]);
+    }
+
+    #[test]
+    fn pager_screen_does_not_replace_pending_command() {
+        let mut shell = Shell::new(120, 5, 100);
+        shell.print("$ journalctl -ex");
+        shell.marks.entered(&mut *shell.term.lock());
+        // Echo and alternate-screen switch arrive together, before the UI reads the mark.
+        shell.print("\r\n\x1b[?1049hNov 14 04:04:23 rhel-01 kernel: ACPI\r\n");
+        assert!(shell.marks.is_pending());
+        shell.marks.entered(&mut *shell.term.lock());
+        assert!(shell.marks.is_pending());
+        shell.print("\x1b[?1049l$ ");
+        assert_eq!(shell.commands(), vec![("journalctl -ex".into(), 0)]);
     }
 
     #[test]

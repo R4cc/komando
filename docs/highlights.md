@@ -1,16 +1,40 @@
 # Highlights
 
-Manage rule sets in **Settings → Highlights**. A set of 69 rules for typical Linux and service
-logs is included.
+Manage rule sets in **Settings → Highlights**. The included **Linux & RHEL** set has 62 rules
+for Linux logs and common Red Hat Enterprise Linux administration tools.
+
+The default palette uses coral for failures, amber for warnings, sage for successful states,
+blue for information, lavender for component and unit names, and slate for quiet states and
+debug output. Only serious failures use bold text. Rules colour diagnostic words and status
+values, leaving surrounding text and timestamps alone. Colours are checked at 4.5:1 contrast
+or better against all fourteen bundled Terminal Themes, including light mode.
+
+The set covers:
+
+- **systemd and journal output:** service states, unit names, exit codes, failed jobs and
+  kernel diagnostics. `active (exited)` is a successful state; `inactive (dead)` and `Stopped`
+  are quiet states rather than failures. Zero-error counters do not turn red.
+- **SELinux and Audit:** AVC denials, policy errors, enforcing and permissive modes.
+  A denial with `permissive=1` on the same row is amber because the operation was allowed;
+  ordinary denials are coral. See Red Hat's [SELinux troubleshooting guide](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/using_selinux/troubleshooting-problems-related-to-selinux_using-selinux).
+- **DNF/YUM and RPM:** transaction stages, completion, repository metadata and GPG failures,
+  missing dependencies, RHSA/RHBA/RHEA advisories and CVE identifiers.
+- **Subscriptions:** registration problems and status values. `Overall Status: Disabled`
+  stays informational: [Red Hat documents it as expected with Simple Content Access](https://access.redhat.com/solutions/7080864).
+- **Networking and common components:** NetworkManager state changes and device states,
+  SSH authentication, firewalld, SSSD, chronyd, Podman, Pacemaker and Corosync.
+
+Rules use word boundaries to avoid matches inside unrelated words such as `ERRATA` or
+`DEBUGGER`. Component names share one colour and do not imply a health state.
 
 - **Order matters.** Rules apply top to bottom and the first match wins, so put specific rules
-  (`WARNING`, `Active: inactive`) above general ones (`WARN`, `Active`).
+  (a permissive AVC denial or zero-error counter) above general severity words.
 - **Format.** Same as Tabby's highlight plugin, so sets move between the two apps:
 
   ```json
   { "id": "…", "name": "Ops", "keywords": [
-      { "text": "ERROR", "enabled": true, "foreground": true, "foregroundColor": "#FF0000", "isCaseSensitive": true },
-      { "text": "health:\\s*(starting)", "isRegExp": true, "isMatchGroup": true, "matchGroup": "1", "foreground": true, "foregroundColor": "#FFA500" }
+      { "text": "\\bERROR\\b", "enabled": true, "isRegExp": true, "foreground": true, "foregroundColor": "#F28B82", "isCaseSensitive": true },
+      { "text": "health:\\s*(starting)", "isRegExp": true, "isMatchGroup": true, "matchGroup": "1", "foreground": true, "foregroundColor": "#87BFEA" }
   ] }
   ```
 
@@ -26,3 +50,7 @@ logs is included.
   so they stay readable.
 - **Storage.** Sets are kept in `%APPDATA%\Komando\highlights.json`. Adding and editing
   individual rules inside the app is not available yet: edit the JSON and re-import.
+- **Default updates.** Saved, untouched copies of the old `ADJUSTED` set automatically use
+  the new bundle. Renamed, reordered, recoloured or individually toggled sets stay as saved;
+  deleted sets stay deleted. The set keeps its id, so a disabled default stays disabled.
+  To replace a customized copy, import [the current bundled set](../assets/highlights/default.json).

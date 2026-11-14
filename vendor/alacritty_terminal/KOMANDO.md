@@ -1,8 +1,8 @@
 # alacritty_terminal 0.26.0, patched for Komando
 
-This is alacritty_terminal 0.26.0 from crates.io with one change, used through
+This is alacritty_terminal 0.26.0 from crates.io with two changes, used through
 `[patch.crates-io]` in Komando's `Cargo.toml`, against the patched vte in `vendor/vte` (see
-its `KOMANDO.md`). `komando.patch` holds the change as a diff against the published crate.
+its `KOMANDO.md`). `komando.patch` holds the changes as a diff against the published crate.
 
 ## The change: printable ASCII written in runs
 
@@ -26,8 +26,9 @@ call), the rest coming from the cursor's movement when the damage is read, and `
 calls `wrapline` at the same points.
 
 The change touches `src/term/mod.rs` (`Term::input_ascii` in the `Handler` impl, and the test
-module declaration) and adds `src/term/komando_tests.rs`. New items are marked `Komando patch`.
-Everything else here is the published crate as it is, with `Cargo.lock`, the registry's
+module declaration) and adds `src/term/komando_tests.rs`. The second change (below) touches
+`src/grid/mod.rs`, `src/grid/storage.rs` and `src/grid/resize.rs`. New items are marked
+`Komando patch`. Everything else here is the published crate as it is, with `Cargo.lock`, the registry's
 bookkeeping files and the reference test recordings (`tests/ref/`, 46 MB) left out.
 
 ## Tests
@@ -78,6 +79,47 @@ best of 5 passes, median of 3 interleaved runs), before and after:
 
 Text that is not ASCII is no slower.
 
+## The second change: new history rows from a row source
+
+Every history row is a full-width `Row<Cell>` (24-byte cells: about 4.2 KB at 177 columns).
+While the history grows, `Storage::initialize` allocates and default-fills new rows 1,000 at a
+time, on the thread that parses output and with the terminal locked; once the history is full,
+rows are only rotated and reused. The allocations, and the fresh memory pages they touch, made
+a filling history much slower than a full one.
+
+A grid can now be given a `RowSource` (`Grid::set_row_source`), which hands over fresh rows
+built elsewhere; Komando's is `src/session/row_pool.rs`, which builds them on a worker thread.
+`Storage::initialize` asks the source for the rows it is about to add, only in the branch where
+it grows its buffer (in an out-of-line, cold function, so the per-line path is unchanged), and
+builds whatever it doesn't get with `Row::new` as before. It throws everything it was handed
+away, and builds every row itself, if the source handed over more rows than asked for or any
+row of another width. The source is told how many more rows the grid may still ask for
+(`rows_left`; zero once the history is full), and is told again, asking for nothing, after
+`Grid::resize` and `Grid::update_history` (a change of the history's size). Without a source,
+nothing changes.
+
+The grid holds the source as `Arc<dyn RowSource<T>>`, which must be `Send + Sync`; it is left
+out of serialization, and `Storage`'s own tests set it to `None`.
+
+Komando's tests (`src/session/row_pool.rs`) check that a terminal taking its rows from the pool
+has the same grid as one building them itself, through a history that fills, is resized while
+the pool holds rows, overflows, is cleared (`ESC [3J`), shrinks and grows with the Scrollback
+setting, and is reset (`ESC c`); that the grid refuses rows of another width or too many; and
+that the pool empties and its thread stops once the history is full, the terminal is dropped,
+or output stops.
+
+Measured on Windows 11 (bare metal), `throughput_parser_only` and the time for the first
+100,000 lines (while the history fills) and the next 900,000 lines (once it's full), 177 x 42,
+median of 8 interleaved runs each:
+
+| Scrollback | Before | After |
+|---|---|---|
+| 100,000 lines, whole run | 0.478 s | 0.434 s |
+| 100,000 lines, first 100,000 lines | 0.070 s | 0.037 s |
+| 100,000 lines, next 900,000 lines | 0.399 s | 0.395 s |
+| 10,000 lines, whole run | 0.290 s | 0.282 s |
+| 0 (no source is set) | 0.255 s | 0.256 s |
+
 ## Updating alacritty_terminal
 
 Copy the new release's crate source over this folder (leaving out `Cargo.lock`, `.cargo-ok`,
@@ -86,6 +128,7 @@ change by hand where it no longer applies), regenerate the patch with
 `diff -ruN a/src b/src > vendor/alacritty_terminal/komando.patch` (`a` the crate source, `b`
 this folder), and update `vendor/vte` to the vte version it depends on. Then check
 `Term::input` and `write_at_cursor` for changes `input_ascii` must follow (anything new that
-`input` does for a one-cell character outside insert mode and the DEC charset), run the tests
+`input` does for a one-cell character outside insert mode and the DEC charset), check that
+`Storage::initialize` is still the only place new history rows are built, run the tests
 above, and compare `throughput_parser_only` before and after. If alacritty_terminal gains a
 batched input path of its own, use that and drop the patch.

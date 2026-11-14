@@ -2,6 +2,7 @@
 
 use std::cmp::{max, min};
 use std::ops::{Bound, Deref, Index, IndexMut, Range, RangeBounds};
+use std::sync::Arc;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,18 @@ mod tests;
 
 pub use self::row::Row;
 use self::storage::Storage;
+
+/// Komando patch: where a grid's new rows come from.
+///
+/// While the history grows, the grid asks its row source for the fresh rows it would otherwise
+/// build itself with [`Row::new`], and builds whatever the source doesn't hand over.
+pub trait RowSource<T>: Send + Sync + std::fmt::Debug {
+    /// Append at most `count` rows to `rows`, each exactly as `Row::new(columns)` makes it; the
+    /// grid builds any it doesn't get. `rows_left` is the most rows the grid may ask for after
+    /// these: zero once the history is full. A `count` of zero asks for nothing and only reports
+    /// `columns` and `rows_left` after a resize or a change of the history's size.
+    fn take_rows(&self, columns: usize, count: usize, rows_left: usize, rows: &mut Vec<Row<T>>);
+}
 
 pub trait GridCell: Sized {
     /// Check if the cell contains any content.
@@ -158,6 +171,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         }
         self.display_offset = min(self.display_offset, history_size);
         self.max_scroll_limit = history_size;
+        self.report_rows_left();
     }
 
     pub fn scroll_display(&mut self, scroll: Scroll) {
@@ -353,6 +367,18 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 }
 
 impl<T> Grid<T> {
+    /// Komando patch: take new rows from `source` while the history grows, or build them all
+    /// here with `None`.
+    pub fn set_row_source(&mut self, source: Option<Arc<dyn RowSource<T>>>) {
+        self.raw.set_row_source(source);
+        self.report_rows_left();
+    }
+
+    /// Komando patch: tell the row source the width of new rows and the most rows in use.
+    fn report_rows_left(&mut self) {
+        self.raw.report_rows_left(self.max_scroll_limit + self.lines, self.columns);
+    }
+
     /// Reset a visible region within the grid.
     pub fn reset_region<D, R: RangeBounds<Line>>(&mut self, bounds: R)
     where

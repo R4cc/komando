@@ -2,11 +2,12 @@ use std::cmp::max;
 use std::mem;
 use std::mem::MaybeUninit;
 use std::ops::{Index, IndexMut};
+use std::sync::Arc;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use super::Row;
+use super::{Row, RowSource};
 use crate::index::Line;
 
 /// Maximum number of buffered lines outside of the grid for performance optimization.
@@ -50,6 +51,10 @@ pub struct Storage<T> {
     /// As long as `len` is bigger than `inner`, it is also possible to grow the scrollback buffer
     /// without any additional insertions.
     len: usize,
+
+    /// Komando patch: where new rows come from, if not built here, and the most rows in use.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    row_source: Option<(Arc<dyn RowSource<T>>, usize)>,
 }
 
 impl<T: PartialEq> PartialEq for Storage<T> {
@@ -72,7 +77,7 @@ impl<T> Storage<T> {
         let mut inner = Vec::with_capacity(visible_lines);
         inner.resize_with(visible_lines, || Row::new(columns));
 
-        Storage { inner, zero: 0, visible_lines, len: visible_lines }
+        Storage { inner, zero: 0, visible_lines, len: visible_lines, row_source: None }
     }
 
     /// Increase the number of lines in the buffer.
@@ -131,10 +136,43 @@ impl<T> Storage<T> {
             self.rezero();
 
             let realloc_size = self.inner.len() + max(additional_rows, MAX_CACHE_SIZE);
+            // Komando patch: rows from the row source first, as far as it has them ready.
+            if self.row_source.is_some() {
+                self.take_rows(realloc_size, columns);
+            }
             self.inner.resize_with(realloc_size, || Row::new(columns));
         }
 
         self.len += additional_rows;
+    }
+
+    /// Komando patch: take new rows from `source`, or build them all here with `None`.
+    pub fn set_row_source(&mut self, source: Option<Arc<dyn RowSource<T>>>) {
+        self.row_source = source.map(|source| (source, usize::MAX));
+    }
+
+    /// Komando patch: tell the row source the width of new rows, and how many more it may be
+    /// asked for with at most `max_rows` rows in use.
+    pub(crate) fn report_rows_left(&mut self, max_rows: usize, columns: usize) {
+        if let Some((source, max)) = &mut self.row_source {
+            *max = max_rows;
+            source.take_rows(columns, 0, max_rows.saturating_sub(self.inner.len()), &mut Vec::new());
+        }
+    }
+
+    /// Komando patch: add up to `realloc_size` rows from the row source.
+    #[cold]
+    #[inline(never)]
+    fn take_rows(&mut self, realloc_size: usize, columns: usize) {
+        let Some((source, max_rows)) = &self.row_source else { return };
+        let start = self.inner.len();
+        let rows_left = max_rows.saturating_sub(realloc_size);
+        source.take_rows(columns, realloc_size - start, rows_left, &mut self.inner);
+        // Never more rows than asked for, and none of another width.
+        let taken = &self.inner[start..];
+        if taken.len() > realloc_size - start || taken.iter().any(|row| row.len() != columns) {
+            self.inner.truncate(start);
+        }
     }
 
     #[inline]
@@ -354,6 +392,7 @@ mod tests {
             zero: 0,
             visible_lines: 3,
             len: 3,
+            row_source: None,
         };
 
         // Grow buffer.
@@ -365,6 +404,7 @@ mod tests {
             zero: 0,
             visible_lines: 4,
             len: 4,
+            row_source: None,
         };
         expected.inner.append(&mut vec![filled_row('\0'); MAX_CACHE_SIZE]);
 
@@ -395,6 +435,7 @@ mod tests {
             zero: 1,
             visible_lines: 3,
             len: 3,
+            row_source: None,
         };
 
         // Grow buffer.
@@ -406,6 +447,7 @@ mod tests {
             zero: 0,
             visible_lines: 4,
             len: 4,
+            row_source: None,
         };
         expected.inner.append(&mut vec![filled_row('\0'); MAX_CACHE_SIZE]);
 
@@ -433,6 +475,7 @@ mod tests {
             zero: 1,
             visible_lines: 3,
             len: 3,
+            row_source: None,
         };
 
         // Shrink buffer.
@@ -444,6 +487,7 @@ mod tests {
             zero: 1,
             visible_lines: 2,
             len: 2,
+            row_source: None,
         };
         assert_eq!(storage.visible_lines, expected.visible_lines);
         assert_eq!(storage.inner, expected.inner);
@@ -469,6 +513,7 @@ mod tests {
             zero: 0,
             visible_lines: 3,
             len: 3,
+            row_source: None,
         };
 
         // Shrink buffer.
@@ -480,6 +525,7 @@ mod tests {
             zero: 0,
             visible_lines: 2,
             len: 2,
+            row_source: None,
         };
         assert_eq!(storage.visible_lines, expected.visible_lines);
         assert_eq!(storage.inner, expected.inner);
@@ -518,6 +564,7 @@ mod tests {
             zero: 2,
             visible_lines: 6,
             len: 6,
+            row_source: None,
         };
 
         // Shrink buffer.
@@ -536,6 +583,7 @@ mod tests {
             zero: 2,
             visible_lines: 2,
             len: 2,
+            row_source: None,
         };
         assert_eq!(storage.visible_lines, expected.visible_lines);
         assert_eq!(storage.inner, expected.inner);
@@ -570,6 +618,7 @@ mod tests {
             zero: 2,
             visible_lines: 1,
             len: 2,
+            row_source: None,
         };
 
         // Truncate buffer.
@@ -581,6 +630,7 @@ mod tests {
             zero: 0,
             visible_lines: 1,
             len: 2,
+            row_source: None,
         };
         assert_eq!(storage.visible_lines, expected.visible_lines);
         assert_eq!(storage.inner, expected.inner);
@@ -605,6 +655,7 @@ mod tests {
             zero: 2,
             visible_lines: 1,
             len: 2,
+            row_source: None,
         };
 
         // Truncate buffer.
@@ -616,6 +667,7 @@ mod tests {
             zero: 0,
             visible_lines: 1,
             len: 2,
+            row_source: None,
         };
         assert_eq!(storage.visible_lines, expected.visible_lines);
         assert_eq!(storage.inner, expected.inner);
@@ -662,6 +714,7 @@ mod tests {
             zero: 2,
             visible_lines: 0,
             len: 6,
+            row_source: None,
         };
 
         // Shrink buffer.
@@ -680,6 +733,7 @@ mod tests {
             zero: 2,
             visible_lines: 0,
             len: 3,
+            row_source: None,
         };
         assert_eq!(storage.inner, shrinking_expected.inner);
         assert_eq!(storage.zero, shrinking_expected.zero);
@@ -701,6 +755,7 @@ mod tests {
             zero: 2,
             visible_lines: 0,
             len: 4,
+            row_source: None,
         };
 
         assert_eq!(storage.inner, growing_expected.inner);
@@ -723,6 +778,7 @@ mod tests {
             zero: 2,
             visible_lines: 0,
             len: 6,
+            row_source: None,
         };
 
         // Initialize additional lines.
@@ -740,7 +796,8 @@ mod tests {
         ];
         let expected_init_size = std::cmp::max(init_size, MAX_CACHE_SIZE);
         expected_inner.append(&mut vec![filled_row('\0'); expected_init_size]);
-        let expected_storage = Storage { inner: expected_inner, zero: 0, visible_lines: 0, len: 9 };
+        let expected_storage =
+            Storage { inner: expected_inner, zero: 0, visible_lines: 0, len: 9, row_source: None };
 
         assert_eq!(storage.len, expected_storage.len);
         assert_eq!(storage.zero, expected_storage.zero);
@@ -754,6 +811,7 @@ mod tests {
             zero: 2,
             visible_lines: 0,
             len: 3,
+            row_source: None,
         };
 
         storage.rotate(2);

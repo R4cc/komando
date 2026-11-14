@@ -64,7 +64,7 @@ impl SettingsSection {
             Self::Shells => "The shells on this PC listed at the top of the sidebar. Hide the ones you don't use, remove them, or add your own, such as WSL or Git Bash.",
             Self::Highlights => "Colour matching text in terminal output. Rules apply top to bottom; the first match wins.",
             Self::Import => "Bring your hosts over from another SSH client. Nothing changes until you confirm the review.",
-            Self::Security => "The vault that holds your passwords and keys.",
+            Self::Security => "The vault that holds your passwords and keys, and the command history kept for each host.",
             Self::About => "",
         }
     }
@@ -205,14 +205,17 @@ impl Workspace {
     fn apply_terminal_settings(&mut self, cx: &mut Context<Self>) {
         let (paste, putty) = (self.settings.confirm_multiline_paste, self.settings.putty_clipboard);
         let rail = self.settings.command_rail;
+        let history = self.settings.command_history;
         let minimap = self.settings.minimap;
         let minimap_overlay = self.settings.minimap_placement == MinimapPlacement::Over;
         let minimap_delay = std::time::Duration::from_millis(self.settings.minimap_delay_ms.into());
         for entry in &self.sessions {
+            let ssh = matches!(entry.kind, SessionKind::Ssh { .. });
             entry.view.update(cx, |v, cx| {
                 v.confirm_multiline_paste = paste;
                 v.putty_clipboard = putty;
                 v.command_rail = rail;
+                v.command_history = history && ssh;
                 v.minimap = minimap;
                 v.minimap_overlay = minimap_overlay;
                 v.minimap_delay = minimap_delay;
@@ -785,6 +788,8 @@ impl Workspace {
         };
         let saved = self.vault.as_ref().map(|v| v.list().count());
         let known_hosts = self.data_dir.join("known_hosts");
+        let history = self.settings.command_history;
+        let history_hosts = crate::history::hosts_with_history(&self.data_dir);
         group(
             p,
             vec![
@@ -811,6 +816,41 @@ impl Workspace {
                     "Komando's own list of host keys you trusted on first connect.",
                     button("open-known-hosts", "Show file", ButtonKind::Secondary, p)
                         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.reveal_path(&known_hosts)))
+                        .into_any_element(),
+                ),
+                setting_row(
+                    p,
+                    "Command history",
+                    "Keep the commands you enter in each host's sessions, with their time, on this PC: your own record of what you did there, whatever else happens on the server. Right-click a host to see it. A command typed after an extra space is left out, as bash does. Off: nothing is recorded.",
+                    switch("command-history".into(), "Command history", history, p)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.settings.command_history = !history;
+                            this.apply_terminal_settings(cx);
+                        }))
+                        .into_any_element(),
+                ),
+                setting_row(
+                    p,
+                    "Saved command history",
+                    match history_hosts {
+                        0 => "None kept on this PC.",
+                        1 => "Kept for 1 host on this PC, in plain text like a shell's history.",
+                        _ => "Kept on this PC, in plain text like a shell's history.",
+                    },
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .when(history_hosts > 1, |el| {
+                            el.child(div().text_size(px(13.)).text_color(p.text_muted).child(format!("{history_hosts} hosts")))
+                        })
+                        .child(
+                            button("delete-all-history", "Delete all", ButtonKind::Secondary, p)
+                                .when(history_hosts == 0, |el| el.opacity(0.5))
+                                .when(history_hosts > 0, |el| {
+                                    el.on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.confirm_delete_all_history(cx)))
+                                }),
+                        )
                         .into_any_element(),
                 ),
             ],
@@ -1222,7 +1262,7 @@ impl Workspace {
                     .p(px(16.))
                     .text_size(px(13.))
                     .text_color(p.text_faint)
-                    .child("No highlight sets. Import a .json file exported from Komando or Tabby."),
+                    .child("No highlight sets. Import a highlight set from a .json file."),
             );
         }
         for set in &self.highlights {
@@ -1345,6 +1385,12 @@ impl Workspace {
                         .child(
                             div().flex_1().min_w_0().flex().child(
                                 div()
+                                    .id(SharedString::from(format!("hl-pattern-{}-{index}", set.id)))
+                                    // A long pattern is cut short in the chip; the tooltip has all of it.
+                                    .tooltip({
+                                        let full = rule.text.clone();
+                                        move |window, cx| Tooltip::new(full.clone()).build(window, cx)
+                                    })
                                     .min_w_0()
                                     .px(px(8.))
                                     .py(px(3.))
@@ -1410,7 +1456,7 @@ impl Workspace {
                             .flex_1()
                             .text_size(px(12.))
                             .text_color(p.text_faint)
-                            .child(format!("{} rules active. Files use Tabby's highlight format.", self.active_rule_count())),
+                            .child(format!("{} rules active.", self.active_rule_count())),
                     )
                     .child(
                         button("hl-import", "Import…", ButtonKind::Secondary, p)

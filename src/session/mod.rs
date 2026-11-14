@@ -7,6 +7,7 @@
 
 pub mod local;
 mod pace;
+pub mod row_pool;
 pub mod ssh;
 mod sudo;
 pub mod wait_for;
@@ -359,7 +360,12 @@ pub fn new_term(size: GridSize, scrollback_lines: usize, proxy: EventProxy) -> S
         osc52: Osc52::OnlyCopy,
         ..TermConfig::default()
     };
-    Arc::new(FairMutex::new(Term::new(config, &size.term_size(), proxy)))
+    let mut term = Term::new(config, &size.term_size(), proxy);
+    if scrollback_lines > 0 {
+        // New Scrollback rows are built ahead, off the parser's thread, while it fills.
+        term.grid_mut().set_row_source(Some(Arc::new(row_pool::RowPool::default())));
+    }
+    Arc::new(FairMutex::new(term))
 }
 
 /// Drop the Scrollback when it holds nothing but blank lines, so there is no empty space to

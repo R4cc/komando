@@ -764,6 +764,9 @@ pub struct Settings {
     pub confirm_multiline_paste: bool,
     /// Show the command rail: a mark at the terminal's left edge for each line entered.
     pub command_rail: bool,
+    /// Keep the Command History: each Host's entered commands, with their time, on this PC.
+    /// Off, nothing is recorded.
+    pub command_history: bool,
     /// Show the minimap: the Scrollback in miniature on the terminal's right edge.
     pub minimap: bool,
     pub minimap_placement: MinimapPlacement,
@@ -805,6 +808,7 @@ impl Default for Settings {
             putty_clipboard: false,
             confirm_multiline_paste: true,
             command_rail: true,
+            command_history: true,
             minimap: true,
             minimap_placement: MinimapPlacement::Beside,
             minimap_delay_ms: 300,
@@ -1025,6 +1029,15 @@ mod tests {
         settings.minimize_to_tray = false;
         let loaded: Settings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
         assert!(!loaded.minimize_to_tray);
+    }
+
+    #[test]
+    fn command_history_defaults_on_and_remembers_opt_out() {
+        let mut settings: Settings = toml::from_str("font_size = 16.0").unwrap();
+        assert!(settings.command_history, "older settings files keep a history");
+        settings.command_history = false;
+        let loaded: Settings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
+        assert!(!loaded.command_history);
     }
 
     #[test]

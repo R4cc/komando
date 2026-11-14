@@ -13,6 +13,55 @@ use gpui::{
 use std::time::{Duration, Instant};
 
 use crate::theme::{AppPalette, UI_FONT, alpha};
+use gpui::Focusable as _;
+use gpui_component::input::{Input, InputState};
+use gpui_component::tooltip::Tooltip;
+
+/// A compact warning shared by password fields and terminal password prompts.
+pub fn caps_lock_indicator(id: impl Into<ElementId>, p: AppPalette) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(gpui::Role::Status)
+        .aria_label("Caps Lock is on")
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .flex_shrink_0()
+        .font_family(UI_FONT)
+        .text_size(px(11.))
+        .text_color(p.warning)
+        .child(icon_el("arrow-big-up-dash", 14., p.warning))
+        .child("Caps Lock")
+        .tooltip(|window, cx| Tooltip::new("Caps Lock is on").build(window, cx))
+}
+
+/// A password input with a live Caps Lock warning while the field has focus.
+pub fn password_input(input: &gpui::Entity<InputState>, p: AppPalette) -> impl IntoElement {
+    PasswordInput { input: input.clone(), palette: p }
+}
+
+#[derive(IntoElement)]
+struct PasswordInput {
+    input: gpui::Entity<InputState>,
+    palette: AppPalette,
+}
+
+impl gpui::RenderOnce for PasswordInput {
+    fn render(self, window: &mut gpui::Window, cx: &mut gpui::App) -> impl IntoElement {
+        let focused = self.input.focus_handle(cx).is_focused(window) && window.is_window_active();
+        let caps_lock = window.capslock().on;
+        div()
+            .w_full()
+            .on_modifiers_changed(move |event, window, _| {
+                if focused && event.capslock.on != caps_lock {
+                    window.refresh();
+                }
+            })
+            .child(Input::new(&self.input).when(focused && caps_lock, |input| {
+                input.suffix(caps_lock_indicator(("caps-lock", self.input.entity_id()), self.palette))
+            }))
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {
@@ -112,20 +161,58 @@ pub fn shell_icon(program: &str) -> Option<&'static str> {
     }
 }
 
-/// The full-colour artwork behind a `shell:` icon name. Sources are in assets/shells/README.md.
-fn shell_image(name: &str) -> Option<std::sync::Arc<gpui::Image>> {
+type ShellFrames = Vec<(u16, std::sync::Arc<gpui::Image>)>;
+
+/// Native small-icon frames first, large artwork last. Sources are in assets/shells/README.md.
+fn shell_frames(name: &str) -> Option<&'static ShellFrames> {
     use std::sync::{Arc, OnceLock};
-    static IMAGES: OnceLock<Vec<(&'static str, Arc<gpui::Image>)>> = OnceLock::new();
+    static IMAGES: OnceLock<Vec<(&'static str, ShellFrames)>> = OnceLock::new();
     let images = IMAGES.get_or_init(|| {
         let png = |bytes: &[u8]| Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes.to_vec()));
         vec![
-            ("shell:pwsh", png(include_bytes!("../../assets/shells/pwsh.png"))),
-            ("shell:powershell", png(include_bytes!("../../assets/shells/powershell.png"))),
-            ("shell:cmd", png(include_bytes!("../../assets/shells/cmd.png"))),
-            ("shell:linux", png(include_bytes!("../../assets/shells/linux.png"))),
+            ("shell:pwsh", vec![
+                (16, png(include_bytes!("../../assets/shells/pwsh-16.png"))),
+                (20, png(include_bytes!("../../assets/shells/pwsh-20.png"))),
+                (24, png(include_bytes!("../../assets/shells/pwsh-24.png"))),
+                (32, png(include_bytes!("../../assets/shells/pwsh-32.png"))),
+                (40, png(include_bytes!("../../assets/shells/pwsh-40.png"))),
+                (48, png(include_bytes!("../../assets/shells/pwsh-48.png"))),
+                (64, png(include_bytes!("../../assets/shells/pwsh-64.png"))),
+                (256, png(include_bytes!("../../assets/shells/pwsh.png"))),
+            ]),
+            ("shell:powershell", vec![
+                (16, png(include_bytes!("../../assets/shells/powershell-16.png"))),
+                (32, png(include_bytes!("../../assets/shells/powershell-32.png"))),
+                (256, png(include_bytes!("../../assets/shells/powershell.png"))),
+            ]),
+            ("shell:cmd", vec![
+                (16, png(include_bytes!("../../assets/shells/cmd-16.png"))),
+                (32, png(include_bytes!("../../assets/shells/cmd-32.png"))),
+                (48, png(include_bytes!("../../assets/shells/cmd-48.png"))),
+                (256, png(include_bytes!("../../assets/shells/cmd.png"))),
+            ]),
+            ("shell:linux", vec![(32, png(include_bytes!("../../assets/shells/linux.png")))]),
         ]
     });
-    images.iter().find(|(n, _)| *n == name).map(|(_, image)| image.clone())
+    images.iter().find(|(n, _)| *n == name).map(|(_, frames)| frames)
+}
+
+fn shell_frame(frames: &ShellFrames, physical_size: f32) -> &(u16, std::sync::Arc<gpui::Image>) {
+    frames.iter().find(|(size, _)| f32::from(*size) >= physical_size.ceil()).unwrap_or_else(|| frames.last().unwrap())
+}
+
+#[derive(IntoElement)]
+struct ShellArtwork {
+    frames: &'static ShellFrames,
+    size: f32,
+}
+
+impl gpui::RenderOnce for ShellArtwork {
+    fn render(self, window: &mut gpui::Window, _: &mut gpui::App) -> impl IntoElement {
+        // Choose at render time so moving between monitors also updates the source artwork.
+        let (_, image) = shell_frame(self.frames, self.size * window.scale_factor());
+        gpui::img(image.clone()).size(px(self.size)).flex_shrink_0()
+    }
 }
 
 /// Whether an icon name is full-colour artwork rather than a Lucide icon drawn in one colour.
@@ -136,8 +223,8 @@ pub fn is_artwork(name: &str) -> bool {
 /// A Lucide icon by name (e.g. "server"), drawn in `color`. `shell:` names are a shell's own
 /// full-colour icon instead, which ignores `color`.
 pub fn icon_el(name: &str, size: f32, color: Hsla) -> AnyElement {
-    if let Some(image) = shell_image(name) {
-        return gpui::img(image).size(px(size)).flex_shrink_0().into_any_element();
+    if let Some(frames) = shell_frames(name) {
+        return ShellArtwork { frames, size }.into_any_element();
     }
     svg()
         .path(SharedString::from(format!("icons/{name}.svg")))
@@ -453,6 +540,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shell_artwork_uses_native_frames_for_the_display_scale() {
+        let pwsh = shell_frames("shell:pwsh").unwrap();
+        for (scale, expected) in [(1., 16), (1.25, 20), (1.5, 24), (2., 32), (2.5, 40), (3., 48), (4., 64)] {
+            assert_eq!(shell_frame(pwsh, 15. * scale).0, expected);
+        }
+        for name in ["shell:pwsh", "shell:powershell", "shell:cmd"] {
+            let frames = shell_frames(name).unwrap();
+            assert_eq!(shell_frame(frames, 15.).0, 16);
+            assert_eq!(shell_frame(frames, 30.).0, 32);
+            assert_eq!(shell_frame(frames, 128.).0, 256);
+            assert_eq!(shell_frame(frames, 512.).0, 256);
+            assert!(frames.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        }
+        assert_eq!(shell_frame(shell_frames("shell:linux").unwrap(), 15.).0, 32);
+    }
+
+    #[test]
     fn shells_get_their_own_icons() {
         assert_eq!(shell_icon("pwsh.exe"), Some("shell:pwsh"));
         assert_eq!(shell_icon(r"C:\Program Files\PowerShell\7\pwsh.exe"), Some("shell:pwsh"));
@@ -464,7 +568,7 @@ mod tests {
         assert_eq!(shell_icon(r"C:\Program Files\Git\bin\bash.exe"), None);
         assert_eq!(shell_icon("nu.exe"), None);
         for name in ["shell:pwsh", "shell:powershell", "shell:cmd", "shell:linux"] {
-            assert!(shell_image(name).is_some(), "{name}");
+            assert!(shell_frames(name).is_some(), "{name}");
         }
         // Every default shell on this platform has one.
         for shell in crate::model::default_shells() {

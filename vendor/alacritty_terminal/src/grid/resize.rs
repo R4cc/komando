@@ -33,6 +33,9 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Restore template cell.
         self.cursor.template = template;
+
+        // Komando patch: rows of the old width are no use any more.
+        self.report_rows_left();
     }
 
     /// Add lines to the visible area.

@@ -783,7 +783,7 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .child(div().flex_1().min_w_0().child(Input::new(&row.password)))
+                            .child(div().flex_1().min_w_0().child(super::password_input(&row.password, p)))
                             .when(has_saved, |el| {
                                 el.child(
                                     button((prefix, 102 + key * 4), "Forget saved password", ButtonKind::Ghost, p).on_click(cx.listener(

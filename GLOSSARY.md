@@ -69,6 +69,12 @@ _Avoid_: Grep, filter
 A line the user entered in a Session (prompt and command), remembered so the command rail can list it and jump back to it. It lasts as long as the line is in the Scrollback.
 _Avoid_: Bookmark, history entry
 
+**Command History**:
+The commands entered in a Host's SSH Sessions, each with its date, time and the address it was
+entered on, kept on this PC per Host for as long as the Host exists. Unlike the shell's own
+history it holds only what was typed in Komando, whoever else uses the server.
+_Avoid_: Log, audit log, shell history
+
 **Split View**:
 Two Sessions shown side by side, made by dragging a sidebar item onto a half of the terminal
 area. It comes back when either of its Sessions is activated, and ends when one is discarded.
