@@ -161,8 +161,8 @@ fn describe(hop: &Hop) -> String {
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How much of the server's output the operating system may hold for Komando: as much as the
-/// largest SSH window lets the server send ahead (`window_size` in `run`, and the most the
-/// shell's paced window grows to; see `pace`).
+/// SSH window of a direct connection lets the server send ahead ([`WINDOW`], and the most the
+/// shell's paced window grows to there; see `pace`).
 ///
 /// With Windows' default receive buffer, output floods stalled: a server writing faster than the
 /// buffer drained waited about one timer tick (15 ms) every couple of hundred kilobytes. Against
@@ -174,6 +174,48 @@ const RECEIVE_BUFFER: u32 = 8 * 1024 * 1024;
 /// SSH window, no pacing, and the receive buffer set (`true`) or left to the operating system.
 #[cfg(test)]
 pub(crate) static FIXED_WINDOW: std::sync::Mutex<Option<(u32, bool)>> = std::sync::Mutex::new(None);
+
+/// How much a server may send on a channel before Komando acknowledges it: the SSH window.
+/// russh tops a channel's window up only once half of it is used, so about half of it is on
+/// its way per round trip: this caps a Session's output at about 80 MB/s at a round trip of
+/// [`WINDOW_ROUND_TRIP`]. The default 2 MiB capped an SFTP download at 40 MB/s at 50 ms before
+/// anything else did. `RECEIVE_BUFFER` matches it.
+const WINDOW: u32 = 8 * 1024 * 1024;
+/// The round trip [`WINDOW`] is meant for.
+const WINDOW_ROUND_TRIP: Duration = Duration::from_millis(50);
+/// The largest window: for the Jump Hosts' connections, and for a Host far away behind them.
+///
+/// A Jump Host's connection only carries the tunnel to the next hop, whose own window already
+/// limits what is on its way, so a large one holds nothing more back; a smaller one would
+/// throttle the connection inside.
+const MAX_WINDOW: u32 = 32 * 1024 * 1024;
+
+/// The window for a Host behind Jump Hosts whose round trip from here is `round_trip`: one
+/// [`WINDOW`] for every whole [`WINDOW_ROUND_TRIP`], up to [`MAX_WINDOW`].
+///
+/// Every hop adds its own way there and back, and russh can't grow a window once connected: at
+/// a fixed 8 MiB, a Host 25 ms beyond a Jump Host that is 25 ms away printed half as fast as the
+/// Jump Host itself would. In whole steps, a Host next to its Jump Host keeps the usual window:
+/// a larger one only holds more output on its way, which Ctrl+C then has to wait for.
+fn window_for(round_trip: Duration) -> u32 {
+    let steps = (round_trip.as_millis() / WINDOW_ROUND_TRIP.as_millis()).clamp(1, (MAX_WINDOW / WINDOW) as u128);
+    WINDOW * steps as u32
+}
+
+/// The client settings for one hop's connection, with a window of `window` bytes: what its SFTP
+/// channels and, on a Jump Host's connection, the tunnel onward get. The shell's channel has a
+/// paced window of its own instead (see `shell`).
+fn client_config(window: u32) -> Arc<client::Config> {
+    #[cfg(test)]
+    let window = FIXED_WINDOW.lock().unwrap().map_or(window, |(window, _)| window);
+    Arc::new(client::Config {
+        inactivity_timeout: None,
+        keepalive_interval: Some(Duration::from_secs(30)),
+        keepalive_max: 4,
+        window_size: window,
+        ..Default::default()
+    })
+}
 
 /// A TCP connection to `address:port`, trying each address it resolves to in turn, with a
 /// receive buffer of [`RECEIVE_BUFFER`].
@@ -335,27 +377,12 @@ async fn run(
     log: ConnectLog,
     mut commands: mpsc::UnboundedReceiver<Command>,
 ) -> Result<String> {
-    let config = Arc::new(client::Config {
-        inactivity_timeout: None,
-        keepalive_interval: Some(Duration::from_secs(30)),
-        keepalive_max: 4,
-        // How much the server may send on a channel before we acknowledge it. The default 2 MiB
-        // caps an SFTP download at 2 MiB per round trip (40 MB/s at 50 ms) before anything else
-        // does; SFTP paces its own requests (`sftp::flow`). The shell's channel has a paced
-        // window of its own instead (see `shell`). `RECEIVE_BUFFER` matches it.
-        window_size: {
-            #[cfg(test)]
-            let window = FIXED_WINDOW.lock().unwrap().map_or(8 * 1024 * 1024, |(window, _)| window);
-            #[cfg(not(test))]
-            let window = 8 * 1024 * 1024;
-            window
-        },
-        ..Default::default()
-    });
     // Every hop's connection stays open: the next one runs through it.
     let mut handles: Vec<Handle<Client>> = Vec::with_capacity(target.hops.len());
     // The last hop's user and the password it signed in with, offered at sudo prompts.
     let mut sudo = None;
+    // The Host's connection window: the most its shell's paced window grows to.
+    let mut host_window = WINDOW;
     for (index, hop) in target.hops.iter().enumerate() {
         proxy.send(SessionEvent::Hop { index, step: HopStep::Reaching });
         match index {
@@ -371,15 +398,19 @@ async fn run(
             hop: index,
         };
         let timed_out = || anyhow!("Timed out connecting to {}:{}.", hop.address, hop.port);
+        let is_jump = index + 1 < target.hops.len();
         let mut handle = match handles.last() {
             None => tokio::time::timeout(CONNECT_TIMEOUT, async {
                 let stream = open_tcp(&hop.address, hop.port).await?;
-                client::connect_stream(config.clone(), stream, handler).await
+                let window = if is_jump { MAX_WINDOW } else { WINDOW };
+                host_window = window;
+                client::connect_stream(client_config(window), stream, handler).await
             })
             .await
             .map_err(|_| timed_out())??,
             Some(through) => {
                 let via = &target.hops[index - 1].name;
+                let opening = std::time::Instant::now();
                 let tunnel = tokio::time::timeout(
                     CONNECT_TIMEOUT,
                     through.channel_open_direct_tcpip(hop.address.as_str(), hop.port as u32, "127.0.0.1", 0),
@@ -387,7 +418,13 @@ async fn run(
                 .await
                 .map_err(|_| timed_out())?
                 .map_err(|err| anyhow!("{via} could not open a tunnel to {}:{}: {err}", hop.address, hop.port))?;
-                tokio::time::timeout(CONNECT_TIMEOUT, client::connect_stream(config.clone(), tunnel.into_stream(), handler))
+                // The Jump Host answers once its own connection onwards is up: about a round
+                // trip from here to this hop.
+                let round_trip = opening.elapsed();
+                let window = if is_jump { MAX_WINDOW } else { window_for(round_trip) };
+                host_window = window;
+                log::debug!("tunnel to {} opened in {round_trip:?}: window {} KiB", describe(hop), window / 1024);
+                tokio::time::timeout(CONNECT_TIMEOUT, client::connect_stream(client_config(window), tunnel.into_stream(), handler))
                     .await
                     .map_err(|_| timed_out())??
             }
@@ -423,7 +460,7 @@ async fn run(
     log.clear();
     // Shared with SFTP channels opened on the same connection.
     let handle = Arc::new(handles.pop().ok_or_else(|| anyhow!("Nothing to connect to."))?);
-    let result = shell(&handle, &mut size, &term, &proxy, &mut commands, sudo).await;
+    let result = shell(&handle, &mut size, &term, &proxy, &mut commands, sudo, host_window).await;
     // Always end the connection with the terminal, so SFTP channels opened on it end too.
     let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
     // The Jump Hosts' connections, innermost first.
@@ -440,11 +477,12 @@ async fn shell(
     proxy: &EventProxy,
     commands: &mut mpsc::UnboundedReceiver<Command>,
     mut sudo: Option<SudoPassword>,
+    max_window: u32,
 ) -> Result<String> {
     // The shell's window follows the link (see `pace`), so output doesn't pile up in a queue
     // that still scrolls past after Ctrl+C. Opening the channel with it keeps the server from
     // sending the connection's large window's worth first.
-    let mut pace = Pace::default();
+    let mut pace = Pace::up_to(max_window);
     #[cfg(test)]
     let paced = FIXED_WINDOW.lock().unwrap().is_none();
     #[cfg(not(test))]
@@ -748,6 +786,8 @@ async fn authenticate(
 #[cfg(test)]
 mod tests {
     use super::{CANCELLED, ConnectLog, LogKind, Output, SudoPassword, is_cancelled, log_line, show_watching_sudo};
+    use super::{MAX_WINDOW, WINDOW, window_for};
+    use std::time::Duration;
     use anyhow::anyhow;
     use crate::session::{EventProxy, GridSize, new_term, scrollback_text};
 
@@ -825,6 +865,15 @@ mod tests {
         log.clear();
         assert_eq!(scrollback_text(&*term.lock()), "earlier output\r\n");
         assert_eq!(term.lock().grid().cursor.point.line.0, 1, "the shell starts where the first log began");
+    }
+
+    #[test]
+    fn a_host_further_behind_jump_hosts_gets_a_larger_window() {
+        assert_eq!(window_for(Duration::from_millis(1)), WINDOW, "a Host next to its Jump Host");
+        assert_eq!(window_for(Duration::from_millis(56)), WINDOW, "a Host next to a Jump Host 25 ms away");
+        assert_eq!(window_for(Duration::from_millis(102)), 2 * WINDOW);
+        assert_eq!(window_for(Duration::from_millis(160)), 3 * WINDOW);
+        assert_eq!(window_for(Duration::from_secs(2)), MAX_WINDOW, "but not without end");
     }
 
     #[test]

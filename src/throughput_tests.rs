@@ -70,26 +70,32 @@ fn plain_line(i: u64) -> String {
 }
 
 /// Prints `lines` log lines to each shell, except for the user `quiet`, whose shell echoes
-/// what is typed, like a shell at its prompt. Over SFTP it offers one file, `/big.bin`, of
+/// what is typed, like a shell at its prompt, and the user `interrupt`, whose shell prints until
+/// Ctrl+C is typed and then ends. Over SFTP it offers one file, `/big.bin`, of
 /// `file_size` bytes, made up as it is read.
 #[derive(Clone)]
 struct LogServer {
     lines: u64,
     file_size: u64,
+    /// How long a Jump Host's connection onwards takes to open: a TCP connect's round trip
+    /// across the link to the next server, which [`DelayProxy`] can't delay itself.
+    connect_delay: Duration,
     user: String,
     channels: Arc<Mutex<std::collections::HashMap<ChannelId, Channel<Msg>>>>,
+    /// Ctrl+C arrived.
+    interrupted: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl LogServer {
     fn new(lines: u64, file_size: u64) -> Self {
-        Self { lines, file_size, user: String::new(), channels: Arc::default() }
+        Self { lines, file_size, connect_delay: Duration::ZERO, user: String::new(), channels: Arc::default(), interrupted: Arc::default() }
     }
 }
 
 impl server::Server for LogServer {
     type Handler = Self;
     fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self {
-        Self::new(self.lines, self.file_size)
+        Self { connect_delay: self.connect_delay, ..Self::new(self.lines, self.file_size) }
     }
 }
 
@@ -112,6 +118,35 @@ impl server::Handler for LogServer {
         Ok(())
     }
 
+    /// A Jump Host's tunnel: the channel is piped to a TCP connection to `host:port`, as
+    /// OpenSSH's sshd does for `ssh -J`.
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host: &str,
+        port: u32,
+        _: &str,
+        _: u32,
+        reply: server::ChannelOpenHandle,
+        _: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let host = host.to_string();
+        let connect_delay = self.connect_delay;
+        // Connecting off the session's own task, which must keep serving its other channels.
+        tokio::spawn(async move {
+            tokio::time::sleep(connect_delay).await;
+            let Some(mut tcp) = forward_to(&host, port as u16).await else {
+                reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+                return;
+            };
+            reply.accept().await;
+            let mut stream = channel.into_stream();
+            // sshd reads up to a packet's worth from the socket at a time.
+            let _ = tokio::io::copy_bidirectional_with_sizes(&mut stream, &mut tcp, 64 * 1024, 64 * 1024).await;
+        });
+        Ok(())
+    }
+
     async fn subsystem_request(&mut self, id: ChannelId, name: &str, session: &mut Session) -> Result<(), Self::Error> {
         let channel = self.channels.lock().await.remove(&id);
         match channel {
@@ -120,6 +155,14 @@ impl server::Handler for LogServer {
                 russh_sftp::server::run(channel.into_stream(), BigFile::new(self.file_size)).await;
             }
             _ => session.channel_failure(id)?,
+        }
+        Ok(())
+    }
+
+    /// Typed input, also handed to the channel (which only the `quiet` shell reads).
+    async fn data(&mut self, _: ChannelId, data: &[u8], _: &mut Session) -> Result<(), Self::Error> {
+        if data.contains(&0x03) {
+            self.interrupted.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(())
     }
@@ -172,7 +215,16 @@ impl server::Handler for LogServer {
             });
             return Ok(());
         }
-        let lines = self.lines;
+        let (lines, interrupted) = match self.user.as_str() {
+            "interrupt" => (u64::MAX, Some(self.interrupted.clone())),
+            _ => (self.lines, None),
+        };
+        // What the client sends on the channel (window adjustments among it) is queued for the
+        // channel, a hundred messages at most; once that queue is full, the server takes nothing
+        // more from the client, its window adjustments included, and the output stops for good.
+        // A real server reads its channels; so does this one.
+        let (mut read, channel) = channel.split();
+        tokio::spawn(async move { while read.wait().await.is_some() {} });
         tokio::spawn(async move {
             // Blocks of about 64 KiB, each sent once the client's window has room for it.
             let mut block = Vec::with_capacity(70 * 1024);
@@ -183,6 +235,10 @@ impl server::Handler for LogServer {
                         return;
                     }
                     block.clear();
+                    if interrupted.as_ref().is_some_and(|stop| stop.load(std::sync::atomic::Ordering::Relaxed)) {
+                        let _ = channel.data(&b"^C\r\n"[..]).await;
+                        break;
+                    }
                 }
             }
             let _ = channel.exit_status(0).await;
@@ -193,12 +249,33 @@ impl server::Handler for LogServer {
     }
 }
 
+/// A Jump Host's connection onwards. Its receive buffer is enlarged the way Linux grows one
+/// on its own (up to 6 MB by default), so the jump host's side isn't held back by Windows'
+/// small default, which a real jump host doesn't have.
+async fn forward_to(host: &str, port: u16) -> Option<tokio::net::TcpStream> {
+    let addr = tokio::net::lookup_host((host, port)).await.ok()?.next()?;
+    let socket = if addr.is_ipv4() { tokio::net::TcpSocket::new_v4() } else { tokio::net::TcpSocket::new_v6() }.ok()?;
+    socket.set_recv_buffer_size(6 * 1024 * 1024).ok()?;
+    let stream = socket.connect(addr).await.ok()?;
+    stream.set_nodelay(true).ok()?;
+    Some(stream)
+}
+
 /// Start the server on its own runtime (a separate program in real use) and return its port.
 fn start_server(lines: u64, threads: usize) -> (u16, tokio::runtime::Runtime) {
     start_server_with_file(lines, 0, threads)
 }
 
 fn start_server_with_file(lines: u64, file_size: u64, threads: usize) -> (u16, tokio::runtime::Runtime) {
+    start(LogServer::new(lines, file_size), threads)
+}
+
+/// A server that only serves as a Jump Host, whose connections onwards take `connect_delay`.
+fn start_jump_server(connect_delay: Duration) -> (u16, tokio::runtime::Runtime) {
+    start(LogServer { connect_delay, ..LogServer::new(0, 0) }, 2)
+}
+
+fn start(mut server: LogServer, threads: usize) -> (u16, tokio::runtime::Runtime) {
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(threads).enable_all().build().unwrap();
     let key = russh::keys::PrivateKey::from(russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[7; 32]));
     let config = Arc::new(server::Config {
@@ -212,7 +289,6 @@ fn start_server_with_file(lines: u64, file_size: u64, threads: usize) -> (u16, t
     let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
     let port = listener.local_addr().unwrap().port();
     runtime.spawn(async move {
-        let mut server = LogServer::new(lines, file_size);
         let _ = server.run_on_socket(config, &listener).await;
     });
     (port, runtime)
@@ -374,7 +450,24 @@ struct Run {
     frames: u32,
 }
 
-fn run_once(port: u16, lines: u64, known_hosts: &std::path::Path, external: bool) -> Run {
+/// A Session's way to the benchmark servers listening on `ports`: Jump Hosts first, the server
+/// with the shell last, all on this machine. Each signs in as `user` with any password.
+fn bench_target(ports: &[u16], user: &str, known_hosts: &std::path::Path) -> crate::session::ssh::Target {
+    let hops = ports
+        .iter()
+        .enumerate()
+        .map(|(index, &port)| crate::session::ssh::Hop {
+            name: if index + 1 == ports.len() { "bench".into() } else { format!("jump{}", index + 1) },
+            address: "127.0.0.1".into(),
+            port,
+            user: Some(if index + 1 == ports.len() { user.into() } else { "jump".into() }),
+            secret: Some(crate::vault::Secret::Password { password: "bench".into() }),
+        })
+        .collect();
+    crate::session::ssh::Target { hops, known_hosts: known_hosts.to_path_buf() }
+}
+
+fn run_once(ports: &[u16], lines: u64, known_hosts: &std::path::Path, external: bool) -> Run {
     // A 1600 x 1000 pixel window with Cascadia Mono at 13 px: about 177 x 42 cells.
     let size = GridSize { cols: 177, rows: 42, cell_width: 9, cell_height: 17 };
     let (tx, mut events) = futures::channel::mpsc::unbounded();
@@ -382,16 +475,7 @@ fn run_once(port: u16, lines: u64, known_hosts: &std::path::Path, external: bool
     proxy.set_palette(&TerminalPalette::dark());
     proxy.set_size(size);
     let term = new_term(size, 100_000, proxy.clone());
-    let target = crate::session::ssh::Target {
-        hops: vec![crate::session::ssh::Hop {
-            name: "bench".into(),
-            address: "127.0.0.1".into(),
-            port,
-            user: Some("bench".into()),
-            secret: Some(crate::vault::Secret::Password { password: "bench".into() }),
-        }],
-        known_hosts: known_hosts.to_path_buf(),
-    };
+    let target = bench_target(ports, "bench", known_hosts);
     let sink = crate::session::ssh::spawn(target, size, term.clone(), proxy.clone());
 
     // The UI: answer prompts, and per Wakeup, wait for the next frame and copy the screen.
@@ -474,7 +558,7 @@ fn throughput_coloured_log_lines_over_ssh() {
 
     let mut times = Vec::new();
     for run in 1..=runs {
-        let result = run_once(port, lines, &known_hosts, external.is_some());
+        let result = run_once(&[port], lines, &known_hosts, external.is_some());
         let secs = result.elapsed.as_secs_f64();
         eprintln!(
             "run {run}: {lines} lines, {:.1} MB in {secs:.3} s = {:.1} MB/s, {} frames",
@@ -523,23 +607,14 @@ struct Bench {
     events: futures::channel::mpsc::UnboundedReceiver<SessionEvent>,
 }
 
-fn connect(port: u16, user: &str, known_hosts: &std::path::Path) -> Bench {
+fn connect(ports: &[u16], user: &str, known_hosts: &std::path::Path) -> Bench {
     let size = GridSize { cols: 177, rows: 42, cell_width: 9, cell_height: 17 };
     let (tx, events) = futures::channel::mpsc::unbounded();
     let proxy = EventProxy::new(tx);
     proxy.set_palette(&TerminalPalette::dark());
     proxy.set_size(size);
     let term = new_term(size, 100_000, proxy.clone());
-    let target = crate::session::ssh::Target {
-        hops: vec![crate::session::ssh::Hop {
-            name: "bench".into(),
-            address: "127.0.0.1".into(),
-            port,
-            user: Some(user.into()),
-            secret: Some(crate::vault::Secret::Password { password: "bench".into() }),
-        }],
-        known_hosts: known_hosts.to_path_buf(),
-    };
+    let target = bench_target(ports, user, known_hosts);
     let sink = crate::session::ssh::spawn(target, size, term.clone(), proxy.clone());
     Bench { term, proxy, sink, events }
 }
@@ -591,6 +666,9 @@ impl Bench {
 }
 
 fn percentiles(mut samples: Vec<Duration>) -> String {
+    if samples.is_empty() {
+        return "no keys: it ended too soon to type".into();
+    }
     samples.sort();
     let at = |p: f64| samples[((samples.len() - 1) as f64 * p) as usize].as_secs_f64() * 1000.0;
     format!("median {:.2} ms, p95 {:.2} ms, max {:.2} ms ({} keys)", at(0.5), at(0.95), at(1.0), samples.len())
@@ -612,9 +690,43 @@ fn throughput_many_sessions_and_typing() {
     let dir = std::env::temp_dir().join(format!("komando-throughput-many-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let known_hosts = dir.join("known_hosts");
+    flood_and_type(&[port], sessions, lines, &known_hosts).print("");
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-    // The quiet Session first, which also trusts the server's key for the others.
-    let mut quiet = connect(port, "quiet", &known_hosts);
+/// What [`flood_and_type`] measured.
+struct Flood {
+    sessions: usize,
+    lines: u64,
+    bytes_each: u64,
+    /// From the first busy Session connecting to the last one ending.
+    total: f64,
+    /// Each busy Session's time, shortest first.
+    each: Vec<f64>,
+    idle: Vec<Duration>,
+    busy: Vec<Duration>,
+}
+
+impl Flood {
+    fn print(self, label: &str) {
+        let Flood { sessions, lines, bytes_each, total, each, idle, busy } = self;
+        eprintln!(
+            "{label}{sessions} busy Sessions x {lines} lines ({:.1} MB each): all done in {total:.3} s = {:.1} MB/s together; each took {:.3}-{:.3} s",
+            bytes_each as f64 / 1e6,
+            (bytes_each * sessions as u64) as f64 / 1e6 / total,
+            each[0],
+            each[each.len() - 1],
+        );
+        eprintln!("{label}typing, idle:        {}", percentiles(idle));
+        eprintln!("{label}typing, while busy:  {}", percentiles(busy));
+    }
+}
+
+/// `sessions` Sessions printing `lines` lines each and a quiet one typed in, all along the way
+/// `ports` (see [`bench_target`]).
+fn flood_and_type(ports: &[u16], sessions: usize, lines: u64, known_hosts: &std::path::Path) -> Flood {
+    // The quiet Session first, which also trusts the servers' keys for the others.
+    let mut quiet = connect(ports, "quiet", known_hosts);
     quiet.wait_connected();
     let idle: Vec<Duration> = (0..50)
         .map(|_| {
@@ -639,7 +751,7 @@ fn throughput_many_sessions_and_typing() {
     let workers: Vec<_> = (0..sessions)
         .map(|index| {
             let remaining = remaining.clone();
-            let mut bench = connect(port, "busy", &known_hosts);
+            let mut bench = connect(ports, "busy", known_hosts);
             std::thread::spawn(move || {
                 let mut connected_at = None;
                 loop {
@@ -685,17 +797,8 @@ fn throughput_many_sessions_and_typing() {
     let total = (last_end - first_start).as_secs_f64();
     let mut each: Vec<f64> = ends.iter().map(|e| (e.1 - e.0).as_secs_f64()).collect();
     each.sort_by(f64::total_cmp);
-    eprintln!(
-        "{sessions} busy Sessions x {lines} lines ({:.1} MB each): all done in {total:.3} s = {:.1} MB/s together; each took {:.3}-{:.3} s",
-        bytes_each as f64 / 1e6,
-        (bytes_each * sessions as u64) as f64 / 1e6 / total,
-        each[0],
-        each[each.len() - 1],
-    );
-    eprintln!("typing, idle:        {}", percentiles(idle));
-    eprintln!("typing, while busy:  {}", percentiles(busy));
     quiet.sink.close();
-    let _ = std::fs::remove_dir_all(&dir);
+    Flood { sessions, lines, bytes_each, total, each, idle, busy }
 }
 
 /// A TCP forwarder that delays every byte by `one_way` in each direction, like a distant
@@ -772,6 +875,36 @@ fn type_until(session: &mut Bench, done: &std::sync::atomic::AtomicBool) -> Vec<
     latencies
 }
 
+/// Ctrl+C typed in a Session printing as fast as it can, along the way `ports`: how long until
+/// the output stops. What the server already sent, up to the SSH window, still has to arrive
+/// and be shown first.
+fn interrupt(ports: &[u16], known_hosts: &std::path::Path) -> Duration {
+    let mut bench = connect(ports, "interrupt", known_hosts);
+    bench.wait_connected();
+    let mut typed = None;
+    let start = Instant::now();
+    loop {
+        // Long enough for the window to fill, even on a slow link.
+        if typed.is_none() && start.elapsed() > Duration::from_secs(3) {
+            bench.sink.write(vec![0x03]);
+            typed = Some(Instant::now());
+        }
+        match bench.next() {
+            Some(SessionEvent::Status(Status::Disconnected(reason))) => {
+                let typed = typed.unwrap_or_else(|| panic!("the shell ended before Ctrl+C: {reason}"));
+                bench.sink.close();
+                return typed.elapsed();
+            }
+            Some(SessionEvent::Wakeup) => {
+                std::thread::sleep(Duration::from_millis(16));
+                bench.proxy.clear_dirty();
+            }
+            Some(_) => {}
+            None => std::thread::sleep(Duration::from_millis(1)),
+        }
+    }
+}
+
 /// Typing in a Session while a large file downloads, then uploads, over SFTP on the same
 /// connection: how long a key takes to show, and how fast the transfer goes. Directly, and
 /// through a link with latency and limited bandwidth, where the transfer's data queues up ahead
@@ -799,7 +932,7 @@ fn throughput_typing_during_sftp_transfers() {
         let proxy = (one_way > Duration::ZERO || rate.is_some()).then(|| DelayProxy::start(server_port, one_way, rate));
         let port = proxy.as_ref().map_or(server_port, |p| p.port);
 
-        let mut quiet = connect(port, "quiet", &known_hosts);
+        let mut quiet = connect(&[port], "quiet", &known_hosts);
         quiet.wait_connected();
         let idle: Vec<Duration> = (0..20)
             .map(|_| {
@@ -939,6 +1072,207 @@ fn throughput_typing_during_sftp_transfers() {
             eprintln!("[{label}] typing, while uploading:   {}", percentiles(busy_up));
         }
         quiet.sink.close();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One stretch of the way between two machines: a one-way delay and a bandwidth cap in bytes
+/// per second (see [`DelayProxy`]). `None` for two programs on this machine.
+type Link = Option<(Duration, Option<u64>)>;
+
+/// The link in front of a server at `port`: the port to connect to instead.
+fn across(link: Link, port: u16, proxies: &mut Vec<DelayProxy>) -> u16 {
+    match link {
+        None => port,
+        Some((one_way, rate)) => {
+            let proxy = DelayProxy::start(port, one_way, rate);
+            let port = proxy.port;
+            proxies.push(proxy);
+            port
+        }
+    }
+}
+
+/// `jumps` benchmark servers acting as Jump Hosts in front of one with the shell, each on its
+/// own runtime, as separate machines would be.
+struct Chain {
+    /// The way to the shell, for [`bench_target`].
+    ports: Vec<u16>,
+    _servers: Vec<tokio::runtime::Runtime>,
+    _proxies: Vec<DelayProxy>,
+}
+
+/// `first` is the link from Komando to the first server, `between` each link between two
+/// servers. The shell's server prints `lines` lines and offers a file of `file_size` bytes.
+fn chain(jumps: usize, lines: u64, file_size: u64, first: Link, between: Link) -> Chain {
+    let (mut next, server) = start_server_with_file(lines, file_size, 4);
+    let mut servers = vec![server];
+    let mut proxies = Vec::new();
+    let mut ports = Vec::new();
+    for _ in 0..jumps {
+        // The jump server in front of `next`, which it reaches across `between`.
+        ports.push(across(between, next, &mut proxies));
+        // A TCP connect takes a round trip across the link.
+        let connect_delay = between.map_or(Duration::ZERO, |(one_way, _)| one_way * 2);
+        let (port, server) = start_jump_server(connect_delay);
+        servers.push(server);
+        next = port;
+    }
+    ports.push(across(first, next, &mut proxies));
+    ports.reverse();
+    Chain { ports, _servers: servers, _proxies: proxies }
+}
+
+/// The two simulated links the Jump Host benchmarks use, 25 ms each way: 1 Gbit/s and 100 Mbit/s.
+const GIGABIT: Link = Some((Duration::from_millis(25), Some(125_000_000)));
+const FAST_ETHERNET: Link = Some((Duration::from_millis(25), Some(12_500_000)));
+
+/// A temporary folder for a benchmark, and the known_hosts file in it.
+fn bench_dir(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("komando-throughput-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let known_hosts = dir.join("known_hosts");
+    (dir, known_hosts)
+}
+
+fn max_jumps() -> usize {
+    std::env::var("KOMANDO_THROUGHPUT_JUMPS").ok().and_then(|v| v.parse().ok()).unwrap_or(2)
+}
+
+/// SSH output through one and two Jump Hosts, next to the same without one: each hop is a
+/// further SSH connection inside the one before, with its own flow control and its own
+/// decryption. The `throughput_through_jump_hosts_*` benchmarks share these notes:
+///
+/// All servers run on this machine, so they share its processors with Komando, unlike real
+/// Jump Hosts. Each simulated link limits one connection: Sessions do not share bandwidth.
+/// `KOMANDO_THROUGHPUT_JUMPS` sets the most Jump Hosts (default 2; 1 for typing and SFTP).
+///
+/// `KOMANDO_THROUGHPUT_LINES` sets the lines per run (default 1,000,000; a fifth of that over
+/// 100 Mbit/s) and `KOMANDO_THROUGHPUT_RUNS` the runs (default 3).
+#[test]
+#[ignore]
+fn throughput_through_jump_hosts_log_lines() {
+    let lines: u64 = std::env::var("KOMANDO_THROUGHPUT_LINES").ok().and_then(|v| v.parse().ok()).unwrap_or(1_000_000);
+    let runs: usize = std::env::var("KOMANDO_THROUGHPUT_RUNS").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+    let max_jumps = max_jumps();
+    let (dir, known_hosts) = bench_dir("jumps");
+    // (label, link to the first server, links between servers, share of `lines`, fewest jumps)
+    let ways: [(&str, Link, Link, u64, usize); 4] = [
+        ("this machine", None, None, 1, 0),
+        ("25 ms, 1 Gbit/s to the first hop", GIGABIT, None, 1, 0),
+        ("25 ms, 100 Mbit/s to the first hop", FAST_ETHERNET, None, 5, 0),
+        ("25 ms, 1 Gbit/s on every hop", GIGABIT, GIGABIT, 1, 1),
+    ];
+    for (label, first, between, share, fewest) in ways {
+        let lines = lines / share;
+        for jumps in fewest..=max_jumps {
+            let chain = chain(jumps, lines, 0, first, between);
+            let mut results: Vec<Run> = (0..runs).map(|_| run_once(&chain.ports, lines, &known_hosts, false)).collect();
+            results.sort_by_key(|run| run.elapsed);
+            let secs: Vec<String> = results.iter().map(|run| format!("{:.3}", run.elapsed.as_secs_f64())).collect();
+            let median = &results[results.len() / 2];
+            eprintln!(
+                "[{label}] {jumps} jumps: {lines} lines, median {:.3} s = {:.1} MB/s (runs {})",
+                median.elapsed.as_secs_f64(),
+                median.bytes as f64 / 1e6 / median.elapsed.as_secs_f64(),
+                secs.join(", "),
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Typing in one Session while four others print 250,000 lines each, all through the same
+/// Jump Host, next to the same without one; then how soon Ctrl+C stops a Session that prints.
+/// See [`throughput_through_jump_hosts_log_lines`].
+#[test]
+#[ignore]
+fn throughput_through_jump_hosts_typing() {
+    let max_jumps = max_jumps();
+    let (dir, known_hosts) = bench_dir("jumps-typing");
+    for (label, first) in [("this machine", None), ("25 ms, 1 Gbit/s to the first hop", GIGABIT)] {
+        for jumps in 0..=max_jumps.min(1) {
+            let chain = chain(jumps, 250_000, 0, first, None);
+            flood_and_type(&chain.ports, 4, 250_000, &known_hosts).print(&format!("[{label}] {jumps} jumps: "));
+        }
+    }
+    // Ctrl+C in a Session that prints, where the window decides how much is still on its way.
+    for (label, first, between) in [
+        ("25 ms, 1 Gbit/s to the first hop", GIGABIT, None),
+        ("25 ms, 100 Mbit/s to the first hop", FAST_ETHERNET, None),
+        ("25 ms, 1 Gbit/s on every hop", GIGABIT, GIGABIT),
+        ("25 ms, 100 Mbit/s on every hop", FAST_ETHERNET, FAST_ETHERNET),
+    ] {
+        for jumps in 0..=max_jumps {
+            if jumps == 0 && between.is_some() {
+                continue;
+            }
+            let chain = chain(jumps, 0, 0, first, between);
+            let drain = interrupt(&chain.ports, &known_hosts);
+            eprintln!("[{label}] {jumps} jumps: Ctrl+C while printing: output stopped after {:.0} ms", drain.as_secs_f64() * 1e3);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A large file downloading over SFTP on a Session's connection through a Jump Host, next to
+/// the same without one, typing in that Session meanwhile. See
+/// [`throughput_through_jump_hosts_log_lines`].
+#[test]
+#[ignore]
+fn throughput_through_jump_hosts_sftp() {
+    let max_jumps = max_jumps();
+    let (dir, known_hosts) = bench_dir("jumps-sftp");
+    for (label, first, size) in [
+        ("25 ms, 1 Gbit/s to the first hop", GIGABIT, 500_000_000),
+        ("25 ms, 100 Mbit/s to the first hop", FAST_ETHERNET, 50_000_000),
+    ] {
+        for jumps in 0..=max_jumps.min(1) {
+            let chain = chain(jumps, 0, size, first, None);
+            let mut quiet = connect(&chain.ports, "quiet", &known_hosts);
+            quiet.wait_connected();
+            let idle: Vec<Duration> = (0..20)
+                .map(|_| {
+                    let latency = quiet.echo();
+                    std::thread::sleep(Duration::from_millis(10));
+                    latency
+                })
+                .collect();
+            let answer = quiet.sink.open_sftp().expect("an SSH Session opens SFTP");
+            let remote = Arc::new(futures::executor::block_on(answer).expect("a reply").expect("SFTP starts"));
+            let local = dir.join(format!("downloads-{jumps}-{size}"));
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let download = {
+                let (remote, local, done) = (remote.clone(), local.clone(), done.clone());
+                std::thread::spawn(move || {
+                    let start = Instant::now();
+                    let progress = crate::sftp::Progress::default();
+                    let path = futures::executor::block_on(crate::sftp::spawn(async move {
+                        remote.download("/big.bin", &local, &progress).await
+                    }))
+                    .expect("the download task ran")
+                    .expect("the download succeeded");
+                    let elapsed = start.elapsed();
+                    done.store(true, std::sync::atomic::Ordering::Relaxed);
+                    (path, elapsed)
+                })
+            };
+            let busy = type_until(&mut quiet, &done);
+            let (path, elapsed) = download.join().unwrap();
+            assert_eq!(std::fs::metadata(&path).unwrap().len(), size, "the whole file arrived");
+            let _ = std::fs::remove_dir_all(&local);
+            eprintln!(
+                "[{label}] {jumps} jumps: {:.0} MB in {:.2} s = {:.1} MB/s",
+                size as f64 / 1e6,
+                elapsed.as_secs_f64(),
+                size as f64 / 1e6 / elapsed.as_secs_f64()
+            );
+            eprintln!("[{label}] {jumps} jumps: typing, idle:               {}", percentiles(idle));
+            if !busy.is_empty() {
+                eprintln!("[{label}] {jumps} jumps: typing, while downloading: {}", percentiles(busy));
+            }
+            quiet.sink.close();
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1365,7 +1699,7 @@ struct CtrlC {
 /// Type Enter to start a flood, let it run for three seconds, press Ctrl+C and wait for the
 /// prompt, with a UI stand-in that draws once per frame.
 fn ctrl_c_once(port: u16, known_hosts: &std::path::Path) -> CtrlC {
-    let mut bench = connect(port, "flood", known_hosts);
+    let mut bench = connect(&[port], "flood", known_hosts);
     bench.wait_connected();
     // A moment at the prompt, then the command.
     std::thread::sleep(Duration::from_millis(300));

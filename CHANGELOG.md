@@ -28,6 +28,10 @@ All notable changes to Komando are listed here. The format follows
   downloads. On a 10 Mbit/s link with 30 ms latency, keys showed over half a second late
   during an upload and now show about 25 ms late; on a 100 Mbit/s link with 50 ms latency,
   about 65 ms late before and 15 ms now. Uploads are about as fast as before.
+- Hosts far behind Jump Hosts print output up to twice as fast. With 25 ms each way to a
+  Jump Host and 25 ms more from there to the Host, 1,000,000 log lines took 2.5 s and now
+  take 1.5 s; through two such Jump Hosts, 3.7 s before and 2.0 s now. Hosts reached
+  directly, and Hosts next to their Jump Host, are as fast as before.
 
 ### Fixed
 
@@ -38,7 +42,7 @@ All notable changes to Komando are listed here. The format follows
   Sessions now let the server send ahead only as much output as the connection needs, so the
   prompt comes back after about a tenth of a second on both. Floods are as fast as before, and
   faster on fast distant links: about 110 MB/s instead of 80 MB/s at 1 Gbit/s with 50 ms
-  latency.
+  latency. Through Jump Hosts, output stops within about a fifth of a second too.
 - When an SSH Session signs in after earlier attempts failed or were cancelled, the
   connection log of those attempts is now cleared too, so the shell starts on a clean screen.
 

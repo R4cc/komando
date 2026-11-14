@@ -45,7 +45,8 @@ const TARGET: Duration = Duration::from_millis(20);
 const PACKET: u32 = 32 * 1024;
 /// Never less than this: two packets' worth.
 const MIN_WINDOW: u32 = 2 * PACKET;
-/// Never more: enough to keep a 1 Gbit/s link with 50 ms round trips busy.
+/// Never more, by default: enough to keep a 1 Gbit/s link with 50 ms round trips busy. A Host
+/// far behind Jump Hosts allows more (see [`Pace::up_to`]).
 const MAX_WINDOW: u32 = 8 * 1024 * 1024;
 /// The window a shell starts with: a fifth of a second at 10 Mbit/s, and doubled every round
 /// trip from the first flood on while the link takes it.
@@ -71,6 +72,8 @@ const GAIN: f64 = 0.25;
 
 pub(crate) struct Pace {
     window: u32,
+    /// The most the window grows to.
+    max: u32,
     /// Doubling every round trip until queueing shows, as at the start of a TCP connection.
     slow_start: bool,
     /// Lowest round trip per interval, newest last.
@@ -93,6 +96,7 @@ impl Default for Pace {
     fn default() -> Self {
         Self {
             window: START_WINDOW,
+            max: MAX_WINDOW,
             slow_start: true,
             base: VecDeque::new(),
             current: VecDeque::new(),
@@ -107,6 +111,13 @@ impl Default for Pace {
 }
 
 impl Pace {
+    /// Pacing that lets the window grow to `max` (but at least to [`MAX_WINDOW`]): the
+    /// connection's own window, larger for a Host far behind Jump Hosts, whose longer round trip
+    /// needs more on its way to keep the link busy. Queueing still holds it back on a slow link.
+    pub(crate) fn up_to(max: u32) -> Self {
+        Self { max: max.max(MAX_WINDOW), ..Self::default() }
+    }
+
     /// The window to keep the shell channel at.
     pub(crate) fn window(&self) -> u32 {
         self.window
@@ -209,7 +220,7 @@ impl Pace {
         }
         let rate = self.rates.iter().map(|(_, rate)| *rate).fold(0.0, f64::max);
         let window = window.max(rate * FLOOR.as_secs_f64());
-        self.window = (window as u32).clamp(MIN_WINDOW, MAX_WINDOW);
+        self.window = (window.min(u32::MAX as f64) as u32).clamp(MIN_WINDOW, self.max);
         #[cfg(test)]
         if std::env::var_os("KOMANDO_PACE_DEBUG").is_some() {
             eprintln!("pace: rtt {rtt:?} received {received} queueing {queueing:?} target {target:?} -> window {}", self.window);

@@ -81,12 +81,21 @@ take: live heap bytes (counted by an allocator that only counts during this test
 process's private bytes, per row and in total, how many cells hold anything, and what widening by
 a column, halving the width and compacting the rows cost. Each case runs in a process of its own
 (`KOMANDO_THROUGHPUT_MEMORY=500000x350` runs one), since Windows' heap keeps freed memory for
-about a second before giving it back. A seventh floods a shell with coloured logs until Ctrl+C arrives, directly and through the same simulated links,
-and reports how long the prompt took to show after Ctrl+C, how much output still arrived after
+about a second before giving it back. A seventh floods a shell with coloured logs until Ctrl+C
+arrives, directly and through the same simulated links, and reports how long the prompt took to show after Ctrl+C, how much output still arrived after
 it, and how fast the flood ran; it compares the shell's paced SSH window (`src/session/pace.rs`)
 with the fixed windows Komando used before (2 MiB, and 8 MiB). The simulated links queue
 without limit, so how much output is still on its way when Ctrl+C is pressed is up to the SSH
-window alone (`KOMANDO_THROUGHPUT_LINK` picks links by name). They run on Windows too:
+window alone (`KOMANDO_THROUGHPUT_LINK` picks links by name). The
+`throughput_through_jump_hosts_*` tests measure output through one and two Jump Hosts, next to the
+same without one: the benchmark server also forwards `direct-tcpip` channels, so a chain of
+them stands in for Jump Hosts, with simulated links (25 ms each way, 1 Gbit/s or 100 Mbit/s)
+to the first hop or between every hop. `_log_lines` times the 1,000,000 log lines, `_typing`
+types in one Session while four others print through the same Jump Host and then times how
+long Ctrl+C takes to stop a Session that prints, and `_sftp` downloads a large file while it
+types (`KOMANDO_THROUGHPUT_JUMPS` sets the most Jump Hosts, default 2). All of these servers
+run on this machine, so its processors are shared and each simulated link limits a single
+connection. They run on Windows too:
 
 ```sh
 cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1
