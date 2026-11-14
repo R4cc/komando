@@ -2078,7 +2078,22 @@ impl Workspace {
         );
         let blue = split::drop_color();
         let (over, dropped) = (project_id.clone(), project_id);
+        // A Host dragged within its Project: a line where it would go.
+        let line = self.reorder_line(ix, cx);
         wrapper
+            .relative()
+            .when_some(line, |el, after| {
+                el.child(
+                    div()
+                        .absolute()
+                        .left(px(10.))
+                        .right(px(6.))
+                        .h(px(2.))
+                        .rounded(px(1.))
+                        .bg(blue)
+                        .map(|el| if after { el.bottom(px(0.)) } else { el.top(px(0.)) }),
+                )
+            })
             .when(lit, |el| {
                 el.bg(blue.opacity(if p.dark { 0.16 } else { 0.1 }))
                     .when(first, |el| el.rounded_t(px(10.)))

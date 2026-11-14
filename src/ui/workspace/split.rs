@@ -3,7 +3,8 @@
 //! A Host or Local Shell dragged from the sidebar onto the terminal area shows a blue
 //! rectangle over the half it would take, following the pointer; let go and it opens there,
 //! beside the Session you were in. Dragged onto another Project's group in the sidebar, a
-//! Host moves to that Project.
+//! Host moves to that Project; dragged up or down within its own Project, it changes place
+//! there, a blue line showing where it would go.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -14,7 +15,7 @@ use gpui::{
     ease_out_quint, prelude::*, px,
 };
 
-use super::{ItemKey, SidebarItem, Workspace};
+use super::{ItemKey, SidebarItem, SidebarRow, Workspace};
 use crate::theme::{AppPalette, Appearance, project_color};
 use crate::ui::widgets::{ISLAND_GAP, ISLAND_RADIUS, elevation, icon_el};
 
@@ -93,6 +94,10 @@ pub(super) enum DropTarget {
     /// A Project's group in the sidebar: the Host moves there. `row` is the sidebar row under
     /// the pointer (each row of the group is a target of its own).
     Project { id: String, row: usize },
+    /// Between two Hosts of the dragged Host's own Project: it moves there. `index` is its
+    /// new place among the Project's Hosts (see `Library::reorder_host`); the line is drawn
+    /// along the top of sidebar row `row`, or along its bottom when `after`.
+    Reorder { project: String, index: usize, row: usize, after: bool },
 }
 
 /// A split waiting for its new Session, which may first need the Vault unlocked.
@@ -298,21 +303,82 @@ impl Workspace {
         event: &DragMoveEvent<DraggedItem>,
         cx: &mut Context<Self>,
     ) {
+        let over = event.bounds.contains(&event.event.position) && !self.modal_open(cx);
+        let dragged = event.drag(cx);
+        let (key, session) = (dragged.key.clone(), dragged.session);
+        let ItemKey::Host { project: from, host } = &key else { return };
+        if from == project {
+            // Within its own Project: the place it would take, above or below this row.
+            let after = event.event.position.y > event.bounds.center().y;
+            let target = if over && session.is_none() { self.reorder_target(project, host, row, after) } else { None };
+            let here = matches!(&self.drop_target, Some(DropTarget::Reorder { row: r, .. }) if *r == row);
+            if target.is_some() || here {
+                self.set_drop_target(target, cx);
+            }
+            return;
+        }
         let target = DropTarget::Project { id: project.to_string(), row };
-        let movable = matches!(&event.drag(cx).key, ItemKey::Host { project: from, .. } if from != project);
-        if event.bounds.contains(&event.event.position) && movable && !self.modal_open(cx) {
+        if over {
             self.set_drop_target(Some(target), cx);
         } else if self.drop_target.as_ref() == Some(&target) {
             self.set_drop_target(None, cx);
         }
     }
 
+    /// Where `host` would go in its `project` if let go over sidebar row `row` (in its top
+    /// half, or its bottom half when `after`), or `None` when it would stay where it is.
+    fn reorder_target(&self, project: &str, host: &str, row: usize, after: bool) -> Option<DropTarget> {
+        let hosts = &self.library.projects.iter().find(|p| p.id == project)?.hosts;
+        let from = hosts.iter().position(|h| h == host)?;
+        let (index, row, after) = match self.sidebar_rows.get(row)? {
+            // The Project's own row: to the top.
+            SidebarRow::Project { .. } => (0, row, true),
+            SidebarRow::Host { host: at, .. } => {
+                let id = &self.library.hosts.get(*at)?.id;
+                let place = hosts.iter().position(|h| h == id)?;
+                (place + usize::from(after), row, after)
+            }
+            // The Project's shells, listed after its Hosts: to the bottom, under the last Host.
+            SidebarRow::ProjectShell { .. } => {
+                let last = (0..row).rev().find(|&r| matches!(self.sidebar_rows[r], SidebarRow::Host { .. }))?;
+                (hosts.len(), last, true)
+            }
+            _ => return None,
+        };
+        (index != from && index != from + 1).then(|| DropTarget::Reorder { project: project.to_string(), index, row, after })
+    }
+
+    /// The line showing where a Host dragged within its Project would go, when it is drawn
+    /// along sidebar row `row`: `Some(true)` along its bottom, `Some(false)` along its top.
+    pub(super) fn reorder_line(&self, row: usize, cx: &gpui::App) -> Option<bool> {
+        match &self.drop_target {
+            Some(DropTarget::Reorder { row: r, after, .. }) if *r == row && cx.has_active_drag() => Some(*after),
+            _ => None,
+        }
+    }
+
     pub(super) fn drop_on_project(&mut self, project: &str, dragged: &DraggedItem, cx: &mut Context<Self>) {
         let target = self.drop_target.take();
         cx.notify();
-        let aimed = matches!(&target, Some(DropTarget::Project { id, .. }) if id == project);
-        if let (true, ItemKey::Host { project: from, host }) = (aimed, &dragged.key) {
-            self.move_host_to(host, from, project, cx);
+        let ItemKey::Host { project: from, host } = &dragged.key else { return };
+        match target {
+            Some(DropTarget::Project { id, .. }) if id == project => self.move_host_to(host, from, project, cx),
+            Some(DropTarget::Reorder { project: id, index, .. }) if id == project && from == project => {
+                self.reorder_host(project, host, index, cx)
+            }
+            _ => {}
+        }
+    }
+
+    /// Move a Host to another place within its Project.
+    fn reorder_host(&mut self, project: &str, host_id: &str, index: usize, cx: &mut Context<Self>) {
+        let mut library = self.library.clone();
+        if !library.reorder_host(project, host_id, index) {
+            return;
+        }
+        if let Err(err) = self.commit_library(library) {
+            let name = self.library.host(host_id).map(|h| h.name.clone()).unwrap_or_default();
+            self.show_toast(format!("Could not move {name}. {err}"), cx);
         }
     }
 
@@ -370,7 +436,7 @@ impl Workspace {
         let side = match self.drop_target.as_ref()? {
             DropTarget::Pane(side) => Some(*side),
             DropTarget::Main => None,
-            DropTarget::Project { .. } => return None,
+            DropTarget::Project { .. } | DropTarget::Reorder { .. } => return None,
         };
         let p = cx.global::<Appearance>().app;
         let blue = drop_color();

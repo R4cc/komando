@@ -6,6 +6,11 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Drag a host up or down in the sidebar to change its place within its project. A blue line
+  shows where it will go; drop it on the project's name to put it at the top.
+
 ## [0.4.3] - 2026-11-14
 
 ### Added

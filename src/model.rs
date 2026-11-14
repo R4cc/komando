@@ -677,6 +677,21 @@ impl Library {
         true
     }
 
+    /// Move a Host to another place in its Project's sidebar order. `index` is where it goes
+    /// among the Project's Hosts as they are now (0 is the top, the number of Hosts the
+    /// bottom). Returns false when nothing changed.
+    pub fn reorder_host(&mut self, project_id: &str, host_id: &str, index: usize) -> bool {
+        let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) else { return false };
+        let Some(from) = project.hosts.iter().position(|h| h == host_id) else { return false };
+        let index = index.min(project.hosts.len());
+        if index == from || index == from + 1 {
+            return false;
+        }
+        let host = project.hosts.remove(from);
+        project.hosts.insert(if index > from { index - 1 } else { index }, host);
+        true
+    }
+
     /// Delete a Host.
     pub fn remove_host(&mut self, id: &str) {
         self.hosts.retain(|h| h.id != id);
@@ -1009,6 +1024,32 @@ mod tests {
         assert!(lib.move_host("web", "p1", "p2"));
         assert!(lib.projects[0].hosts.is_empty());
         assert_eq!(lib.projects[1].hosts, ["web"]);
+    }
+
+    #[test]
+    fn reordering_a_host_moves_it_within_its_project() {
+        let mut lib = library(vec![named("a"), named("b"), named("c")]);
+        lib.projects[0].hosts = vec!["a".into(), "b".into(), "c".into()];
+        assert!(lib.reorder_host("p1", "a", 3));
+        assert_eq!(lib.projects[0].hosts, ["b", "c", "a"]);
+        assert!(lib.reorder_host("p1", "a", 0));
+        assert_eq!(lib.projects[0].hosts, ["a", "b", "c"]);
+        assert!(lib.reorder_host("p1", "c", 1));
+        assert_eq!(lib.projects[0].hosts, ["a", "c", "b"]);
+        assert!(lib.reorder_host("p1", "a", 99), "past the end goes to the bottom");
+        assert_eq!(lib.projects[0].hosts, ["c", "b", "a"]);
+    }
+
+    #[test]
+    fn reordering_a_host_onto_its_own_place_changes_nothing() {
+        let mut lib = library(vec![named("a"), named("b")]);
+        lib.projects[0].hosts = vec!["a".into(), "b".into()];
+        let before = lib.clone();
+        assert!(!lib.reorder_host("p1", "a", 0));
+        assert!(!lib.reorder_host("p1", "a", 1));
+        assert!(!lib.reorder_host("p1", "gone", 0));
+        assert!(!lib.reorder_host("nowhere", "a", 2));
+        assert_eq!(lib, before);
     }
 
     #[test]
