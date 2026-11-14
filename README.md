@@ -22,12 +22,12 @@ All your Linux servers in colour-coded projects, one click away. Written in Rust
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-dark.svg">
-    <img src="assets/benchmark-light.svg" width="828" alt="Komando against Windows Terminal + OpenSSH: window on screen in 235 ms vs 351 ms (1.5× faster), 22 MB vs 29 MB with 1 SSH session, 29 MB vs 127 MB with 10 sessions (4.3× less)">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-tabby-dark.svg">
+    <img src="assets/benchmark-tabby-light.svg" width="828" alt="Komando 0.4.0 compared with Tabby 1.0.238: window on screen in 187 ms vs 725 ms; 23.5 MB vs 318.7 MB with 1 SSH Session; 28.3 MB vs 382.8 MB with 10 Sessions; a million coloured log lines in 0.81 s vs 4.19 s">
   </picture>
 </p>
 
-<p align="center"><sub>Komando 0.3.6 compared with Windows Terminal + the OpenSSH client built into Windows. Each pair uses its own scale. 13 MB installer, nothing else to install. <a href="#performance">Details below.</a></sub></p>
+<p align="center"><sub>Komando 0.4.0 compared with Tabby 1.0.238 on the same Windows 11 PC, 2026-11-14. Each pair uses its own scale. SSH tests use a launcher linked to the unchanged Komando 0.4.0 library. <a href="#performance">Method and earlier Windows Terminal results below.</a></sub></p>
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="assets/screenshot-light.png">
@@ -151,6 +151,34 @@ machine in `%APPDATA%\Komando`.
 
 ## Performance
 
+Komando 0.4.0 against Tabby 1.0.238, measured on 2026-11-14 with a Ryzen 7 9800X3D and
+Windows 11. Both embedded SSH clients connect to the same local test server, with matching
+107 × 40 terminal grids, Cascadia Mono at size 14 and 100,000 lines of Scrollback.
+
+| | Komando 0.4.0 | Tabby 1.0.238 | |
+|---|---:|---:|---|
+| Window on screen after launch | **187 ms** | 725 ms | 3.9× faster |
+| Memory, 1 idle SSH Session | **23.5 MB** | 318.7 MB | 13.5× less |
+| Memory, 10 idle SSH Sessions | **28.3 MB** | 382.8 MB | 13.5× less |
+| Processes for 10 Sessions | **1** | 5 | |
+| A million coloured log lines | **0.81 s** | 4.19 s | 5.2× faster |
+
+Startup uses the installed executables and five warm launches. Komando's SSH tests use a
+release-built launcher that opens disposable Sessions through the unchanged 0.4.0 library;
+Tabby uses its installed executable. Memory is private working set across every client process,
+the median of three fresh launches with five samples each; MB means 1,000,000 bytes. Throughput
+is the median of five runs, timed until the terminal answers after parsing the last line.
+These are local fixture results; real servers and network links can behave differently.
+The [method, ranges, raw data and reproduction scripts](docs/benchmarks.md) are included.
+
+<details>
+<summary><b>Earlier Windows Terminal comparison (Komando 0.3.6)</b></summary>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-dark.svg">
+  <img src="assets/benchmark-light.svg" width="828" alt="Earlier Komando 0.3.6 measurements against Windows Terminal + OpenSSH: startup 235 ms vs 351 ms; 22 MB vs 29 MB with 1 SSH session; 29 MB vs 127 MB with 10 sessions">
+</picture>
+
 Komando 0.3.6 against Windows Terminal with the OpenSSH client that ships with Windows, both
 connected to the same SSH server. Ryzen 7 9800X3D, Windows 11.
 
@@ -168,6 +196,8 @@ about 1.4 s, where Komando needed about 2.9 s. Since 0.3.7 the stalls that slowe
 are gone: on the same kind of test, a million coloured log lines now come through in about
 0.8 s instead of about 4 s. Windows Terminal has not been re-measured against it yet. Method,
 ranges and caveats are in [docs/benchmarks.md](docs/benchmarks.md).
+
+</details>
 
 ### On slow and distant connections
 

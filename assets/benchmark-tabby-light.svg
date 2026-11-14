@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 828 426" width="828" height="426" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="title desc">
+<title id="title">Komando 0.4.0 compared with Tabby 1.0.238</title>
+<desc id="desc">Window on screen after launch: Komando 187 ms, Tabby 725 ms; Memory with 1 SSH Session: Komando 23.5 MB, Tabby 318.7 MB; Memory with 10 SSH Sessions: Komando 28.3 MB, Tabby 382.8 MB; 1,000,000 coloured log lines: Komando 0.81 s, Tabby 4.19 s. Lower is better. Each metric has its own zero-based scale.</desc>
+<text x="0" y="19" fill="#1f2328" font-size="14" font-weight="600">Komando 0.4.0 · Tabby 1.0.238</text>
+<text x="820" y="19" text-anchor="end" fill="#59636e" font-size="12">Lower is better</text>
+<text x="0" y="52" fill="#1f2328" font-size="13" font-weight="600">Window on screen after launch</text>
+<text x="820" y="88" text-anchor="end" fill="#1f2328" font-size="20" font-weight="700">3.9×</text>
+<text x="820" y="106" text-anchor="end" fill="#59636e" font-size="12">faster</text>
+<text x="0" y="77" fill="#1f2328" font-size="12">Komando</text>
+<rect x="78" y="62" width="124.02" height="20" rx="4" fill="#c4510d"><title>Komando: 187 ms</title></rect>
+<text x="210.02" y="77" fill="#1f2328" font-size="13" font-weight="700">187 ms</text>
+<text x="0" y="104" fill="#59636e" font-size="12">Tabby</text>
+<rect x="78" y="89" width="480.00" height="20" rx="4" fill="#607b9c"><title>Tabby: 725 ms</title></rect>
+<text x="566.00" y="104" fill="#59636e" font-size="13" font-weight="400">725 ms</text>
+<text x="0" y="146" fill="#1f2328" font-size="13" font-weight="600">Memory with 1 SSH Session</text>
+<text x="820" y="182" text-anchor="end" fill="#1f2328" font-size="20" font-weight="700">13.5×</text>
+<text x="820" y="200" text-anchor="end" fill="#59636e" font-size="12">less memory</text>
+<text x="0" y="171" fill="#1f2328" font-size="12">Komando</text>
+<rect x="78" y="156" width="35.46" height="20" rx="4" fill="#c4510d"><title>Komando: 23.5 MB</title></rect>
+<text x="121.46" y="171" fill="#1f2328" font-size="13" font-weight="700">23.5 MB</text>
+<text x="0" y="198" fill="#59636e" font-size="12">Tabby</text>
+<rect x="78" y="183" width="480.00" height="20" rx="4" fill="#607b9c"><title>Tabby: 318.7 MB</title></rect>
+<text x="566.00" y="198" fill="#59636e" font-size="13" font-weight="400">318.7 MB</text>
+<text x="0" y="240" fill="#1f2328" font-size="13" font-weight="600">Memory with 10 SSH Sessions</text>
+<text x="820" y="276" text-anchor="end" fill="#1f2328" font-size="20" font-weight="700">13.5×</text>
+<text x="820" y="294" text-anchor="end" fill="#59636e" font-size="12">less memory</text>
+<text x="0" y="265" fill="#1f2328" font-size="12">Komando</text>
+<rect x="78" y="250" width="35.54" height="20" rx="4" fill="#c4510d"><title>Komando: 28.3 MB</title></rect>
+<text x="121.54" y="265" fill="#1f2328" font-size="13" font-weight="700">28.3 MB</text>
+<text x="0" y="292" fill="#59636e" font-size="12">Tabby</text>
+<rect x="78" y="277" width="480.00" height="20" rx="4" fill="#607b9c"><title>Tabby: 382.8 MB</title></rect>
+<text x="566.00" y="292" fill="#59636e" font-size="13" font-weight="400">382.8 MB</text>
+<text x="0" y="334" fill="#1f2328" font-size="13" font-weight="600">1,000,000 coloured log lines</text>
+<text x="820" y="370" text-anchor="end" fill="#1f2328" font-size="20" font-weight="700">5.2×</text>
+<text x="820" y="388" text-anchor="end" fill="#59636e" font-size="12">faster</text>
+<text x="0" y="359" fill="#1f2328" font-size="12">Komando</text>
+<rect x="78" y="344" width="92.58" height="20" rx="4" fill="#c4510d"><title>Komando: 0.81 s</title></rect>
+<text x="178.58" y="359" fill="#1f2328" font-size="13" font-weight="700">0.81 s</text>
+<text x="0" y="386" fill="#59636e" font-size="12">Tabby</text>
+<rect x="78" y="371" width="480.00" height="20" rx="4" fill="#607b9c"><title>Tabby: 4.19 s</title></rect>
+<text x="566.00" y="386" fill="#59636e" font-size="13" font-weight="400">4.19 s</text>
+<text x="0" y="418" fill="#59636e" font-size="11">Windows 11 · 2026-11-14 · matching 107 × 40 terminal grids · method and raw results linked below</text>
+</svg>

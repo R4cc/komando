@@ -1,0 +1,33 @@
+{
+  "os": "Windows 11 Pro build 26300",
+  "cpu": "AMD Ryzen 7 9800X3D, 8 cores",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti",
+  "physical_ram_bytes": 33944211456,
+  "python": "3.15",
+  "asyncssh": "2.24.1",
+  "psutil": "7.2.2",
+  "pyyaml": "6.0.3",
+  "komando_release_source": "6edfabb5092517119903160fbbc87996348ba6b7",
+  "benchmark_library_checkout": "11e9297b43b5593bcf1a857e277a8c6b47c97914",
+  "library_source_matches_release": true,
+  "binaries": [
+    {
+      "name": "installed Komando",
+      "version": "0.4.0",
+      "sha256": "F4B36A2E32885752CA8AFCB6A7DE0C8EA0744CB0A4B61AAA4C58DE7F58F79084",
+      "used_for": "startup"
+    },
+    {
+      "name": "benchmark_client.exe",
+      "version": "0.4.0",
+      "sha256": "B5DEA2A00D3A0451AEF3BED94236F6F43B0BAD3EE1AF0F45AA91A94E4290AA28",
+      "used_for": "idle SSH memory and throughput; unchanged release library with disposable session startup"
+    },
+    {
+      "name": "installed Tabby",
+      "version": "1.0.238",
+      "sha256": "0280FFEADD44C30641146EF28391DF262E9B025A9675DE6929B650723B3F0986",
+      "used_for": "startup, idle SSH memory and throughput"
+    }
+  ]
+}
