@@ -112,7 +112,7 @@ pub fn shell_icon(program: &str) -> Option<&'static str> {
     }
 }
 
-/// The full-colour artwork behind a `shell:` icon name (from Windows Terminal's profile icons).
+/// The full-colour artwork behind a `shell:` icon name. Sources are in assets/shells/README.md.
 fn shell_image(name: &str) -> Option<std::sync::Arc<gpui::Image>> {
     use std::sync::{Arc, OnceLock};
     static IMAGES: OnceLock<Vec<(&'static str, Arc<gpui::Image>)>> = OnceLock::new();

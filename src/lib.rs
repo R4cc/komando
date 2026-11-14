@@ -13,8 +13,10 @@ pub mod marks;
 pub mod model;
 pub mod perf;
 pub mod platform;
+pub mod search;
 pub mod session;
 pub mod sftp;
+pub mod share;
 pub mod theme;
 #[cfg(test)]
 mod throughput_tests;
@@ -27,7 +29,7 @@ use std::path::PathBuf;
 
 use gpui::{App, AppContext as _, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 
-use crate::ui::terminal_view::{self, Copy, Paste, ScrollPageDown, ScrollPageUp};
+use crate::ui::terminal_view::{self, Copy, Find, Paste, ScrollPageDown, ScrollPageUp, SearchNewer, SearchOlder};
 use crate::ui::workspace::{
     CloseSession, CopyOutputFile, CopyOutputText, LockVault, NewSession, NextSession, OpenSettings, PrevSession, QuickConnect,
     ToggleSftp, Workspace,
@@ -56,6 +58,12 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-shift-v", Paste, t),
         KeyBinding::new("shift-pageup", ScrollPageUp, t),
         KeyBinding::new("shift-pagedown", ScrollPageDown, t),
+        // Ctrl+F stays the shell's (forward a character in bash, page down in vim and less).
+        KeyBinding::new("ctrl-shift-f", Find, t),
+        // In the search bar's field Up and Down step through the matches. They are bound after
+        // the component library's own, so in that field they win.
+        KeyBinding::new("up", SearchOlder, Some("TerminalSearch > Input")),
+        KeyBinding::new("down", SearchNewer, Some("TerminalSearch > Input")),
         KeyBinding::new("ctrl-shift-k", QuickConnect, None),
         KeyBinding::new("ctrl-shift-t", NewSession, None),
         KeyBinding::new("ctrl-shift-w", CloseSession, None),

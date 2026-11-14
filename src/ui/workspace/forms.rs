@@ -8,10 +8,10 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, App, ClickEvent, Context, Entity, FontWeight, SharedString, Window, div, prelude::*, px};
-use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_component::input::{Input, InputEvent, InputState};
 
 use super::{FIRST_PROJECT_COLOR, FIRST_PROJECT_NAME, Overlay, Workspace, form_field, form_section, icon_picker, segmented, switch};
-use crate::model::{CredentialId, Host, Inherited, JumpHost, Library, Project};
+use crate::model::{CredentialId, Host, Inherited, JumpHost, Library, Project, StartupCommand};
 use crate::theme::{AppPalette, project_color};
 use crate::ui::widgets::{ButtonKind, badge, button, icon_button, icon_el, icon_text_button};
 use crate::vault::{Credential, Secret};
@@ -57,7 +57,7 @@ pub(super) struct HostForm {
     port: Entity<InputState>,
     user: Entity<InputState>,
     key_path: Entity<InputState>,
-    commands: Entity<TextareaState>,
+    commands: Vec<CommandRow>,
     user_source: Source,
     sign_in: SignIn,
     /// Go through the Project's Jump Hosts first.
@@ -80,8 +80,16 @@ pub(super) struct ProjectForm {
     sign_in: SignIn,
     key_path: Entity<InputState>,
     jumps: Vec<JumpRow>,
-    commands: Entity<TextareaState>,
+    commands: Vec<CommandRow>,
     error: Option<String>,
+}
+
+/// One Startup Command in a form's list: what it waits for (optional) and what it types.
+pub(super) struct CommandRow {
+    /// Tells rows apart in element ids while rows are added and removed.
+    key: usize,
+    wait_for: Entity<InputState>,
+    command: Entity<InputState>,
 }
 
 /// One Jump Host in a form's list: user, address and port side by side, and its password.
@@ -106,13 +114,30 @@ struct JumpEntry {
     new_password: Option<String>,
 }
 
-fn lines(commands: &[String]) -> String {
-    commands.join("\n")
-}
-
-/// The non-empty lines of a commands field.
-fn commands_of(field: &Entity<TextareaState>, cx: &App) -> Vec<String> {
-    field.read(cx).value().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
+/// The Startup Commands of a form's rows. Empty rows are skipped; a row that waits for a
+/// password question is refused, since its command would be a password saved unencrypted.
+fn read_command_rows(rows: &[CommandRow], cx: &App) -> Result<Vec<StartupCommand>, String> {
+    let mut commands = vec![];
+    for (i, row) in rows.iter().enumerate() {
+        let wait_for = row.wait_for.read(cx).value().to_string();
+        let command = row.command.read(cx).value().trim().to_string();
+        let wait_for = (!wait_for.trim().is_empty()).then_some(wait_for);
+        let n = i + 1;
+        let step = match (wait_for, command.is_empty()) {
+            (None, true) => continue,
+            (Some(_), true) => return Err(format!("Type the command to run in startup command {n}, or remove it.")),
+            (wait_for, false) => StartupCommand { wait_for, command },
+        };
+        if step.answers_password() {
+            return Err(format!(
+                "Startup command {n} answers a password question. Startup commands are saved unencrypted, so they \
+                 can't hold passwords: Komando stops at the question for you to type it, or save the host's password \
+                 in the vault instead."
+            ));
+        }
+        commands.push(step);
+    }
+    Ok(commands)
 }
 
 impl Workspace {
@@ -154,7 +179,7 @@ impl Workspace {
         let port = self.form_input("22", &port, window, cx);
         let user = self.form_input("", h.user.own().map_or("", |u| u.as_str()), window, cx);
         let key_path = self.form_input(r"C:\Users\you\.ssh\id_ed25519", "", window, cx);
-        let commands = commands_field(&lines(&h.startup_commands), window, cx);
+        let commands = h.startup_commands.iter().map(|c| self.command_row(Some(c), window, cx)).collect();
         let jumps = h.jump_hosts.iter().map(|j| self.jump_row(Some(j), window, cx)).collect();
         name.update(cx, |f, cx| f.focus(window, cx));
         let sign_in = match h.credential {
@@ -392,7 +417,7 @@ impl Workspace {
         };
         let jumps = read_jump_rows(&form.jumps, cx)?;
         let use_project_jumps = form.use_project_jumps;
-        let startup_commands = commands_of(&form.commands, cx);
+        let startup_commands = read_command_rows(&form.commands, cx)?;
         let (project_id, editing, sign_in, run_project_commands, icon) =
             (form.project_id.clone(), form.editing.clone(), form.sign_in, form.run_project_commands, form.icon.clone());
 
@@ -487,14 +512,12 @@ impl Workspace {
                         )
                         .child(div().text_size(px(12.5)).text_color(p.text).child("Run the project's commands first")),
                 )
-                .when(form.run_project_commands, |el| el.child(commands_preview(&project_commands, p)))
+                .when(form.run_project_commands, |el| {
+                    el.child(commands_preview(&project_commands.iter().map(StartupCommand::label).collect::<Vec<_>>(), p))
+                })
             })
-            .child(form_field(
-                "This host's commands",
-                Some("One per line. Typed into the shell once it is ready, as if you typed them."),
-                Textarea::new(&form.commands).into_any_element(),
-                p,
-            ));
+            .child(self.command_list("hf-cmd", &form.commands, wide, p, cx))
+            .child(hint_text(COMMANDS_HINT.into(), p));
 
         let selected = form.icon.clone();
         let icon = form_section("Icon", p).child(icon_picker(&form.icon_query, &selected, color, p, cx, |this, name| {
@@ -502,13 +525,13 @@ impl Workspace {
                 form.icon = name;
             }
         }));
-        // Two columns: who it is and how you sign in on the left, what runs on it and how it
-        // looks on the right. The jump hosts, a row of fields each, get the full width below.
+        // Two columns: who it is and how you sign in on the left, how it looks on the right.
+        // The jump hosts and startup commands, a row of fields each, get the full width below.
         let body = form_body(
             wide,
             vec![connection.into_any_element(), sign_in.into_any_element()],
-            vec![commands.into_any_element(), icon.into_any_element()],
-            vec![route.into_any_element()],
+            vec![icon.into_any_element()],
+            vec![route.into_any_element(), commands.into_any_element()],
         );
 
         let ok_label = if form.editing.is_some() { "Save" } else { "Add host" };
@@ -798,6 +821,117 @@ impl Workspace {
             .into_any_element()
     }
 
+    // ---- startup command list (both forms) -----------------------------------------------
+
+    /// A form row for a Startup Command, empty or filled from a saved one.
+    fn command_row(&mut self, command: Option<&StartupCommand>, window: &mut Window, cx: &mut Context<Self>) -> CommandRow {
+        let wait_for = self.form_input("shell ready", command.and_then(|c| c.wait_for.as_deref()).unwrap_or(""), window, cx);
+        let command = self.form_input("command", command.map_or("", |c| c.command.as_str()), window, cx);
+        self.next_jump_row += 1;
+        CommandRow { key: self.next_jump_row, wait_for, command }
+    }
+
+    /// The open form's Startup Command rows.
+    fn command_rows(&mut self) -> Option<&mut Vec<CommandRow>> {
+        match self.overlay.as_mut() {
+            Some(Overlay::HostForm(form)) => Some(&mut form.commands),
+            Some(Overlay::ProjectForm(form)) => Some(&mut form.commands),
+            _ => None,
+        }
+    }
+
+    fn add_command_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let row = self.command_row(None, window, cx);
+        let command = row.command.clone();
+        if let Some(rows) = self.command_rows() {
+            rows.push(row);
+            command.update(cx, |f, cx| f.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Move the row with `key` one up (or down), if there is room.
+    fn move_command_row(&mut self, key: usize, up: bool, cx: &mut Context<Self>) {
+        if let Some(rows) = self.command_rows()
+            && let Some(i) = rows.iter().position(|r| r.key == key)
+        {
+            let j = if up { i.checked_sub(1) } else { Some(i + 1).filter(|j| *j < rows.len()) };
+            if let Some(j) = j {
+                rows.swap(i, j);
+            }
+        }
+        cx.notify();
+    }
+
+    /// The Startup Commands of a form, one row each (what it waits for, then the command),
+    /// with a button to add another.
+    fn command_list(&self, prefix: &'static str, rows: &[CommandRow], wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let wait_width = if wide { 180. } else { 110. };
+        let column_label = |text: &'static str| div().text_size(px(11.5)).text_color(p.text_faint).child(text);
+        let actions_width = 84.;
+        let header = div()
+            .flex()
+            .gap(px(8.))
+            .pl(px(22.))
+            .child(column_label("Wait for").w(px(wait_width)).flex_shrink_0())
+            .child(column_label("Command").flex_1().min_w_0())
+            .child(div().w(px(actions_width)).flex_shrink_0());
+        let count = rows.len();
+        let rows = rows.iter().enumerate().map(|(i, row)| {
+            let key = row.key;
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().w(px(14.)).flex_shrink_0().text_size(px(12.)).text_color(p.text_faint).child(format!("{}", i + 1)))
+                .child(div().w(px(wait_width)).flex_shrink_0().child(Input::new(&row.wait_for)))
+                .child(div().flex_1().min_w_0().child(Input::new(&row.command)))
+                .child(
+                    div()
+                        .w(px(actions_width))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.))
+                        .child(
+                            icon_button((prefix, key * 3), "arrow-up", p)
+                                .aria_label(format!("Move startup command {} up", i + 1))
+                                .when(i == 0, |el| el.opacity(0.35))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.move_command_row(key, true, cx))),
+                        )
+                        .child(
+                            icon_button((prefix, key * 3 + 1), "arrow-down", p)
+                                .aria_label(format!("Move startup command {} down", i + 1))
+                                .when(i + 1 == count, |el| el.opacity(0.35))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.move_command_row(key, false, cx))),
+                        )
+                        .child(
+                            icon_button((prefix, key * 3 + 2), "x", p)
+                                .aria_label(format!("Remove startup command {}", i + 1))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    if let Some(rows) = this.command_rows() {
+                                        rows.retain(|r| r.key != key);
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .when(count > 0, |el| el.child(header).children(rows))
+            .child(
+                div().flex().child(
+                    icon_text_button((prefix, 0usize), "plus", "Add command", ButtonKind::Ghost, p)
+                        .px(px(10.))
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.add_command_row(window, cx))),
+                ),
+            )
+            .into_any_element()
+    }
+
     // ---- project form -------------------------------------------------------------------
 
     pub(super) fn open_new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -818,7 +952,7 @@ impl Workspace {
         let name = self.form_input("", &pr.name, window, cx);
         let default_user = self.form_input("", pr.default_user.as_deref().unwrap_or(""), window, cx);
         let key_path = self.form_input(r"C:\Users\you\.ssh\id_ed25519", "", window, cx);
-        let commands = commands_field(&lines(&pr.startup_commands), window, cx);
+        let commands = pr.startup_commands.iter().map(|c| self.command_row(Some(c), window, cx)).collect();
         let jumps = pr.jump_hosts.iter().map(|j| self.jump_row(Some(j), window, cx)).collect();
         name.update(cx, |f, cx| f.focus(window, cx));
         let icon_query = self.new_icon_query(window, cx);
@@ -851,7 +985,7 @@ impl Workspace {
             return Err("Give the project a name.".into());
         }
         let jumps = read_jump_rows(&form.jumps, cx)?;
-        let startup_commands = commands_of(&form.commands, cx);
+        let startup_commands = read_command_rows(&form.commands, cx)?;
         let (editing, color, icon, sign_in) = (form.editing.clone(), form.color.clone(), form.icon.clone(), form.sign_in);
 
         let mut project = editing
@@ -956,12 +1090,10 @@ impl Workspace {
             "Its hosts are reached through these, top first, unless a host switches them off. A host can add its own after them."
         };
         let jumps = form_section("Jump hosts", p).child(self.jump_list("pf", &form.jumps, wide, p, cx)).child(hint_text(jump_hint.into(), p));
-        let commands = form_section("Startup commands", p).child(form_field(
-            "For every host",
-            Some("One per line. Typed into every host's shell once it is ready, before the host's own."),
-            Textarea::new(&form.commands).into_any_element(),
-            p,
-        ));
+        let commands = form_section("Startup commands", p)
+            .child(hint_text("Typed into every host's shell, before the host's own.".into(), p))
+            .child(self.command_list("pf-cmd", &form.commands, wide, p, cx))
+            .child(hint_text(COMMANDS_HINT.into(), p));
 
         let selected_icon = form.icon.clone();
         let project = form_section("Project", p)
@@ -974,13 +1106,13 @@ impl Workspace {
             }
         }));
         // Two columns: the project itself on the left, what its hosts inherit on the right. The
-        // jump hosts, a row of fields each, get the full width below.
+        // jump hosts and startup commands, a row of fields each, get the full width below.
         let (left, right) = if wide {
-            (vec![project.into_any_element(), icon.into_any_element()], vec![defaults.into_any_element(), commands.into_any_element()])
+            (vec![project.into_any_element(), icon.into_any_element()], vec![defaults.into_any_element()])
         } else {
-            (vec![project.into_any_element(), defaults.into_any_element(), commands.into_any_element(), icon.into_any_element()], vec![])
+            (vec![project.into_any_element(), defaults.into_any_element(), icon.into_any_element()], vec![])
         };
-        let body = form_body(wide, left, right, vec![jumps.into_any_element()]);
+        let body = form_body(wide, left, right, vec![jumps.into_any_element(), commands.into_any_element()]);
 
         let subtitle = if form.editing.is_some() { "Its settings apply to all its hosts" } else { "A group of hosts that belong together" };
         form_shell(
@@ -993,15 +1125,9 @@ impl Workspace {
     }
 }
 
-/// A multi-line field for Startup Commands.
-fn commands_field(value: &str, window: &mut Window, cx: &mut Context<Workspace>) -> Entity<TextareaState> {
-    let value = value.to_string();
-    cx.new(|cx| {
-        TextareaState::new(window, cx)
-            .auto_grow(2, 8)
-            .default_value(value)
-    })
-}
+/// Below a form's Startup Commands: when each is typed.
+const COMMANDS_HINT: &str = "Typed into the shell in turn, as if you typed them: each once the shell is quiet, or once \
+    the text in \"Wait for\" appears after the previous command. Komando stops at password questions for you to answer.";
 
 /// A Source picked with a segmented control, written back into the host form.
 fn source_choice(

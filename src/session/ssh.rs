@@ -578,6 +578,8 @@ impl Output {
         if self.parser.sync_bytes_count() < bytes.len() {
             proxy.send_event(Event::Wakeup);
         }
+        // After the grid has it, so whatever is typed next lands after this output.
+        proxy.watch_output(bytes);
     }
 
     /// When a pending synchronized update must be shown even if it never ends.

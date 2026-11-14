@@ -52,7 +52,7 @@ pub struct Project {
     legacy_jump_host: Option<HostId>,
     /// Startup Commands typed into every Host's shell, before the Host's own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub startup_commands: Vec<String>,
+    pub startup_commands: Vec<StartupCommand>,
     /// Hosts in this Project, in sidebar order. A Host may appear in several Projects.
     #[serde(default)]
     pub hosts: Vec<HostId>,
@@ -172,7 +172,7 @@ pub struct Host {
     legacy_jump_host: Inherited<HostId>,
     /// Startup Commands typed after the Project's (see `run_project_commands`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub startup_commands: Vec<String>,
+    pub startup_commands: Vec<StartupCommand>,
     /// Type the Project's Startup Commands before the Host's own.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub run_project_commands: bool,
@@ -228,6 +228,93 @@ impl JumpHost {
         let user = self.user.as_deref().map(|u| format!("{u}@")).unwrap_or_default();
         let port = if self.port == default_port() { String::new() } else { format!(":{}", self.port) };
         format!("{user}{}{port}", self.address)
+    }
+}
+
+/// A Startup Command: a line typed into an SSH Session's shell, as if the user typed it.
+///
+/// Without `wait_for` it is typed once the shell is ready and has gone quiet. With it, it is
+/// typed once that text appears in the output, after the previous command's line (or, for
+/// the first, once signed in), such as a root prompt after `sudo -i`.
+///
+/// In `library.toml` one without `wait_for` is written as plain text, as all were before
+/// waiting existed; one with it as `{ wait_for = "...", command = "..." }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupCommand {
+    pub wait_for: Option<String>,
+    pub command: String,
+}
+
+impl StartupCommand {
+    pub fn new(command: impl Into<String>) -> Self {
+        Self { wait_for: None, command: command.into() }
+    }
+
+    pub fn after(wait_for: impl Into<String>, command: impl Into<String>) -> Self {
+        Self { wait_for: Some(wait_for.into()), command: command.into() }
+    }
+
+    /// The command, with what it waits for in front: `[# ] cd /srv`.
+    pub fn label(&self) -> String {
+        match &self.wait_for {
+            Some(text) => format!("[{text}] {}", self.command),
+            None => self.command.clone(),
+        }
+    }
+
+    /// Whether it waits for a password question, so its command would be a password saved
+    /// unencrypted (and shared with a Project). Komando never saves one: forms refuse it,
+    /// imports and shared files leave it out.
+    pub fn answers_password(&self) -> bool {
+        self.wait_for.as_deref().is_some_and(|text| {
+            let text = text.to_lowercase();
+            text.contains("password") || text.contains("passphrase") || text.contains("passwort")
+        })
+    }
+}
+
+impl From<&str> for StartupCommand {
+    fn from(command: &str) -> Self {
+        Self::new(command)
+    }
+}
+
+impl PartialEq<&str> for StartupCommand {
+    fn eq(&self, other: &&str) -> bool {
+        self.wait_for.is_none() && self.command == *other
+    }
+}
+
+impl Serialize for StartupCommand {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Step<'a> {
+            wait_for: &'a str,
+            command: &'a str,
+        }
+        match &self.wait_for {
+            None => serializer.serialize_str(&self.command),
+            Some(wait_for) => Step { wait_for, command: &self.command }.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StartupCommand {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Line(String),
+            Step {
+                #[serde(default)]
+                wait_for: Option<String>,
+                command: String,
+            },
+        }
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Line(command) => Self::new(command),
+            Repr::Step { wait_for, command } => Self { wait_for: wait_for.filter(|w| !w.is_empty()), command },
+        })
     }
 }
 
@@ -329,7 +416,7 @@ pub struct ResolvedHost {
     /// switches them off), then the Host's own. Empty: connect directly.
     pub jump_hosts: Vec<RouteJump>,
     /// The Project's Startup Commands (unless the Host skips them), then the Host's own.
-    pub startup_commands: Vec<String>,
+    pub startup_commands: Vec<StartupCommand>,
     pub color: String,
     pub icon: String,
 }
@@ -643,6 +730,17 @@ pub enum TerminalThemeSetting {
     Dark,
 }
 
+/// Where the minimap goes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MinimapPlacement {
+    /// A column of its own, always shown, as in VS Code: output never runs underneath it.
+    #[default]
+    Beside,
+    /// Laid over the output's right edge, shown after resting the pointer at that edge.
+    Over,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -668,6 +766,9 @@ pub struct Settings {
     pub command_rail: bool,
     /// Show the minimap: the Scrollback in miniature on the terminal's right edge.
     pub minimap: bool,
+    pub minimap_placement: MinimapPlacement,
+    /// Over the output: how long the pointer rests at the right edge before the minimap opens.
+    pub minimap_delay_ms: u32,
     /// Highlight sets (by id) that are switched off.
     pub disabled_highlight_sets: Vec<String>,
     /// Windows 11 Mica: the blurred desktop shows through Komando's background.
@@ -705,6 +806,8 @@ impl Default for Settings {
             confirm_multiline_paste: true,
             command_rail: true,
             minimap: true,
+            minimap_placement: MinimapPlacement::Beside,
+            minimap_delay_ms: 300,
             disabled_highlight_sets: vec![],
             background_blur: true,
             minimize_to_tray: true,
@@ -1121,6 +1224,35 @@ mod tests {
         assert_eq!(lib.resolve("p1", "web").unwrap().startup_commands, ["cd /srv/atlas", "tail -f app.log"]);
         lib.hosts[0].run_project_commands = false;
         assert_eq!(lib.resolve("p1", "web").unwrap().startup_commands, ["tail -f app.log"]);
+    }
+
+    #[test]
+    fn startup_commands_that_wait_round_trip_and_plain_ones_stay_plain() {
+        let mut web = named("web");
+        web.startup_commands = vec!["sudo -i".into(), StartupCommand::after("# ", "cd /srv")];
+        let mut lib = library(vec![web]);
+        lib.projects[0].startup_commands = vec![StartupCommand::after("$ ", "uptime")];
+        let text = toml::to_string_pretty(&lib).unwrap();
+        assert!(text.contains("\"sudo -i\""), "{text}");
+        let back: Library = toml::from_str(&text).unwrap();
+        assert_eq!(back, lib);
+
+        // Files from before waiting existed.
+        let old: Library = toml::from_str("[[hosts]]
+id = \"a\"
+name = \"a\"
+address = \"a\"
+startup_commands = [\"uptime\"]
+").unwrap();
+        assert_eq!(old.hosts[0].startup_commands, ["uptime"]);
+    }
+
+    #[test]
+    fn a_wait_for_a_password_question_is_a_saved_password() {
+        assert!(StartupCommand::after("[sudo] Password for ana:", "hunter2").answers_password());
+        assert!(StartupCommand::after("Enter passphrase", "x").answers_password());
+        assert!(!StartupCommand::after("# ", "cd /srv").answers_password());
+        assert!(!StartupCommand::new("passwd").answers_password());
     }
 
     #[test]

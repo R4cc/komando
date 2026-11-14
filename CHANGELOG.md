@@ -6,8 +6,48 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Search the output: press Ctrl+Shift+F, or right-click and choose "Find in output…". Komando
+  searches the whole scrollback, highlights every match and shows where you are ("3 of 24").
+  The minimap marks the lines with matches too, and over the output its handle shows where
+  matches are in the whole scrollback. Enter or Up steps to older matches, Shift+Enter or Down
+  back to newer ones; Escape closes the search and leaves the match selected, ready to copy. Searches ignore case unless you turn on
+  **Match case** (Alt+C), and **Regular expression** (Alt+R) takes the text as a pattern.
+  Results keep up with new output, and searching never holds up typing, even in a scrollback
+  of 500,000 lines. Ctrl+F still goes to the shell.
+- Share a project with someone: right-click it in the sidebar and choose "Share project…" to
+  save it as a `.komando` file. It holds the project's hosts with their host names, ports,
+  users, jump hosts, startup commands, colours and icons, and never a password or key. The
+  person you send it to adds it under Settings → Import → Komando project, where they pick
+  the hosts and review them first; Komando asks them for each password the first time they
+  connect.
+- Startup commands can wait for text before they're typed. In the host and project forms each
+  command is now a row with an optional "Wait for" field: type `sudo -i`, then wait for `# `
+  and type `cd /srv`. A command without it is typed once the shell goes quiet, as before. If
+  the text doesn't appear within a minute, the remaining commands are dropped and Komando
+  tells you. Startup commands can't answer password questions, since they're saved
+  unencrypted.
+- Importing from Tabby brings login scripts over as startup commands. Scripts that use
+  regular expressions or optional steps, or that type a password, stay in Tabby and are
+  listed in the review.
+
 ### Changed
 
+- The minimap now has a column of its own beside the output, as in VS Code, so it never
+  covers output and is always there. The terminal is a little narrower to make room. To get
+  the full width back, choose **Over output** in **Settings → Terminal → Minimap placement**.
+- Over the output, the minimap is easier to find and keep open. A thin bar at the terminal's
+  right edge shows where you are in the scrollback and lights up when you rest the pointer on
+  it; the minimap then opens, or opens at once if you click the bar. It stays open as long as
+  the pointer is on it, including after you drag and let go. When the pointer leaves, it waits
+  a moment and then fades out. You can set how long to rest on the bar, from no delay to 1 s.
+  Split panes that don't touch the window's edge get a minimap too.
+- Dragging the minimap's slider now moves it from where you grabbed it instead of jumping its
+  middle to the pointer. Clicking elsewhere on the minimap still jumps there. The slider
+  brightens under the pointer.
+- PowerShell and Command Prompt icons now use higher-resolution artwork for sharper
+  rendering on high-DPI displays.
 - Loading indicators no longer flash when work finishes almost at once. In the file browser,
   the footer and the title bar's SFTP button keep their spinner for at least half a second,
   then show a check that fades out after a moment. The "Loading…" message in place of the

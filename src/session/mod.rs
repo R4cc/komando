@@ -8,6 +8,7 @@
 pub mod local;
 pub mod ssh;
 mod sudo;
+pub mod wait_for;
 
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
@@ -41,6 +42,8 @@ pub enum SessionEvent {
     Remember { hop: usize, what: Remembered },
     /// A program asked to put text on the clipboard (OSC 52).
     ClipboardStore(String),
+    /// The text of the wait with this id (see `EventProxy::wait_for`) appeared in the output.
+    Appeared(u64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -194,6 +197,10 @@ pub struct EventProxy {
     /// Connection log lines on screen and not yet erased (see `ssh::ConnectLog`), over every
     /// attempt in this terminal: signing in erases the lines of earlier attempts that failed too.
     connect_log: Arc<std::sync::atomic::AtomicUsize>,
+    /// The text a Startup Command waits for, watched in the output as it arrives.
+    wait: Arc<Mutex<Option<wait_for::WaitFor>>>,
+    /// Whether `wait` holds one, so output is only looked at while something waits.
+    waiting: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -210,6 +217,32 @@ impl EventProxy {
             responder: Arc::new(Default::default()),
             reports: Arc::new(Mutex::new(Reports::default())),
             connect_log: Arc::default(),
+            wait: Arc::default(),
+            waiting: Arc::default(),
+        }
+    }
+
+    /// Watch the output for this text from now on, replacing any earlier wait (`None`: stop
+    /// watching). `SessionEvent::Appeared` with its id says when it appears.
+    pub fn wait_for(&self, wait: Option<wait_for::WaitFor>) {
+        let mut slot = self.wait.lock().unwrap();
+        self.waiting.store(wait.is_some(), Ordering::Release);
+        *slot = wait;
+    }
+
+    /// Output arrived from the program: look for the awaited text in it.
+    pub(crate) fn watch_output(&self, bytes: &[u8]) {
+        if !self.waiting.load(Ordering::Acquire) {
+            return;
+        }
+        let mut slot = self.wait.lock().unwrap();
+        if let Some(wait) = slot.as_mut()
+            && wait.feed(bytes)
+        {
+            let id = wait.id();
+            *slot = None;
+            self.waiting.store(false, Ordering::Release);
+            self.send(SessionEvent::Appeared(id));
         }
     }
 
@@ -627,6 +660,34 @@ mod tests {
         output.feed(&term, &proxy, b"\x1b[?2026h\r\nnext");
         output.feed(&term, &proxy, b"\x1b[?2026l");
         assert_eq!(text(), "beforeinside\r\nnext\r\n");
+    }
+
+    #[test]
+    fn awaited_text_in_ssh_output_is_reported_once() {
+        let (term, proxy, _replies) = replying_term();
+        let (tx, mut rx) = mpsc::unbounded();
+        let proxy = EventProxy { tx, ..proxy };
+        let appeared = |rx: &mut mpsc::UnboundedReceiver<SessionEvent>| {
+            std::iter::from_fn(|| rx.try_recv().ok()).filter_map(|e| if let SessionEvent::Appeared(id) = e { Some(id) } else { None }).collect::<Vec<_>>()
+        };
+        let mut output = ssh::Output::default();
+        let wait = wait_for::WaitFor::new("# ", true);
+        let id = wait.id();
+        proxy.wait_for(Some(wait));
+        output.feed(&term, &proxy, b"sudo -i # really
+");
+        assert!(appeared(&mut rx).is_empty(), "the echoed command line doesn't count");
+        output.feed(&term, &proxy, b"[1;31mroot@web01[0m:~");
+        output.feed(&term, &proxy, b"# ");
+        assert_eq!(appeared(&mut rx), [id]);
+        output.feed(&term, &proxy, b"
+root@web01:~# ");
+        assert!(appeared(&mut rx).is_empty(), "reported once");
+
+        proxy.wait_for(Some(wait_for::WaitFor::new("done", false)));
+        proxy.wait_for(None);
+        output.feed(&term, &proxy, b"done");
+        assert!(appeared(&mut rx).is_empty(), "no longer watched");
     }
 
     #[test]

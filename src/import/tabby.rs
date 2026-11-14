@@ -15,6 +15,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value, json};
 
 use super::{Found, FoundGroup, FoundHost, LeftOut};
+use crate::model::StartupCommand;
 
 /// The file name Tabby keeps its configuration in.
 pub const CONFIG_FILE: &str = "config.yaml";
@@ -123,7 +124,7 @@ pub fn parse(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
             let user_layers = merge(global.clone(), defaults);
             let default_user = set_value(&user_layers, &builtin, &["options", "user"]).and_then(|v| text_of(Some(v))).map(str::to_string);
             let icon = group.and_then(|g| text_of(g.get("icon"))).and_then(|i| lucide_icon(i, is_icon));
-            (id.clone(), FoundGroup { name: name.clone(), icon, default_user, hosts: vec![] })
+            (id.clone(), FoundGroup { name: name.clone(), icon, default_user, ..Default::default() })
         })
         .collect();
 
@@ -161,13 +162,25 @@ pub fn parse(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
             let user = user.as_deref().map(|u| format!("{u}@")).unwrap_or_default();
             if port == 22 { format!("{user}{address}") } else { format!("{user}{address}:{port}") }
         });
+        let mut left = left_out(&user_layers, &builtin, &profiles);
+        let startup_commands = match login_script(&user_layers, &builtin) {
+            Ok(commands) => commands,
+            Err(not_imported) => {
+                // Listed where the login script used to be, after the Jump Host.
+                let at = left.iter().position(|l| l.setting != "Jump host").unwrap_or(left.len());
+                left.insert(at, not_imported);
+                None
+            }
+        };
         let host = FoundHost {
             name,
             address,
             port,
             user,
             icon: text_of(profile.get("icon")).and_then(|i| lucide_icon(i, is_icon)),
-            left_out: left_out(&user_layers, &builtin, &profiles),
+            startup_commands,
+            left_out: left,
+            ..Default::default()
         };
         // A group id Tabby doesn't know is shown by Tabby as a group of that name (files from
         // before groups had ids name them that way).
@@ -176,7 +189,7 @@ pub fn parse(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
             Some((_, group)) => group.hosts.push(host),
             None => {
                 let name = if key.is_empty() { UNGROUPED.to_string() } else { key.clone() };
-                found_groups.push((key, FoundGroup { name, icon: None, default_user: global_user.clone(), hosts: vec![host] }));
+                found_groups.push((key, FoundGroup { name, default_user: global_user.clone(), hosts: vec![host], ..Default::default() }));
             }
         }
     }
@@ -195,6 +208,32 @@ pub fn parse(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
         groups: found_groups.into_iter().map(|(_, g)| g).filter(|g| !g.hosts.is_empty()).collect(),
         notes,
     })
+}
+
+/// A profile's login script as Startup Commands: each step waits for its `expect` text, if it
+/// has one, then types its `send`. None when it has no script. A script Komando can't run the
+/// same way is left out whole, with why: regular expressions, optional steps, a step that only
+/// presses Enter, or a step answering a password question (that would save the password
+/// unencrypted, see `StartupCommand::answers_password`).
+fn login_script(user: &Value, builtin: &Value) -> Result<Option<Vec<StartupCommand>>, LeftOut> {
+    let Some(steps) = set_value(user, builtin, &["options", "scripts"]).and_then(Value::as_array) else { return Ok(None) };
+    let not = |why: &str| LeftOut::new("Login script", format!("{}, {why}", plural(steps.len(), "step")));
+    let mut commands = vec![];
+    for step in steps {
+        if flag(step.get("isRegex")) {
+            return Err(not("uses regular expressions"));
+        }
+        if flag(step.get("optional")) {
+            return Err(not("has optional steps"));
+        }
+        let Some(send) = text_of(step.get("send")) else { return Err(not("has a step that only presses Enter")) };
+        let command = StartupCommand { wait_for: text_of(step.get("expect")).map(str::to_string), command: send.to_string() };
+        if command.answers_password() {
+            return Err(not("types a password"));
+        }
+        commands.push(command);
+    }
+    Ok(Some(commands))
 }
 
 /// Groups in tree order (parents first, children right after, otherwise as listed), each with
@@ -250,9 +289,6 @@ fn left_out(user: &Value, builtin: &Value, profiles: &[&Map<String, Value>]) -> 
             .and_then(|p| text_of(p.get("name")))
             .unwrap_or(jump);
         out.push(LeftOut::new("Jump host", format!("via {name}")));
-    }
-    if let Some(steps) = opt("scripts").and_then(Value::as_array) {
-        out.push(LeftOut::new("Login script", plural(steps.len(), "step")));
     }
     if let Some(ports) = opt("forwardedPorts").and_then(Value::as_array) {
         let shown: Vec<String> = ports.iter().take(2).filter_map(forward_label).collect();
@@ -647,7 +683,7 @@ profileDefaults:
             web.left_out,
             [
                 LeftOut::new("Jump host", "via bastion"),
-                LeftOut::new("Login script", "1 step"),
+                LeftOut::new("Login script", "1 step, types a password"),
                 LeftOut::new("Port forwarding", "Local 8080 → db.lan:5432"),
             ]
         );
@@ -661,6 +697,28 @@ profileDefaults:
             [LeftOut::new("Backspace key", "sends Ctrl+H"), LeftOut::new("Keep-alive", "every 30 s, 10 tries")]
         );
         assert!(found.groups[2].hosts[0].left_out.is_empty());
+    }
+
+    #[test]
+    fn login_scripts_come_over_as_startup_commands_that_wait() {
+        let profile = |scripts: &str| {
+            let text = format!("profiles:\n  - type: ssh\n    name: a\n    options:\n      host: a.lan\n      scripts: {scripts}\n");
+            parse_ok(&text).groups.remove(0).hosts.remove(0)
+        };
+        let host = profile("[{ send: 'sudo -i' }, { expect: 'root@', send: 'cd /srv' }]");
+        assert_eq!(host.startup_commands, Some(vec!["sudo -i".into(), StartupCommand::after("root@", "cd /srv")]));
+        assert!(host.left_out.is_empty());
+
+        for (scripts, why) in [
+            ("[{ expect: 'a.*b', send: x, isRegex: true }]", "1 step, uses regular expressions"),
+            ("[{ send: x }, { expect: y, send: z, optional: true }]", "2 steps, has optional steps"),
+            ("[{ expect: 'Continue?' }]", "1 step, has a step that only presses Enter"),
+            ("[{ send: 'sudo -i' }, { expect: '[sudo] Password', send: hunter2 }]", "2 steps, types a password"),
+        ] {
+            let host = profile(scripts);
+            assert_eq!(host.startup_commands, None, "{scripts}");
+            assert_eq!(host.left_out, [LeftOut::new("Login script", why)], "{scripts}");
+        }
     }
 
     #[test]

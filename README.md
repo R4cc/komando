@@ -93,7 +93,10 @@ machine in `%APPDATA%\Komando`.
 - **Shared settings per project.** Default user, key or password, jump hosts and startup commands
   set once and inherited by every host.
 - **Jump hosts.** Reach servers that sit behind others. Komando shows each hop while connecting.
+- **Share a project.** Send a teammate a `.komando` file with its hosts, users and jump hosts,
+  never its passwords or keys.
 - **Startup commands.** `cd /srv/app`, `sudo -i` or `tmux attach` typed for you once the shell is ready.
+  A command can wait for text first, such as the root prompt after `sudo -i`.
 - **Several sessions per host**, and **reconnect in place** with your output kept.
 - **Local shells too.** PowerShell 7, Windows PowerShell and Command Prompt are detected; add WSL
   or Git Bash yourself.
@@ -108,8 +111,10 @@ machine in `%APPDATA%\Komando`.
   69 rules for Linux and service logs are included.
 - **Your own rules.** Import and export rule sets in Tabby's format. See [Highlights](docs/highlights.md).
 - **Minimap.** The whole scrollback in miniature on the right edge, errors and warnings in colour.
-  Click or drag to jump.
+  Drag its slider or click to jump. It sits beside the output, or over it until you need it.
 - **Command rail.** A mark beside every command you ran. Click one to scroll back to it.
+- **Search the scrollback.** Ctrl+Shift+F finds text or a regular expression in all of the
+  output, highlights every match and marks them on the minimap; Enter steps back through them.
 - **Copy the whole output** as text, or as a `.txt` file to drop into Outlook or Teams.
 
 <br clear="right">
@@ -183,6 +188,8 @@ still reach the shell on your server.
 | Next / previous session | Ctrl+Tab / Ctrl+Shift+Tab |
 | Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
 | Copy whole output as text / as .txt file | Ctrl+Shift+A / Ctrl+Shift+S |
+| Search the output; then older / newer match | Ctrl+Shift+F; Enter or ↑ / Shift+Enter or ↓ |
+| Search: match case / regular expression | Alt+C / Alt+R |
 | Show / hide the SFTP browser | Ctrl+Shift+E |
 | Lock vault | Ctrl+Shift+L |
 | Settings | Ctrl+, |

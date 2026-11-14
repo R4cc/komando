@@ -1,8 +1,9 @@
-//! Settings → Import: bring Hosts over from Tabby.
+//! Settings → Import: bring Hosts over from Tabby, or from a Project File someone shared.
 //!
-//! Three steps on the page itself: find Tabby's configuration (automatically, or the user
-//! picks the file), pick the groups and hosts to bring over, then review what comes over and
-//! what doesn't before anything is saved. Reading and matching live in `crate::import`.
+//! Three steps on the page itself: find the file (Tabby's configuration automatically, or the
+//! user picks it), pick the groups and hosts to bring over, then review what comes over and
+//! what doesn't before anything is saved. Reading and matching live in `crate::import` and
+//! `crate::share`.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -12,6 +13,8 @@ use gpui::Toggled;
 use super::settings::group;
 use super::*;
 use crate::import::{self, Applied, Duplicate, Found, FoundHost, Plan, Target, tabby};
+use crate::model::JumpHost;
+use crate::share;
 
 /// Groups start folded when the import has more hosts than this, so the list stays short.
 const UNFOLD_UP_TO: usize = 40;
@@ -25,14 +28,33 @@ pub(super) enum ImportFlow {
     /// Tabby isn't in the usual places: the user is asked to pick its file.
     NotFound,
     /// The picked or found file couldn't be read, or has no SSH profiles.
-    Failed { path: PathBuf, error: String },
+    Failed { from: Source, path: PathBuf, error: String },
     Pick(Selection),
     Review(Selection),
     Done(Applied),
 }
 
+/// What an import reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Source {
+    Tabby,
+    /// A Project File made with "Share project…".
+    ProjectFile,
+}
+
+impl Source {
+    /// Where settings that don't come over stay, for "… stay in {}".
+    fn name(self) -> &'static str {
+        match self {
+            Source::Tabby => "Tabby",
+            Source::ProjectFile => "the project file",
+        }
+    }
+}
+
 /// What was read, and what the user picked of it.
 pub(super) struct Selection {
+    from: Source,
     source: PathBuf,
     found: Found,
     plan: Plan,
@@ -86,7 +108,8 @@ impl Workspace {
         }
     }
 
-    fn choose_tabby_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Ask for the file to import from: Tabby's configuration or a Project File.
+    fn choose_import_file(&mut self, from: Source, window: &mut Window, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
             directories: false,
@@ -96,34 +119,48 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = picked.await else { return };
             let Some(path) = paths.into_iter().next() else { return };
-            let _ = this.update(cx, |this, cx| match tabby::config_in(&path) {
-                Ok(config) => this.load_tabby(config, cx),
-                Err(err) => {
-                    this.import = ImportFlow::Failed { path, error: format!("{err:#}") };
-                    cx.notify();
-                }
+            let _ = this.update(cx, |this, cx| match from {
+                Source::ProjectFile => this.load_project_file(path, cx),
+                Source::Tabby => match tabby::config_in(&path) {
+                    Ok(config) => this.load_tabby(config, cx),
+                    Err(err) => {
+                        this.import = ImportFlow::Failed { from, path, error: format!("{err:#}") };
+                        cx.notify();
+                    }
+                },
             });
         })
         .detach();
     }
 
+    fn load_project_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.import = match share::read_file(&path, &is_icon) {
+            Err(err) => ImportFlow::Failed { from: Source::ProjectFile, path, error: format!("{err:#}") },
+            Ok(found) => self.selection(Source::ProjectFile, path, found),
+        };
+        cx.notify();
+    }
+
+    /// The pick step for what was read: hosts already in Komando start unpicked.
+    fn selection(&self, from: Source, source: PathBuf, found: Found) -> ImportFlow {
+        let plan = import::plan(&found, &self.library);
+        let picked = plan.groups.iter().map(|g| g.hosts.iter().map(|d| !d.is_duplicate()).collect()).collect();
+        let open = if found.host_count() <= UNFOLD_UP_TO { (0..found.groups.len()).collect() } else { HashSet::new() };
+        ImportFlow::Pick(Selection { from, source, found, plan, picked, open })
+    }
+
     fn load_tabby(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.import = match tabby::read(&path, &is_icon) {
-            Err(err) => ImportFlow::Failed { path, error: format!("{err:#}") },
+            Err(err) => ImportFlow::Failed { from: Source::Tabby, path, error: format!("{err:#}") },
             Ok(found) if found.groups.is_empty() => {
                 let mut error = "There are no SSH profiles in this file.".to_string();
                 for note in &found.notes {
                     error.push(' ');
                     error.push_str(note);
                 }
-                ImportFlow::Failed { path, error }
+                ImportFlow::Failed { from: Source::Tabby, path, error }
             }
-            Ok(found) => {
-                let plan = import::plan(&found, &self.library);
-                let picked = plan.groups.iter().map(|g| g.hosts.iter().map(|d| !d.is_duplicate()).collect()).collect();
-                let open = if found.host_count() <= UNFOLD_UP_TO { (0..found.groups.len()).collect() } else { HashSet::new() };
-                ImportFlow::Pick(Selection { source: path, found, plan, picked, open })
-            }
+            Ok(found) => self.selection(Source::Tabby, path, found),
         };
         cx.notify();
     }
@@ -189,11 +226,15 @@ impl Workspace {
         // Matched again: the Library may have changed since the list was made.
         let plan = import::plan(&selection.found, &library);
         let applied = import::apply(&selection.found, &plan, &selection.picked, &mut library);
+        let from = match selection.from {
+            Source::Tabby => "Tabby".to_string(),
+            Source::ProjectFile => selection.found.groups.first().map(|g| g.name.clone()).unwrap_or_default(),
+        };
         if let Err(err) = self.commit_library(library) {
             self.show_toast(format!("Nothing was imported. {err}"), cx);
             return;
         }
-        self.show_toast(format!("Imported {} from Tabby", hosts_label(applied.hosts)), cx);
+        self.show_toast(format!("Imported {} from {from}", hosts_label(applied.hosts)), cx);
         self.import = ImportFlow::Done(applied);
         cx.notify();
     }
@@ -204,7 +245,7 @@ impl Workspace {
         match &self.import {
             ImportFlow::Start => self.import_start(None, p, cx),
             ImportFlow::NotFound => self.import_start(Some(self.import_not_found(p, cx)), p, cx),
-            ImportFlow::Failed { path, error } => self.import_start(Some(self.import_failed(path, error, p, cx)), p, cx),
+            ImportFlow::Failed { from, path, error } => self.import_start(Some(self.import_failed(*from, path, error, p, cx)), p, cx),
             ImportFlow::Pick(selection) => self.import_pick(selection, p, cx),
             ImportFlow::Review(selection) => self.import_review(selection, p, cx),
             ImportFlow::Done(applied) => self.import_done(applied, p, cx),
@@ -226,8 +267,8 @@ impl Workspace {
                     .gap(px(3.))
                     .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child("Tabby"))
                     .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(
-                        "Copies your SSH profiles' names, host names, ports, users and icons. Profile groups become \
-                         projects. Passwords, jump hosts and login scripts stay in Tabby.",
+                        "Copies your SSH profiles' names, host names, ports, users, icons and login scripts (as startup \
+                         commands). Profile groups become projects. Passwords and jump hosts stay in Tabby.",
                     )),
             )
             .child(
@@ -235,7 +276,31 @@ impl Workspace {
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start_tabby_import(cx))),
             )
             .into_any_element();
-        let mut rows = vec![row];
+        let project_row = div()
+            .flex()
+            .items_center()
+            .gap(px(14.))
+            .child(badge("folder-input", p.brand, 36.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child("Komando project"))
+                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(format!(
+                        "A .{} file someone made with \"Share project…\". Brings over its hosts with their addresses, \
+                         users, jump hosts and startup commands. Passwords and keys are never in it.",
+                        share::EXTENSION
+                    ))),
+            )
+            .child(
+                button("import-project", "Choose project file…", ButtonKind::Secondary, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_import_file(Source::ProjectFile, window, cx))),
+            )
+            .into_any_element();
+        let mut rows = vec![row, project_row];
         rows.extend(problem);
         group(p, rows)
     }
@@ -251,20 +316,20 @@ impl Workspace {
                  portable Tabby.exe. Choose that file to import from it."
             ),
             button("import-choose", "Choose config.yaml…", ButtonKind::Secondary, p)
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_tabby_config(window, cx)))
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_import_file(Source::Tabby, window, cx)))
                 .into_any_element(),
             p,
         )
     }
 
-    fn import_failed(&self, path: &Path, error: &str, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn import_failed(&self, from: Source, path: &Path, error: &str, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         notice(
             "circle-alert",
             p.danger,
             &format!("Couldn't import {}", path.display()),
             error,
             button("import-choose", "Choose another file…", ButtonKind::Secondary, p)
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_tabby_config(window, cx)))
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.choose_import_file(from, window, cx)))
                 .into_any_element(),
             p,
         )
@@ -272,6 +337,7 @@ impl Workspace {
 
     /// The file the import reads, with a way to read another one instead.
     fn import_source(&self, selection: &Selection, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let from = selection.from;
         div()
             .flex()
             .items_center()
@@ -280,7 +346,7 @@ impl Workspace {
             .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.text_muted).child(selection.source.display().to_string()))
             .child(
                 button("import-other", "Choose another file…", ButtonKind::Ghost, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_tabby_config(window, cx))),
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.choose_import_file(from, window, cx))),
             )
             .into_any_element()
     }
@@ -323,7 +389,10 @@ impl Workspace {
             let header = div()
                 .id(("import-group", g))
                 .role(gpui::Role::Button)
-                .aria_label(format!("Profile group: {}", found.name))
+                .aria_label(match selection.from {
+                    Source::Tabby => format!("Profile group: {}", found.name),
+                    Source::ProjectFile => format!("Project: {}", found.name),
+                })
                 .aria_expanded(open)
                 .tab_index(0)
                 .focus_visible(move |s| s.border_2().border_color(p.brand))
@@ -376,7 +445,11 @@ impl Workspace {
                     }
                     if !host.left_out.is_empty() {
                         let n = host.left_out.len();
-                        tags = tags.child(tag(&format!("{n} setting{} stay in Tabby", if n == 1 { "" } else { "s" }), p.text_muted, p));
+                        tags = tags.child(tag(
+                            &format!("{n} setting{} stay in {}", if n == 1 { "" } else { "s" }, selection.from.name()),
+                            p.text_muted,
+                            p,
+                        ));
                     }
                     list = list.child(
                         div()
@@ -490,6 +563,18 @@ impl Workspace {
                         .child(div().flex_shrink_0().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(host.name.clone()))
                         .child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.text_muted).child(login(host))),
                 );
+                for (setting, detail) in comes_over(host) {
+                    row = row.child(
+                        div()
+                            .pl(px(25.))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(icon_el("check", 13., p.success))
+                            .child(div().flex_shrink_0().text_size(px(12.)).text_color(p.text).child(setting))
+                            .child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.text_faint).child(detail)),
+                    );
+                }
                 for left in &host.left_out {
                     row = row.child(
                         div()
@@ -545,8 +630,17 @@ impl Workspace {
         }
         left.push(info_line(
             "x",
-            "Passwords and keys. Komando asks for the password the first time you connect and can save it in its vault; \
-             a key file can be added in the host's settings.",
+            match selection.from {
+                Source::Tabby => {
+                    "Passwords and keys. Komando asks for the password the first time you connect and can save it in its vault; \
+                     a key file can be added in the host's settings."
+                }
+                Source::ProjectFile => {
+                    "Passwords and keys: a shared project never holds them. Komando asks for each password, the jump hosts' \
+                     included, the first time you connect and can save it in its vault; a key file can be added in the host's \
+                     settings."
+                }
+            },
             p,
         ));
         left.extend(selection.found.notes.iter().map(|note| info_line("x", note, p)));
@@ -578,9 +672,12 @@ impl Workspace {
                     .flex_col()
                     .gap(px(4.))
                     .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Review the import"))
-                    .child(div().text_size(px(12.5)).text_color(p.text_muted).child(format!(
-                        "{summary} Settings marked with an X were set in Tabby and don't come over."
-                    ))),
+                    .child(div().text_size(px(12.5)).text_color(p.text_muted).child(match selection.from {
+                        Source::Tabby => format!("{summary} Settings marked with an X were set in Tabby and don't come over."),
+                        Source::ProjectFile => {
+                            format!("{summary} Each host keeps the user, jump hosts and startup commands it has in the shared project.")
+                        }
+                    })),
             )
             .child(sections)
             .child(
@@ -651,6 +748,21 @@ impl Workspace {
             .into_any_element();
         group(p, vec![row])
     }
+}
+
+/// What a host brings over besides its address and user, for the review: its Jump Hosts and
+/// Startup Commands, when the file says.
+fn comes_over(host: &FoundHost) -> Vec<(String, String)> {
+    let mut over = vec![];
+    if let Some(jumps) = host.jump_hosts.as_ref().filter(|j| !j.is_empty()) {
+        let label = if jumps.len() == 1 { "Jump host" } else { "Jump hosts" };
+        over.push((label.to_string(), jumps.iter().map(JumpHost::label).collect::<Vec<_>>().join(" → ")));
+    }
+    if let Some(commands) = host.startup_commands.as_ref().filter(|c| !c.is_empty()) {
+        let label = if commands.len() == 1 { "Startup command" } else { "Startup commands" };
+        over.push((label.to_string(), commands.iter().map(|c| c.label()).collect::<Vec<_>>().join(" · ")));
+    }
+    over
 }
 
 /// A tick box, 16×16: ticked, empty, or a dash when only some of what it stands for is ticked.
@@ -730,7 +842,7 @@ mod tests {
         for (fa, lucide) in tabby::ICON_MAP {
             assert!(is_icon(lucide), "{fa} maps to {lucide}, which isn't bundled");
         }
-        for icon in ["import", "search-x", "circle-alert", "file-text", "check", "minus", "x", "info"] {
+        for icon in ["import", "search-x", "circle-alert", "file-text", "check", "minus", "x", "info", "folder-input", "share-2"] {
             assert!(is_icon(icon), "{icon}");
         }
     }

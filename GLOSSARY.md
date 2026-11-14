@@ -25,6 +25,11 @@ instead: a Host goes through the Project's Jump Hosts first (unless it switches 
 its own.
 _Avoid_: Inherited setting, project setting
 
+**Project File**:
+A `.komando` file made by "Share project…": a Project with its Hosts, their users, Jump Hosts
+and Startup Commands, and no Credential. Importing it on another PC adds the Project there.
+_Avoid_: Export, backup, profile
+
 **Host Key**:
 The public key a Host's server presents to prove its identity. It is trusted on first connection and checked on every connection after that.
 _Avoid_: Fingerprint (that is only its display form), known host
@@ -47,12 +52,18 @@ A Session of a Local Shell, running on the Windows machine itself.
 
 **Startup Commands**:
 Lines Komando types into an SSH Session's shell once it is ready, as if the user typed them. A
-Project's run first, then the Host's own.
-_Avoid_: Init script, login script, RemoteCommand
+Project's run first, then the Host's own. Each is typed once the shell goes quiet, or, if it
+has a **Wait for** text, once that text appears after the previous one (a root prompt after
+`sudo -i`). One never answers a password question: Komando stops there for the user.
+_Avoid_: Init script, login script, RemoteCommand, expect/send
 
 **Scrollback**:
 All output a Session has received and still holds, from its first line to its current screen.
 _Avoid_: History, buffer, log
+
+**Scrollback Search**:
+Finding text in a Session's Scrollback from the search bar over its output, which highlights every match and steps through them from the newest up.
+_Avoid_: Grep, filter
 
 **Command Mark**:
 A line the user entered in a Session (prompt and command), remembered so the command rail can list it and jump back to it. It lasts as long as the line is in the Scrollback.

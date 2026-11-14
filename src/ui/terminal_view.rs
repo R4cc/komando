@@ -29,6 +29,8 @@ use gpui_component::Icon;
 use crate::highlight::{self, ActiveHighlights};
 use crate::keys::{self, MouseAction, MouseMode, Mods};
 use crate::marks::Marks;
+use crate::model::StartupCommand;
+use crate::session::wait_for::WaitFor;
 use crate::ui::connect_route::{self, ConnectRoute, RouteCard};
 use crate::session::{
     Answer, EventProxy, GridSize, InputSink, Prompt, Remembered, SessionEvent, SharedTerm, Status, new_term,
@@ -38,9 +40,13 @@ use crate::theme::{Appearance, UI_FONT, rgb_to_hsla};
 use crate::ui::box_drawing::{self, Prim};
 use crate::ui::widgets::{button, icon_el, ButtonKind};
 
-actions!(terminal, [Copy, Paste, ScrollPageUp, ScrollPageDown]);
+mod search;
+
+actions!(terminal, [Copy, Paste, ScrollPageUp, ScrollPageDown, Find, SearchOlder, SearchNewer]);
 
 pub const CONTEXT: &str = "Terminal";
+/// The search bar's key context, for Up and Down in its field.
+pub const SEARCH_CONTEXT: &str = "TerminalSearch";
 const PADDING_X: f32 = 12.0;
 const PADDING_Y: f32 = 8.0;
 /// Height each command takes on the rail: its line plus the gap below.
@@ -113,21 +119,32 @@ const AUTOSCROLL_MAX_STEP: Duration = Duration::from_millis(100);
 const STARTUP_QUIET: Duration = Duration::from_millis(150);
 /// How long to wait for the shell's first output before typing anyway.
 const STARTUP_FIRST: Duration = Duration::from_millis(1500);
+/// How long a Startup Command waits for its text before it and the rest are dropped, so it
+/// can't be typed into whatever the user is doing much later.
+const STARTUP_WAIT_LIMIT: Duration = Duration::from_secs(60);
 
-/// Startup Commands still to type. They go in one at a time, each once the shell has printed
-/// something and then gone quiet, so each lands at a prompt like a typed command.
+/// Startup Commands still to type. They go in one at a time: each once the shell has printed
+/// something and then gone quiet, so each lands at a prompt like a typed command, or, for
+/// one that waits for text, once that text appears.
 #[derive(Default)]
 struct StartupCommands {
-    queue: VecDeque<String>,
+    queue: VecDeque<StartupCommand>,
     /// Bumped whenever a new wait starts; a timer only types if no newer wait replaced it.
     generation: u64,
     /// The shell asked for a password (e.g. `sudo`): wait until the user has answered.
     paused: bool,
+    /// The next command's text hasn't appeared yet: the id of its wait in the proxy.
+    watching: Option<u64>,
 }
 
 impl StartupCommands {
     fn waiting(&self) -> bool {
         !self.queue.is_empty() && !self.paused
+    }
+
+    /// The next command waits for text, not for the shell to go quiet.
+    fn next_waits(&self) -> bool {
+        self.queue.front().is_some_and(|c| c.wait_for.is_some())
     }
 }
 
@@ -149,6 +166,8 @@ pub enum TerminalEvent {
     EditHost { hop: usize },
     /// The pane's grid size is known or changed (see [`TerminalView::measured_size`]).
     Sized,
+    /// A Startup Command's text didn't appear in time; it and the ones after it were dropped.
+    StartupStopped { waited_for: String },
 }
 
 enum ActivePrompt {
@@ -209,8 +228,12 @@ pub struct TerminalView {
     pub putty_clipboard: bool,
     /// Show the command rail and record entered lines for it.
     pub command_rail: bool,
-    /// Allow the minimap to appear after dwelling at the window's right edge.
+    /// Show the minimap (see `ui::minimap`).
     pub minimap: bool,
+    /// Lay the minimap over the output instead of giving it a column of its own.
+    pub minimap_overlay: bool,
+    /// Over the output: how long the pointer rests at the right edge before it opens.
+    pub minimap_delay: Duration,
     minimap_state: Rc<crate::ui::minimap::MinimapState>,
     glyph_cache: Rc<RefCell<GlyphCache>>,
     marks: Marks,
@@ -220,6 +243,11 @@ pub struct TerminalView {
     /// Shrinks the Scrollback's rows once a new width has settled (see `compact_after_resize`).
     compaction: Option<Task<()>>,
     reflow: Rc<Cell<Reflow>>,
+    /// Lines of Scrollback the Session keeps.
+    scrollback: usize,
+    /// The search bar, while open (Ctrl+Shift+F), and what it last searched for.
+    search: Option<search::SearchBar>,
+    last_search: crate::search::Query,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -401,6 +429,8 @@ impl TerminalView {
             putty_clipboard: false,
             command_rail: true,
             minimap: true,
+            minimap_overlay: false,
+            minimap_delay: Duration::from_millis(300),
             minimap_state: Rc::new(Default::default()),
             glyph_cache: Rc::new(RefCell::new(GlyphCache::default())),
             marks: Marks::default(),
@@ -408,6 +438,9 @@ impl TerminalView {
             flash: None,
             compaction: None,
             reflow: Rc::default(),
+            scrollback,
+            search: None,
+            last_search: Default::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -476,9 +509,41 @@ impl TerminalView {
 
     /// Get ready for a new connection: the route page if it goes through Jump Hosts, and the
     /// Startup Commands to type once the shell is open.
-    pub fn begin_connect(&mut self, route: Option<Vec<RouteCard>>, startup: Vec<String>) {
+    pub fn begin_connect(&mut self, route: Option<Vec<RouteCard>>, startup: Vec<StartupCommand>) {
         self.route = route.map(ConnectRoute::new);
         self.startup = StartupCommands { queue: startup.into(), ..StartupCommands::default() };
+        // Watched from before the shell opens, so text printed on sign-in isn't missed.
+        self.watch_next(false);
+    }
+
+    /// Watch the output for the text the next Startup Command waits for, if it waits.
+    /// `after_echo`: a command was just typed, so the line echoing it doesn't count.
+    fn watch_next(&mut self, after_echo: bool) {
+        let wait = self.startup.queue.front().and_then(|c| c.wait_for.as_deref()).map(|text| WaitFor::new(text, after_echo));
+        self.startup.watching = wait.as_ref().map(WaitFor::id);
+        self.proxy.wait_for(wait);
+    }
+
+    /// Drop the Startup Commands still to type, and stop watching for text.
+    fn stop_startup(&mut self) {
+        self.startup = StartupCommands::default();
+        self.proxy.wait_for(None);
+    }
+
+    /// Give the next Startup Command's text `STARTUP_WAIT_LIMIT` to appear.
+    fn limit_wait(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.startup.watching else { return };
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(STARTUP_WAIT_LIMIT).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.startup.watching == Some(id) {
+                    let waited_for = this.startup.queue.front().and_then(|c| c.wait_for.clone()).unwrap_or_default();
+                    this.stop_startup();
+                    cx.emit(TerminalEvent::StartupStopped { waited_for });
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn attach(&mut self, sink: InputSink) {
@@ -528,9 +593,10 @@ impl TerminalView {
                 } else {
                     crate::session::drop_blank_scrollback(&mut *self.term.lock());
                 }
-                if self.startup.waiting() && !self.is_disconnected() && self.status == Status::Connected {
+                if self.startup.waiting() && !self.startup.next_waits() && !self.is_disconnected() && self.status == Status::Connected {
                     self.schedule_startup(STARTUP_QUIET, window, cx);
                 }
+                self.search_output(cx);
                 cx.notify();
             }
             SessionEvent::Title(title) => {
@@ -551,6 +617,7 @@ impl TerminalView {
                                 self.prompt = None;
                             }
                             self.startup = StartupCommands::default();
+                            self.proxy.wait_for(None);
                             match self.route.as_mut() {
                                 Some(route) if !route.is_finished() => route.fail(reason.clone()),
                                 _ => self.route = None,
@@ -570,7 +637,9 @@ impl TerminalView {
                                 })
                                 .detach();
                             }
-                            if self.startup.waiting() {
+                            if self.startup.next_waits() {
+                                self.limit_wait(cx);
+                            } else if self.startup.waiting() {
                                 self.schedule_startup(STARTUP_FIRST, window, cx);
                             }
                         }
@@ -589,6 +658,12 @@ impl TerminalView {
             SessionEvent::Prompt(prompt) => self.show_prompt(prompt, window, cx),
             SessionEvent::Remember { hop, what } => cx.emit(TerminalEvent::Remember { hop, what }),
             SessionEvent::ClipboardStore(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
+            SessionEvent::Appeared(id) => {
+                if self.startup.watching == Some(id) {
+                    self.startup.watching = None;
+                    self.type_startup_command(cx);
+                }
+            }
         }
     }
 
@@ -688,17 +763,28 @@ impl TerminalView {
         if !self.startup.waiting() || self.status != Status::Connected {
             return;
         }
-        let cursor_line = {
-            let term = self.term.lock();
-            let grid = term.grid();
-            let row = &grid[grid.cursor.point.line];
-            (0..term.columns()).map(|c| row[Column(c)].c).collect::<String>()
-        };
-        if asks_for_secret(&cursor_line) {
-            self.startup.paused = true;
-            return;
+        if self.startup.next_waits() {
+            // Typed once its text appears, whatever the shell does in between.
+            if self.startup.watching.is_some() {
+                return;
+            }
+        } else {
+            let cursor_line = {
+                let term = self.term.lock();
+                let grid = term.grid();
+                let row = &grid[grid.cursor.point.line];
+                (0..term.columns()).map(|c| row[Column(c)].c).collect::<String>()
+            };
+            if asks_for_secret(&cursor_line) {
+                self.startup.paused = true;
+                return;
+            }
         }
-        let Some(line) = self.startup.queue.pop_front() else { return };
+        let Some(next) = self.startup.queue.pop_front() else { return };
+        // Before typing, so the output that follows can't come before the watch.
+        self.watch_next(true);
+        self.limit_wait(cx);
+        let line = next.command;
         self.scroll_to_bottom();
         {
             let mut term = self.term.lock();
@@ -853,8 +939,13 @@ impl TerminalView {
         }
     }
 
-    fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
+    fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else { return };
+        // Typing in the search bar: Ctrl+Shift+V pastes there, not into the shell.
+        if self.search_focused(window, cx) {
+            self.paste_into_search(&text, window, cx);
+            return;
+        }
         self.paste_or_confirm(text, cx);
     }
 
@@ -987,7 +1078,7 @@ impl TerminalView {
     }
 
     /// The terminal's right-click menu: copy and paste, typing the selection into the shell,
-    /// selecting everything, and copying the whole output.
+    /// selecting everything, searching, and copying the whole output.
     fn context_menu(view: gpui::WeakEntity<Self>, focus: FocusHandle, menu: PopupMenu, cx: &mut App) -> PopupMenu {
         let Some(this) = view.upgrade() else { return menu };
         let (selected, can_type) = {
@@ -1008,6 +1099,7 @@ impl TerminalView {
             )
             .separator()
             .item(run("Select all", "scan-text", |this, _, cx| this.select_all(cx)))
+            .menu_with_icon("Find in output…", icon("search"), Box::new(Find))
             .separator()
             .menu_with_icon("Copy output", icon("copy"), Box::new(crate::ui::workspace::CopyOutputText))
             .menu_with_icon("Copy as .txt", icon("file-text"), Box::new(crate::ui::workspace::CopyOutputFile))
@@ -1055,42 +1147,132 @@ impl TerminalView {
         }
     }
 
-    /// Listen at window level so the gutter outside the terminal can activate the minimap.
-    /// Merely passing over right-aligned output must not activate it, nor may a selection.
-    fn minimap_hover(&mut self, event: &MouseMoveEvent, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Pointer motion anywhere in the window: a held minimap slider follows it (even off the
+    /// minimap), and the overlay opens and closes with it.
+    fn minimap_hover(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.minimap_state.clone();
-        if state.dragging() && event.pressed_button == Some(MouseButton::Left) {
-            crate::ui::minimap::drag_to(&self.term, &state, event.position.y);
-            cx.stop_propagation();
+        if state.dragging() {
+            if event.pressed_button == Some(MouseButton::Left) {
+                crate::ui::minimap::drag(&self.term, &state, event.position.y);
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+            // The release happened somewhere nothing reported it.
+            state.release();
             cx.notify();
+        }
+        self.minimap_track(event.position, event.pressed_button.is_some(), window, cx);
+    }
+
+    /// Something else has the pointer, or there is nothing for the overlay to show.
+    fn minimap_blocked(&self, window: &Window) -> bool {
+        !self.minimap
+            || !self.minimap_overlay
+            || self.prompt.is_some()
+            || self.route.is_some()
+            || self.selecting
+            || self.mouse_pressed.is_some()
+            || !window.is_window_active()
+            || {
+                let term = self.term.lock();
+                term.mode().contains(TermMode::ALT_SCREEN) || term.grid().history_size() == 0
+            }
+    }
+
+    /// Open or close the overlay for the pointer at `position`. Merely passing over output
+    /// never opens it, nor may a selection; once open it stays while the pointer is on it.
+    fn minimap_track(&mut self, position: gpui::Point<Pixels>, pressed: bool, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::ui::minimap::{HIDE_DELAY, Timer, hover_region};
+        if !self.minimap_overlay {
             return;
         }
-        let was_visible = state.visible();
-        let (at_edge, over_map) = crate::ui::minimap::hover_region(event.position, bounds, window.viewport_size().width);
-        let blocked = !self.minimap || self.prompt.is_some() || self.route.is_some()
-            || self.selecting || self.mouse_pressed.is_some() || event.pressed_button.is_some()
-            || !window.is_window_active() || self.term.lock().grid().history_size() == 0;
-        let generation = state.track_hover(at_edge, over_map, blocked);
-        if was_visible != state.visible() {
-            state.hide();
+        let state = self.minimap_state.clone();
+        let Some(bounds) = state.terminal() else {
+            return;
+        };
+        let (at_edge, over_map) = hover_region(position, bounds, window.viewport_size().width, PADDING_X);
+        let blocked = pressed || self.minimap_blocked(window);
+        let now = Instant::now();
+        let before = state.look();
+        let timer = state.track(at_edge, over_map, blocked, now);
+        if state.look() != before {
             cx.notify();
         }
-        if let Some(generation) = generation {
-            cx.spawn_in(window, async move |this, cx| {
-                cx.background_executor().timer(crate::ui::minimap::REVEAL_DELAY).await;
-                let _ = this.update_in(cx, |this, window, cx| {
-                    let (at_edge, _) = crate::ui::minimap::hover_region(window.mouse_position(), bounds, window.viewport_size().width);
-                    if this.minimap && this.prompt.is_none() && this.route.is_none()
-                        && !this.selecting && this.mouse_pressed.is_none()
-                        && window.is_window_active() && window.is_window_hovered() && at_edge
-                        && this.term.lock().grid().history_size() > 0
-                        && state.reveal(generation)
-                    {
-                        cx.notify();
-                    }
-                });
-            }).detach();
+        match timer {
+            Some(Timer::Show(generation)) if self.minimap_delay.is_zero() => {
+                if state.show(generation, now) {
+                    cx.notify();
+                }
+            }
+            Some(Timer::Show(generation)) => {
+                let delay = self.minimap_delay;
+                cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor().timer(delay).await;
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        let state = this.minimap_state.clone();
+                        if !this.minimap_blocked(window) && window.is_window_hovered() {
+                            if state.show(generation, Instant::now()) {
+                                cx.notify();
+                            }
+                        } else if state.look().1 {
+                            state.cancel_pending();
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+            Some(Timer::Hide(generation)) => {
+                cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor().timer(HIDE_DELAY).await;
+                    let _ = this.update_in(cx, |this, _, cx| {
+                        if !this.minimap_state.dragging() && this.minimap_state.leave(generation, Instant::now()) {
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+            None => {}
         }
+    }
+
+    /// A press on the minimap. Returns whether the minimap took it.
+    pub(crate) fn minimap_pressed(&mut self, y: Pixels, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        // A question is open: the terminal's own handler keeps the keyboard on it.
+        if self.prompt.is_some() || self.route.is_some() {
+            return false;
+        }
+        window.focus(&self.focus, cx);
+        crate::ui::minimap::press(&self.term, &self.minimap_state, y);
+        if self.minimap_overlay {
+            self.minimap_state.open_now(Instant::now());
+        }
+        cx.notify();
+        true
+    }
+
+    /// The left button came up. Returns whether it ended a drag of the minimap's slider. The
+    /// overlay stays open; if the pointer is off it, it fades after the usual pause.
+    pub(crate) fn minimap_released(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.minimap_state.dragging() {
+            return false;
+        }
+        self.minimap_state.release();
+        self.minimap_track(window.mouse_position(), false, window, cx);
+        cx.notify();
+        true
+    }
+
+    /// A click on the overlay's handle: open now, without waiting.
+    pub(crate) fn minimap_open_now(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.minimap_blocked(window) {
+            return false;
+        }
+        self.minimap_state.open_now(Instant::now());
+        cx.notify();
+        true
     }
 
     /// The pointer moved while a selection is being dragged, wherever it is: over the
@@ -1754,6 +1936,8 @@ struct Frame {
     /// Bar and underline cursors, over the text.
     cursor_bars: Vec<(Bounds<Pixels>, Hsla)>,
     cursor_outline: Option<(Bounds<Pixels>, Hsla)>,
+    /// The current search match's edge, over the text.
+    outlines: Vec<(Bounds<Pixels>, Hsla)>,
     /// What the IME is composing, over the cursor: its area, text and background.
     preedit: Option<(Bounds<Pixels>, ShapedLine, Hsla)>,
     font_size: Pixels,
@@ -2028,8 +2212,21 @@ impl Render for TerminalView {
         let family = appearance.font_family.clone();
         let font_size = px(appearance.font_size);
         let term_bg = palette.background_hsla();
-        if !self.minimap || !window.is_window_active() || !window.is_window_hovered() {
-            self.minimap_state.hide();
+        let now = Instant::now();
+        let minimap_state = self.minimap_state.clone();
+        if !self.minimap {
+            minimap_state.hide();
+            minimap_state.release();
+        } else if !self.minimap_overlay {
+            minimap_state.hide();
+        } else {
+            if !window.is_window_active() || (!window.is_window_hovered() && !minimap_state.dragging()) {
+                minimap_state.close(now);
+            }
+            minimap_state.set_still(cx.reduce_motion());
+            if minimap_state.animating(now) {
+                window.request_animation_frame();
+            }
         }
         let focused = self.focus.is_focused(window) && self.prompt.is_none() && window.is_window_active();
         // Colour queries (OSC 10/11/4) are answered with the colours on screen.
@@ -2047,6 +2244,7 @@ impl Render for TerminalView {
         let hover_entity = this.entity_id();
         let hover_state = self.minimap_state.clone();
         let exit_state = self.minimap_state.clone();
+        let bounds_state = self.minimap_state.clone();
         let origin_cell = self.origin.clone();
         let cell_cell = self.cell.clone();
         let glyph_cache = self.glyph_cache.clone();
@@ -2055,23 +2253,41 @@ impl Render for TerminalView {
         let input_focus = self.focus.clone();
         let highlighter = cx.try_global::<ActiveHighlights>().map(|h| h.0.clone()).unwrap_or_default();
         let (rail, flash_row) = crate::perf::time("command rail", || self.render_rail(cx));
-        // Laid over the terminal's right edge, sized from the last layout's width.
-        let text_width = self.grid.get().map_or(800., |g| g.cols as f32 * g.cell_width as f32) + PADDING_X * 2.;
-        let minimap = self
-            .minimap
-            .then(|| {
-                crate::ui::minimap::minimap(
-                    self.term.clone(),
-                    self.minimap_state.clone(),
-                    palette.clone(),
-                    cx.global::<Appearance>().app,
-                    highlighter.clone(),
-                    crate::ui::minimap::width_for(text_width),
-                    cx,
-                )
-            })
-            .flatten();
+        let (search_marks, minimap_marks) = crate::perf::time("search highlights", || self.search_view());
+        // Beside the output it takes a column (and the right padding: it has its own); over the
+        // output it is laid on top, or is just the handle in the right padding.
+        let beside = self.minimap && !self.minimap_overlay;
+        let pad_right = if beside { 0. } else { PADDING_X };
+        let app = cx.global::<Appearance>().app;
+        let (minimap_column, minimap_overlay) = if !self.minimap {
+            (None, None)
+        } else if beside {
+            let column = crate::ui::minimap::beside(
+                self.term.clone(),
+                minimap_state,
+                palette.clone(),
+                app,
+                highlighter.clone(),
+                minimap_marks,
+                cx,
+            );
+            (Some(column), None)
+        } else {
+            let overlay = crate::ui::minimap::over(
+                self.term.clone(),
+                minimap_state,
+                palette.clone(),
+                app,
+                highlighter.clone(),
+                (PADDING_X, PADDING_Y),
+                minimap_marks,
+                cx,
+            );
+            (None, overlay)
+        };
         let flash_color = Hsla { a: palette.selection.a * 0.7, ..palette.selection };
+        let search_colors = (Hsla { a: 0.3, ..app.brand }, Hsla { a: 0.6, ..app.brand }, app.brand);
+        let search_bar = self.render_search_bar(cx);
 
         let surface = canvas(
             move |bounds, window, cx| crate::perf::time("terminal grid prepaint", || {
@@ -2132,6 +2348,8 @@ impl Render for TerminalView {
                             if width_changed {
                                 view.compact_after_resize(new_size.cols, cx);
                             }
+                            // Rows moved or rewrapped: an open search looks again.
+                            view.search_output(cx);
                             cx.emit(TerminalEvent::Sized)
                         });
                     });
@@ -2237,6 +2455,18 @@ impl Render for TerminalView {
                 for d in &mut frame.decorations {
                     d.y += if d.kind == DecorationKind::Strike { ctx.strike_y } else { ctx.underline_y };
                 }
+                // Search matches: over the cells' backgrounds and the selection, under the text.
+                let (match_bg, current_bg, current_edge) = search_colors;
+                for (row, cols, current) in &search_marks {
+                    let area = Bounds::new(
+                        point(bounds.origin.x + cell_w * cols.start as f32, bounds.origin.y + line_h * *row as f32),
+                        size(cell_w * cols.len() as f32, line_h),
+                    );
+                    frame.rects.push((area, if *current { current_bg } else { match_bg }));
+                    if *current {
+                        frame.outlines.push((area, current_edge));
+                    }
+                }
                 // The IME's composition sits at the cursor, underlined, until it is committed.
                 if let Some(text) = marked.filter(|text| !text.contains('\n'))
                     && let Some((col, row)) = cursor_cell(&*term.lock())
@@ -2262,11 +2492,12 @@ impl Render for TerminalView {
                 window.handle_input(&input_focus, ElementInputHandler::new(bounds, input_view), cx);
                 let terminal_bounds = Bounds::new(
                     point(bounds.left() - px(PADDING_X), bounds.top() - px(PADDING_Y)),
-                    size(bounds.size.width + px(PADDING_X * 2.), bounds.size.height + px(PADDING_Y * 2.)),
+                    size(bounds.size.width + px(PADDING_X + pad_right), bounds.size.height + px(PADDING_Y * 2.)),
                 );
+                bounds_state.set_terminal(terminal_bounds);
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                     if phase == gpui::DispatchPhase::Capture {
-                        let _ = this_hover.update(cx, |this, cx| this.minimap_hover(event, terminal_bounds, window, cx));
+                        let _ = this_hover.update(cx, |this, cx| this.minimap_hover(event, window, cx));
                     }
                 });
                 window.on_mouse_event(move |_: &MouseDownEvent, phase, _, _| {
@@ -2274,11 +2505,12 @@ impl Render for TerminalView {
                         hover_state.cancel_pending();
                     }
                 });
+                // Leaving the window: the overlay fades (a held slider keeps it).
                 window.on_mouse_event(move |_: &gpui::MouseExitEvent, phase, _, cx| {
                     if phase == gpui::DispatchPhase::Capture && !exit_state.dragging() {
-                        let visible = exit_state.visible();
-                        exit_state.hide();
-                        if visible {
+                        let before = exit_state.look();
+                        exit_state.close(Instant::now());
+                        if exit_state.look() != before || exit_state.animating(Instant::now()) {
                             cx.notify(hover_entity);
                         }
                     }
@@ -2337,6 +2569,9 @@ impl Render for TerminalView {
                     if let Some((bounds, color)) = frame.cursor_outline {
                         window.paint_quad(outline(bounds, color, gpui::BorderStyle::Solid));
                     }
+                    for (bounds, color) in &frame.outlines {
+                        window.paint_quad(outline(*bounds, *color, gpui::BorderStyle::Solid));
+                    }
                     if let Some((bounds, line, background)) = &frame.preedit {
                         window.paint_quad(fill(*bounds, *background));
                         let _ = line.paint(bounds.origin, bounds.size.height, TextAlign::Left, None, window, cx);
@@ -2355,6 +2590,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(|this, _: &ScrollPageUp, _, cx| this.scroll_page(true, cx)))
             .on_action(cx.listener(|this, _: &ScrollPageDown, _, cx| this.scroll_page(false, cx)))
+            .on_action(cx.listener(|this, _: &Find, window, cx| this.open_search(window, cx)))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))
@@ -2369,13 +2605,26 @@ impl Render for TerminalView {
             .on_scroll(cx.listener(Self::scroll_wheel))
             .relative()
             .size_full()
+            .flex()
             // Inside a rounded island: round our own background too, 1px in for the border.
             .rounded(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
             .bg(term_bg)
             // A program that takes the mouse gets an arrow, as in xterm; shift still selects.
             .map(|el| if mouse_reporting { el.cursor_default() } else { el.cursor_text() })
-            .child(div().size_full().px(px(PADDING_X)).py(px(PADDING_Y)).child(surface))
-            .children(minimap)
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .pl(px(PADDING_X))
+                    .pr(px(pad_right))
+                    .py(px(PADDING_Y))
+                    .child(surface)
+                    .children(search_bar),
+            )
+            .children(minimap_column)
+            .children(minimap_overlay)
             .children(rail)
             .children(self.render_disconnected(cx))
             .children(self.render_route(cx))

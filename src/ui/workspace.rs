@@ -633,6 +633,38 @@ impl Workspace {
         .detach();
     }
 
+    /// "Share project…": save the Project as a Project File to send to someone. It holds
+    /// where its Hosts are and how to reach them, never a password or key.
+    fn share_project(&mut self, project_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(project) = self.library.project(project_id) else { return };
+        let Some(text) = crate::share::write(&self.library, project_id) else {
+            self.show_toast("Could not share the project.", cx);
+            return;
+        };
+        let project_name = project.name.clone();
+        let hosts = self.library.hosts_of(project).count();
+        let dir = dirs::document_dir().or_else(dirs::home_dir).unwrap_or_else(std::env::temp_dir);
+        let name = format!("{}.{}", sanitize(&project_name), crate::share::EXTENSION);
+        let picked = cx.prompt_for_new_path(&dir, Some(&name));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = picked.await else { return };
+            let result = std::fs::write(&path, text);
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(()) => this.show_toast_for(
+                    format!(
+                        "Saved {project_name} with {} to {}. It has no passwords or keys; import it under Settings → Import.",
+                        if hosts == 1 { "1 host".to_string() } else { format!("{hosts} hosts") },
+                        path.display()
+                    ),
+                    Duration::from_secs(8),
+                    cx,
+                ),
+                Err(err) => this.show_toast(format!("Could not save {}: {err}", path.display()), cx),
+            });
+        })
+        .detach();
+    }
+
     // ---- vault ------------------------------------------------------------------------
 
     /// Ask for the master password, saying why (`reason`). What waits for it is in `pending`.
@@ -863,12 +895,16 @@ impl Workspace {
         let putty = self.settings.putty_clipboard;
         let command_rail = self.settings.command_rail;
         let minimap = self.settings.minimap;
+        let minimap_overlay = self.settings.minimap_placement == crate::model::MinimapPlacement::Over;
+        let minimap_delay = std::time::Duration::from_millis(self.settings.minimap_delay_ms.into());
         let view = cx.new(|cx| {
             let mut view = TerminalView::new(label.clone(), scrollback, window, cx);
             view.confirm_multiline_paste = confirm_paste;
             view.putty_clipboard = putty;
             view.command_rail = command_rail;
             view.minimap = minimap;
+            view.minimap_overlay = minimap_overlay;
+            view.minimap_delay = minimap_delay;
             view
         });
         let id = self.next_id;
@@ -922,6 +958,11 @@ impl Workspace {
                 }
                 this.start_waiting(cx);
             }
+            TerminalEvent::StartupStopped { waited_for } => this.show_toast_for(
+                format!("Startup commands stopped: \"{}\" didn't appear within a minute.", waited_for.trim()),
+                Duration::from_secs(8),
+                cx,
+            ),
             TerminalEvent::EditHost { hop } => match this.hop_target(id, *hop) {
                 Some(HopTarget::Jump(model::RouteJump { owner: model::JumpOwner::Project(project_id, _), .. })) => {
                     this.open_edit_project(project_id, window, cx)
@@ -1988,9 +2029,10 @@ impl Workspace {
             let menu_pid = project.id.clone();
             let project_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
                 let id = menu_pid.clone();
-                let (a, b, c, d) = (id.clone(), id.clone(), id.clone(), id);
+                let (a, b, c, d, e) = (id.clone(), id.clone(), id.clone(), id.clone(), id);
                 menu.item(menu_item("Add host…", "plus", &ws, move |this, window, cx| this.open_new_host(a.clone(), window, cx)))
                     .item(menu_item("Edit project…", "pencil", &ws, move |this, window, cx| this.open_edit_project(b.clone(), window, cx)))
+                    .item(menu_item("Share project…", "share-2", &ws, move |this, window, cx| this.share_project(&e, window, cx)))
                     .item(menu_item(if collapsed { "Expand" } else { "Collapse" }, if collapsed { "chevron-down" } else { "chevron-right" }, &ws, move |this, _, cx| {
                         if !this.collapsed.remove(&c) {
                             this.collapsed.insert(c.clone());

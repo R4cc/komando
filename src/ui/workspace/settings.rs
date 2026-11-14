@@ -4,6 +4,7 @@
 use std::sync::{Arc, OnceLock};
 
 use super::*;
+use crate::model::MinimapPlacement;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsSection {
@@ -69,6 +70,11 @@ impl SettingsSection {
     }
 }
 
+/// Where the minimap goes.
+const MINIMAP_PLACEMENTS: [(MinimapPlacement, &str); 2] =
+    [(MinimapPlacement::Beside, "Beside output"), (MinimapPlacement::Over, "Over output")];
+/// How long the pointer rests at the right edge before the overlaid minimap opens, in ms.
+const MINIMAP_DELAYS: [(u32, &str); 5] = [(0, "None"), (150, "0.15 s"), (300, "0.3 s"), (600, "0.6 s"), (1000, "1 s")];
 const SCROLLBACK_CHOICES: [(usize, &str); 4] = [(10_000, "10k"), (50_000, "50k"), (100_000, "100k"), (500_000, "500k")];
 /// Idle time before the vault locks, in minutes; 0 keeps it unlocked until Komando closes.
 const AUTO_LOCK_CHOICES: [(u32, &str); 8] = [
@@ -200,12 +206,16 @@ impl Workspace {
         let (paste, putty) = (self.settings.confirm_multiline_paste, self.settings.putty_clipboard);
         let rail = self.settings.command_rail;
         let minimap = self.settings.minimap;
+        let minimap_overlay = self.settings.minimap_placement == MinimapPlacement::Over;
+        let minimap_delay = std::time::Duration::from_millis(self.settings.minimap_delay_ms.into());
         for entry in &self.sessions {
             entry.view.update(cx, |v, cx| {
                 v.confirm_multiline_paste = paste;
                 v.putty_clipboard = putty;
                 v.command_rail = rail;
                 v.minimap = minimap;
+                v.minimap_overlay = minimap_overlay;
+                v.minimap_delay = minimap_delay;
                 cx.notify();
             });
         }
@@ -560,6 +570,28 @@ impl Workspace {
         let putty = self.settings.putty_clipboard;
         let rail = self.settings.command_rail;
         let minimap = self.settings.minimap;
+        let placement = self.settings.minimap_placement;
+        let delay = self.settings.minimap_delay_ms;
+        let placement_choice = segmented(
+            "minimap-placement",
+            &MINIMAP_PLACEMENTS.map(|(value, label)| (label, value == placement)),
+            p,
+            cx,
+            |this, i, _, cx| {
+                this.settings.minimap_placement = MINIMAP_PLACEMENTS[i].0;
+                this.apply_terminal_settings(cx);
+            },
+        );
+        let delay_choice = segmented(
+            "minimap-delay",
+            &MINIMAP_DELAYS.map(|(ms, label)| (label, ms == delay)),
+            p,
+            cx,
+            |this, i, _, cx| {
+                this.settings.minimap_delay_ms = MINIMAP_DELAYS[i].0;
+                this.apply_terminal_settings(cx);
+            },
+        );
         let font_slider = self.font_slider.clone().map(|s| Slider::new(&s).into_any_element());
         let font_input = self.font_input.clone().map(|i| Input::new(&i).into_any_element());
         let scrollback_choice = segmented(
@@ -637,7 +669,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "Minimap",
-                    "Hover at the window's far-right edge briefly to show the output in miniature. Click or drag to scroll; move away to hide. The terminal keeps its full width.",
+                    "The output in miniature at the right edge, coloured like the text. Drag the slider to scroll, or click a spot to jump there.",
                     switch("minimap".into(), "Minimap", minimap, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.minimap = !minimap;
@@ -645,7 +677,29 @@ impl Workspace {
                         }))
                         .into_any_element(),
                 ),
-            ],
+            ]
+            .into_iter()
+            .chain(minimap.then(|| {
+                setting_row(
+                    p,
+                    "Minimap placement",
+                    if placement == MinimapPlacement::Beside {
+                        "Beside output: always shown in a column of its own, so it never covers output. The terminal is a little narrower."
+                    } else {
+                        "Over output: the terminal keeps its full width. Rest the pointer on the thin bar at the right edge, or click it, to open the minimap over the output."
+                    },
+                    placement_choice,
+                )
+            }))
+            .chain((minimap && placement == MinimapPlacement::Over).then(|| {
+                setting_row(
+                    p,
+                    "Open after",
+                    "How long the pointer rests on the bar before the minimap opens. It stays open while the pointer is on it.",
+                    delay_choice,
+                )
+            }))
+            .collect(),
         )
     }
 
