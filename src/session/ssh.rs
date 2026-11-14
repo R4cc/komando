@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
@@ -27,6 +27,7 @@ use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertific
 use russh::{ChannelMsg, Disconnect, Pty};
 use tokio::sync::mpsc;
 
+use super::pace::Pace;
 use super::sudo::SudoPassword;
 use super::{Answer, EventProxy, GridSize, HopStep, InputSink, Prompt, Remembered, SessionEvent, SharedTerm, Status};
 use crate::vault::Secret;
@@ -160,7 +161,8 @@ fn describe(hop: &Hop) -> String {
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How much of the server's output the operating system may hold for Komando: as much as the
-/// SSH window lets the server send ahead (`window_size` in `run`).
+/// largest SSH window lets the server send ahead (`window_size` in `run`, and the most the
+/// shell's paced window grows to; see `pace`).
 ///
 /// With Windows' default receive buffer, output floods stalled: a server writing faster than the
 /// buffer drained waited about one timer tick (15 ms) every couple of hundred kilobytes. Against
@@ -168,14 +170,23 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// 1.1 s with this buffer, with no stalls left.
 const RECEIVE_BUFFER: u32 = 8 * 1024 * 1024;
 
+/// For benchmarks that compare with how Komando used to connect: every channel at this fixed
+/// SSH window, no pacing, and the receive buffer set (`true`) or left to the operating system.
+#[cfg(test)]
+pub(crate) static FIXED_WINDOW: std::sync::Mutex<Option<(u32, bool)>> = std::sync::Mutex::new(None);
+
 /// A TCP connection to `address:port`, trying each address it resolves to in turn, with a
 /// receive buffer of [`RECEIVE_BUFFER`].
 async fn open_tcp(address: &str, port: u16) -> std::io::Result<tokio::net::TcpStream> {
     let mut last_error = None;
     for addr in tokio::net::lookup_host((address, port)).await? {
         let socket = if addr.is_ipv4() { tokio::net::TcpSocket::new_v4()? } else { tokio::net::TcpSocket::new_v6()? };
+        #[cfg(test)]
+        let set_buffer = FIXED_WINDOW.lock().unwrap().is_none_or(|(_, set_buffer)| set_buffer);
+        #[cfg(not(test))]
+        let set_buffer = true;
         // A smaller buffer only costs speed, so a refusal is not an error.
-        if let Err(err) = socket.set_recv_buffer_size(RECEIVE_BUFFER) {
+        if set_buffer && let Err(err) = socket.set_recv_buffer_size(RECEIVE_BUFFER) {
             log::warn!("setting the TCP receive buffer: {err}");
         }
         match socket.connect(addr).await {
@@ -328,10 +339,17 @@ async fn run(
         inactivity_timeout: None,
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 4,
-        // How much the server may send before we acknowledge it. The default 2 MiB caps an
-        // SFTP download at 2 MiB per round trip (40 MB/s at 50 ms) before anything else does.
-        // `RECEIVE_BUFFER` matches it.
-        window_size: 8 * 1024 * 1024,
+        // How much the server may send on a channel before we acknowledge it. The default 2 MiB
+        // caps an SFTP download at 2 MiB per round trip (40 MB/s at 50 ms) before anything else
+        // does; SFTP paces its own requests (`sftp::flow`). The shell's channel has a paced
+        // window of its own instead (see `shell`). `RECEIVE_BUFFER` matches it.
+        window_size: {
+            #[cfg(test)]
+            let window = FIXED_WINDOW.lock().unwrap().map_or(8 * 1024 * 1024, |(window, _)| window);
+            #[cfg(not(test))]
+            let window = 8 * 1024 * 1024;
+            window
+        },
         ..Default::default()
     });
     // Every hop's connection stays open: the next one runs through it.
@@ -392,10 +410,10 @@ async fn run(
         if remember_user {
             proxy.send(SessionEvent::Remember { hop: index, what: Remembered::User(user.clone()) });
         }
-        if let Some(password) = &signed_in.password {
-            if signed_in.remember {
-                proxy.send(SessionEvent::Remember { hop: index, what: Remembered::Password(password.to_string()) });
-            }
+        if let Some(password) = &signed_in.password
+            && signed_in.remember
+        {
+            proxy.send(SessionEvent::Remember { hop: index, what: Remembered::Password(password.to_string()) });
         }
         sudo = signed_in.password.map(|password| SudoPassword::new(user, password));
         proxy.send(SessionEvent::Hop { index, step: HopStep::Done });
@@ -423,7 +441,17 @@ async fn shell(
     commands: &mut mpsc::UnboundedReceiver<Command>,
     mut sudo: Option<SudoPassword>,
 ) -> Result<String> {
-    let mut channel = handle.channel_open_session().await?;
+    // The shell's window follows the link (see `pace`), so output doesn't pile up in a queue
+    // that still scrolls past after Ctrl+C. Opening the channel with it keeps the server from
+    // sending the connection's large window's worth first.
+    let mut pace = Pace::default();
+    #[cfg(test)]
+    let paced = FIXED_WINDOW.lock().unwrap().is_none();
+    #[cfg(not(test))]
+    let paced = true;
+    let mut channel =
+        if paced { handle.channel_open_session_with_window(pace.window()).await? } else { handle.channel_open_session().await? };
+    let window = paced.then(|| set_window(handle, channel.id(), pace.window()));
     // Signing in took a while: the pane has been laid out since the connection started, so
     // open the shell at its size rather than resize it straight after (a shell that starts at
     // one size and is resized at once can leave blank lines behind).
@@ -449,14 +477,21 @@ async fn shell(
 
     let mut output = Output::default();
     let mut exit_status = None;
+    // The answer to the ping on its way, if any.
+    let mut ping = (paced && pace.started(Instant::now())).then(|| send_ping(handle));
     let reason = loop {
         let sync_deadline = output.sync_deadline();
         tokio::select! {
             msg = channel.wait() => match msg {
-                Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => match &mut sudo {
-                    Some(sudo) => show_watching_sudo(&mut output, term, proxy, sudo, &data),
-                    None => output.feed(term, proxy, &data),
-                },
+                Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    if paced && pace.output(data.len(), Instant::now()) {
+                        ping = Some(send_ping(handle));
+                    }
+                    match &mut sudo {
+                        Some(sudo) => show_watching_sudo(&mut output, term, proxy, sudo, &data),
+                        None => output.feed(term, proxy, &data),
+                    }
+                }
                 Some(ChannelMsg::ExitStatus { exit_status: code }) => exit_status = Some(code),
                 // The exit status may still follow the end of output; wait for Close.
                 Some(ChannelMsg::Eof) => {}
@@ -470,16 +505,22 @@ async fn shell(
                 Some(_) => {}
             },
             command = commands.recv() => match command {
-                Some(Command::Input(bytes)) => match &mut sudo {
-                    Some(sudo) => {
-                        let typed = sudo.typed(bytes);
-                        if typed.clear {
-                            output.feed(term, proxy, super::sudo::CLEAR);
+                Some(Command::Input(bytes)) => {
+                    match &mut sudo {
+                        Some(sudo) => {
+                            let typed = sudo.typed(bytes);
+                            if typed.clear {
+                                output.feed(term, proxy, super::sudo::CLEAR);
+                            }
+                            channel.data(&typed.send[..]).await?;
                         }
-                        channel.data(&typed.send[..]).await?;
+                        None => channel.data_bytes(bytes).await?,
                     }
-                    None => channel.data_bytes(bytes).await?,
-                },
+                    // After the key, so the ping doesn't hold it up.
+                    if paced && pace.typed(Instant::now()) {
+                        ping = Some(send_ping(handle));
+                    }
+                }
                 Some(Command::Resize(new_size)) => {
                     if new_size != *size {
                         *size = new_size;
@@ -499,9 +540,45 @@ async fn shell(
             // A program began a synchronized update (DECSET 2026) and did not finish it in
             // time: show what it drew so far rather than freezing the screen.
             _ = sleep_until(sync_deadline), if sync_deadline.is_some() => output.flush(term, proxy),
+            answer = async { ping.as_mut().expect("a ping").await }, if ping.is_some() => {
+                ping = None;
+                pace.answered(answer.is_ok(), Instant::now());
+                if let Some(window) = &window {
+                    window.send_if_modified(|current| std::mem::replace(current, pace.window()) != pace.window());
+                }
+            }
         }
     };
     Ok(reason)
+}
+
+/// Keeps the shell channel `id` at the window sent here, from a task of its own: the shell loop
+/// must never wait for the connection, which may itself be waiting for the shell loop to take
+/// output. Only the latest window is sent. Ends with the sender.
+fn set_window(handle: &Arc<Handle<Client>>, id: russh::ChannelId, window: u32) -> tokio::sync::watch::Sender<u32> {
+    let (sender, mut latest) = tokio::sync::watch::channel(window);
+    let handle = handle.clone();
+    tokio::spawn(async move {
+        while latest.changed().await.is_ok() {
+            let window = *latest.borrow_and_update();
+            if handle.set_channel_window(id, window).await.is_err() {
+                return;
+            }
+        }
+    });
+    sender
+}
+
+/// Ping the server; the answer comes once it has arrived, after all output sent before it.
+fn send_ping(handle: &Arc<Handle<Client>>) -> oneshot::Receiver<()> {
+    let (answered, answer) = oneshot::channel();
+    let handle = handle.clone();
+    tokio::spawn(async move {
+        if handle.send_ping().await.is_ok() {
+            let _ = answered.send(());
+        }
+    });
+    answer
 }
 
 /// Shows output, and offers the sign-in password after a sudo prompt for the signed-in user:

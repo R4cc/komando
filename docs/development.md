@@ -74,8 +74,13 @@ quiet one, and reports how long the output took and how long each typed key took
 a folder of small files download, then upload, over SFTP on its connection, directly and through simulated
 links with latency and limited bandwidth (`KOMANDO_THROUGHPUT_SFTP_MB` sets the direct file's
 size, default 512). A fifth fills Scrollbacks of 100,000 and 500,000 lines and times what
-holds the terminal locked: Copy output, resizes, and finding Command Marks. They run on Windows
-too:
+holds the terminal locked: Copy output, resizes, and finding Command Marks. A sixth floods a
+shell with coloured logs until Ctrl+C arrives, directly and through the same simulated links,
+and reports how long the prompt took to show after Ctrl+C, how much output still arrived after
+it, and how fast the flood ran; it compares the shell's paced SSH window (`src/session/pace.rs`)
+with the fixed windows Komando used before (2 MiB, and 8 MiB). The simulated links queue
+without limit, so how much output is still on its way when Ctrl+C is pressed is up to the SSH
+window alone (`KOMANDO_THROUGHPUT_LINK` picks links by name). They run on Windows too:
 
 ```sh
 cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1
@@ -83,6 +88,11 @@ cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1
 
 `KOMANDO_THROUGHPUT_LINES` and `KOMANDO_THROUGHPUT_RUNS` change the size and the number of runs.
 `KOMANDO_THROUGHPUT_PORT` uses an SSH server already listening on that port instead.
+`KOMANDO_PACE_DEBUG=1` prints each ping the shell's window pacing takes into account.
+
+Komando builds against a patched russh in `vendor/russh` that lets a channel keep a receive
+window of its own; `vendor/russh/KOMANDO.md` says what changed and how to carry it over to a
+new russh release.
 
 To include rendering, run the whole app against `examples/logserver.rs`. It writes a key pair
 for `examples/demo.rs`, floods each shell it opens and prints how long the terminal took to take
