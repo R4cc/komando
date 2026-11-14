@@ -1002,7 +1002,7 @@ fn throughput_lock_holders_with_full_scrollback() {
         let resize = |label: &str, cols: u16, rows: u16| {
             time(label, || {
                 let mut term = term.lock();
-                term.resize(GridSize { cols, rows, ..size }.term_size());
+                crate::session::resize(&mut *term, GridSize { cols, rows, ..size });
                 crate::session::drop_blank_scrollback(&mut *term);
             })
         };
@@ -1013,5 +1013,252 @@ fn throughput_lock_holders_with_full_scrollback() {
         resize("resize: half as wide", 88, 42);
         resize("resize: back to full width", 177, 42);
         time("compact rows (in stretches, off the UI)", || crate::session::compact_rows(&term, 177));
+        // Every row has to grow: wider than the rows have been.
+        resize("resize: one column wider than ever", 178, 42);
+        time("compact rows (in stretches, off the UI)", || crate::session::compact_rows(&term, 178));
     }
+}
+
+/// Counts live heap bytes while [`heap::counting`] is on, for the Scrollback memory benchmark.
+/// Off, it costs one relaxed load per allocation, so the other benchmarks are unaffected.
+mod heap {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+
+    static ON: AtomicBool = AtomicBool::new(false);
+    static LIVE: AtomicIsize = AtomicIsize::new(0);
+
+    pub struct Counting;
+
+    fn add(bytes: isize) {
+        if ON.load(Ordering::Relaxed) {
+            LIVE.fetch_add(bytes, Ordering::Relaxed);
+        }
+    }
+
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            add(layout.size() as isize);
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            add(layout.size() as isize);
+            unsafe { System.alloc_zeroed(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            add(-(layout.size() as isize));
+            unsafe { System.dealloc(ptr, layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            add(new_size as isize - layout.size() as isize);
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    /// Start (or stop) counting, from zero. Exact while nothing else allocates meanwhile.
+    pub fn counting(on: bool) {
+        LIVE.store(0, Ordering::Relaxed);
+        ON.store(on, Ordering::Relaxed);
+    }
+
+    /// Heap bytes allocated and not freed since counting started.
+    pub fn live() -> isize {
+        LIVE.load(Ordering::Relaxed)
+    }
+
+    /// Memory the process has committed for itself: private bytes on Windows, the resident
+    /// set elsewhere. Unlike [`live`], includes what the allocator keeps after a free.
+    pub fn process() -> Option<u64> {
+        #[cfg(windows)]
+        {
+            #[repr(C)]
+            #[derive(Default)]
+            struct Counters {
+                cb: u32,
+                page_faults: u32,
+                peak_working_set: usize,
+                working_set: usize,
+                quota_peak_paged: usize,
+                quota_paged: usize,
+                quota_peak_non_paged: usize,
+                quota_non_paged: usize,
+                pagefile: usize,
+                peak_pagefile: usize,
+                private: usize,
+            }
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn GetCurrentProcess() -> isize;
+                fn K32GetProcessMemoryInfo(process: isize, counters: *mut Counters, cb: u32) -> i32;
+            }
+            let mut counters = Counters { cb: size_of::<Counters>() as u32, ..Default::default() };
+            let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+            (ok != 0).then_some(counters.private as u64)
+        }
+        #[cfg(not(windows))]
+        {
+            let status = std::fs::read_to_string("/proc/self/status").ok()?;
+            let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+            Some(line[6..].trim().trim_end_matches("kB").trim().parse::<u64>().ok()? * 1024)
+        }
+    }
+}
+
+#[global_allocator]
+static ALLOC: heap::Counting = heap::Counting;
+
+/// Line `i` of a realistic mix: mostly log lines, with prompts, blank lines, short messages and
+/// long lines (a JSON body, a stack frame with a long path) that wrap on a narrow terminal.
+fn mixed_line(i: u64, out: &mut Vec<u8>) {
+    use std::io::Write;
+    let _ = match i % 16 {
+        5 => write!(out, "\x1b[1;32mops@web01\x1b[0m:\x1b[1;34m~/app\x1b[0m$ tail -n 200 app.log\r\n"),
+        6 | 13 => write!(out, "\r\n"),
+        9 => write!(out, "ok\r\n"),
+        11 => write!(
+            out,
+            "{{\"id\":{i},\"user\":\"user{}@example.com\",\"roles\":[\"reader\",\"writer\"],\"payload\":\"{}\",\"ts\":\"2026-11-13T10:00:00Z\"}}\r\n",
+            i % 997,
+            "x".repeat(120),
+        ),
+        15 => write!(
+            out,
+            "    at com.example.billing.invoices.InvoiceService.generateMonthlyInvoices(/srv/app/releases/2026-11-13/lib/billing/invoices/InvoiceService.java:{})\r\n",
+            i % 4000,
+        ),
+        _ => {
+            log_line(i, out);
+            Ok(())
+        }
+    };
+}
+
+/// What a full Scrollback costs in memory, at the width of a large window and twice that, and
+/// what a resize leaves behind before and after the rows are compacted. Also counts the cells
+/// that hold anything, which is what a more compact row storage would need to keep.
+///
+/// Each case runs in a process of its own, so the process's memory isn't memory an earlier
+/// case freed and the allocator kept. `KOMANDO_THROUGHPUT_MEMORY=500000x350` runs one case.
+#[test]
+#[ignore]
+fn throughput_scrollback_memory() {
+    if let Ok(case) = std::env::var("KOMANDO_THROUGHPUT_MEMORY") {
+        let (scrollback, cols) = case.split_once('x').expect("lines x columns");
+        memory_case(scrollback.parse().unwrap(), cols.parse().unwrap());
+        return;
+    }
+    for case in ["100000x177", "100000x350", "500000x177", "500000x350"] {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["throughput_tests::throughput_scrollback_memory", "--exact", "--ignored", "--nocapture", "--test-threads=1"])
+            .env("KOMANDO_THROUGHPUT_MEMORY", case)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+}
+
+fn memory_case(scrollback: usize, cols: u16) {
+    use alacritty_terminal::grid::Row;
+    use alacritty_terminal::term::cell::{Cell, LineLength};
+    let mib = |bytes: f64| bytes / (1024. * 1024.);
+    let before = heap::process();
+    let process = || before.zip(heap::process()).map_or("?".into(), |(a, b)| format!("{:.1} MiB", mib(b as f64 - a as f64)));
+    // Windows' heap gives freed memory back to the system within about a second.
+    let settled = || {
+        std::thread::sleep(Duration::from_millis(1500));
+        process()
+    };
+    let size = GridSize { cols, rows: 42, cell_width: 9, cell_height: 17 };
+    heap::counting(true);
+    let (tx, _rx) = futures::channel::mpsc::unbounded();
+    let proxy = EventProxy::new(tx);
+    let term = new_term(size, scrollback, proxy.clone());
+    let mut output = crate::session::ssh::Output::default();
+    let mut data = Vec::new();
+    let start = Instant::now();
+    let mut lines = 0;
+    while term.lock().grid().history_size() < scrollback {
+        for _ in 0..2_000 {
+            mixed_line(lines, &mut data);
+            lines += 1;
+        }
+        output.feed(&term, &proxy, &data);
+        proxy.clear_dirty();
+        data.clear();
+    }
+    let fill = start.elapsed();
+    let live = heap::live() as f64;
+    let (rows, used) = {
+        let term = term.lock();
+        let grid = term.grid();
+        let top = -(grid.history_size() as i32);
+        let used: usize = (top..grid.screen_lines() as i32).map(|l| grid[Line(l)].line_length().0).sum();
+        (grid.total_lines(), used)
+    };
+    let floor = rows * (cols as usize * size_of::<Cell>() + size_of::<Row<Cell>>());
+    eprintln!(
+        "scrollback {scrollback}, {cols} columns: {rows} rows from {lines} lines in {:.2} s (Cell {} bytes, Row {} bytes)",
+        fill.as_secs_f64(),
+        size_of::<Cell>(),
+        size_of::<Row<Cell>>(),
+    );
+    eprintln!(
+        "  full:  heap {:.1} MiB = {:.0} bytes/row (rows x columns x cell: {:.1} MiB), process {}",
+        mib(live),
+        live / rows as f64,
+        mib(floor as f64),
+        process(),
+    );
+    eprintln!(
+        "  cells in use: {:.1}%, {:.0} per row; those alone as cells: {:.1} MiB",
+        used as f64 * 100. / (rows * cols as usize) as f64,
+        used as f64 / rows as f64,
+        mib((used * size_of::<Cell>() + rows * size_of::<Row<Cell>>()) as f64),
+    );
+
+    // One column wider than the rows have ever been, the way the app resizes; then the rows
+    // are compacted, as the app does once the width has settled.
+    let wider = GridSize { cols: cols + 1, ..size };
+    let start = Instant::now();
+    crate::session::resize(&mut *term.lock(), wider);
+    let took = start.elapsed();
+    eprintln!(
+        "  one column wider: {:.1} ms, heap {:.1} MiB, process {}",
+        took.as_secs_f64() * 1e3,
+        mib(heap::live() as f64),
+        process()
+    );
+    let start = Instant::now();
+    crate::session::compact_rows(&term, wider.cols as usize);
+    eprintln!(
+        "    compacted in {:.0} ms: heap {:.1} MiB, process {}, settled {}",
+        start.elapsed().as_secs_f64() * 1e3,
+        mib(heap::live() as f64),
+        process(),
+        settled(),
+    );
+
+    // Half as wide, as when a split opens: the rows keep their allocations until compacted.
+    let half = GridSize { cols: cols / 2, ..size };
+    let start = Instant::now();
+    crate::session::resize(&mut *term.lock(), half);
+    eprintln!(
+        "  half as wide: {:.1} ms, heap {:.1} MiB, process {}",
+        start.elapsed().as_secs_f64() * 1e3,
+        mib(heap::live() as f64),
+        process()
+    );
+    let start = Instant::now();
+    crate::session::compact_rows(&term, half.cols as usize);
+    eprintln!(
+        "    compacted in {:.0} ms: heap {:.1} MiB, process {}, settled {}",
+        start.elapsed().as_secs_f64() * 1e3,
+        mib(heap::live() as f64),
+        process(),
+        settled(),
+    );
+    drop((term, proxy, output));
+    eprintln!("  closed: heap {:.1} MiB, process settled {}", mib(heap::live() as f64), settled());
+    heap::counting(false);
 }

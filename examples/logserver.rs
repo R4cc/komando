@@ -87,13 +87,14 @@ impl server::Handler for LogServer {
         &mut self,
         channel: ChannelId,
         _: &str,
-        _: u32,
-        _: u32,
+        cols: u32,
+        rows: u32,
         _: u32,
         _: u32,
         _: &[(russh::Pty, u32)],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
+        eprintln!("{:?} terminal opened at {cols} x {rows}", std::time::SystemTime::now());
         session.channel_success(channel)?;
         Ok(())
     }

@@ -19,6 +19,11 @@ All notable changes to Komando are listed here. The format follows
   to a new width used to take most of every frame; now the text rewraps a few times a second
   while you drag and catches up when you let go. Shorter Scrollbacks still rewrap every frame.
 - Copy output takes about 40% less time with a full Scrollback.
+- Making a window or pane wider uses much less memory while the text rewraps. With a full
+  Scrollback, a Session briefly needed up to three times its usual memory after becoming
+  wider: with 500,000 lines at 350 columns, about 12.8 GB instead of 4.2 GB for a moment.
+  Now it needs little more than usual. Becoming wider also takes up to a third less time with
+  a long Scrollback, and tidying up afterwards takes up to two thirds less.
 - Typing stays responsive while files upload in the file browser, as it already did for
   downloads. On a 10 Mbit/s link with 30 ms latency, keys showed over half a second late
   during an upload and now show about 25 ms late; on a 100 Mbit/s link with 50 ms latency,

@@ -74,8 +74,14 @@ quiet one, and reports how long the output took and how long each typed key took
 a folder of small files download, then upload, over SFTP on its connection, directly and through simulated
 links with latency and limited bandwidth (`KOMANDO_THROUGHPUT_SFTP_MB` sets the direct file's
 size, default 512). A fifth fills Scrollbacks of 100,000 and 500,000 lines and times what
-holds the terminal locked: Copy output, resizes, and finding Command Marks. They run on Windows
-too:
+holds the terminal locked: Copy output, resizes, and finding Command Marks. A sixth,
+`throughput_scrollback_memory`, fills Scrollbacks of 100,000 and 500,000 lines at 177 and 350
+columns with a mix of log lines, prompts, blank lines and long lines, and reports the memory they
+take: live heap bytes (counted by an allocator that only counts during this test) and the
+process's private bytes, per row and in total, how many cells hold anything, and what widening by
+a column, halving the width and compacting the rows cost. Each case runs in a process of its own
+(`KOMANDO_THROUGHPUT_MEMORY=500000x350` runs one), since Windows' heap keeps freed memory for
+about a second before giving it back. They run on Windows too:
 
 ```sh
 cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1
@@ -86,8 +92,11 @@ cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1
 
 To include rendering, run the whole app against `examples/logserver.rs`. It writes a key pair
 for `examples/demo.rs`, floods each shell it opens and prints how long the terminal took to take
-in the output. It also logs each terminal size the app sends, with the time it arrived.
-`KOMANDO_DEMO_SCROLLBACK` sets the demo's Scrollback length:
+in the output. It also logs the size each terminal opens at and each size the app sends, with
+the time it arrived. `KOMANDO_DEMO_PORT` sets its port (default 2222) for both. `KOMANDO_DEMO_SCROLLBACK`
+sets the demo's Scrollback length, and `KOMANDO_DEMO_MEM=1` makes the demo print every 5 seconds
+its live heap, peak heap and, on Windows, private bytes and working set (elsewhere the resident
+set). `KOMANDO_DEMO_STRESS=1,8,8` opens 8 Sessions:
 
 ```sh
 cargo run --release --example logserver -- target/bench 1000000 3

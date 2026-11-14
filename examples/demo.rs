@@ -62,18 +62,55 @@ mod heap {
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(5));
                 let mib = |v: isize| v as f64 / (1024. * 1024.);
-                let rss = std::fs::read_to_string("/proc/self/status")
-                    .ok()
-                    .and_then(|s| s.lines().find(|l| l.starts_with("VmRSS:")).map(|l| l[6..].trim().to_string()))
-                    .unwrap_or_default();
                 eprintln!(
-                    "mem t={:>4}s heap={:>8.1} MiB peak={:>8.1} MiB rss={rss}",
+                    "mem t={:>4}s heap={:>8.1} MiB peak={:>8.1} MiB {}",
                     start.elapsed().as_secs(),
                     mib(LIVE.load(std::sync::atomic::Ordering::Relaxed)),
                     mib(PEAK.load(std::sync::atomic::Ordering::Relaxed)),
+                    process(),
                 );
             }
         });
+    }
+
+    /// What the process holds as the OS sees it: private bytes and working set on Windows,
+    /// the resident set elsewhere. Includes GPU buffers, fonts, and what the allocator keeps.
+    #[cfg(windows)]
+    fn process() -> String {
+        #[repr(C)]
+        #[derive(Default)]
+        struct Counters {
+            cb: u32,
+            page_faults: u32,
+            peak_working_set: usize,
+            working_set: usize,
+            quota_peak_paged: usize,
+            quota_paged: usize,
+            quota_peak_non_paged: usize,
+            quota_non_paged: usize,
+            pagefile: usize,
+            peak_pagefile: usize,
+            private: usize,
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> isize;
+            fn K32GetProcessMemoryInfo(process: isize, counters: *mut Counters, cb: u32) -> i32;
+        }
+        let mut c = Counters { cb: size_of::<Counters>() as u32, ..Default::default() };
+        if unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) } == 0 {
+            return String::new();
+        }
+        let mib = |v: usize| v as f64 / (1024. * 1024.);
+        format!("private={:.1} MiB working-set={:.1} MiB", mib(c.private), mib(c.working_set))
+    }
+
+    #[cfg(not(windows))]
+    fn process() -> String {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| s.lines().find(|l| l.starts_with("VmRSS:")).map(|l| format!("rss={}", l[6..].trim())))
+            .unwrap_or_default()
     }
 }
 

@@ -355,7 +355,11 @@ pub fn drop_blank_scrollback<T>(term: &mut Term<T>) -> bool {
 /// Resizing leaves rows bigger than they need to be: alacritty keeps a row's allocation when the
 /// terminal gets narrower, and widening a row at least doubles it (`Vec` growth). With a full
 /// Scrollback, widening the window by one column doubled the Session's memory, for good, as rows
-/// are recycled rather than reallocated. A clone of a row is allocated at exactly its length.
+/// are recycled rather than reallocated.
+///
+/// Only rows that are bigger than their length get a new allocation: reallocating rows already
+/// the right size (after [`resize`] widened them, say) would only hold a second copy of the
+/// Scrollback until the heap gives the old one back.
 ///
 /// Works through the rows a stretch at a time, so the parser and the UI never wait long for the
 /// terminal. Stops when the width changes again: the resize that changed it starts another pass.
@@ -375,12 +379,76 @@ pub fn compact_rows<T>(term: &FairMutex<Term<T>>, cols: usize) {
         let end = (done + STRETCH).min(total);
         for i in done..end {
             let row = &mut grid[Line(top + i as i32)];
-            *row = row.clone();
+            let len = row.len();
+            // Taking the cells hands over the row's allocation, but not its count of cells a
+            // reset has to clear (see `occupied`).
+            let mut cells = row.front_split_off(len);
+            let occupied = occupied(&cells, len);
+            if cells.capacity() > len {
+                cells = cells.to_vec();
+            }
+            *row = alacritty_terminal::grid::Row::from_vec(cells, occupied);
         }
         drop(term);
         done = end;
         std::thread::yield_now();
     }
+}
+
+/// Resize the terminal. Getting wider, every row first gets an allocation of exactly the new
+/// width, which the terminal then fills in place.
+///
+/// Left to itself, the terminal grows each row as a `Vec` does, to at least twice its size: with
+/// a full Scrollback, one column wider briefly took twice the memory (three times, as Windows
+/// counts it, until the heap released the old rows), and copying every row into its doubled
+/// allocation took longer than reallocating it at the right size. `compact_rows` still trims
+/// what reflowing leaves oversized.
+///
+/// Only the grid on screen is reached: while a full-screen program has the alternate screen up,
+/// the Scrollback behind it grows the old way.
+pub fn resize<T: EventListener>(term: &mut Term<T>, size: GridSize) {
+    reserve_width(term, size.cols as usize);
+    term.resize(size.term_size());
+}
+
+fn reserve_width<T>(term: &mut Term<T>, cols: usize) {
+    use alacritty_terminal::grid::Row;
+    let grid = term.grid_mut();
+    if cols <= grid.columns() {
+        return;
+    }
+    let top = -(grid.history_size() as i32);
+    for line in top..grid.screen_lines() as i32 {
+        let row = &mut grid[Line(line)];
+        let len = row.len();
+        // Taking all the cells hands over the row's own allocation, without copying. The row's
+        // count of cells a reset has to clear goes with it, and a new count is needed.
+        let mut cells = row.front_split_off(len);
+        let occupied = if cells.capacity() >= cols {
+            // Room enough already (the row was wider before): leave it, and count every cell
+            // rather than look at them all. The next reset clears the whole row, once.
+            len
+        } else {
+            let occupied = occupied(&cells, cols);
+            cells.reserve_exact(cols - len);
+            occupied
+        };
+        *row = Row::from_vec(cells, occupied);
+    }
+}
+
+/// How many cells from the start of a row a reset has to clear once the row is `cols` wide.
+///
+/// A reset compares the background of the row's last cell with the new one: when they differ it
+/// clears the whole row, otherwise only the cells counted. Past them, every cell must already be
+/// what a reset makes it: blank, in that background. Growing to `cols` adds blank cells in the
+/// default background, which is then the last cell's.
+fn occupied(cells: &[alacritty_terminal::term::cell::Cell], cols: usize) -> usize {
+    use alacritty_terminal::term::cell::Cell;
+    let Some(last) = cells.last() else { return 0 };
+    let bg = if cells.len() < cols { Cell::default().bg } else { last.bg };
+    let blank = Cell { bg, ..Cell::default() };
+    cells.iter().rposition(|cell| *cell != blank).map_or(0, |i| i + 1)
 }
 
 /// The whole Scrollback plus screen as plain text: colours dropped, trailing blanks trimmed,
@@ -499,6 +567,99 @@ mod tests {
         let grid = t.grid();
         let top = -(grid.history_size() as i32);
         assert!((top..grid.screen_lines() as i32).all(|line| grid[Line(line)].len() == 61));
+    }
+
+    /// Output that leaves rows with every kind of tail: coloured backgrounds to the edge, underlined
+    /// spaces, wide characters, wrapped lines, links, combining characters, tabs, blank lines.
+    /// Links have ids: a link without one gets a new id each time it is parsed.
+    fn varied_output(i: usize) -> String {
+        match i % 9 {
+            0 => format!("\x1b[3{}mline {i}\x1b[0m {}\r\n", i % 8, "x".repeat(i % 70)),
+            1 => format!("\x1b[44mblue to the edge {i}\x1b[K\x1b[0m\r\n"),
+            2 => format!("under\x1b[4m      \x1b[0m{i}\r\n"),
+            3 => format!("wide \u{4e16}\u{754c}\u{4e16}\u{754c}\u{4e16}\u{754c}\u{4e16}\u{754c}\u{4e16}\u{754c} {i}\r\n"),
+            4 => format!("\x1b]8;id={i};https://example.com/{i}\x07link\x1b]8;;\x07 e\u{301} tab\there\r\n"),
+            5 => "\r\n".into(),
+            // Scrolls while the background is set: those rows are reset to green.
+            6 => format!("\x1b[42mgreen {i}\r\n\x1b[0m"),
+            7 => format!("{}\r\n", "long ".repeat(15)),
+            _ => format!("\x1b[7m inverse {i} \x1b[0m\r\n"),
+        }
+    }
+
+    #[test]
+    fn resizing_keeps_every_cell_the_terminal_would_keep() {
+        let size = GridSize { cols: 40, rows: 8, cell_width: 8, cell_height: 18 };
+        let ours = new_term(size, 300, EventProxy::new(mpsc::unbounded().0));
+        let plain = new_term(size, 300, EventProxy::new(mpsc::unbounded().0));
+        let mut parsers: [Processor; 2] = [Processor::new(), Processor::new()];
+        let mut feed = |from: usize, to: usize| {
+            for i in from..to {
+                let text = varied_output(i);
+                parsers[0].advance(&mut *ours.lock(), text.as_bytes());
+                parsers[1].advance(&mut *plain.lock(), text.as_bytes());
+            }
+        };
+        let same = |when: &str| {
+            let (a, b) = (ours.lock(), plain.lock());
+            assert_eq!(a.grid().history_size(), b.grid().history_size(), "{when}");
+            assert_eq!(a.grid().cursor.point, b.grid().cursor.point, "{when}");
+            assert!(rows(&*a) == rows(&*b), "{when}: the rows differ");
+            assert_eq!(scrollback_text(&*a), scrollback_text(&*b), "{when}");
+        };
+        // A full Scrollback, so new output recycles the oldest rows.
+        feed(0, 500);
+        same("before resizing");
+        // One column wider, much wider, narrower, wider within what the rows had room for, and
+        // wider than ever; after each, enough output to recycle every row, which resets them
+        // (a resize leaves the terminal room for 1,000 more rows before it reuses old ones).
+        // The rows are compacted after some steps, as when the width has settled.
+        let steps = [(41u16, true), (97, true), (30, false), (60, false), (50, true), (120, true)];
+        for (step, (cols, compact)) in steps.into_iter().enumerate() {
+            let size = GridSize { cols, ..size };
+            resize(&mut *ours.lock(), size);
+            plain.lock().resize(size.term_size());
+            same(&format!("resized to {cols}"));
+            feed(500 + step * 2_000, 2_500 + step * 2_000);
+            same(&format!("output after resizing to {cols}"));
+            if compact {
+                compact_rows(&ours, cols as usize);
+                same(&format!("compacted at {cols}"));
+                feed(10_000 + step * 2_000, 12_000 + step * 2_000);
+                same(&format!("output after compacting at {cols}"));
+            }
+        }
+    }
+
+    #[test]
+    fn occupied_cells_are_those_a_reset_has_to_clear() {
+        use alacritty_terminal::grid::Row;
+        use alacritty_terminal::term::cell::{Cell, Flags};
+        use alacritty_terminal::vte::ansi::{Color, NamedColor};
+        let mut row: Row<Cell> = Row::new(10);
+        assert_eq!(occupied(&row[..], 10), 0);
+        row[Column(3)].c = 'a';
+        assert_eq!(occupied(&row[..], 10), 4);
+        // A space with an attribute is not blank.
+        row[Column(6)].flags.insert(Flags::UNDERLINE);
+        assert_eq!(occupied(&row[..], 10), 7);
+        row[Column(6)].flags = Flags::empty();
+        // Spaces in the last cell's background are blank: a reset to that background leaves them
+        // as they are, and one to any other background clears the whole row. Spaces in another
+        // background before them are not.
+        let blue = Color::Named(NamedColor::Blue);
+        for col in 7..10 {
+            row[Column(col)].bg = blue;
+        }
+        assert_eq!(occupied(&row[..], 10), 7);
+        for col in 4..7 {
+            row[Column(col)].bg = blue;
+        }
+        assert_eq!(occupied(&row[..], 10), 4);
+        // Not once the row grows: its last cell will be in the default background.
+        assert_eq!(occupied(&row[..], 11), 10);
+        row[Column(9)].c = 'z';
+        assert_eq!(occupied(&row[..], 10), 10);
     }
 
     #[test]
