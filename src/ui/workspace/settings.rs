@@ -482,7 +482,7 @@ impl Workspace {
         });
         setting_row_below(p, if dark { "Dark theme" } else { "Light theme" },
             if dark { "App and terminal colors in dark mode." } else { "App and terminal colors in light mode." },
-            div().w_full().max_w(px(420.)).child(dropdown).into_any_element())
+            div().w_full().max_w(px(340.)).child(dropdown).into_any_element())
     }
 
     fn settings_terminal(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {

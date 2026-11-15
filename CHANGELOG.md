@@ -14,6 +14,8 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- Theme previews show four adjacent color blocks in a narrower selector. Removed the
+  tagline from the welcome screen.
 - Refined each theme's light and dark palettes with clearer surface hierarchy, readable
   secondary text and consistent accents. FL-Theme now has a true dark variant; Mint and
   Gold retain their signature colors in both modes.

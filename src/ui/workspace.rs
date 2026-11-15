@@ -3825,14 +3825,6 @@ impl Workspace {
             .justify_center()
             .bg(p.background)
             .child(wordmark(60., p.text))
-            .child(
-                div()
-                    .mt(px(14.))
-                    .text_size(px(16.))
-                    .text_color(p.text_muted)
-                    .text_center()
-                    .child("A fast terminal for local and remote work."),
-            )
             .child(div().mt(px(40.)).flex().flex_wrap().justify_center().gap(px(12.)).children(actions))
             .into_any_element()
     }

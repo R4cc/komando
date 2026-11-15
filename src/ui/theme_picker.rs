@@ -17,7 +17,7 @@ pub fn dropdown(
         .child(theme_choice(current, p))
         .child(icon_el("chevron-down", 14., p.text_muted))
         .dropdown_menu(move |mut menu, _, _| {
-            menu = menu.min_w(px(380.)).max_w(px(460.)).max_h(px(400.));
+            menu = menu.min_w(px(300.)).max_w(px(380.)).max_h(px(400.));
             for t in crate::theme::themes(dark) {
                 let selected = selected.clone();
                 menu = menu.item(PopupMenuItem::element(move |_, _| theme_choice(t, p))
@@ -30,20 +30,18 @@ pub fn dropdown(
 
 /// Shared by the closed selector and each dropdown row; swatches show the tuned colors.
 fn theme_choice(t: &'static crate::theme::ThemeSpec, p: AppPalette) -> impl IntoElement {
-    div().w_full().min_w(px(310.)).h(px(28.)).flex().items_center().gap(px(16.))
+    div().w_full().min_w(px(240.)).h(px(28.)).flex().items_center().gap(px(12.))
         .child(div().flex_1().child(t.name))
         .child(theme_swatches(t, p))
 }
 
 fn theme_swatches(t: &'static crate::theme::ThemeSpec, p: AppPalette) -> impl IntoElement {
     let c = t.colors;
-    div().flex().gap(px(3.)).children([
-        ("Background", c.background), ("Sidebar", c.sidebar), ("Panels", c.card),
-        ("Primary", c.primary), ("Secondary", c.secondary), ("Accent", c.accent), ("Text", c.foreground),
+    div().flex().flex_shrink_0().rounded(px(3.)).overflow_hidden().border_1().border_color(p.border).children([
+        ("Background", c.background), ("Sidebar", c.sidebar), ("Primary", c.primary), ("Accent", c.accent),
     ].into_iter().map(move |(name, color)| {
         div().id(SharedString::from(format!("swatch-{}-{}-{name}", t.id, t.dark)))
-            .w(px(12.)).h(px(17.)).rounded(px(3.)).bg(crate::theme::hex(color))
-            .border_1().border_color(p.border)
+            .w(px(12.)).h(px(17.)).flex_shrink_0().bg(crate::theme::hex(color))
             .tooltip(move |window, cx| Tooltip::new(format!("{name}: #{color:06X}")).build(window, cx))
     }))
 }
