@@ -8,6 +8,10 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- Background hosts, sessions and collapsed projects show a small rotating green ring while
+  receiving terminal output, replacing the static pulse icon. Visible and quiet sessions
+  keep the normal connected dot. Session icons remain on the left; status indicators stay
+  on the right and remain visible just before the close button on hover.
 - The minimap emphasizes highlighted words at their original positions, with slightly wider
   failure matches and equally thick informational matches. Dense errors stay within their
   own rows so other log levels remain visible.

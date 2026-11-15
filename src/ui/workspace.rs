@@ -1089,6 +1089,12 @@ impl Workspace {
         self.sessions.iter().filter(move |s| s.item == key)
     }
 
+    /// Output already visible in either pane needs no extra moving indicator.
+    fn background_busy(&self, session: &SessionEntry) -> bool {
+        session.busy && Some(session.id) != self.active
+            && !self.shown_split().is_some_and(|split| split.contains(session.id))
+    }
+
     /// Clicking a sidebar item: show its Session (reconnecting it in place if it dropped,
     /// so the earlier output stays above), or connect if it has none. `another` opens an
     /// additional Session for the same item.
@@ -2648,7 +2654,7 @@ impl Workspace {
                 ItemKey::Shell { project: id, name } => id.as_ref() == Some(&project.id) && project.shells.iter().any(|sh| &sh.name == name),
             }).collect();
             let live = sessions.iter().filter(|s| s.is_live()).count();
-            let busy = sessions.iter().any(|s| s.busy);
+            let busy = sessions.iter().any(|s| self.background_busy(s));
             let pid = project.id.clone();
             let pid_host = project.id.clone();
             // A Host from another Project is held over this one's group.
@@ -2959,7 +2965,8 @@ impl Workspace {
             main.map(|s| s.status.clone())
         };
         let live = matches!(status, Some(Status::Connected | Status::Connecting));
-        let busy = if grouped { sessions.iter().any(|s| s.busy) } else { main.is_some_and(|s| s.busy) };
+        let busy = !holds_active && !beside
+            && if grouped { sessions.iter().any(|s| self.background_busy(s)) } else { main.is_some_and(|s| self.background_busy(s)) };
         // With the Sessions listed below, the active one is marked there instead.
         let active = holds_active && !expanded;
         let any_live = sessions.iter().any(|s| s.is_live());
@@ -3104,14 +3111,15 @@ impl Workspace {
                         .text_color(if active || live { p.text } else { p.text_muted })
                         .child(item.label().to_string()),
                 )
-                // The status (and a group's count) gives way to the row's buttons while
-                // hovered, so the two never sit on top of each other.
+                // On hover the status is repeated just before the close button, keeping
+                // connection state visible while making room for the row's actions.
                 .child(
                     div()
                         .flex_shrink_0()
                         .flex()
                         .items_center()
                         .gap(px(6.))
+                        .id("item-status")
                         .group_hover("item-row", |s| s.invisible())
                         .child(status_indicator(status.as_ref(), busy, p))
                         .when(grouped, |el| {
@@ -3145,6 +3153,7 @@ impl Workspace {
                     // buttons' backdrop matches the row and covers the end of a long label.
                     div()
                         .absolute()
+                        .id("item-hover-actions")
                         .right(px(if grouped { 30. } else { 4. }))
                         .top(px(5.))
                         .rounded(px(7.))
@@ -3166,6 +3175,12 @@ impl Workspace {
                                             this.activate_item(item_for_new.clone(), true, window, cx);
                                         })),
                                 )
+                                .when_some(status.as_ref(), |el, status| {
+                                    el.child(
+                                        div().w(px(16.)).h(px(24.)).flex().items_center().justify_center()
+                                            .child(status_indicator(Some(status), busy, p)),
+                                    )
+                                })
                                 // A group has no close button of its own: which Session would it
                                 // close? Each Session's row has one.
                                 .when_some(session_id.filter(|_| !grouped), |el, id| {
@@ -3228,7 +3243,7 @@ impl Workspace {
             .text_size(px(12.5))
             .relative()
             .h(px(30.))
-            // The status sits under the item's icon, the title under its name.
+            // Keep the Host or shell icon visible; connection state lives on the right.
             .pl(px(indent + 2.))
             .pr(px(10.))
             .flex()
@@ -3253,7 +3268,7 @@ impl Workspace {
                     .flex_shrink_0()
                     .flex()
                     .justify_center()
-                    .child(status_indicator(Some(&session.status), session.busy, p)),
+                    .child(icon_el(&item.icon(), 12., if active || live { color } else { p.text_faint })),
             )
             .child(
                 div()
@@ -3276,7 +3291,15 @@ impl Workspace {
             })
             .child(
                 div()
+                    .flex_shrink_0()
+                    .id("session-status")
+                    .group_hover("session-row", |s| s.invisible())
+                    .child(status_indicator(Some(&session.status), self.background_busy(session), p)),
+            )
+            .child(
+                div()
                     .absolute()
+                    .id("session-hover-actions")
                     .right(px(4.))
                     .top(px(3.))
                     .rounded(px(7.))
@@ -3284,7 +3307,14 @@ impl Workspace {
                     .invisible()
                     .group_hover("session-row", |s| s.visible())
                     .child(
-                        div().rounded(px(7.)).bg(if active { p.active } else { p.hover }).child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .rounded(px(7.))
+                            .bg(if active { p.active } else { p.hover })
+                            .child(status_indicator(Some(&session.status), self.background_busy(session), p))
+                            .child(
                             icon_button(SharedString::from(format!("close-{id}")), "x", p)
                                 .aria_label(if live { "Disconnect" } else { "Close session" })
                                 .size(px(24.))
@@ -3982,13 +4012,17 @@ impl Workspace {
 
 /// The sign that output is streaming in.
 fn activity_icon(p: AppPalette) -> AnyElement {
-    div().flex_shrink_0().child(icon_el("activity", 12., p.success)).into_any_element()
+    div()
+        .id("output-activity-status")
+        .role(gpui::Role::Status)
+        .aria_label("Receiving output")
+        .flex_shrink_0()
+        .child(spinner("output-activity", 12., p.success))
+        .into_any_element()
 }
 
 /// A Session's state in the sidebar: a dot while live (green) or connecting (amber), a hollow
-/// ring once it dropped, and a pulse line while output is streaming in (a command at work).
-/// The pulse line doesn't move: an animation would redraw the whole window every frame for as
-/// long as `tail -f` runs.
+/// ring once it dropped, and a small turning green ring for output streaming in the background.
 fn status_indicator(status: Option<&Status>, busy: bool, p: AppPalette) -> AnyElement {
     match status {
         Some(Status::Connected) if busy => activity_icon(p),
