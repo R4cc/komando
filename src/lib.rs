@@ -3,6 +3,7 @@
 
 #[cfg(all(test, unix))]
 mod compat_tests;
+pub mod elevate;
 pub mod export;
 pub mod favorites;
 pub mod highlight;
@@ -135,7 +136,8 @@ pub fn run(options: Options) {
                     window_min_size: Some(size(px(720.), px(420.))),
                     // Komando draws its own title bar (see `Workspace::render_title_bar`).
                     titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("Komando".into()),
+                        // Like Windows' own consoles, so the taskbar tells the windows apart.
+                        title: Some(if elevate::is_elevated() { "Administrator: Komando" } else { "Komando" }.into()),
                         appears_transparent: true,
                         ..Default::default()
                     }),

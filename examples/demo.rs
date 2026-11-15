@@ -244,6 +244,7 @@ fn main() {
             settings: env::var("KOMANDO_DEMO_SETTINGS").ok().and_then(|s| {
                 SettingsSection::ALL.into_iter().find(|section| format!("{section:?}").eq_ignore_ascii_case(&s))
             }),
+            ..Default::default()
         },
     });
 }

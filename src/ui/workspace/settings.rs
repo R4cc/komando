@@ -88,6 +88,15 @@ const AUTO_LOCK_CHOICES: [(u32, &str); 8] = [
     (0, "Until restart"),
 ];
 
+/// An auto-lock time as the Security settings name it ("15 min", "1 h").
+pub(super) fn auto_lock_label(minutes: u32) -> String {
+    match AUTO_LOCK_CHOICES.iter().find(|(m, _)| *m == minutes) {
+        Some((_, label)) => label.to_string(),
+        None if minutes % 60 == 0 => format!("{} h", minutes / 60),
+        None => format!("{minutes} min"),
+    }
+}
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Settings → Local shells: the fields that add a shell, or edit the one named in `editing`.
@@ -261,6 +270,9 @@ impl Workspace {
                     .child(div().flex_1().child("Back to sessions"))
                     .child(kbd("Esc", p)),
             )
+            // The vault row is here too, so the master password popover comes out of the same
+            // place on every page.
+            .children(self.render_vault_row(p, cx).map(|row| div().mb(px(6.)).child(row)))
             .child(div().px(px(8.)).pt(px(4.)).pb(px(6.)).child(section_label("Settings", p)))
             .children(SettingsSection::ALL.into_iter().map(|s| {
                 let active = s == section;

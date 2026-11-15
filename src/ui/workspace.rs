@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, KeyDownEvent,
+    Animation, AnimationExt as _, AnyElement, App, anchored, deferred, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, KeyDownEvent,
     ScrollHandle, SharedString, Subscription, Window, WindowAppearance, actions, div, prelude::*, px, WindowControlArea, MouseButton, ListState, ListAlignment, list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -232,6 +232,9 @@ pub struct Startup {
     pub active: Option<usize>,
     /// Open the Settings page at this section (used for screenshots).
     pub settings: Option<SettingsSection>,
+    /// A Local Shell to open: its Project's id (`None` when standalone) and name. Passed by the
+    /// Komando that asked for this one to run the shell as administrator.
+    pub open_shell: Option<(Option<String>, String)>,
 }
 
 pub struct Workspace {
@@ -260,10 +263,15 @@ pub struct Workspace {
     /// A shell whose Remove button was clicked once, waiting for the second click.
     confirm_remove_shell: Option<(String, Instant)>,
     vault: Option<Vault>,
-    /// Shown full-window at launch; as a dialog when a locked Vault is needed later.
+    /// A Vault file is on this PC (looked up when its state can change, not on every frame).
+    /// With it locked, the sidebar shows the vault row.
+    vault_exists: bool,
+    /// The master password popover, out of the sidebar's vault row.
     unlock: Option<UnlockState>,
     /// What waits for the master password, in the order it was asked for.
     pending: Vec<Pending>,
+    /// Unlocked with "Stay unlocked" off: lock again once what waited has used the Vault.
+    lock_after_use: bool,
     sessions: Vec<SessionEntry>,
     active: Option<usize>,
     /// Two Sessions side by side, shown while either is active (see `split.rs`).
@@ -297,10 +305,13 @@ pub struct Workspace {
     _subscriptions: Vec<Subscription>,
 }
 
-/// The master password dialog. It opens only when something needs the Vault (connecting
-/// with a saved password, saving one, importing a key), never at startup.
+/// The master password popover. It opens when something needs the Vault (connecting with a
+/// saved password, saving one, importing a key) or from the sidebar's vault row, never at
+/// startup. It doesn't block the window: the terminal and sidebar stay usable while it's open.
 struct UnlockState {
     creating: bool,
+    /// The popover's own focus, so Escape closes it only while the keyboard is in it.
+    focus: FocusHandle,
     password: Entity<InputState>,
     confirm: Entity<InputState>,
     error: Option<String>,
@@ -359,8 +370,10 @@ impl Workspace {
             shell_editor: None,
             confirm_remove_shell: None,
             vault: None,
+            vault_exists: false,
             unlock: None,
             pending: vec![],
+            lock_after_use: false,
             sessions: vec![],
             active: None,
             split: None,
@@ -397,6 +410,7 @@ impl Workspace {
                 Err(err) => log::error!("startup unlock: {err:#}"),
             }
         }
+        this.vault_exists = Vault::exists(&this.data_dir);
         this.start_auto_lock(window, cx);
         if let Some(message) = library_error {
             this.show_toast_for(message, Duration::from_secs(20), cx);
@@ -410,7 +424,7 @@ impl Workspace {
             .detach();
         }
         crate::perf::startup("workspace ready");
-        if !startup.open.is_empty() {
+        if !startup.open.is_empty() || startup.open_shell.is_some() {
             cx.defer_in(window, move |this, window, cx| this.run_startup(&startup, window, cx));
         }
         this
@@ -432,6 +446,13 @@ impl Workspace {
             if let Some(item) = item {
                 let another = self.sessions_of(&item.key()).next().is_some();
                 self.activate_item(item, another, window, cx);
+            }
+        }
+        if let Some((project, name)) = &startup.open_shell {
+            let key = ItemKey::Shell { project: project.clone(), name: name.clone() };
+            match items.iter().find(|item| item.key() == key).cloned() {
+                Some(item) => self.activate_item(item, false, window, cx),
+                None => self.show_toast(format!("Couldn't find the shell “{name}”. It may have been renamed or removed."), cx),
             }
         }
         if let Some(index) = startup.active
@@ -718,7 +739,8 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let creating = !Vault::exists(&self.data_dir);
+        self.vault_exists = Vault::exists(&self.data_dir);
+        let creating = !self.vault_exists;
         let password = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
@@ -734,7 +756,8 @@ impl Workspace {
             self._subscriptions.push(sub);
         }
         password.update(cx, |state, cx| state.focus(window, cx));
-        self.unlock = Some(UnlockState { creating, password, confirm, error: None, reason: reason.into() });
+        let focus = cx.focus_handle();
+        self.unlock = Some(UnlockState { creating, focus, password, confirm, error: None, reason: reason.into() });
         cx.notify();
     }
 
@@ -754,9 +777,11 @@ impl Workspace {
         match result {
             Ok(vault) => {
                 self.vault = Some(vault);
+                self.vault_exists = true;
                 self.unlock = None;
                 self.last_activity = Instant::now();
                 let pending = std::mem::take(&mut self.pending);
+                self.lock_after_use = !pending.is_empty() && !self.settings.stay_unlocked;
                 if pending.is_empty() {
                     self.focus_active(window, cx);
                 }
@@ -767,6 +792,7 @@ impl Workspace {
                         Pending::Form => self.submit_form(window, cx),
                     }
                 }
+                self.lock_if_used(cx);
             }
             Err(err) => {
                 // A vault created elsewhere since the dialog opened: ask for its password now.
@@ -779,7 +805,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// "Not now" (or Escape) on the master password dialog. A connection still goes ahead
+    /// "Not now", ✕ or Escape on the master password popover, or a second click on the vault row. A connection still goes ahead
     /// and asks for the server's password instead; anything else is dropped.
     fn skip_unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.unlock = None;
@@ -799,8 +825,20 @@ impl Workspace {
         cx.notify();
     }
 
+    /// With "Stay unlocked" off, lock the Vault once what waited for it has read it: saving
+    /// and imports do at once, a new Session when it starts (see `start_when_sized`).
+    fn lock_if_used(&mut self, cx: &mut Context<Self>) {
+        if self.lock_after_use && !self.sessions.iter().any(|s| s.waiting_for_size) {
+            self.lock_after_use = false;
+            self.vault = None;
+            cx.notify();
+        }
+    }
+
     fn lock_vault(&mut self, cx: &mut Context<Self>) {
+        self.lock_after_use = false;
         if self.vault.take().is_some() {
+            self.vault_exists = true;
             self.show_toast("Vault locked. Open sessions stay connected.", cx);
         }
         cx.notify();
@@ -1123,6 +1161,7 @@ impl Workspace {
             }
             self.start_backend(&view, &kind, project_id.as_deref(), cx);
         }
+        self.lock_if_used(cx);
     }
 
     fn start_backend(&mut self, view: &Entity<TerminalView>, kind: &SessionKind, project_id: Option<&str>, cx: &mut Context<Self>) {
@@ -1330,11 +1369,10 @@ impl Workspace {
         }
     }
 
+    /// Give the keyboard to the active Session. The master password popover doesn't hold on
+    /// to it: switching Sessions while it's open types into the terminal, not the popover.
     fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
-        // The master password dialog sits over everything: it keeps the keyboard.
-        if let Some(unlock) = &self.unlock {
-            unlock.password.update(cx, |input, cx| input.focus(window, cx));
-        } else if let Some(entry) = self.active_entry() {
+        if let Some(entry) = self.active_entry() {
             // The open question's field if it has one, else the terminal.
             entry.view.update(cx, |view, cx| view.focus_prompt(window, cx));
         } else {
@@ -1346,11 +1384,16 @@ impl Workspace {
         self.sessions.iter().find(|s| Some(s.id) == self.active)
     }
 
-    /// Whether a question is open: the active Session's (a password, a host key…) or the
-    /// master password. It is a modal: nothing else in the window can be used, and no other
-    /// dialog opens, until it is answered.
+    /// Whether the active Session has a question open (a password, a host key…). It is a
+    /// modal: nothing else in the window can be used, and no other dialog opens, until it is
+    /// answered. The master password popover is not one: it leaves the window usable.
     fn prompt_open(&self, cx: &App) -> bool {
-        self.unlock.is_some() || self.active_entry().is_some_and(|entry| entry.view.read(cx).has_prompt())
+        self.active_entry().is_some_and(|entry| entry.view.read(cx).has_prompt())
+    }
+
+    /// Whether the keyboard is in the master password popover.
+    fn unlock_focused(&self, window: &Window, cx: &App) -> bool {
+        self.unlock.as_ref().is_some_and(|state| state.focus.contains_focused(window, cx))
     }
 
     /// Whether a dialog is up, so the window's shortcuts and other dialogs must wait.
@@ -1856,109 +1899,306 @@ fn sanitize(s: &str) -> String {
 // ---- rendering -------------------------------------------------------------------------
 
 impl Workspace {
-    /// The master password dialog. It must not be mistaken for a server's password question
-    /// (a plain card titled "Password for …"): it carries the vault badge, names Komando's
-    /// vault, and says in a highlighted note that this is not the server's password.
+    /// The sidebar's vault row, over the Projects: there while the Vault is locked, gone once
+    /// it is unlocked. A click opens the master password popover out of it (a second click
+    /// closes it), and anything else that needs the Vault opens the popover here too. Before a
+    /// Vault exists the row shows only while the popover asks for a new master password.
+    pub(super) fn render_vault_row(&self, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let open = self.unlock.as_ref();
+        if open.is_none() && (self.vault.is_some() || !self.vault_exists) {
+            return None;
+        }
+        let creating = open.is_some_and(|state| state.creating);
+        let label = if creating { "Set up vault" } else { "Vault locked" };
+        let row = div()
+            .id("vault-row")
+            .role(gpui::Role::Button)
+            .aria_label(if open.is_some() { label.to_string() } else { format!("{label}, unlock") })
+            .tab_index(0)
+            .focus_visible(move |s| s.border_2().border_color(p.brand))
+            .relative()
+            .h(px(34.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(p.brand.opacity(if open.is_some() { 0.6 } else { 0.3 }))
+            .bg(if open.is_some() { p.brand_soft } else { p.brand_soft.opacity(0.5) })
+            .cursor_pointer()
+            .text_size(px(12.5))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(p.text)
+            .hover(|s| s.bg(p.brand_soft))
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                if this.unlock.is_some() {
+                    this.skip_unlock(window, cx);
+                } else {
+                    this.show_unlock("Unlock to connect with your saved passwords and keys.", window, cx);
+                }
+            }))
+            .child(icon_el("lock-keyhole", 14., p.brand))
+            .child(div().flex_1().min_w_0().child(label))
+            .when(open.is_none(), |el| el.child(div().text_size(px(11.5)).text_color(p.brand).child("Unlock")))
+            .child(icon_el("chevron-right", 14., p.brand))
+            .children(open.map(|state| self.render_unlock(state, p, cx)));
+        Some(row.into_any_element())
+    }
+
+    /// The master password popover, drawn from the vault row's right edge out over the
+    /// terminal area, its top level with the row. It is not a modal: there is no backdrop and
+    /// the rest of the window keeps working. It must not be mistaken for a server's password
+    /// question (a plain card titled "Password for …"): it carries the vault badge and a
+    /// brand-coloured top edge, names Komando's vault, and says under the field that this is
+    /// not the server's password.
     fn render_unlock(&self, state: &UnlockState, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let creating = state.creating;
+        let waiting = !self.pending.is_empty();
         let skip_label = if self.pending.iter().any(|job| matches!(job, Pending::Open { .. })) {
-            "Type the server password instead"
+            "Use server password"
         } else {
             "Not now"
+        };
+        let header = div()
+            .flex()
+            .items_start()
+            .gap(px(12.))
+            .child(badge("lock-keyhole", p.brand, 36.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.brand)
+                            .child("KOMANDO VAULT"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.text)
+                            .child(if creating { "Create a master password" } else { "Unlock your vault" }),
+                    )
+                    .child(
+                        div()
+                            .pt(px(2.))
+                            .text_size(px(12.5))
+                            .line_height(px(18.))
+                            .text_color(p.text_muted)
+                            .child(state.reason.clone()),
+                    ),
+            )
+            // Same as the skip button or Escape.
+            .child(
+                close_x("unlock-close", p)
+                    .flex_shrink_0()
+                    .mt(px(-4.))
+                    .mr(px(-6.))
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.skip_unlock(window, cx))),
+            );
+
+        // Under the field, one line that keeps it apart from a server's password question.
+        let hint = |icon: &str, text: &'static str, color: Hsla| {
+            div()
+                .flex()
+                .items_start()
+                .gap(px(6.))
+                .text_size(px(12.))
+                .line_height(px(17.))
+                .text_color(color)
+                .child(div().flex_shrink_0().pt(px(1.)).child(icon_el(icon, 13., color)))
+                .child(div().flex_1().min_w_0().child(text))
         };
         let form = div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(px(8.))
             .child(password_input(&state.password, p))
             .when(creating, |el| el.child(password_input(&state.confirm, p)))
-            .when_some(state.error.clone(), |el, e| el.child(div().text_size(px(12.)).text_color(p.danger).child(e)));
-        let header = div()
-            .flex()
-            .items_center()
-            .gap(px(12.))
-            .child(badge("lock-keyhole", p.brand, 38.))
-            .child(
-                div()
+            .child(match &state.error {
+                Some(error) => div()
                     .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .child(div().text_size(px(11.5)).font_weight(FontWeight::MEDIUM).text_color(p.brand).child("KOMANDO VAULT"))
-                    .child(
-                        div()
-                            .text_size(px(16.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(p.text)
-                            .child(if creating { "Create a master password" } else { "Enter your master password" }),
-                    ),
-            )
-            // Same as "Not now" or Escape.
-            .child(div().flex_1())
-            .child(
-                close_x("unlock-close", p)
-                    .flex_shrink_0()
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.skip_unlock(window, cx))),
-            );
-        let note = div()
-            .flex()
-            .items_start()
-            .gap(px(10.))
-            .px(px(12.))
-            .py(px(10.))
-            .rounded(px(8.))
-            .bg(p.brand_soft)
-            .border_1()
-            .border_color(p.brand.opacity(0.35))
-            .child(div().flex_shrink_0().pt(px(2.)).child(icon_el("key-round", 15., p.brand)))
-            .child(
-                div().flex_1().min_w_0().text_size(px(12.5)).line_height(px(18.)).text_color(p.text).child(if creating {
-                    "This password protects the passwords and keys Komando saves for you. It is not a server's password, and Komando asks for it only when it needs the vault."
-                } else {
-                    "This is the password you chose for Komando's vault, not the password of the server."
-                }),
-            );
+                    .items_start()
+                    .gap(px(6.))
+                    .text_size(px(12.))
+                    .line_height(px(17.))
+                    .text_color(p.danger)
+                    .child(div().flex_shrink_0().pt(px(1.)).child(icon_el("circle-alert", 13., p.danger)))
+                    .child(div().flex_1().min_w_0().child(error.clone()))
+                    .into_any_element(),
+                None if creating => hint(
+                    "key-round",
+                    "Protects the passwords and keys Komando saves. It is not a server's password.",
+                    p.text_faint,
+                )
+                .into_any_element(),
+                None => hint("key-round", "The password you chose for Komando, not the server's.", p.text_faint)
+                    .into_any_element(),
+            });
+
         // The one sentence that must not be skimmed past.
         let warning = creating.then(|| {
             div()
-                .text_size(px(12.5))
-                .line_height(px(18.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(p.warning)
-                .child("There is no recovery: if you forget it, saved passwords are lost. Projects and hosts are kept.")
+                .flex()
+                .items_start()
+                .gap(px(8.))
+                .px(px(10.))
+                .py(px(8.))
+                .rounded(px(8.))
+                .bg(p.warning.opacity(0.1))
+                .border_1()
+                .border_color(p.warning.opacity(0.3))
+                .text_size(px(12.))
+                .line_height(px(17.))
+                .text_color(p.text)
+                .child(div().flex_shrink_0().pt(px(1.)).child(icon_el("triangle-alert", 13., p.warning)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child("There is no recovery: forget it and saved passwords are lost. Projects and hosts are kept."),
+                )
         });
+
+        // Stay unlocked for the auto-lock time, or lock again once what waits has used the
+        // Vault. Only offered when something waits: unlocking from the row means to stay.
+        let stay = self.settings.stay_unlocked;
+        let stay_detail = if !stay {
+            "Locks again right after this".to_string()
+        } else {
+            match self.settings.auto_lock_minutes {
+                0 => "Until Komando closes".to_string(),
+                minutes => format!("Locks after {} without use", settings::auto_lock_label(minutes)),
+            }
+        };
+        let remember = waiting.then(|| {
+            div()
+                .id("unlock-stay")
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(10.))
+                .py(px(8.))
+                .rounded(px(8.))
+                .bg(p.hover)
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.settings.stay_unlocked = !this.settings.stay_unlocked;
+                    this.save_settings(cx);
+                    cx.notify();
+                }))
+                .child(switch("unlock-stay-switch".into(), "Stay unlocked", stay, p))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child("Stay unlocked"))
+                        .child(div().text_size(px(11.5)).text_color(p.text_faint).child(stay_detail)),
+                )
+                .child(
+                    div()
+                        .id("unlock-stay-change")
+                        .flex_shrink_0()
+                        .text_size(px(11.5))
+                        .text_color(p.text_muted)
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(p.brand))
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.open_settings(SettingsSection::Security, window, cx);
+                        }))
+                        .child("Change"),
+                )
+        });
+
         let actions = div()
             .flex()
             .items_center()
-            .justify_end()
             .gap(px(8.))
+            .px(px(20.))
+            .py(px(12.))
+            .border_t_1()
+            .border_color(p.border)
             .child(
+                // Its text lines up with the content above; the hover background reaches out.
                 button("unlock-skip", skip_label, ButtonKind::Ghost, p)
+                    .ml(px(-12.))
                     .on_click(cx.listener(|this, _, window, cx| this.skip_unlock(window, cx))),
             )
+            .child(div().flex_1())
             .child(
                 button("unlock", if creating { "Create vault" } else { "Unlock" }, ButtonKind::Primary, p)
                     .on_click(cx.listener(|this, _, window, cx| this.submit_unlock(window, cx))),
             );
-        modal(
-            p,
-            div()
-                .w(px(440.))
-                .p(px(24.))
-                .flex()
-                .flex_col()
-                .gap(px(16.))
-                // A brand-coloured top edge, which the plain server questions don't have.
-                .border_t_4()
-                .border_color(p.brand)
-                .rounded(px(14.))
-                .child(header)
-                .child(div().text_size(px(13.)).line_height(px(20.)).text_color(p.text_muted).child(state.reason.clone()))
-                .child(note)
-                .children(warning)
-                .child(form)
-                .child(actions)
-                .into_any_element(),
-        )
+
+        let card = div()
+            .id("unlock-popover")
+            .track_focus(&state.focus)
+            .role(gpui::Role::Dialog)
+            .aria_label("Komando vault")
+            // Clicks on it must not reach the terminal underneath (it would take the focus).
+            .occlude()
+            .relative()
+            .w(px(380.))
+            .rounded(px(14.))
+            .bg(p.surface)
+            .border_1()
+            .border_color(p.border)
+            .shadow(elevation(p.dark))
+            .child(
+                div()
+                    .rounded(px(14.))
+                    // A brand-coloured top edge, which the plain server questions don't have.
+                    .border_t_4()
+                    .border_color(p.brand)
+                    .child(
+                        div()
+                            .px(px(20.))
+                            .pt(px(16.))
+                            .pb(px(16.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(14.))
+                            .child(header)
+                            .children(warning)
+                            .child(form)
+                            .children(remember),
+                    )
+                    .child(actions),
+            )
+            // Slides out of the row to the right as it fades in.
+            .with_animation(
+                "unlock-popover-in",
+                Animation::new(Duration::from_millis(160)).with_easing(gpui::ease_out_quint()),
+                |el, t| el.opacity(t).left(px(-10. * (1. - t))),
+            );
+        // From the row's right edge: past the sidebar's inner padding and the gap between the
+        // islands, so the card starts just inside the terminal area, its top a little above
+        // the row's. It stays in the window when the window is short.
+        div()
+            .absolute()
+            .top_0()
+            .right_0()
+            .size_0()
+            .child(
+                deferred(
+                    anchored()
+                        .offset(gpui::point(px(8. + ISLAND_GAP + 8.), px(-4.)))
+                        .snap_to_window_with_margin(px(ISLAND_GAP))
+                        .child(card),
+                )
+                .with_priority(5),
+            )
+            .into_any_element()
     }
 
     /// The sidebar's rows, in order. Kept small (indices, counts) so working it out on every
@@ -2323,7 +2563,8 @@ impl Workspace {
                             .child(icon_el("search", 14., p.text_faint))
                             .child(div().flex_1().child("Quick connect"))
                             .child(kbd("Ctrl Shift K", p)),
-                    ),
+                    )
+                    .children(self.render_vault_row(p, cx).map(|row| div().pt(px(6.)).child(row))),
             )
             .child(list.pb(px(8.)));
 
@@ -2524,6 +2765,15 @@ impl Workspace {
                 menu = menu
                     .separator()
                     .item(menu_item("Delete host…", "trash", &ws, move |this, _, cx| this.confirm_delete_host(hc.clone(), cx)));
+            }
+            // In an elevated window every Session is elevated already.
+            if let SidebarItem::Shell { project, shell } = &item
+                && !crate::elevate::is_elevated()
+            {
+                let (project, name) = (project.as_ref().map(|p| p.id.clone()), shell.name.clone());
+                menu = menu.separator().item(menu_item("Run as administrator", "shield", &ws, move |this, window, cx| {
+                    this.run_as_admin(project.clone(), name.clone(), window, cx)
+                }));
             }
             menu
         };
@@ -2767,6 +3017,32 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// Open a Local Shell in a new, elevated Komando window. Windows asks for consent (UAC)
+    /// first; saying no there leaves everything as it was. See `crate::elevate`.
+    fn run_as_admin(&mut self, project: Option<String>, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let parent = crate::platform::window_handle(window);
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let label = name.clone();
+        // The call blocks until the prompt is answered; this window keeps drawing meanwhile.
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::elevate::open_shell_elevated(parent, project.as_deref(), &name));
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(outcome) = rx.await else { return };
+            let _ = this.update(cx, |this, cx| match outcome {
+                Ok(crate::elevate::Outcome::Started) => {
+                    this.show_toast(format!("{label} opens as administrator in a new window."), cx)
+                }
+                Ok(crate::elevate::Outcome::Cancelled) => {}
+                Err(err) => {
+                    log::error!("run as administrator: {err:#}");
+                    this.show_toast(format!("Couldn't run {label} as administrator: {err:#}"), cx)
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Fold an item's Sessions away under its row, or show them again.
     fn toggle_item_sessions(&mut self, key: &ItemKey, cx: &mut Context<Self>) {
         if !self.collapsed_items.remove(key) {
@@ -2982,7 +3258,9 @@ impl Workspace {
                     .pl(px(ISLAND_GAP + 18.))
                     .flex()
                     .items_center()
-                    .when(!minimal, |el| el.child(wordmark(16., p.text))),
+                    .gap(px(10.))
+                    .when(!minimal, |el| el.child(wordmark(16., p.text)))
+                    .when(crate::elevate::is_elevated(), |el| el.child(admin_badge(p))),
             )
             .child(div().flex_1().min_w_0().h_full().flex().items_center().children(strip))
             .child(window_controls(p, window))
@@ -3676,32 +3954,6 @@ fn close_x(id: &'static str, p: AppPalette) -> gpui::Stateful<gpui::Div> {
     icon_button(id, "x", p).aria_label("Close")
 }
 
-fn modal(p: AppPalette, body: AnyElement) -> AnyElement {
-    div()
-        .absolute()
-        // Clicks must not reach the terminal underneath (it would take the focus).
-        .occlude()
-        // Below the title bar, so the window can still be moved and closed.
-        .top(px(TITLE_BAR_HEIGHT))
-        .left_0()
-        .right_0()
-        .bottom_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(alpha(0x000000, if p.dark { 0.5 } else { 0.2 }))
-        .child(
-            div()
-                .rounded(px(14.))
-                .bg(p.surface)
-                .border_1()
-                .border_color(p.border)
-                .shadow(elevation(p.dark))
-                .child(body),
-        )
-        .into_any_element()
-}
-
 /// Minimise, maximise/restore and close, in the order Windows uses, drawn like the rest of
 /// Komando: rounded buttons that sit inside the title bar with room around them, instead of
 /// squares that fill it and run into the terminal's coloured edge below. The close button's
@@ -3789,6 +4041,29 @@ fn menu_item(
     })
 }
 
+/// Marks a window running with administrator rights, where every shell is elevated. Amber,
+/// like a caution sign, and always in view in the title bar.
+fn admin_badge(p: AppPalette) -> impl IntoElement {
+    div()
+        .id("admin-badge")
+        .h(px(22.))
+        .px(px(8.))
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(5.))
+        .rounded_full()
+        .bg(p.warning.opacity(0.14))
+        .border_1()
+        .border_color(p.warning.opacity(0.3))
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(p.warning)
+        .child(icon_el("shield", 13., p.warning))
+        .child("Administrator")
+        .tooltip(|window, cx| Tooltip::new("Shells in this window run with administrator rights").build(window, cx))
+}
+
 /// A small icon-only action for the session strip above the terminal.
 /// `danger` marks an action that ends something: it turns red on hover.
 fn strip_action(id: &'static str, icon: &str, label: &'static str, danger: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
@@ -3860,7 +4135,7 @@ impl Render for Workspace {
             .text_color(p.text)
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.last_activity = Instant::now();
-                if event.keystroke.key == "escape" && this.unlock.is_some() {
+                if event.keystroke.key == "escape" && this.unlock_focused(window, cx) {
                     this.skip_unlock(window, cx);
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.overlay.is_some() {
@@ -3980,7 +4255,6 @@ impl Render for Workspace {
             .children(downloads)
             .children(self.render_overlay(f32::from(window.bounds().size.width) >= WIDE_FORM_MIN_WINDOW, p, cx))
             .children(self.render_prompt_modal(p, cx))
-            .children(self.unlock.as_ref().map(|s| self.render_unlock(s, p, cx)))
             .children(toast)
             .into_any_element()
     }

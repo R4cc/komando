@@ -15,6 +15,20 @@ All notable changes to Komando are listed here. The format follows
   review lists, per host, a private key or proxy that doesn't come over, and how many RDP,
   VNC or other non-SSH sessions were left out. MobaXterm's file format isn't documented, so
   check the review before importing.
+- Right-click a local shell, such as PowerShell or cmd, and choose Run as administrator. After
+  you approve the Windows prompt, the shell opens in a new Komando window with administrator
+  rights, and your current window keeps running as it was. That window shows an amber
+  Administrator badge in its title bar, and every shell you open there runs as administrator.
+- A "Stay unlocked" switch in the master password box. On, the vault stays unlocked for the
+  auto-lock time set in Settings → Security; off, it locks again as soon as the host has signed
+  in or the password is saved. Komando remembers your choice.
+
+### Changed
+
+- The master password no longer covers the window. While the vault is locked, a "Vault locked"
+  row sits at the top of the sidebar; click it, or open a host that needs the vault, and the
+  password box opens beside it. The rest of the window keeps working while it's open, and the
+  row goes away once the vault is unlocked.
 
 ## [0.4.4] - 2026-11-14
 

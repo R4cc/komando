@@ -773,6 +773,9 @@ pub struct Settings {
     /// Minutes of inactivity before the Vault locks, up to 7 days. 0 means it stays unlocked
     /// until Komando closes (it is never kept unlocked across a restart).
     pub auto_lock_minutes: u32,
+    /// The master password popover's "Stay unlocked": on, the Vault stays unlocked for
+    /// `auto_lock_minutes`; off, it locks again once what asked for it has used it.
+    pub stay_unlocked: bool,
     /// PuTTY-style: selecting copies, right-click pastes.
     pub putty_clipboard: bool,
     /// Ask before pasting more than one line.
@@ -820,6 +823,7 @@ impl Default for Settings {
             font_size: 14.0,
             scrollback_lines: 100_000,
             auto_lock_minutes: 0,
+            stay_unlocked: true,
             putty_clipboard: false,
             confirm_multiline_paste: true,
             command_rail: true,

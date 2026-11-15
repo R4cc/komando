@@ -28,6 +28,17 @@ pub fn set_window_dark_mode(window: &gpui::Window, dark: bool) {
 #[cfg(not(windows))]
 pub fn set_window_dark_mode(_window: &gpui::Window, _dark: bool) {}
 
+/// The window's Win32 handle, as a number so it can go to another thread (see
+/// `crate::elevate::open_shell_elevated`).
+pub fn window_handle(window: &gpui::Window) -> Option<isize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    match HasWindowHandle::window_handle(window).ok()?.as_raw() {
+        RawWindowHandle::Win32(win32) => Some(win32.hwnd.get()),
+        _ => None,
+    }
+}
+
 /// Configure DWM directly: gpui 0.3.12's Mica path has a version probe with an
 /// uninitialised structure size, and its Opaque path never clears SYSTEMBACKDROP_TYPE.
 /// Return whether the backdrop was enabled, so failed native calls keep our UI opaque.
