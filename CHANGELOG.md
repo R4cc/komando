@@ -6,14 +6,7 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
-### Fixed
-
-- MobaXterm imports preserve equals signs in startup commands, such as shell variable
-  assignments. Sessions without a startup command no longer run an existing Project's commands.
-  Mixed-case escape markers also work in commands and Jump Host lists.
-- Timed vault unlocks now survive Komando restarts on your Windows account. Time with
-  Komando closed counts toward the selected inactivity period; Lock now clears the saved
-  unlock, and Until restart still locks when Komando closes.
+## [0.5.2] - 2026-11-15
 
 ### Added
 
@@ -26,6 +19,12 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- MobaXterm imports preserve equals signs in startup commands, such as shell variable
+  assignments. Sessions without a startup command no longer run an existing Project's commands.
+  Mixed-case escape markers also work in commands and Jump Host lists.
+- Timed vault unlocks now survive Komando restarts on your Windows account. Time with
+  Komando closed counts toward the selected inactivity period; Lock now clears the saved
+  unlock, and Until restart still locks when Komando closes.
 - Short-lived local shells reliably report that they have exited, even when they finish
   before Komando's session event loop starts listening.
 
@@ -1084,7 +1083,9 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/R4cc/komando/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/R4cc/komando/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/R4cc/komando/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/R4cc/komando/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/R4cc/komando/compare/v0.4.2...v0.4.3
