@@ -1,3 +1,4 @@
+mod artwork;
 pub mod box_drawing;
 pub mod connect_route;
 pub mod desktop_view;

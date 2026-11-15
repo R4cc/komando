@@ -6,6 +6,16 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Removed the tagline from Settings → About.
+
+### Fixed
+
+- Theme previews and the About icon have smoother rounded edges at different display
+  scales. Their outer rims are trimmed and transparent edges use higher-quality resizing
+  without dark or bright fringes.
+
 ## [0.5.5] - 2026-11-15
 
 ### Changed

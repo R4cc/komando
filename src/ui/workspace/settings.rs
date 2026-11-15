@@ -1,7 +1,7 @@
 //! The Settings page: a full-window page with category navigation on the left.
 //! Sessions keep running behind it; Esc or "Back to sessions" returns to them.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use super::*;
 use crate::model::MinimapPlacement;
@@ -115,24 +115,20 @@ pub struct ShellEditor {
     error: Option<String>,
 }
 
-fn logo() -> Arc<gpui::Image> {
-    static LOGO: OnceLock<Arc<gpui::Image>> = OnceLock::new();
-    LOGO.get_or_init(|| {
-        Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, include_bytes!("../../../assets/icon.png").to_vec()))
-    })
-    .clone()
+fn logo() -> &'static crate::ui::artwork::Artwork {
+    static LOGO: OnceLock<crate::ui::artwork::Artwork> = OnceLock::new();
+    LOGO.get_or_init(|| crate::ui::artwork::Artwork::png(include_bytes!("../../../assets/icon.png"), 0.01, 0.22))
 }
 
-fn theme_thumbnail(theme: &crate::theme::ThemeSpec) -> Arc<gpui::Image> {
-    static IMAGES: OnceLock<std::collections::HashMap<&'static str, Arc<gpui::Image>>> = OnceLock::new();
-    IMAGES.get_or_init(|| {
+fn theme_thumbnail(theme: &crate::theme::ThemeSpec) -> &'static crate::ui::artwork::Artwork {
+    static IMAGES: OnceLock<std::collections::HashMap<&'static str, crate::ui::artwork::Artwork>> = OnceLock::new();
+    &IMAGES.get_or_init(|| {
         crate::theme::DARK_THEMES
             .iter()
             .chain(crate::theme::LIGHT_THEMES)
-            .map(|t| (t.thumbnail_file, Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, t.thumbnail_png.to_vec()))))
+            .map(|t| (t.thumbnail_file, crate::ui::artwork::Artwork::png(t.thumbnail_png, 0.0625, 0.22)))
             .collect()
     })[theme.thumbnail_file]
-        .clone()
 }
 
 impl Workspace {
@@ -496,9 +492,8 @@ impl Workspace {
                 .size(px(46.))
                 .flex_shrink_0()
                 .relative()
-                // The PNG includes its rounded corners and transparency. Contain keeps all
-                // of its artwork visible without cropping, stretching or recolouring it.
-                .child(gpui::img(theme_thumbnail(t)).size_full().object_fit(gpui::ObjectFit::Contain))
+                // Trim the baked rim and filter transparent edges at this monitor's scale.
+                .child(theme_thumbnail(t).element(46.))
                 .when(selected, |el| {
                     el.child(
                         div()
@@ -998,11 +993,11 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(20.))
-                    // The artwork includes its own rounded border and transparent corners.
+                    // Use the same scale-aware, antialiased edge treatment as theme artwork.
                     .child(
                         div()
                             .size(px(72.))
-                            .child(gpui::img(logo()).size_full()),
+                            .child(logo().element(72.)),
                     )
                     .child(
                         div()
@@ -1012,13 +1007,6 @@ impl Workspace {
                             .child(wordmark(24., p.text))
                             .child(div().text_size(px(13.)).text_color(p.text_muted).child(format!("Version {VERSION}"))),
                     ),
-            )
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .line_height(px(20.))
-                    .text_color(p.text_muted)
-                    .child("A fast terminal for system engineers who work on Linux servers from Windows 11."),
             )
             .child(group(
                 p,
