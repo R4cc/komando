@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-15
+
 ### Added
 
 - A PolyForm Noncommercial 1.0.0 license for Komando-authored code, permitting copying,
@@ -25,7 +27,6 @@ All notable changes to Komando are listed here. The format follows
 - Clipboard confirmations are concise and no longer suggest apps to paste into.
 - Add and edit Local Shells in a focused dialog, keeping the Settings list compact and
   Save and Cancel visible while choosing an icon.
-
 - Background hosts, sessions and collapsed projects show a small rotating green ring while
   receiving terminal output, replacing the static pulse icon. Visible and quiet sessions
   keep the normal connected dot. Session icons remain on the left; status indicators stay
