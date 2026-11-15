@@ -11,6 +11,7 @@ pub enum SettingsSection {
     Appearance,
     Terminal,
     FileBrowser,
+    RemoteDesktop,
     Shells,
     Highlights,
     Import,
@@ -19,10 +20,11 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 8] = [
+    pub const ALL: [SettingsSection; 9] = [
         Self::Appearance,
         Self::Terminal,
         Self::FileBrowser,
+        Self::RemoteDesktop,
         Self::Shells,
         Self::Highlights,
         Self::Import,
@@ -35,6 +37,7 @@ impl SettingsSection {
             Self::Appearance => "Appearance",
             Self::Terminal => "Terminal",
             Self::FileBrowser => "File browser",
+            Self::RemoteDesktop => "Remote desktop",
             Self::Shells => "Local shells",
             Self::Highlights => "Highlights",
             Self::Import => "Import",
@@ -48,6 +51,7 @@ impl SettingsSection {
             Self::Appearance => "palette",
             Self::Terminal => "square-terminal",
             Self::FileBrowser => "folder-open",
+            Self::RemoteDesktop => "monitor",
             Self::Shells => "terminal",
             Self::Highlights => "highlighter",
             Self::Import => "import",
@@ -61,6 +65,7 @@ impl SettingsSection {
             Self::Appearance => "Dark and light mode, a theme for each, and the background blur.",
             Self::Terminal => "Font, scrollback and clipboard behaviour for every session.",
             Self::FileBrowser => "The SFTP file browser beside SSH sessions.",
+            Self::RemoteDesktop => "RDP and VNC desktops of your hosts. Each host sets up its own in its form, under Remote desktop.",
             Self::Shells => "The shells on this PC listed at the top of the sidebar. Hide the ones you don't use, remove them, or add your own, such as WSL or Git Bash.",
             Self::Highlights => "Colour matching text in terminal output. Rules apply top to bottom; the first match wins.",
             Self::Import => "Bring your hosts over from another SSH client. Nothing changes until you confirm the review.",
@@ -213,6 +218,9 @@ impl Workspace {
     /// Push terminal behaviour settings into every open session.
     fn apply_terminal_settings(&mut self, cx: &mut Context<Self>) {
         let (paste, putty) = (self.settings.confirm_multiline_paste, self.settings.putty_clipboard);
+        let windows_selection = self.settings.windows_selection;
+        let cursor_shape = self.settings.cursor_shape;
+        let cursor_blink = self.settings.cursor_blink;
         let rail = self.settings.command_rail;
         let history = self.settings.command_history;
         let minimap = self.settings.minimap;
@@ -220,9 +228,12 @@ impl Workspace {
         let minimap_delay = std::time::Duration::from_millis(self.settings.minimap_delay_ms.into());
         for entry in &self.sessions {
             let ssh = matches!(entry.kind, SessionKind::Ssh { .. });
-            entry.view.update(cx, |v, cx| {
+            let Some(view) = entry.view.terminal() else { continue };
+            view.update(cx, |v, cx| {
                 v.confirm_multiline_paste = paste;
                 v.putty_clipboard = putty;
+                v.windows_selection = windows_selection;
+                v.set_cursor(cursor_shape, cursor_blink);
                 v.command_rail = rail;
                 v.command_history = history && ssh;
                 v.minimap = minimap;
@@ -314,6 +325,7 @@ impl Workspace {
             SettingsSection::Appearance => self.settings_appearance(p, cx),
             SettingsSection::Terminal => self.settings_terminal(p, cx),
             SettingsSection::FileBrowser => self.settings_file_browser(p, cx),
+            SettingsSection::RemoteDesktop => self.settings_remote_desktop(p, cx),
             SettingsSection::Shells => self.settings_shells(p, cx),
             SettingsSection::Highlights => self.settings_highlights(p, cx),
             SettingsSection::Import => self.settings_import(p, cx),
@@ -366,7 +378,7 @@ impl Workspace {
             // The title bar above is the top margin.
             .px(px(ISLAND_GAP))
             .pb(px(ISLAND_GAP))
-            .child(nav)
+            .when(self.sidebar_visible, |el| el.child(nav))
             .child(content)
             .into_any_element()
     }
@@ -583,6 +595,24 @@ impl Workspace {
         let scrollback = self.settings.scrollback_lines;
         let paste = self.settings.confirm_multiline_paste;
         let putty = self.settings.putty_clipboard;
+        let windows_selection = self.settings.windows_selection;
+        let cursor_blink = self.settings.cursor_blink;
+        use crate::model::TerminalCursor;
+        let cursor_shapes = [TerminalCursor::Line, TerminalCursor::Block, TerminalCursor::Underline];
+        let cursor_choice = segmented(
+            "cursor-shape",
+            &[
+                ("Line", self.settings.cursor_shape == cursor_shapes[0]),
+                ("Block", self.settings.cursor_shape == cursor_shapes[1]),
+                ("Underline", self.settings.cursor_shape == cursor_shapes[2]),
+            ],
+            p,
+            cx,
+            move |this, i, _, cx| {
+                this.settings.cursor_shape = cursor_shapes[i];
+                this.apply_terminal_settings(cx);
+            },
+        );
         let rail = self.settings.command_rail;
         let minimap = self.settings.minimap;
         let placement = self.settings.minimap_placement;
@@ -640,6 +670,34 @@ impl Workspace {
                         .gap(px(12.))
                         .child(div().flex_1().children(font_slider))
                         .child(value_label(format!("{} px", self.settings.font_size), p))
+                        .into_any_element(),
+                ),
+                setting_row(
+                    p,
+                    "Cursor shape",
+                    "The default cursor. Terminal programs can request their own shape.",
+                    cursor_choice,
+                ),
+                setting_row(
+                    p,
+                    "Blinking cursor",
+                    "Blink the cursor while typing. Terminal programs can request a steady cursor.",
+                    switch("cursor-blink".into(), "Blinking cursor", cursor_blink, p)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.settings.cursor_blink = !cursor_blink;
+                            this.apply_terminal_settings(cx);
+                        }))
+                        .into_any_element(),
+                ),
+                setting_row(
+                    p,
+                    "Windows-style keyboard selection",
+                    "Ctrl+A selects a recognised command, then all output. Ctrl+Shift+A selects all output. Shift+arrows select text; Ctrl+Shift+Left/Right select words. Ctrl+Shift+Home/End select to the output edges. Esc clears. Replaces shell shortcuts outside full-screen programs.",
+                    switch("windows-selection".into(), "Windows-style keyboard selection", windows_selection, p)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.settings.windows_selection = !windows_selection;
+                            this.apply_terminal_settings(cx);
+                        }))
                         .into_any_element(),
                 ),
                 setting_row(
@@ -754,6 +812,62 @@ impl Workspace {
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.sftp_menu_move_to = !move_to;
                             this.apply_sftp_menu_settings(cx);
+                        }))
+                        .into_any_element(),
+                ),
+            ],
+        )
+    }
+
+    fn settings_remote_desktop(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let (fit, shared) = (self.settings.rdp_fit_desktop, self.settings.vnc_shared);
+        let trusted = std::fs::read_to_string(self.data_dir.join(crate::desktop::trust::FILE))
+            .map(|text| text.lines().filter(|l| !l.trim().is_empty()).count())
+            .unwrap_or(0);
+        group(
+            p,
+            vec![
+                setting_row(
+                    p,
+                    "RDP: fit the desktop to the window",
+                    "Ask the server for a desktop the size of the pane, and again when it changes size. Off, the server picks the size and Komando scales it down to fit.",
+                    switch("rdp-fit-desktop".into(), "Fit RDP desktops to the window", fit, p)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.settings.rdp_fit_desktop = !fit;
+                            this.save_settings(cx);
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ),
+                setting_row(
+                    p,
+                    "VNC: share the desktop",
+                    "Leave other viewers of a VNC desktop connected. Off asks the server to disconnect them. Applies from the next connection.",
+                    switch("vnc-shared".into(), "Share VNC desktops", shared, p)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.settings.vnc_shared = !shared;
+                            this.save_settings(cx);
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ),
+                setting_row(
+                    p,
+                    "Trusted RDP certificates",
+                    &match trusted {
+                        0 => "None yet. Komando asks the first time it connects to an RDP server, as for an SSH host key.".to_string(),
+                        1 => "1 server. Forgetting it makes Komando ask again on the next connection.".to_string(),
+                        n => format!("{n} servers. Forgetting them makes Komando ask again on the next connections."),
+                    },
+                    button("rdp-forget-certificates", "Forget all", ButtonKind::Secondary, p)
+                        .when(trusted == 0, |el| el.opacity(0.5))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            if trusted > 0 {
+                                match std::fs::remove_file(this.data_dir.join(crate::desktop::trust::FILE)) {
+                                    Ok(()) => this.show_toast("Trusted RDP certificates forgotten.", cx),
+                                    Err(err) => this.show_toast(format!("Could not forget certificates: {err}"), cx),
+                                }
+                            }
                         }))
                         .into_any_element(),
                 ),

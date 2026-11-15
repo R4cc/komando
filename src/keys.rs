@@ -140,10 +140,13 @@ fn is_altgr(key: &str, key_char: Option<&str>, mods: Mods) -> bool {
 /// Whether the key belongs to the application's shortcuts rather than the shell. They are all
 /// ctrl+shift+… (and ctrl+tab); plain ctrl+letter keys belong to the shell (ctrl+w deletes a
 /// word in bash). Ctrl+shift+2, 6 and - are the shell's NUL, RS and US, and AltGr+shift
-/// (ctrl+alt+shift on Windows) typing a character is text.
+/// (ctrl+alt+shift on Windows) typing a character is text. Modified navigation also belongs
+/// to the shell unless the terminal's optional keyboard selection handles it first.
 pub fn is_app_shortcut(key: &str, key_char: Option<&str>, mods: Mods) -> bool {
     (mods.ctrl && key == "tab")
-        || (mods.ctrl && mods.shift && !matches!(key, "-" | "2" | "6") && !is_altgr(key, key_char, mods))
+        || (mods.ctrl && mods.shift
+            && !matches!(key, "-" | "2" | "6" | "left" | "right" | "up" | "down" | "home" | "end" | "pageup" | "pagedown")
+            && !is_altgr(key, key_char, mods))
 }
 
 /// Alt+F4 (close) and Alt+Space (the window menu): on Windows these are the system's, and
@@ -376,6 +379,10 @@ mod tests {
         assert!(!is_app_shortcut("-", None, ctrl_shift));
         assert!(!is_app_shortcut("c", None, CTRL));
         assert!(!is_app_shortcut("c", Some("c"), NONE));
+        for key in ["left", "right", "up", "down", "home", "end", "pageup", "pagedown"] {
+            assert!(!is_app_shortcut(key, None, ctrl_shift));
+            assert!(to_bytes(key, None, ctrl_shift, false).is_some());
+        }
     }
 
     #[test]

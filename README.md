@@ -129,6 +129,23 @@ machine in `%APPDATA%\Komando`.
 - **Safe with Windows names.** Remote files called `con` or `README` and `readme` side by side
   download without clobbering each other.
 
+### Remote desktops over RDP and VNC
+
+- **Attached to your hosts.** Edit a host → Remote desktop to enable RDP, VNC, or both, with
+  their own port, account and vault password. Their toolbar buttons appear only when configured,
+  beside SFTP; the host's right-click menu opens them too.
+- **Inside Komando.** A desktop opens as a session under its host, with keyboard and mouse
+  input, scaling to fit, and reconnect. Choose what a click on the host opens, including a
+  desktop for Windows hosts without SSH.
+- **Direct or through SSH.** A tunnel on the host's SSH session reaches the desktop port on
+  that same machine. VNC defaults to this route because classic VNC leaves screen traffic
+  unencrypted. Connect the SSH session first; a waiting desktop then connects automatically.
+- **RDP certificate checks** happen before credentials are sent. New or changed certificates
+  ask for trust. Settings → Remote desktop controls RDP resizing, VNC sharing and remembered
+  certificates. RDP supports TLS and NLA with NTLM; VNC supports no authentication and classic
+  VNC passwords. Clipboard, audio and drive redirection, RD Gateway, Kerberos and VNC
+  TLS/VeNCrypt are outside this first version. Project sharing and imports still cover SSH.
+
 ### Secure by default
 
 <img src="assets/screenshot-vault.png" alt="The vault asks for the master password before web01 signs in with a saved key" width="380" align="right">
@@ -190,6 +207,15 @@ connection.
 App shortcuts use <kbd>Ctrl</kbd>+<kbd>Shift</kbd>, so plain <kbd>Ctrl</kbd> keys (Ctrl+W, Ctrl+R, …)
 still reach the shell on your server.
 
+Settings → Terminal offers **Windows-style keyboard selection** (off by default). When enabled,
+Ctrl+A selects the current recognised command; press it again to select all output. With an
+unrecognised or empty prompt it selects all output immediately. Ctrl+Shift+A selects all output
+instead of copying it. Shift+arrows select characters, Ctrl+Shift+Left/Right select words,
+Shift+Home/End select to the line edges, and Ctrl+Shift+Home/End select to the output edges.
+Esc clears the selection; Ctrl+Shift+C copies it. Selecting text does not edit the shell's command.
+Full-screen programs retain their input keys. Cursor shape and blinking are also configurable
+there, with a blinking line as the default.
+
 <details>
 <summary>All shortcuts</summary>
 <br>
@@ -205,6 +231,7 @@ still reach the shell on your server.
 | Search the output; then older / newer match | Ctrl+Shift+F; Enter or ↑ / Shift+Enter or ↓ |
 | Search: match case / regular expression | Alt+C / Alt+R |
 | Show / hide the SFTP browser | Ctrl+Shift+E |
+| Show / hide the sidebar | Ctrl+Shift+B |
 | Lock vault | Ctrl+Shift+L |
 | Settings | Ctrl+, |
 

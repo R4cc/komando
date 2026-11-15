@@ -45,11 +45,12 @@ use crate::ui::box_drawing::{self, Prim};
 use crate::ui::widgets::{button, caps_lock_indicator, icon_el, password_input, ButtonKind};
 
 mod search;
+mod selection;
 #[cfg(all(test, target_os = "linux"))]
 mod render_bench;
 
 actions!(terminal, [
-    Copy, Paste, ScrollPageUp, ScrollPageDown, Find, SearchOlder, SearchNewer, SendTab, SendBackTab,
+    Copy, Paste, ScrollPageUp, ScrollPageDown, Find, SearchOlder, SearchNewer, SendTab, SendBackTab, SelectOutput,
 ]);
 
 pub const CONTEXT: &str = "Terminal";
@@ -240,6 +241,10 @@ pub struct TerminalView {
     pub confirm_multiline_paste: bool,
     /// PuTTY-style: selecting copies, right-click pastes.
     pub putty_clipboard: bool,
+    pub windows_selection: bool,
+    keyboard_selection: selection::KeyboardSelection,
+    cursor_epoch: Instant,
+    cursor_timer: Option<Task<()>>,
     /// Show the command rail and record entered lines for it.
     pub command_rail: bool,
     /// Record entered lines for the Command History (`TerminalEvent::Entered`), with or
@@ -411,11 +416,21 @@ impl TerminalView {
         Self::listen(rx, window, cx);
         let focus = cx.focus_handle();
         let subscriptions = vec![
-            cx.on_focus_in(&focus, window, |this, window, _| this.report_focus(window.is_window_active())),
-            cx.on_focus_out(&focus, window, |this, _, _, _| this.report_focus(false)),
-            cx.observe_window_activation(window, |this, window, _| {
+            cx.on_focus_in(&focus, window, |this, window, cx| {
+                this.reset_cursor();
+                this.report_focus(window.is_window_active());
+                cx.notify();
+            }),
+            cx.on_focus_out(&focus, window, |this, _, _, cx| {
+                this.reset_cursor();
+                this.report_focus(false);
+                cx.notify();
+            }),
+            cx.observe_window_activation(window, |this, window, cx| {
                 let focused = window.is_window_active() && this.focus.is_focused(window);
+                this.reset_cursor();
                 this.report_focus(focused);
+                cx.notify();
             }),
         ];
         let title = title.into();
@@ -446,6 +461,10 @@ impl TerminalView {
             startup: StartupCommands::default(),
             confirm_multiline_paste: true,
             putty_clipboard: false,
+            windows_selection: false,
+            keyboard_selection: Default::default(),
+            cursor_epoch: Instant::now(),
+            cursor_timer: None,
             command_rail: true,
             command_history: false,
             minimap: true,
@@ -860,6 +879,7 @@ impl TerminalView {
     }
 
     fn write(&mut self, bytes: Vec<u8>) {
+        self.reset_cursor();
         if let Some(sink) = &self.sink {
             self.activity.input(Instant::now());
             sink.write(bytes);
@@ -936,6 +956,13 @@ impl TerminalView {
         }
         let m = &ks.modifiers;
         let mods = Mods { ctrl: m.control, alt: m.alt, shift: m.shift };
+        if self.windows_selection && !m.alt && !m.platform && self.prompt.is_none()
+            && self.keyboard_selection.key(&mut self.term.lock(), &ks.key, m.control, m.shift)
+        {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         // Application shortcuts are all ctrl+shift+… (and ctrl+tab); plain ctrl+letter keys
         // belong to the shell (ctrl+w deletes a word in bash, ctrl+k kills the line).
         if keys::is_app_shortcut(&ks.key, ks.key_char.as_deref(), mods) {
@@ -1028,6 +1055,20 @@ impl TerminalView {
     }
 
     fn scroll_page(&mut self, up: bool, cx: &mut Context<Self>) {
+        if self.windows_selection && self.prompt.is_none() {
+            let key = if up { "pageup" } else { "pagedown" };
+            if self.keyboard_selection.key(&mut self.term.lock(), key, false, true) {
+                cx.notify();
+                return;
+            }
+            // On the alternate screen the program keeps Shift+PageUp/PageDown too.
+            let app_cursor = self.term.lock().mode().contains(TermMode::APP_CURSOR);
+            if let Some(bytes) = keys::to_bytes(key, None, Mods { ctrl: false, alt: false, shift: true }, app_cursor) {
+                self.write(bytes);
+                cx.notify();
+            }
+            return;
+        }
         self.term.lock().scroll_display(if up { Scroll::PageUp } else { Scroll::PageDown });
         cx.notify();
     }
@@ -1191,20 +1232,62 @@ impl TerminalView {
     /// Select the whole output: the Scrollback and the screen down to its last written line
     /// (or the cursor's), not the blank rows below.
     fn select_all(&mut self, cx: &mut Context<Self>) {
-        let mut term = self.term.lock();
-        let grid = term.grid();
-        let top = GridPoint::new(Line(-(grid.history_size() as i32)), Column(0));
-        let cols = grid.columns();
-        let last_written = (0..grid.screen_lines() as i32)
-            .rev()
-            .find(|&row| (0..cols).any(|col| grid[Line(row)][Column(col)].c != ' '))
-            .unwrap_or(0);
-        let last = last_written.max(grid.cursor.point.line.0);
-        let bottom = GridPoint::new(Line(last), grid.last_column());
-        let mut selection = Selection::new(SelectionType::Simple, top, Side::Left);
-        selection.update(bottom, Side::Right);
-        term.selection = Some(selection);
+        self.keyboard_selection.select_all(&mut self.term.lock());
         cx.notify();
+    }
+
+    fn select_output(&mut self, _: &SelectOutput, window: &mut Window, cx: &mut Context<Self>) {
+        if self.windows_selection && self.focus.is_focused(window) && self.prompt.is_none()
+            && !self.term.lock().mode().contains(TermMode::ALT_SCREEN)
+        {
+            self.select_all(cx);
+        } else {
+            // Keep the existing Copy output shortcut when keyboard selection is off.
+            cx.propagate();
+        }
+    }
+
+    pub fn set_cursor(&mut self, shape: crate::model::TerminalCursor, blinking: bool) {
+        let mut config = crate::session::terminal_config(self.scrollback);
+        config.default_cursor_style = alacritty_terminal::vte::ansi::CursorStyle {
+            shape: match shape {
+                crate::model::TerminalCursor::Line => CursorShape::Beam,
+                crate::model::TerminalCursor::Block => CursorShape::Block,
+                crate::model::TerminalCursor::Underline => CursorShape::Underline,
+            },
+            blinking,
+        };
+        self.term.lock().set_options(config);
+        self.reset_cursor();
+    }
+
+    fn reset_cursor(&mut self) {
+        self.cursor_epoch = Instant::now();
+        self.cursor_timer = None;
+    }
+
+    /// Wake only at blink edges, and only while the terminal has the keyboard.
+    fn cursor_visible(&mut self, focused: bool, cx: &mut Context<Self>) -> bool {
+        let blink = {
+            let term = self.term.lock();
+            focused && term.cursor_style().blinking && term.mode().contains(TermMode::SHOW_CURSOR)
+        };
+        if !blink {
+            self.cursor_timer = None;
+            return true;
+        }
+        let elapsed = self.cursor_epoch.elapsed();
+        if self.cursor_timer.is_none() {
+            let wait = Duration::from_millis(500 - (elapsed.as_millis() % 500) as u64);
+            self.cursor_timer = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.cursor_timer = None;
+                    cx.notify();
+                });
+            }));
+        }
+        (elapsed.as_millis() / 500) % 2 == 0
     }
 
     /// Pointer motion over the terminal, for programs that asked for it. A selection follows
@@ -2205,7 +2288,7 @@ fn layout_row(
         let color = rgb_to_hsla(k.color);
         let bar = px((2. * ctx.scale).round().max(1.) / ctx.scale);
         match k.shape {
-            _ if !ctx.focused => frame.cursor_outline = Some((bounds, color)),
+            CursorShape::Block if !ctx.focused => frame.cursor_outline = Some((bounds, color)),
             CursorShape::Block => {} // drawn as the cell's background above
             CursorShape::HollowBlock => frame.cursor_outline = Some((bounds, color)),
             CursorShape::Beam => frame.cursor_bars.push((Bounds::new(bounds.origin, size(bar, ctx.line_h)), color)),
@@ -2435,6 +2518,7 @@ struct GridLook<'a> {
     palette: &'a crate::theme::TerminalPalette,
     highlighter: &'a Arc<highlight::Highlighter>,
     focused: bool,
+    cursor_visible: bool,
 }
 
 /// What the grid keeps from one frame to the next: the rows laid out, and buffers reused.
@@ -2540,7 +2624,7 @@ fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &
             *looked = Some(now);
             all = true;
         }
-        let cursor = cursor_snap(&term, &content, look.palette);
+        let cursor = cursor_snap(&term, &content, look.palette).filter(|_| look.cursor_visible);
         if all {
             dirty.fill(true);
         } else {
@@ -2877,6 +2961,7 @@ impl Render for TerminalView {
             }
         }
         let focused = self.focus.is_focused(window) && self.prompt.is_none() && window.is_window_active();
+        let cursor_visible = self.cursor_visible(focused, cx);
         // Colour queries (OSC 10/11/4) are answered with the colours on screen.
         self.proxy.set_palette(&palette);
         let mouse_reporting = self.mouse_mode(false).is_some();
@@ -3019,6 +3104,7 @@ impl Render for TerminalView {
                     palette: &palette,
                     highlighter: &highlighter,
                     focused,
+                    cursor_visible,
                 };
                 layout_grid(&term, &*text_system, &look, &mut grid_cache.borrow_mut());
                 // Search matches: over the cells' backgrounds and the selection, under the text.
@@ -3164,8 +3250,13 @@ impl Render for TerminalView {
             .on_action(cx.listener(|this, _: &SendBackTab, window, cx| this.send_tab(true, window, cx)))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
-            .on_action(cx.listener(|this, _: &ScrollPageUp, _, cx| this.scroll_page(true, cx)))
-            .on_action(cx.listener(|this, _: &ScrollPageDown, _, cx| this.scroll_page(false, cx)))
+            .on_action(cx.listener(Self::select_output))
+            .on_action(cx.listener(|this, _: &ScrollPageUp, window, cx| {
+                if this.focus.is_focused(window) { this.scroll_page(true, cx); } else { cx.propagate(); }
+            }))
+            .on_action(cx.listener(|this, _: &ScrollPageDown, window, cx| {
+                if this.focus.is_focused(window) { this.scroll_page(false, cx); } else { cx.propagate(); }
+            }))
             .on_action(cx.listener(|this, _: &Find, window, cx| this.open_search(window, cx)))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
@@ -3467,6 +3558,7 @@ mod tests {
         palette: TerminalPalette,
         highlighter: Arc<Highlighter>,
         focused: bool,
+        cursor_visible: bool,
         cache: GridCache,
     }
 
@@ -3486,6 +3578,7 @@ mod tests {
                 palette: TerminalPalette::dark(),
                 highlighter: Arc::new(Highlighter::from_sets(&sets, &[])),
                 focused: true,
+                cursor_visible: true,
                 cache: GridCache::default(),
             }
         }
@@ -3496,8 +3589,8 @@ mod tests {
 
         /// Lay out a frame and check it against a fresh layout. Returns how many rows it laid out.
         fn frame(&mut self, what: &str) -> usize {
-            let Grid { term, font, origin, scale, palette, highlighter, focused, cache, .. } = self;
-            let look = GridLook { font, origin: *origin, scale: *scale, palette, highlighter, focused: *focused };
+            let Grid { term, font, origin, scale, palette, highlighter, focused, cursor_visible, cache, .. } = self;
+            let look = GridLook { font, origin: *origin, scale: *scale, palette, highlighter, focused: *focused, cursor_visible: *cursor_visible };
             layout_grid(term, &FakeShaper, &look, cache);
             let mut laid_out: Vec<i32> = cache.snapshot.cells.iter().map(|c| c.row).collect();
             laid_out.dedup();
@@ -3586,6 +3679,12 @@ $ ");
         assert!(g.frame("unfocused") <= 1);
         g.focused = true;
         assert!(g.frame("focused") <= 1);
+        g.cursor_visible = false;
+        assert!(g.frame("blink off") <= 1);
+        assert!(g.cache.rows.iter().all(|row| row.cursor_bars.is_empty() && row.cursor_outline.is_none()));
+        g.cursor_visible = true;
+        assert!(g.frame("blink on") <= 1);
+        assert!(g.cache.rows.iter().any(|row| !row.cursor_bars.is_empty()));
         g.feed("\x1b[6 q");
         assert!(g.frame("bar cursor") <= 1);
         g.feed("\x1b[?25l");

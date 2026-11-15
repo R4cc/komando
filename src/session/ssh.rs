@@ -20,7 +20,7 @@ use alacritty_terminal::term::Term;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::Processor;
-use anyhow::{Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use futures::channel::oneshot;
 use russh::client::{self, AuthResult, Handle};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
@@ -38,6 +38,9 @@ pub enum Command {
     Resize(GridSize),
     /// Open an SFTP channel on this Session's connection (no second sign-in).
     OpenSftp(oneshot::Sender<Result<crate::sftp::Remote>>),
+    /// Open a tunnel on this Session's connection to `port` on the Host itself, for a Remote
+    /// Desktop reached through SSH.
+    OpenTunnel { port: u16, reply: oneshot::Sender<Result<crate::desktop::Stream>> },
     Close,
 }
 
@@ -615,6 +618,12 @@ async fn shell(
                         let _ = reply.send(crate::sftp::Remote::open(handle).await);
                     });
                 }
+                Some(Command::OpenTunnel { port, reply }) => {
+                    let handle = handle.clone();
+                    tokio::spawn(async move {
+                        let _ = reply.send(open_tunnel(&handle, port).await);
+                    });
+                }
                 Some(Command::Close) | None => break "Session closed.".to_string(),
             },
             // A program began a synchronized update (DECSET 2026) and did not finish it in
@@ -630,6 +639,22 @@ async fn shell(
         }
     };
     Ok(reason)
+}
+
+/// A tunnel to `port` on the Host itself, over the Session's connection. The channel is
+/// copied to one end of an in-memory pipe, whose other end is returned: the desktop engines
+/// want a stream they may share between threads, which a channel is not.
+async fn open_tunnel(handle: &Arc<Handle<Client>>, port: u16) -> Result<crate::desktop::Stream> {
+    let channel = handle
+        .channel_open_direct_tcpip("localhost", u32::from(port), "127.0.0.1", 0)
+        .await
+        .with_context(|| format!("The SSH server refused a tunnel to port {port} on this host"))?;
+    let (near, mut far) = tokio::io::duplex(256 * 1024);
+    tokio::spawn(async move {
+        let mut channel = channel.into_stream();
+        let _ = tokio::io::copy_bidirectional(&mut channel, &mut far).await;
+    });
+    Ok(Box::new(near))
 }
 
 /// Keeps the shell channel `id` at the window sent here, from a task of its own: the shell loop

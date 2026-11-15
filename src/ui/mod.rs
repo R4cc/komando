@@ -1,5 +1,6 @@
 pub mod box_drawing;
 pub mod connect_route;
+pub mod desktop_view;
 pub mod file_browser;
 pub mod minimap;
 pub mod popup;

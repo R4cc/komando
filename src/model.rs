@@ -180,9 +180,108 @@ pub struct Host {
     pub color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// The Host's Remote Desktop over RDP, if it offers one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rdp: Option<Desktop>,
+    /// The Host's Remote Desktop over VNC, if it offers one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vnc: Option<Desktop>,
+    /// What clicking the Host in the sidebar opens when it has no Session yet: its terminal,
+    /// or one of its Remote Desktops (a Windows machine without SSH).
+    #[serde(default, skip_serializing_if = "Protocol::is_ssh")]
+    pub opens: Protocol,
+}
+
+/// How Komando reaches a Host: a terminal over SSH, or a Remote Desktop over RDP or VNC.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Protocol {
+    #[default]
+    Ssh,
+    Rdp,
+    Vnc,
+}
+
+impl Protocol {
+    pub fn is_ssh(&self) -> bool {
+        *self == Protocol::Ssh
+    }
+
+    /// "SSH", "RDP", "VNC": how the UI names it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Protocol::Ssh => "SSH",
+            Protocol::Rdp => "RDP",
+            Protocol::Vnc => "VNC",
+        }
+    }
+
+    /// The port a server of this kind listens on unless told otherwise.
+    pub fn default_port(self) -> u16 {
+        match self {
+            Protocol::Ssh => 22,
+            Protocol::Rdp => 3389,
+            Protocol::Vnc => 5900,
+        }
+    }
+}
+
+/// A Remote Desktop a Host offers: an RDP or VNC server on the Host's own address.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Desktop {
+    pub port: u16,
+    /// RDP: the account to sign in with. None: the Host's user, or asked when connecting.
+    /// VNC servers have no user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// RDP: the account's Windows domain. None: a local account (or one typed as
+    /// `DOMAIN\user`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    /// Its password in the Vault. None: asked when connecting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<CredentialId>,
+    /// Reach it through the Host's SSH Session: a tunnel to the port on the Host itself
+    /// (`localhost` as the SSH server sees it), so a VNC server need not listen on the network
+    /// and nothing crosses it unencrypted. Off: connect straight to the Host's address.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub through_ssh: bool,
+}
+
+impl Desktop {
+    pub fn new(protocol: Protocol) -> Self {
+        Self { port: protocol.default_port(), user: None, domain: None, credential: None, through_ssh: false }
+    }
 }
 
 impl Host {
+    /// The Host's Remote Desktop over `protocol`, if it has one (never for SSH).
+    pub fn desktop(&self, protocol: Protocol) -> Option<&Desktop> {
+        match protocol {
+            Protocol::Ssh => None,
+            Protocol::Rdp => self.rdp.as_ref(),
+            Protocol::Vnc => self.vnc.as_ref(),
+        }
+    }
+
+    pub fn desktop_mut(&mut self, protocol: Protocol) -> Option<&mut Desktop> {
+        match protocol {
+            Protocol::Ssh => None,
+            Protocol::Rdp => self.rdp.as_mut(),
+            Protocol::Vnc => self.vnc.as_mut(),
+        }
+    }
+
+    /// The Remote Desktops it offers, RDP first.
+    pub fn desktops(&self) -> impl Iterator<Item = Protocol> + '_ {
+        [Protocol::Rdp, Protocol::Vnc].into_iter().filter(|p| self.desktop(*p).is_some())
+    }
+
+    /// What a click opens: what `opens` says, unless that Remote Desktop was removed since.
+    pub fn opens_with(&self) -> Protocol {
+        if self.desktop(self.opens).is_some() { self.opens } else { Protocol::Ssh }
+    }
+
     /// A Host with a fresh id that takes everything it can from its Project.
     pub fn new(name: impl Into<String>, address: impl Into<String>) -> Self {
         Self {
@@ -199,6 +298,9 @@ impl Host {
             run_project_commands: true,
             color: None,
             icon: None,
+            rdp: None,
+            vnc: None,
+            opens: Protocol::Ssh,
         }
     }
 }
@@ -715,9 +817,12 @@ impl Library {
     /// hints and to tell when one is no longer needed.
     pub fn credential_users(&self, credential: &str) -> usize {
         let jumps = |list: &[JumpHost]| list.iter().filter(|j| j.credential.as_deref() == Some(credential)).count();
+        let desktops = |h: &Host| {
+            [&h.rdp, &h.vnc].into_iter().flatten().filter(|d| d.credential.as_deref() == Some(credential)).count()
+        };
         self.hosts
             .iter()
-            .map(|h| usize::from(h.credential.own().is_some_and(|c| c == credential)) + jumps(&h.jump_hosts))
+            .map(|h| usize::from(h.credential.own().is_some_and(|c| c == credential)) + jumps(&h.jump_hosts) + desktops(h))
             .sum::<usize>()
             + self
                 .projects
@@ -778,6 +883,10 @@ pub struct Settings {
     pub stay_unlocked: bool,
     /// PuTTY-style: selecting copies, right-click pastes.
     pub putty_clipboard: bool,
+    /// Local keyboard selection instead of the shell's Ctrl+A and Shift navigation.
+    pub windows_selection: bool,
+    pub cursor_shape: TerminalCursor,
+    pub cursor_blink: bool,
     /// Ask before pasting more than one line.
     pub confirm_multiline_paste: bool,
     /// Show the command rail: a mark at the terminal's left edge for each line entered.
@@ -810,6 +919,21 @@ pub struct Settings {
     pub sftp_menu_copy_to: bool,
     /// "Move to…" in the SFTP browser's context menu.
     pub sftp_menu_move_to: bool,
+    /// RDP: ask the server for a desktop the size of the pane, and again when the pane changes
+    /// size. Off, the server picks the size and the picture is scaled.
+    pub rdp_fit_desktop: bool,
+    /// VNC: leave other viewers of the desktop connected. Off asks the server for it alone.
+    pub vnc_shared: bool,
+}
+
+/// The cursor used unless a terminal program requests its own style.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalCursor {
+    #[default]
+    Line,
+    Block,
+    Underline,
 }
 
 impl Default for Settings {
@@ -825,6 +949,9 @@ impl Default for Settings {
             auto_lock_minutes: 0,
             stay_unlocked: true,
             putty_clipboard: false,
+            windows_selection: false,
+            cursor_shape: TerminalCursor::Line,
+            cursor_blink: true,
             confirm_multiline_paste: true,
             command_rail: true,
             command_history: true,
@@ -841,6 +968,8 @@ impl Default for Settings {
             sftp_menu_rename: false,
             sftp_menu_copy_to: false,
             sftp_menu_move_to: false,
+            rdp_fit_desktop: true,
+            vnc_shared: true,
         }
     }
 }
@@ -942,6 +1071,46 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn remote_desktops_round_trip_and_older_files_have_none() {
+        let mut host = Host::new("win-build", "10.0.4.21");
+        let old: Host = toml::from_str(&toml::to_string(&host).unwrap()).unwrap();
+        assert_eq!((old.rdp, old.vnc, old.opens), (None, None, Protocol::Ssh));
+        host.rdp = Some(Desktop { user: Some("ada".into()), credential: Some("c1".into()), ..Desktop::new(Protocol::Rdp) });
+        host.vnc = Some(Desktop { through_ssh: true, ..Desktop::new(Protocol::Vnc) });
+        host.opens = Protocol::Rdp;
+        let text = toml::to_string(&host).unwrap();
+        assert_eq!(toml::from_str::<Host>(&text).unwrap(), host);
+        assert_eq!(host.desktops().collect::<Vec<_>>(), [Protocol::Rdp, Protocol::Vnc]);
+        assert_eq!(host.opens_with(), Protocol::Rdp);
+        // A Host that opened its RDP desktop opens its terminal once that desktop is removed.
+        host.rdp = None;
+        assert_eq!(host.opens_with(), Protocol::Ssh);
+    }
+
+    #[test]
+    fn a_remote_desktop_password_counts_as_a_use_of_its_credential() {
+        let mut library = Library::default();
+        let mut host = Host::new("win-build", "10.0.4.21");
+        host.vnc = Some(Desktop { credential: Some("c1".into()), ..Desktop::new(Protocol::Vnc) });
+        library.hosts.push(host);
+        assert_eq!(library.credential_users("c1"), 1);
+    }
+
+    #[test]
+    fn terminal_preferences_migrate_and_round_trip() {
+        use super::{Settings, TerminalCursor};
+        let mut settings: Settings = toml::from_str("font_size = 16.0").unwrap();
+        assert_eq!(settings.cursor_shape, TerminalCursor::Line);
+        assert!(settings.cursor_blink);
+        assert!(!settings.windows_selection);
+        settings.cursor_shape = TerminalCursor::Underline;
+        settings.cursor_blink = false;
+        settings.windows_selection = true;
+        let saved = toml::to_string(&settings).unwrap();
+        assert_eq!(toml::from_str::<Settings>(&saved).unwrap(), settings);
+    }
+
     use super::*;
 
     fn project(credential: Option<&str>, user: Option<&str>) -> Project {
@@ -979,6 +1148,9 @@ mod tests {
             run_project_commands: true,
             color: color.map(Into::into),
             icon: None,
+            rdp: None,
+            vnc: None,
+            opens: Protocol::Ssh,
         }
     }
 

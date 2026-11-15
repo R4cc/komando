@@ -139,6 +139,19 @@ impl InputSink {
         }
     }
 
+    /// Ask an SSH Session for a tunnel to `port` on its Host. `None` for Local Sessions and
+    /// for a Session whose connection has already ended.
+    pub fn open_tunnel(&self, port: u16) -> Option<oneshot::Receiver<anyhow::Result<crate::desktop::Stream>>> {
+        match self {
+            InputSink::Local(_) => None,
+            InputSink::Ssh(sender) => {
+                let (reply, answer) = oneshot::channel();
+                sender.send(ssh::Command::OpenTunnel { port, reply }).ok()?;
+                Some(answer)
+            }
+        }
+    }
+
     pub fn close(&self) {
         match self {
             InputSink::Local(sender) => {
@@ -300,6 +313,7 @@ impl EventListener for EventProxy {
             }
             Event::Title(title) => self.send(SessionEvent::Title(title)),
             Event::ResetTitle => self.send(SessionEvent::Title(String::new())),
+            Event::CursorBlinkingChange => self.send_event(Event::Wakeup),
             Event::PtyWrite(text) => self.reply(text),
             Event::ColorRequest(index, format) => {
                 let color = self.reports.lock().unwrap().palette.as_ref().map(|p| p.color_at(index));
@@ -354,18 +368,26 @@ mod parking_lot_lite {
 }
 
 pub fn new_term(size: GridSize, scrollback_lines: usize, proxy: EventProxy) -> SharedTerm {
-    let config = TermConfig {
-        scrolling_history: scrollback_lines,
-        // Programs may copy to the clipboard (OSC 52) but never read it.
-        osc52: Osc52::OnlyCopy,
-        ..TermConfig::default()
-    };
+    let config = terminal_config(scrollback_lines);
     let mut term = Term::new(config, &size.term_size(), proxy);
     if scrollback_lines > 0 {
         // New Scrollback rows are built ahead, off the parser's thread, while it fills.
         term.grid_mut().set_row_source(Some(Arc::new(row_pool::RowPool::default())));
     }
     Arc::new(FairMutex::new(term))
+}
+
+pub(crate) fn terminal_config(scrollback_lines: usize) -> TermConfig {
+    TermConfig {
+        scrolling_history: scrollback_lines,
+        default_cursor_style: alacritty_terminal::vte::ansi::CursorStyle {
+            shape: alacritty_terminal::vte::ansi::CursorShape::Beam,
+            blinking: true,
+        },
+        // Programs may copy to the clipboard (OSC 52) but never read it.
+        osc52: Osc52::OnlyCopy,
+        ..TermConfig::default()
+    }
 }
 
 /// Drop the Scrollback when it holds nothing but blank lines, so there is no empty space to
@@ -556,6 +578,23 @@ pub fn tidy_export(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cursor_defaults_blink_as_a_line_and_respect_program_requests() {
+        use alacritty_terminal::vte::ansi::{CursorShape, Processor};
+        let (tx, _rx) = futures::channel::mpsc::unbounded();
+        let term = super::new_term(super::GridSize { cols: 20, rows: 3, cell_width: 8, cell_height: 16 }, 100, super::EventProxy::new(tx));
+        let mut term = term.lock();
+        assert_eq!(term.cursor_style().shape, CursorShape::Beam);
+        assert!(term.cursor_style().blinking);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut *term, b"\x1b[2 q");
+        assert_eq!(term.cursor_style().shape, CursorShape::Block);
+        assert!(!term.cursor_style().blinking);
+        parser.advance(&mut *term, b"\x1bc");
+        assert_eq!(term.cursor_style().shape, CursorShape::Beam);
+        assert!(term.cursor_style().blinking);
+    }
+
     use super::*;
     use alacritty_terminal::vte::ansi::Processor;
 

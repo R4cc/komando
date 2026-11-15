@@ -1,0 +1,32 @@
+# Remote Desktops are Sessions of a Host
+
+A Host may offer RDP and VNC alongside SSH, each with its own port and Credential, on the
+Host's existing address. A Remote Desktop is a Session under that Host rather than an SFTP-like
+panel: it needs the pane's space and its own keyboard focus, lifecycle and reconnect behavior.
+Configured protocols appear in the toolbar and Host menu; the Host chooses which opens first.
+Global viewing defaults live in Settings → Remote desktop.
+
+Komando embeds IronRDP and vnc-rs and draws their framebuffer in GPUI. Launching external
+viewers would split focus, credential storage and session ownership between apps; Windows'
+RDP ActiveX control would need native child-window hosting that VNC cannot share. Embedded
+engines give both protocols the same pane and input behavior at the cost of implementing and
+testing the protocol adapters and maintaining their dependencies.
+
+## Consequences
+
+- Desktop passwords belong to the Vault and are independent of the SSH Credential. Old
+  libraries have no desktops and continue opening SSH Sessions.
+- Through SSH means a `direct-tcpip` channel on an already connected SSH Session, to
+  `localhost` on the Host itself. No local listener is exposed; existing Jump Hosts still
+  apply to that SSH Session. Ending it ends the desktop's tunnel too.
+- RDP requires TLS or NLA with NTLM. Its certificate is pinned by Host address and desktop
+  port, after explicit first-use or changed-certificate approval and before credentials are
+  sent. Standard unencrypted RDP Security and server redirections are refused.
+- VNC initially supports no authentication and classic VNC passwords, with Raw, CopyRect and
+  ZRLE updates. New VNC configurations default to SSH because classic VNC has no transport
+  encryption. TLS/VeNCrypt and proprietary authentication are not silently downgraded.
+- The initial scope excludes clipboard, audio, drives, printers, RD Gateway, Kerberos and
+  multi-monitor sessions. Project files and imports remain SSH-only for now.
+- Protocol work runs outside the UI thread. Picture notifications coalesce while rectangles
+  are applied in order; replaced images are released from GPUI's atlas. Dropping a connection
+  cancels handshakes and prompts as well as active sessions.

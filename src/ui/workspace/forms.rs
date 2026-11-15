@@ -11,7 +11,7 @@ use gpui::{AnyElement, App, ClickEvent, Context, Entity, FontWeight, SharedStrin
 use gpui_component::input::{Input, InputEvent, InputState};
 
 use super::{FIRST_PROJECT_COLOR, FIRST_PROJECT_NAME, Overlay, Workspace, form_field, form_section, icon_picker, segmented, switch};
-use crate::model::{CredentialId, Host, Inherited, JumpHost, Library, Project, StartupCommand};
+use crate::model::{CredentialId, Desktop, Host, Inherited, JumpHost, Library, Project, Protocol, StartupCommand};
 use crate::theme::{AppPalette, project_color};
 use crate::ui::widgets::{ButtonKind, badge, button, icon_button, icon_el, icon_text_button};
 use crate::vault::{Credential, Secret};
@@ -64,9 +64,29 @@ pub(super) struct HostForm {
     use_project_jumps: bool,
     jumps: Vec<JumpRow>,
     run_project_commands: bool,
+    /// Its Remote Desktops: RDP, then VNC.
+    desktops: [DesktopRow; 2],
+    /// What a click on the Host opens.
+    opens: Protocol,
     icon: String,
     icon_query: Entity<InputState>,
     error: Option<String>,
+}
+
+/// One Remote Desktop in the host form: switched on or off, with its settings.
+pub(super) struct DesktopRow {
+    protocol: Protocol,
+    on: bool,
+    port: Entity<InputState>,
+    /// RDP only.
+    user: Entity<InputState>,
+    domain: Entity<InputState>,
+    /// A new password, saved to the Vault with the form.
+    password: Entity<InputState>,
+    /// The Credential it had when the form opened, kept unless replaced or forgotten.
+    saved: Option<CredentialId>,
+    forget_saved: bool,
+    through_ssh: bool,
 }
 
 /// Create a Project, or edit one.
@@ -188,6 +208,7 @@ impl Workspace {
             Inherited::Off => SignIn::Ask,
         };
         let icon_query = self.new_icon_query(window, cx);
+        let desktops = [Protocol::Rdp, Protocol::Vnc].map(|protocol| self.desktop_row(protocol, h.desktop(protocol), window, cx));
         self.overlay = Some(Overlay::HostForm(HostForm {
             project_id,
             editing,
@@ -202,6 +223,8 @@ impl Workspace {
             use_project_jumps: h.use_project_jump_hosts,
             jumps,
             run_project_commands: h.run_project_commands,
+            desktops,
+            opens: h.opens_with(),
             icon: h.icon.unwrap_or_else(|| "server".into()),
             icon_query,
             error: None,
@@ -225,17 +248,20 @@ impl Workspace {
     pub(super) fn submit_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A key file or a Jump Host's password goes into the Vault: ask for the master
         // password first, then save.
-        let (sign_in, key_path, jumps) = match &self.overlay {
-            Some(Overlay::HostForm(form)) => (form.sign_in, form.key_path.clone(), &form.jumps),
-            Some(Overlay::ProjectForm(form)) => (form.sign_in, form.key_path.clone(), &form.jumps),
+        let (sign_in, key_path, jumps, desktops) = match &self.overlay {
+            Some(Overlay::HostForm(form)) => (form.sign_in, form.key_path.clone(), &form.jumps, &form.desktops[..]),
+            Some(Overlay::ProjectForm(form)) => (form.sign_in, form.key_path.clone(), &form.jumps, &[][..]),
             _ => return,
         };
         let new_password = jumps.iter().any(|row| !row.password.read(cx).value().is_empty());
+        let desktop_password = desktops.iter().any(|row| row.on && !row.password.read(cx).value().is_empty());
         if self.vault.is_none() {
             let reason = if sign_in == SignIn::KeyFile && !key_path.read(cx).value().trim().is_empty() {
                 Some("The key file is copied into your vault, encrypted.")
             } else if new_password {
                 Some("Jump host passwords are saved in your vault, encrypted.")
+            } else if desktop_password {
+                Some("Remote desktop passwords are saved in your vault, encrypted.")
             } else {
                 None
             };
@@ -420,6 +446,8 @@ impl Workspace {
         let startup_commands = read_command_rows(&form.commands, cx)?;
         let (project_id, editing, sign_in, run_project_commands, icon) =
             (form.project_id.clone(), form.editing.clone(), form.sign_in, form.run_project_commands, form.icon.clone());
+        let desktop_entries = form.desktops.iter().map(|row| read_desktop_row(row, cx)).collect::<Result<Vec<_>, _>>()?;
+        let opens = form.opens;
 
         let mut host = editing.as_deref().and_then(|id| self.library.host(id)).cloned().unwrap_or_else(|| Host::new("", ""));
         let mut imported = None;
@@ -441,9 +469,49 @@ impl Workspace {
         host.startup_commands = startup_commands;
         host.run_project_commands = run_project_commands;
         host.icon = Some(icon);
+        let mut imported: Vec<CredentialId> = imported.into_iter().collect();
+        // Desktop passwords that are replaced or forgotten leave the Vault once nothing uses them.
+        let old_desktop_credentials: Vec<CredentialId> =
+            [&host.rdp, &host.vnc].into_iter().flatten().filter_map(|d| d.credential.clone()).collect();
+        for (protocol, entry) in [Protocol::Rdp, Protocol::Vnc].into_iter().zip(desktop_entries) {
+            let desktop = match entry {
+                None => None,
+                Some((mut desktop, new_password)) => {
+                    if let Some(password) = new_password {
+                        let label = format!("{} ({})", host.name, protocol.label());
+                        let added = self
+                            .vault
+                            .as_mut()
+                            .ok_or_else(|| "Unlock the vault to save the remote desktop's password.".to_string())
+                            .and_then(|vault| {
+                                vault
+                                    .add(Credential { label, secret: Secret::Password { password } })
+                                    .map_err(|err| format!("Could not store the password: {err}"))
+                            });
+                        match added {
+                            Ok(id) => {
+                                imported.push(id.clone());
+                                desktop.credential = Some(id);
+                            }
+                            Err(err) => {
+                                self.forget_added(imported);
+                                return Err(err);
+                            }
+                        }
+                    }
+                    Some(desktop)
+                }
+            };
+            match protocol {
+                Protocol::Rdp => host.rdp = desktop,
+                _ => host.vnc = desktop,
+            }
+        }
+        host.opens = opens;
+        host.opens = host.opens_with();
         let before = std::mem::take(&mut host.jump_hosts);
 
-        self.commit_form(jumps, imported.into_iter().collect(), before, move |library, jumps| {
+        let result = self.commit_form(jumps, imported, before, move |library, jumps| {
             host.jump_hosts = jumps;
             match library.hosts.iter_mut().find(|h| h.id == host.id) {
                 Some(existing) => *existing = host,
@@ -460,7 +528,11 @@ impl Workspace {
                     library.hosts.push(host);
                 }
             }
-        })
+        });
+        if result.is_ok() {
+            self.forget_unused_credentials(old_desktop_credentials);
+        }
+        result
     }
 
     pub(super) fn render_host_form(&self, form: &HostForm, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -491,6 +563,7 @@ impl Workspace {
             .child(self.host_credential_field(form, host, project, p, cx));
 
         let route = form_section("Jump hosts", p).child(self.host_jump_field(form, project, wide, p, cx));
+        let desktops = form_section("Remote desktop", p).child(self.host_desktop_field(form, p, cx));
 
         let project_commands = project.map(|pr| pr.startup_commands.clone()).unwrap_or_default();
         let commands = form_section("Startup commands", p)
@@ -530,7 +603,7 @@ impl Workspace {
         let body = form_body(
             wide,
             vec![connection.into_any_element(), sign_in.into_any_element()],
-            vec![icon.into_any_element()],
+            vec![icon.into_any_element(), desktops.into_any_element()],
             vec![route.into_any_element(), commands.into_any_element()],
         );
 
@@ -932,6 +1005,166 @@ impl Workspace {
             .into_any_element()
     }
 
+    // ---- remote desktops in the host form ----------------------------------------------
+
+    fn desktop_row(&mut self, protocol: Protocol, desktop: Option<&Desktop>, window: &mut Window, cx: &mut Context<Self>) -> DesktopRow {
+        let default = protocol.default_port().to_string();
+        let port = desktop.map(|d| d.port).filter(|p| *p != protocol.default_port()).map(|p| p.to_string()).unwrap_or_default();
+        let user = desktop.and_then(|d| d.user.clone()).unwrap_or_default();
+        let domain = desktop.and_then(|d| d.domain.clone()).unwrap_or_default();
+        DesktopRow {
+            protocol,
+            on: desktop.is_some(),
+            port: self.form_input(&default, &port, window, cx),
+            user: self.form_input("The host's user", &user, window, cx),
+            domain: self.form_input("None (local account)", &domain, window, cx),
+            password: {
+                let field = cx.new(|cx| InputState::new(window, cx).masked(true));
+                let sub = cx.subscribe_in(&field, window, |this, _, event: &InputEvent, window, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        this.submit_form(window, cx);
+                    }
+                });
+                self._subscriptions.push(sub);
+                field
+            },
+            saved: desktop.and_then(|d| d.credential.clone()),
+            forget_saved: false,
+            // A new VNC desktop goes through SSH: VNC encrypts nothing on its own.
+            through_ssh: desktop.map_or(protocol == Protocol::Vnc, |d| d.through_ssh),
+        }
+    }
+
+    fn update_desktop_row(&mut self, index: usize, change: impl FnOnce(&mut DesktopRow)) {
+        if let Some(form) = self.host_form() {
+            change(&mut form.desktops[index]);
+            form.error = None;
+            // A Host can't open with a desktop it no longer has.
+            if form.desktops.iter().all(|row| row.protocol != form.opens || !row.on) {
+                form.opens = Protocol::Ssh;
+            }
+        }
+    }
+
+    fn host_desktop_field(&self, form: &HostForm, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let rows = form.desktops.iter().enumerate().map(|(i, row)| self.desktop_row_view(i, row, p, cx)).collect::<Vec<_>>();
+        let offered: Vec<Protocol> = form.desktops.iter().filter(|row| row.on).map(|row| row.protocol).collect();
+        let opens = (!offered.is_empty()).then(|| {
+            let choices: Vec<Protocol> = std::iter::once(Protocol::Ssh).chain(offered).collect();
+            let labels: Vec<(&'static str, bool)> = choices
+                .iter()
+                .map(|protocol| (if protocol.is_ssh() { "Terminal" } else { protocol.label() }, *protocol == form.opens))
+                .collect();
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(field_label("A click on the host opens", p))
+                .child(segmented("hf-opens", &labels, p, cx, move |this, i, _, cx| {
+                    if let Some(form) = this.host_form() {
+                        form.opens = choices[i];
+                    }
+                    cx.notify();
+                }))
+                .into_any_element()
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .children(rows)
+            .children(opens)
+            .child(hint_text(
+                "Opens beside the host's terminal: the RDP and VNC buttons in the title bar switch between them.".into(),
+                p,
+            ))
+            .into_any_element()
+    }
+
+    fn desktop_row_view(&self, index: usize, row: &DesktopRow, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let protocol = row.protocol;
+        let (name, about) = match protocol {
+            Protocol::Rdp => ("RDP", "Windows Remote Desktop, xrdp"),
+            _ => ("VNC", "Linux desktops, macOS screen sharing"),
+        };
+        let header = div()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .child(switch(format!("hf-desktop-{index}").into(), format!("Remote desktop over {name}"), row.on, p).on_click(cx.listener(
+                move |this, _: &ClickEvent, _, cx| {
+                    this.update_desktop_row(index, |row| row.on = !row.on);
+                    cx.notify();
+                },
+            )))
+            .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(name))
+            .child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.text_faint).child(about));
+        let card = div().flex().flex_col().gap(px(10.)).p(px(12.)).rounded(px(10.)).border_1().border_color(p.border).child(header);
+        if !row.on {
+            return card.into_any_element();
+        }
+        let password_hint = match (&row.saved, row.forget_saved) {
+            (Some(_), false) => "Saved in your vault. Type a new one to replace it.",
+            _ => "Asked when connecting, unless you type it here to save it in your vault.",
+        };
+        let ssh_hint = match (protocol, row.through_ssh) {
+            (_, true) => "A tunnel on the host's SSH session to this port on the host itself. The SSH session connects first.",
+            (Protocol::Vnc, false) => "Straight to the host's address. VNC sends the desktop unencrypted: prefer the SSH session.",
+            (_, false) => "Straight to the host's address.",
+        };
+        card.child(
+            div()
+                .flex()
+                .gap(px(10.))
+                .when(protocol == Protocol::Rdp, |el| {
+                    el.child(div().flex_1().min_w_0().child(form_field("User", None, Input::new(&row.user).into_any_element(), p)))
+                })
+                .child(div().w(px(92.)).flex_shrink_0().child(form_field("Port", None, Input::new(&row.port).into_any_element(), p))),
+        )
+        .when(protocol == Protocol::Rdp, |el| el.child(form_field("Domain", None, Input::new(&row.domain).into_any_element(), p)))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(field_label("Password", p))
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .child(div().flex_1().min_w_0().child(crate::ui::widgets::password_input(&row.password, p)))
+                        .when(row.saved.is_some() && !row.forget_saved, |el| {
+                            el.child(
+                                button(("hf-desktop-forget", index), "Forget", ButtonKind::Ghost, p).on_click(cx.listener(
+                                    move |this, _: &ClickEvent, _, cx| {
+                                        this.update_desktop_row(index, |row| row.forget_saved = true);
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                        }),
+                )
+                .child(hint_text(password_hint.into(), p)),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(
+                    switch(format!("hf-desktop-ssh-{index}").into(), "Through the host's SSH session", row.through_ssh, p).on_click(
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.update_desktop_row(index, |row| row.through_ssh = !row.through_ssh);
+                            cx.notify();
+                        }),
+                    ),
+                )
+                .child(div().text_size(px(12.5)).text_color(p.text).child("Through the host's SSH session")),
+        )
+        .child(hint_text(ssh_hint.into(), p))
+        .into_any_element()
+    }
+
     // ---- project form -------------------------------------------------------------------
 
     pub(super) fn open_new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1300,6 +1533,33 @@ fn read_jump_rows(rows: &[JumpRow], cx: &App) -> Result<Vec<JumpEntry>, String> 
         jumps.push(JumpEntry { jump: JumpHost { address, port, user, credential: saved }, new_password });
     }
     Ok(jumps)
+}
+
+/// A Remote Desktop read from the host form, with a new password to put in the Vault. `None`
+/// when it is switched off.
+fn read_desktop_row(row: &DesktopRow, cx: &App) -> Result<Option<(Desktop, Option<String>)>, String> {
+    if !row.on {
+        return Ok(None);
+    }
+    let text = |field: &Entity<InputState>| field.read(cx).value().trim().to_string();
+    let name = row.protocol.label();
+    let port = match text(&row.port) {
+        port if port.is_empty() => row.protocol.default_port(),
+        port => port.parse::<u16>().ok().filter(|p| *p > 0).ok_or_else(|| format!("The {name} port is a number from 1 to 65535."))?,
+    };
+    let (user, domain) = match row.protocol {
+        Protocol::Rdp => (Some(text(&row.user)).filter(|u| !u.is_empty()), Some(text(&row.domain)).filter(|d| !d.is_empty())),
+        _ => (None, None),
+    };
+    let password = row.password.read(cx).value().to_string();
+    let desktop = Desktop {
+        port,
+        user,
+        domain,
+        credential: row.saved.clone().filter(|_| !row.forget_saved),
+        through_ssh: row.through_ssh,
+    };
+    Ok(Some((desktop, (!password.is_empty()).then_some(password))))
 }
 
 /// A port field: empty is 22.

@@ -56,6 +56,21 @@ install for the current user only (no administrator rights) or for all users; fo
 installs, `msiexec /i Komando-0.2.0-x64.msi /qn` installs for the current user and adding `ALLUSERS=1`
 installs for all users.
 
+## Remote desktop checks
+
+`cargo test --lib desktop --locked` covers framebuffer rectangles and overlapping CopyRect,
+input mapping and focus-loss releases, certificate pins, old-library compatibility and
+credential references. Loopback RFB servers exercise no-auth and password sign-in, the
+remember-password event, a raw framebuffer update and keyboard input through the real VNC
+adapter. Silent TCP peers check cancellation during both protocols' handshakes.
+
+These tests do not establish compatibility with real Windows RDP, xrdp or VNC servers.
+Before extending protocol coverage, verify real sign-in, certificate rejection and change,
+SSH routes with Jump Hosts, disconnect/reconnect, desktop resizing, mixed DPI, keyboard
+layouts and focus loss during a drag. Use disposable host data and credentials. RDP currently
+requires TLS or NLA/NTLM; VNC supports none or classic password authentication. Unsupported
+security modes must fail explicitly rather than weaken a server's configuration.
+
 ## Developing on Linux
 
 Komando ships for Windows only, but it also builds on Linux, which is handy for tests and

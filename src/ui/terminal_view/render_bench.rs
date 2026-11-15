@@ -82,6 +82,7 @@ impl Harness {
             palette: &self.palette,
             highlighter: &self.highlighter,
             focused: self.focused,
+            cursor_visible: true,
         };
         layout_grid(&self.term, &self.text_system, &look, &mut self.cache);
     }

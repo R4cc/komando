@@ -1,6 +1,6 @@
 # Komando
 
-A Windows 11 terminal for system engineers who work on remote Linux machines over SSH, organised by Project and with saved credentials.
+A Windows 11 terminal and remote desktop client, organised by Project and with saved credentials.
 
 ## Organisation
 
@@ -9,7 +9,7 @@ A named group of Hosts that belong together, such as one application or one envi
 _Avoid_: Workspace, folder, group
 
 **Host**:
-A saved SSH destination: address, port, user, Credential and how it looks (icon, color). A Host can belong to more than one Project.
+A saved machine with an address, SSH settings, optional Remote Desktops and how it looks (icon, color). A Host can belong to more than one Project.
 _Avoid_: Profile, server, connection, bookmark
 
 **Jump Host**:
@@ -34,14 +34,14 @@ _Avoid_: Export, backup, profile
 The public key a Host's server presents to prove its identity. It is trusted on first connection and checked on every connection after that.
 _Avoid_: Fingerprint (that is only its display form), known host
 
-## Running terminals
+## Running sessions
 
 **Local Shell**:
 A saved local shell, such as PowerShell or cmd, that Komando can start. It belongs to a Project or stands alone. Standalone ones are managed in Settings → Local shells, where they can be hidden from the sidebar.
 _Avoid_: Local profile
 
 **Session**:
-A terminal running for a Host or Local Shell. A Host or Local Shell can have several Sessions. When a Session ends (closed or dropped), its Scrollback stays until it is discarded or Komando closes, and activating it again reconnects in the same terminal.
+A terminal or Remote Desktop running for a Host, or a terminal running for a Local Shell; either can have several Sessions. A disconnected Session keeps its terminal output or last desktop picture and reconnects in place.
 _Avoid_: Connection, shell, instance, tab
 
 **SSH Session**:
@@ -49,6 +49,10 @@ A Session connected to a Host. The shell runs on the remote machine; no local sh
 
 **Local Session**:
 A Session of a Local Shell, running on the Windows machine itself.
+
+**Remote Desktop**:
+A Host's graphical desktop reached over RDP or VNC, directly or through that Host's SSH Session. Each Remote Desktop runs in its own Session alongside the Host's terminal.
+_Avoid_: External viewer, remote screen, desktop tab
 
 **Startup Commands**:
 Lines Komando types into an SSH Session's shell once it is ready, as if the user typed them. A

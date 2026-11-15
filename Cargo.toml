@@ -1,6 +1,6 @@
 [package]
 name = "komando"
-version = "0.4.4"
+version = "0.5.0"
 edition = "2024"
 description = "A fast terminal for system engineers who SSH into Linux machines."
 publish = false
@@ -33,13 +33,30 @@ base64 = "0.22"
 sha2 = "0.10"
 ureq = { version = "2", default-features = false, features = ["tls", "proxy-from-env"] }
 serde-saphyr = { version = "1.3", default-features = false, features = ["deserialize"] }
+# Remote desktops (see docs/adr/0012-remote-desktops-are-sessions-of-a-host.md): RDP through
+# IronRDP, VNC through vnc-rs, both drawn by Komando. Only what a plain desktop needs: no audio,
+# drive or clipboard redirection, and ring rather than aws-lc (no CMake or NASM to build).
+ironrdp-connector = "0.12"
+ironrdp-session = "0.13"
+ironrdp-core = "0.3"
+ironrdp-pdu = "0.11"
+ironrdp-graphics = "0.11"
+ironrdp-input = "0.9"
+ironrdp-dvc = "0.10"
+ironrdp-displaycontrol = "0.10"
+ironrdp-tokio = "0.12"
+ironrdp-tls = { version = "0.3", default-features = false, features = ["rustls-ring"] }
+vnc-rs = "0.6.1"
+# A desktop's picture is handed to gpui as an `image::Frame`.
+image = { version = "0.25", default-features = false }
+smallvec = "1"
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5"
 # Windows: also trust the Windows certificate store (Schannel); see update.rs.
 ureq = { version = "2", default-features = false, features = ["native-tls"] }
 raw-window-handle = "0.6"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dwm", "Win32_Security", "Win32_UI_Controls", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dwm", "Win32_Security", "Win32_UI_Controls", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [profile.dev]
 debug = 0

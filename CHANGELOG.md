@@ -6,8 +6,26 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-15
+
 ### Added
 
+- RDP and VNC remote desktops inside Komando. Enable either in a host's Remote desktop
+  section, then open it from the toolbar beside SFTP or the host's right-click menu. Each
+  desktop has its own session, port and vault password; a host can open its desktop by default.
+  Connect directly or through the host's SSH session, with VNC set to use SSH by default.
+- Settings → Remote desktop controls RDP resizing and VNC sharing. Desktops scale down to
+  fit the pane, forward keyboard and mouse input, and reconnect in place. RDP also has a
+  Send Ctrl+Alt+Del action and checks server certificates before sending credentials.
+- Initial desktop support covers RDP with TLS or NLA/NTLM, and VNC with no authentication
+  or classic VNC passwords. Audio, clipboard and drive redirection, RD Gateway, Kerberos and
+  VNC TLS/VeNCrypt are not supported yet; use SSH to protect classic VNC traffic.
+- Optional Windows-style keyboard selection in Settings → Terminal: Ctrl+A selects the current
+  recognised command, then all output on a second press; Ctrl+Shift+A selects all output.
+  Shift+navigation selects text, Ctrl+Shift+Left/Right selects words, and Esc clears the selection.
+  Off by default to preserve shell shortcuts; full-screen programs keep their keys.
+- Cursor shape and blinking controls in Settings → Terminal. The default is a blinking line;
+  terminal programs can still request their own cursor style.
 - Experimental: import your SSH sessions from MobaXterm in Settings → Import. Komando reads MobaXterm.ini
   from Documents\MobaXterm or %APPDATA%\MobaXterm, or a file you exported from MobaXterm's
   sessions. Session folders become projects, an SSH gateway becomes the host's jump hosts and
@@ -25,6 +43,11 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- The logo above the sidebar is now a toggle: hide or show navigation with the button or
+  Ctrl+Shift+B, giving the active session more room when it is hidden.
+- The minimize, maximize and close buttons now look like those of other Windows 11 apps: flush
+  with the top edge of the window, with the close button in the corner, instead of rounded
+  buttons set in from the edge.
 - The master password no longer covers the window. While the vault is locked, a "Vault locked"
   row sits at the top of the sidebar; click it, or open a host that needs the vault, and the
   password box opens beside it. The rest of the window keeps working while it's open, and the
@@ -1020,7 +1043,9 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/R4cc/komando/compare/v0.4.4...v0.5.0
+[0.4.4]: https://github.com/R4cc/komando/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/R4cc/komando/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/R4cc/komando/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/R4cc/komando/compare/v0.4.0...v0.4.1

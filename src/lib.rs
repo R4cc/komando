@@ -3,6 +3,7 @@
 
 #[cfg(all(test, unix))]
 mod compat_tests;
+pub mod desktop;
 pub mod elevate;
 pub mod export;
 pub mod favorites;
@@ -32,11 +33,11 @@ use std::path::PathBuf;
 use gpui::{App, AppContext as _, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 
 use crate::ui::terminal_view::{
-    self, Copy, Find, Paste, ScrollPageDown, ScrollPageUp, SearchNewer, SearchOlder, SendBackTab, SendTab,
+    self, Copy, Find, Paste, ScrollPageDown, ScrollPageUp, SearchNewer, SearchOlder, SendBackTab, SendTab, SelectOutput,
 };
 use crate::ui::workspace::{
     CloseSession, CopyOutputFile, CopyOutputText, LockVault, NewSession, NextSession, OpenSettings, PickerDown, PickerUp,
-    PrevSession, QuickConnect, ToggleSftp, Workspace,
+    PrevSession, QuickConnect, ToggleSftp, ToggleSidebar, Workspace,
 };
 
 pub const FONTS: [&[u8]; 6] = [
@@ -65,6 +66,9 @@ fn key_bindings() -> Vec<KeyBinding> {
         // Key bindings run before on_key_down; override Root's focus traversal in a terminal.
         KeyBinding::new("tab", SendTab, t),
         KeyBinding::new("shift-tab", SendBackTab, t),
+        // A remote desktop takes Tab too.
+        KeyBinding::new("tab", ui::desktop_view::SendTab, Some(ui::desktop_view::CONTEXT)),
+        KeyBinding::new("shift-tab", ui::desktop_view::SendBackTab, Some(ui::desktop_view::CONTEXT)),
         KeyBinding::new("ctrl-shift-c", Copy, t),
         KeyBinding::new("ctrl-shift-v", Paste, t),
         KeyBinding::new("shift-pageup", ScrollPageUp, t),
@@ -84,10 +88,14 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-tab", NextSession, None),
         KeyBinding::new("ctrl-shift-tab", PrevSession, None),
         KeyBinding::new("ctrl-shift-a", CopyOutputText, None),
+        // Global bindings have the deepest context's priority too; register the terminal's
+        // override last so it can select locally or propagate to Copy output when disabled.
+        KeyBinding::new("ctrl-shift-a", SelectOutput, t),
         KeyBinding::new("ctrl-shift-s", CopyOutputFile, None),
         KeyBinding::new("ctrl-shift-l", LockVault, None),
         KeyBinding::new("ctrl-,", OpenSettings, None),
         KeyBinding::new("ctrl-shift-e", ToggleSftp, None),
+        KeyBinding::new("ctrl-shift-b", ToggleSidebar, Some("Workspace")),
     ]
 }
 
@@ -161,6 +169,23 @@ pub fn run(options: Options) {
 #[cfg(test)]
 mod tests {
     use gpui::AssetSource as _;
+
+    #[test]
+    fn terminal_select_all_has_the_existing_copy_output_fallback() {
+        use gpui::{KeyContext, Keymap, Keystroke};
+        let keymap = Keymap::new(super::key_bindings());
+        let terminal = [KeyContext::parse("Root").unwrap(), KeyContext::parse("Terminal").unwrap()];
+        let key = Keystroke::parse("ctrl-shift-a").unwrap();
+        let (bindings, pending) = keymap.bindings_for_input(&[key.clone()], &terminal);
+        assert!(!pending);
+        assert_eq!(bindings.len(), 2);
+        assert!(bindings[0].action().as_any().is::<super::SelectOutput>());
+        assert!(bindings[1].action().as_any().is::<super::CopyOutputText>());
+        let settings = [KeyContext::parse("Root").unwrap()];
+        let (bindings, _) = keymap.bindings_for_input(&[key], &settings);
+        assert_eq!(bindings.len(), 1);
+        assert!(bindings[0].action().as_any().is::<super::CopyOutputText>());
+    }
 
     #[test]
     fn terminal_tab_bindings_precede_focus_navigation_and_keep_its_fallback() {

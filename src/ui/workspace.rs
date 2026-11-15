@@ -22,7 +22,9 @@ use crate::model::{
 };
 use crate::session::{self, Status, ssh};
 use crate::theme::{AppPalette, Appearance, TerminalPalette, UI_FONT, alpha, project_color};
+use crate::model::Protocol;
 use crate::ui::connect_route::RouteCard;
+use crate::ui::desktop_view::DesktopView;
 use crate::ui::file_browser::{self, BrowserEvent, FavoriteStore, FileBrowser, MenuExtras};
 use crate::ui::terminal_view::{TerminalEvent, TerminalView};
 use crate::ui::transfers::{Activity, Transfers, TransfersChanged};
@@ -33,6 +35,7 @@ use crate::ui::widgets::{
 use crate::vault::{Credential, Secret, Vault};
 
 mod command_history;
+mod desktops;
 mod forms;
 mod import;
 mod settings;
@@ -55,6 +58,7 @@ actions!(
         LockVault,
         OpenSettings,
         ToggleSftp,
+        ToggleSidebar,
         PickerUp,
         PickerDown
     ]
@@ -82,10 +86,9 @@ impl Render for SftpDivider {
 }
 /// Height of Komando's own title bar (and of its window buttons).
 const TITLE_BAR_HEIGHT: f32 = 40.;
-/// The window buttons' rounded shapes, and the room between them.
-const WINDOW_BUTTON_WIDTH: f32 = 36.;
-const WINDOW_BUTTON_HEIGHT: f32 = 28.;
-const WINDOW_BUTTON_GAP: f32 = 2.;
+/// The window buttons' highlighted shapes, sized like Windows 11's own caption buttons.
+const WINDOW_BUTTON_WIDTH: f32 = 46.;
+const WINDOW_BUTTON_HEIGHT: f32 = 32.;
 
 /// Window width from which the host and project forms use two columns side by side: the
 /// wide form plus a margin each side. Narrower, they stack in one.
@@ -95,6 +98,46 @@ const WIDE_FORM_MIN_WINDOW: f32 = forms::WIDE_FORM_WIDTH + 60.;
 enum SessionKind {
     Ssh { host_id: String },
     Local { shell: LocalShell },
+    /// A Host's Remote Desktop over RDP or VNC.
+    Desktop { host_id: String, protocol: Protocol },
+}
+
+/// What a Session shows: a terminal, or a Remote Desktop.
+#[derive(Clone, PartialEq)]
+enum SessionView {
+    Terminal(Entity<TerminalView>),
+    Desktop(Entity<DesktopView>),
+}
+
+impl SessionView {
+    fn terminal(&self) -> Option<&Entity<TerminalView>> {
+        match self {
+            SessionView::Terminal(view) => Some(view),
+            SessionView::Desktop(_) => None,
+        }
+    }
+
+    fn desktop(&self) -> Option<&Entity<DesktopView>> {
+        match self {
+            SessionView::Desktop(view) => Some(view),
+            SessionView::Terminal(_) => None,
+        }
+    }
+
+    fn has_prompt(&self, cx: &App) -> bool {
+        match self {
+            SessionView::Terminal(view) => view.read(cx).has_prompt(),
+            SessionView::Desktop(view) => view.read(cx).has_prompt(),
+        }
+    }
+
+    /// End its connection for good: the Session is being discarded.
+    fn close(&self, cx: &mut App) {
+        match self {
+            SessionView::Terminal(view) => view.update(cx, |v, _| v.close()),
+            SessionView::Desktop(view) => view.update(cx, |v, _| v.close()),
+        }
+    }
 }
 
 /// Identifies a sidebar item: a saved Host in a Project, or a Local Shell (in a Project or
@@ -164,7 +207,7 @@ struct SessionEntry {
     title: SharedString,
     /// Output is streaming in (a command at work), copied here like `status`.
     busy: bool,
-    view: Entity<TerminalView>,
+    view: SessionView,
     /// The terminal's status, copied here when it changes. The sidebar reads this rather than
     /// the terminal: reading a terminal while rendering makes gpui redraw the whole window on
     /// every bit of output it gets, even when it isn't on screen.
@@ -216,6 +259,10 @@ enum ConfirmAction {
 /// What waits for the Vault: done once the master password is entered.
 enum Pending {
     Open { project_id: String, host_id: String },
+    /// Connect a Remote Desktop Session whose password is in the Vault.
+    Desktop { session: usize },
+    /// Save a Remote Desktop's password typed in with "Remember" ticked.
+    SaveDesktop { host_id: String, protocol: Protocol, user: Option<String>, password: zeroize::Zeroizing<String> },
     Save { session: usize, hop: usize, password: String },
     /// Save the open host or project form, which imports a key file into the Vault.
     Form,
@@ -253,6 +300,8 @@ pub struct Workspace {
     /// The sidebar list (virtual: only rows in view are built) and the rows it was built for.
     sidebar_list: ListState,
     sidebar_rows: Vec<SidebarRow>,
+    /// Per-window navigation visibility; the title-bar toggle stays available when hidden.
+    sidebar_visible: bool,
     /// The highlight set whose delete button was clicked once and now asks for a second click.
     confirm_delete_set: Option<(String, Instant)>,
     blur_slider: Option<Entity<SliderState>>,
@@ -364,6 +413,7 @@ impl Workspace {
             confirm_delete_set: None,
             sidebar_list: ListState::new(0, ListAlignment::Top, px(240.)),
             sidebar_rows: vec![],
+            sidebar_visible: true,
             blur_slider: None,
             font_slider: None,
             font_input: None,
@@ -730,6 +780,8 @@ impl Workspace {
     /// Ask for the master password, saying why (`reason`). What waits for it is in `pending`.
     /// Asked again while the dialog is open (two hosts opened at once), it stays as it is.
     fn show_unlock(&mut self, reason: impl Into<String>, window: &mut Window, cx: &mut Context<Self>) {
+        // The password popover is anchored to a row in the sidebar.
+        self.sidebar_visible = true;
         if let Some(state) = self.unlock.as_mut() {
             if self.pending.len() > 1 {
                 state.reason = "The hosts you're opening sign in with passwords or keys saved in your vault.".into();
@@ -788,6 +840,10 @@ impl Workspace {
                 for job in pending {
                     match job {
                         Pending::Open { project_id, host_id } => self.open_host(&project_id, &host_id, window, cx),
+                        Pending::Desktop { session } => self.connect_desktop(session, window, cx),
+                        Pending::SaveDesktop { host_id, protocol, user, password } => {
+                            self.save_desktop_password(&host_id, protocol, user, password, cx)
+                        }
                         Pending::Save { session, hop, password } => self.save_password(session, hop, password, cx),
                         Pending::Form => self.submit_form(window, cx),
                     }
@@ -812,11 +868,13 @@ impl Workspace {
         for job in std::mem::take(&mut self.pending) {
             match job {
                 Pending::Open { project_id, host_id } => self.open_host_session(&project_id, &host_id, window, cx),
+                // Connects without the saved password: the desktop asks for one.
+                Pending::Desktop { session } => self.connect_desktop_without_vault(session, window, cx),
                 Pending::Form => self.show_form_error(
                     "Key files and jump host passwords go into the vault: unlock it, or leave them out.",
                     cx,
                 ),
-                Pending::Save { .. } => {}
+                Pending::Save { .. } | Pending::SaveDesktop { .. } => {}
             }
         }
         if self.overlay.is_none() {
@@ -948,7 +1006,10 @@ impl Workspace {
             }
         }
         match item {
-            SidebarItem::Host { project, host } => self.open_host(&project.id, &host.id, window, cx),
+            SidebarItem::Host { project, host } => match host.opens_with() {
+                Protocol::Ssh => self.open_host(&project.id, &host.id, window, cx),
+                protocol => self.open_desktop(&project.id, &host.id, protocol, window, cx),
+            },
             SidebarItem::Shell { project, shell } => self.open_local(project.map(|p| p.id), shell, window, cx),
         }
     }
@@ -970,6 +1031,9 @@ impl Workspace {
         let scrollback = self.settings.scrollback_lines;
         let confirm_paste = self.settings.confirm_multiline_paste;
         let putty = self.settings.putty_clipboard;
+        let windows_selection = self.settings.windows_selection;
+        let cursor_shape = self.settings.cursor_shape;
+        let cursor_blink = self.settings.cursor_blink;
         let command_rail = self.settings.command_rail;
         // Kept per Host: Local Sessions have their shell's own history.
         let command_history = self.settings.command_history && matches!(kind, SessionKind::Ssh { .. });
@@ -980,6 +1044,8 @@ impl Workspace {
             let mut view = TerminalView::new(label.clone(), scrollback, window, cx);
             view.confirm_multiline_paste = confirm_paste;
             view.putty_clipboard = putty;
+            view.windows_selection = windows_selection;
+            view.set_cursor(cursor_shape, cursor_blink);
             view.command_rail = command_rail;
             view.command_history = command_history;
             view.minimap = minimap;
@@ -992,6 +1058,12 @@ impl Workspace {
         let sub = cx.subscribe_in(&view, window, move |this, view, event: &TerminalEvent, window, cx| match event {
             TerminalEvent::Changed => {
                 let status = view.read(cx).status.clone();
+                // Remote Desktops waiting to go through this Session can connect now.
+                let connected = matches!(status, Status::Connected)
+                    && this.sessions.iter().find(|s| s.id == id).is_some_and(|s| s.status != Status::Connected);
+                if connected {
+                    cx.defer_in(window, move |this, window, cx| this.ssh_connected(id, window, cx));
+                }
                 if let Some(entry) = this.sessions.iter_mut().find(|s| s.id == id) {
                     entry.title = view.read(cx).title.clone();
                     entry.busy = view.read(cx).busy;
@@ -1073,7 +1145,7 @@ impl Workspace {
             number,
             title: label,
             busy: false,
-            view: view.clone(),
+            view: SessionView::Terminal(view.clone()),
             status: Status::Connecting,
             browser: None,
             sftp_open: false,
@@ -1125,7 +1197,7 @@ impl Workspace {
     /// resized as soon as the pane appears repaints, and Windows' pseudo-console leaves blank
     /// lines above the prompt when it does.
     fn start_when_sized(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
-        let Some(entry) = self.sessions.iter_mut().find(|s| &s.view == view) else { return };
+        let Some(entry) = self.sessions.iter_mut().find(|s| s.view.terminal() == Some(view)) else { return };
         // Opened into a split: it gets half the room, which the last pane laid out may not
         // have had. Wait for its own pane.
         let in_split = self.split.is_some_and(|s| s.contains(entry.id));
@@ -1153,7 +1225,10 @@ impl Workspace {
         let waiting: Vec<_> = self
             .sessions
             .iter_mut()
-            .filter_map(|s| std::mem::take(&mut s.waiting_for_size).then(|| (s.view.clone(), s.kind.clone(), s.project_id.clone())))
+            .filter_map(|s| {
+                let view = s.view.terminal()?.clone();
+                std::mem::take(&mut s.waiting_for_size).then(|| (view, s.kind.clone(), s.project_id.clone()))
+            })
             .collect();
         for (view, kind, project_id) in waiting {
             if let Some(size) = self.pane_size {
@@ -1207,7 +1282,7 @@ impl Workspace {
                     })
                     .collect();
                 let history_on = crate::history::address_label(&host.address, host.port);
-                if let Some(entry) = self.sessions.iter_mut().find(|s| &s.view == view) {
+                if let Some(entry) = self.sessions.iter_mut().find(|s| s.view.terminal() == Some(view)) {
                     entry.history_on = Some(history_on);
                 }
                 let secret = |credential: Option<&str>| {
@@ -1223,6 +1298,7 @@ impl Workspace {
                 let target = ssh::Target { hops, known_hosts: self.data_dir.join("known_hosts") };
                 Some(ssh::spawn(target, size, term, proxy))
             }
+            SessionKind::Desktop { .. } => return,
         };
         view.update(cx, |v, cx| {
             if let Some(sink) = sink {
@@ -1236,6 +1312,11 @@ impl Workspace {
     fn reconnect(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
         let (view, kind, project_id) = (entry.view.clone(), entry.kind.clone(), entry.project_id.clone());
+        let SessionView::Terminal(view) = view else {
+            self.connect_desktop(id, window, cx);
+            self.focus_active(window, cx);
+            return;
+        };
         view.update(cx, |v, _| v.close());
         self.start_backend(&view, &kind, project_id.as_deref(), cx);
         self.focus_active(window, cx);
@@ -1311,11 +1392,11 @@ impl Workspace {
                     this.save_settings(cx);
                 }
                 BrowserEvent::Retry => {
-                    let sink = this.sessions.iter().find(|s| s.id == id).and_then(|s| s.view.read(cx).sink());
+                    let sink = this.sessions.iter().find(|s| s.id == id).and_then(|s| s.view.terminal()?.read(cx).sink());
                     browser.update(cx, |b, cx| b.connect(sink, cx));
                 }
                 BrowserEvent::JumpTo(dir) => {
-                    let Some(view) = this.sessions.iter().find(|s| s.id == id).map(|s| s.view.clone()) else { return };
+                    let Some(view) = this.sessions.iter().find(|s| s.id == id).and_then(|s| s.view.terminal().cloned()) else { return };
                     let line = file_browser::cd_command(dir);
                     if view.update(cx, |v, cx| v.run_line(&line, cx)) {
                         view.update(cx, |v, cx| v.focus_prompt(window, cx));
@@ -1341,7 +1422,7 @@ impl Workspace {
         entry.sftp_open = true;
         let browser = entry.browser.clone().expect("browser");
         if matches!(entry.status, Status::Connected) && !browser.read(cx).is_connected() {
-            let sink = entry.view.read(cx).sink();
+            let sink = entry.view.terminal().and_then(|v| v.read(cx).sink());
             browser.update(cx, |b, cx| b.connect(sink, cx));
         }
         let handle = browser.read(cx).focus_handle(cx);
@@ -1373,11 +1454,31 @@ impl Workspace {
     /// to it: switching Sessions while it's open types into the terminal, not the popover.
     fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(entry) = self.active_entry() {
-            // The open question's field if it has one, else the terminal.
-            entry.view.update(cx, |view, cx| view.focus_prompt(window, cx));
+            // The open question's field if it has one, else the terminal or desktop.
+            match &entry.view {
+                SessionView::Terminal(view) => view.update(cx, |view, cx| view.focus_prompt(window, cx)),
+                SessionView::Desktop(view) => view.update(cx, |view, cx| view.focus_prompt(window, cx)),
+            }
         } else {
             window.focus(&self.focus, cx);
         }
+    }
+
+    fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Keep the Vault's pending question visible until it is answered or dismissed.
+        if self.modal_open(cx) || self.unlock.is_some() {
+            return;
+        }
+        self.sidebar_visible = !self.sidebar_visible;
+        if !self.sidebar_visible {
+            self.transfers.update(cx, |transfers, cx| transfers.close(cx));
+        }
+        if self.page == Page::Sessions {
+            self.focus_active(window, cx);
+        } else {
+            window.focus(&self.focus, cx);
+        }
+        cx.notify();
     }
 
     fn active_entry(&self) -> Option<&SessionEntry> {
@@ -1388,7 +1489,7 @@ impl Workspace {
     /// modal: nothing else in the window can be used, and no other dialog opens, until it is
     /// answered. The master password popover is not one: it leaves the window usable.
     fn prompt_open(&self, cx: &App) -> bool {
-        self.active_entry().is_some_and(|entry| entry.view.read(cx).has_prompt())
+        self.active_entry().is_some_and(|entry| entry.view.has_prompt(cx))
     }
 
     /// Whether the keyboard is in the master password popover.
@@ -1406,14 +1507,17 @@ impl Workspace {
     fn close_session(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.sessions.iter().position(|s| s.id == id) else { return };
         if self.sessions[index].is_live() {
-            self.sessions[index].view.update(cx, |v, cx| {
-                v.close();
-                v.set_status(Status::Disconnected("Session closed.".into()), cx);
-            });
+            match self.sessions[index].view.clone() {
+                SessionView::Terminal(view) => view.update(cx, |v, cx| {
+                    v.close();
+                    v.set_status(Status::Disconnected("Session closed.".into()), cx);
+                }),
+                SessionView::Desktop(view) => view.update(cx, |v, cx| v.end("Session closed.", cx)),
+            }
         } else {
             let entry = self.sessions.remove(index);
             self.last_active.retain(|_, v| *v != id);
-            entry.view.update(cx, |v, _| v.close());
+            entry.view.close(cx);
             let partner = self.leave_split(id);
             if self.active == Some(id) {
                 self.active = None;
@@ -1581,8 +1685,8 @@ impl Workspace {
     }
 
     fn copy_output_text(&mut self, cx: &mut Context<Self>) {
-        let Some(entry) = self.active_entry() else { return };
-        let text = entry.view.read(cx).output_text();
+        let Some(view) = self.active_entry().and_then(|e| e.view.terminal()) else { return };
+        let text = view.read(cx).output_text();
         let lines = text.lines().count();
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
         self.show_toast(format!("Copied {lines} lines as text."), cx);
@@ -1590,7 +1694,8 @@ impl Workspace {
 
     fn copy_output_file(&mut self, cx: &mut Context<Self>) {
         let Some(entry) = self.active_entry() else { return };
-        let text = entry.view.read(cx).output_text();
+        let Some(view) = entry.view.terminal() else { return };
+        let text = view.read(cx).output_text();
         let name = format!(
             "{}_{}.txt",
             sanitize(&entry.label),
@@ -1791,7 +1896,10 @@ impl Workspace {
         self.library = library;
         match action {
             ConfirmAction::DeleteHost(id) => {
-                self.discard_sessions(|s| matches!(&s.kind, SessionKind::Ssh { host_id } if *host_id == id), cx);
+                self.discard_sessions(
+                    |s| matches!(&s.kind, SessionKind::Ssh { host_id } | SessionKind::Desktop { host_id, .. } if *host_id == id),
+                    cx,
+                );
             }
             ConfirmAction::DeleteProject(id) => {
                 self.discard_sessions(|s| s.project_id.as_deref() == Some(id.as_str()), cx);
@@ -1808,7 +1916,7 @@ impl Workspace {
         let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.sessions).into_iter().partition(|s| matches(s));
         self.sessions = kept;
         for entry in &gone {
-            entry.view.update(cx, |v, _| v.close());
+            entry.view.close(cx);
             self.last_active.retain(|_, v| *v != entry.id);
             let partner = self.leave_split(entry.id).filter(|p| !gone.iter().any(|g| g.id == *p));
             if self.active == Some(entry.id) {
@@ -2751,6 +2859,23 @@ impl Workspace {
                 let (pb, hb) = (project.id.clone(), host.id.clone());
                 let (pd, hd) = (project.id.clone(), host.id.clone());
                 let hc = host.id.clone();
+                let desktops: Vec<Protocol> = host.desktops().collect();
+                if !desktops.is_empty() {
+                    menu = menu.separator();
+                    // A Host that opens its desktop on a click offers its terminal here instead.
+                    if !host.opens_with().is_ssh() {
+                        let (pt, ht) = (project.id.clone(), host.id.clone());
+                        menu = menu.item(menu_item("Open terminal", "square-terminal", &ws, move |this, window, cx| {
+                            this.show_terminal_of(&pt, &ht, window, cx)
+                        }));
+                    }
+                    for protocol in desktops {
+                        let (pr, hr) = (project.id.clone(), host.id.clone());
+                        menu = menu.item(menu_item(&format!("Open remote desktop ({})", protocol.label()), "monitor", &ws, move |this, window, cx| {
+                            this.open_desktop(&pr, &hr, protocol, window, cx)
+                        }));
+                    }
+                }
                 menu = menu
                     .separator()
                     .item(menu_item("Edit host…", "pencil", &ws, move |this, window, cx| this.open_edit_host(pa.clone(), ha.clone(), window, cx)))
@@ -3080,7 +3205,13 @@ impl Workspace {
                 })
                 .unwrap_or_default(),
             SessionKind::Local { shell } => format!("Local · {}", shell.program),
+            SessionKind::Desktop { host_id, protocol } => {
+                // The label already names the protocol ("win-build · RDP").
+                entry.project_id.as_deref().map(|p| self.desktop_target(p, host_id, *protocol)).unwrap_or_default()
+            }
         };
+        let is_terminal = entry.view.terminal().is_some();
+        let desktop_buttons = self.desktop_strip_buttons(entry, p, cx);
         let (status_text, status_color) = match &entry.status {
             Status::Connecting => ("Connecting", p.warning),
             Status::Connected => ("Connected", p.success),
@@ -3200,20 +3331,23 @@ impl Workspace {
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_split(window, cx))),
                     )
                 })
+                .children(desktop_buttons)
                 .when_some(history_host, |el, host_id| {
                     el.child(
                         strip_action("command-history", command_history::ICON, "Command history", false, p)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_history(&host_id, window, cx))),
                     )
                 })
-                .child(
-                    strip_action("copy-text", "copy", "Copy output", false, p)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_text(cx))),
-                )
-                .child(
-                    strip_action("copy-file", "file-text", "Copy as .txt", false, p)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_file(cx))),
-                )
+                .when(is_terminal, |el| {
+                    el.child(
+                        strip_action("copy-text", "copy", "Copy output", false, p)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_text(cx))),
+                    )
+                    .child(
+                        strip_action("copy-file", "file-text", "Copy as .txt", false, p)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_file(cx))),
+                    )
+                })
                 // Set apart from the harmless copy actions: this one disconnects.
                 .child(div().w(px(1.)).h(px(14.)).mx(px(4.)).bg(p.border))
                 // An unplug, not an ✕: the window's own ✕ is in the same bar.
@@ -3227,7 +3361,7 @@ impl Workspace {
         )
     }
 
-    /// The window's title bar, drawn by Komando so it matches the app: the wordmark over the
+    /// The window's title bar, drawn by Komando so it matches the app: the sidebar toggle,
     /// sidebar, the active Session's strip over the terminal, and the window buttons. Its
     /// background is the canvas, so on Windows Mica shows through it like everywhere else.
     /// `minimal` (the unlock screen) shows only the window buttons.
@@ -3236,6 +3370,8 @@ impl Workspace {
             (Page::Sessions, false) => self.render_session_strip(p, cx),
             _ => None,
         };
+        let sidebar_label = if self.sidebar_visible { "Hide sidebar (Ctrl+Shift+B)" } else { "Show sidebar (Ctrl+Shift+B)" };
+        let sidebar_icon = if self.sidebar_visible { "panel-left-close" } else { "panel-left-open" };
         div()
             .id("title-bar")
             .h(px(TITLE_BAR_HEIGHT))
@@ -3254,14 +3390,27 @@ impl Workspace {
             })
             .child(
                 div()
-                    .w(px(SIDEBAR_WIDTH + ISLAND_GAP * 2.))
+                    .when(self.sidebar_visible || minimal, |el| el.w(px(SIDEBAR_WIDTH + ISLAND_GAP * 2.)))
                     .flex_shrink_0()
                     .h_full()
-                    .pl(px(ISLAND_GAP + 18.))
+                    .pl(px(ISLAND_GAP + 8.))
+                    .pr(px(ISLAND_GAP))
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .when(!minimal, |el| el.child(wordmark(16., p.text)))
+                    .when(!minimal, |el| el.child(
+                        strip_action("sidebar-toggle", sidebar_icon, sidebar_label, false, p)
+                            .size(px(30.))
+                            .aria_expanded(self.sidebar_visible)
+                            .when(self.unlock.is_some(), |el| el.opacity(0.45).cursor_default())
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.toggle_sidebar(window, cx)))
+                            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    this.toggle_sidebar(window, cx);
+                                    cx.stop_propagation();
+                                }
+                            })),
+                    ))
                     .when(crate::elevate::is_elevated(), |el| el.child(admin_badge(p))),
             )
             .child(div().flex_1().min_w_0().h_full().flex().items_center().children(strip))
@@ -3309,7 +3458,8 @@ impl Workspace {
         let browser = entry.browser.clone().filter(|_| entry.sftp_open);
         // The browser keeps at least 300px for the terminal when the pane is narrow.
         let window_width = f32::from(window.bounds().size.width);
-        let area = window_width - SIDEBAR_WIDTH - ISLAND_GAP * 3.;
+        let area = window_width - ISLAND_GAP * 2.
+            - if self.sidebar_visible { SIDEBAR_WIDTH + ISLAND_GAP } else { 0. };
         let pane_width = if in_split { (area - ISLAND_GAP) / 2. } else { area };
         let max = (pane_width - 300.).max(280.);
         let width = self.settings.sftp_width.min(max).max(280.);
@@ -3340,7 +3490,10 @@ impl Workspace {
                         this.resize_sftp(f32::from(event.event.position.x), event.bounds, cx);
                     }
                 }))
-                .child(div().flex_1().min_w_0().h_full().child(entry.view.clone()))
+                .child(div().flex_1().min_w_0().h_full().map(|el| match &entry.view {
+                    SessionView::Terminal(view) => el.child(view.clone()),
+                    SessionView::Desktop(view) => el.child(view.clone()),
+                }))
                 .when_some(browser, |el, browser| {
                     el.child(
                         div()
@@ -3477,7 +3630,8 @@ impl Workspace {
         if self.overlay.is_some() {
             return None;
         }
-        let view = self.active_entry()?.view.clone();
+        // A Remote Desktop asks inside its own pane.
+        let view = self.active_entry()?.view.terminal()?.clone();
         let card = view.update(cx, |view, cx| view.prompt_modal(cx))?;
         Some(
             div()
@@ -3956,14 +4110,14 @@ fn close_x(id: &'static str, p: AppPalette) -> gpui::Stateful<gpui::Div> {
     icon_button(id, "x", p).aria_label("Close")
 }
 
-/// Minimise, maximise/restore and close, in the order Windows uses, drawn like the rest of
-/// Komando: rounded buttons that sit inside the title bar with room around them, instead of
-/// squares that fill it and run into the terminal's coloured edge below. The close button's
-/// right edge lines up with the terminal island's.
+/// Minimise, maximise/restore and close, drawn like Windows 11's own caption buttons: flush
+/// rectangles along the window's top edge with no gap between them, the close button in the
+/// window's corner (DWM rounds it with the window). The highlight is the system's 32 px tall,
+/// so it stays clear of the terminal island's coloured edge below the bar.
 ///
-/// Each button's hit area is still the full height of the bar, and the close button's reaches
-/// the window's corner, so flicking the pointer to the top-right corner of a maximised window
-/// still hits it. On Windows the buttons are hit-tested by the system (snap layouts on
+/// Each button's hit area is the full height of the bar, and the close button's reaches the
+/// window's corner, so flicking the pointer to the top-right corner of a maximised window
+/// hits it. On Windows the buttons are hit-tested by the system (snap layouts on
 /// maximise work); elsewhere (Linux dev builds) they act on click.
 fn window_controls(p: AppPalette, window: &Window) -> impl IntoElement {
     let maximized = window.is_maximized();
@@ -3981,10 +4135,7 @@ fn window_controls(p: AppPalette, window: &Window) -> impl IntoElement {
             .aria_label(label)
             .h_full()
             .flex()
-            .items_center()
-            .pl(px(WINDOW_BUTTON_GAP))
-            // The last button's hit area runs on to the window's edge.
-            .when(close, |el| el.pr(px(ISLAND_GAP)))
+            .items_start()
             // The button's hitbox hides the title bar's drag area behind it. Without this the
             // system hit test can answer "caption" for a button (seen after maximising with a
             // dialog open): a click then does nothing and only a double click acts.
@@ -4005,7 +4156,6 @@ fn window_controls(p: AppPalette, window: &Window) -> impl IntoElement {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(8.))
                     .group_hover(id, move |s| s.bg(hover_bg))
                     .group_active(id, move |s| s.bg(press_bg))
                     .child(
@@ -4144,8 +4294,10 @@ impl Render for Workspace {
                     this.close_overlay(window, cx);
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.prompt_open(cx) {
-                    if let Some(entry) = this.active_entry() {
-                        entry.view.clone().update(cx, |view, cx| view.cancel_prompt(window, cx));
+                    match this.active_entry().map(|e| e.view.clone()) {
+                        Some(SessionView::Terminal(view)) => view.update(cx, |view, cx| view.cancel_prompt(window, cx)),
+                        Some(SessionView::Desktop(view)) => view.update(cx, |view, cx| view.cancel_prompt(window, cx)),
+                        None => {}
                     }
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && matches!(this.page, Page::Settings(_)) {
@@ -4187,6 +4339,7 @@ impl Render for Workspace {
                     this.toggle_sftp(id, window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| this.toggle_sidebar(window, cx)))
             // A sidebar item let go anywhere that takes no drop: nothing happens, and the
             // drop indicators go.
             .on_drop(cx.listener(|this, _: &DraggedItem, _, cx| {
@@ -4237,7 +4390,7 @@ impl Render for Workspace {
                 // The title bar above is the top margin.
                 .px(px(ISLAND_GAP))
                 .pb(px(ISLAND_GAP))
-                .child(self.render_sidebar(p, cx))
+                .when(self.sidebar_visible, |el| el.child(self.render_sidebar(p, cx)))
                 .child(self.render_main(p, window, cx))
                 .into_any_element()),
         };
