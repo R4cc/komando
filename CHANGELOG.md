@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-11-15
+
 ### Changed
 
 - Restored the borderless, theme-colored text logo inside the app, including the welcome
