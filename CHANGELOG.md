@@ -6,6 +6,11 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Resize the sidebar by dragging the gap beside the terminal. The divider highlights on
+  hover, and Komando remembers your preferred width between launches.
+
 ### Fixed
 
 - Short-lived local shells reliably report that they have exited, even when they finish

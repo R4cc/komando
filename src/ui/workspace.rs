@@ -76,6 +76,22 @@ enum Page {
 
 const SIDEBAR_WIDTH: f32 = 264.;
 
+/// Leave a usable terminal beside the navigation, including at the minimum window size.
+fn sidebar_width(preferred: f32, window_width: f32) -> f32 {
+    let max = (window_width - ISLAND_GAP * 3. - 360.).clamp(200., 520.);
+    let preferred = if preferred.is_finite() { preferred } else { SIDEBAR_WIDTH };
+    preferred.clamp(200., max)
+}
+
+/// A divider drag has no image following the pointer.
+struct SidebarDivider;
+
+impl Render for SidebarDivider {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
 /// What is dragged while resizing a Session's file browser (drawn as nothing).
 struct SftpDivider(usize);
 
@@ -302,6 +318,7 @@ pub struct Workspace {
     sidebar_rows: Vec<SidebarRow>,
     /// Per-window navigation visibility; the title-bar toggle stays available when hidden.
     sidebar_visible: bool,
+    sidebar_resizing: bool,
     /// The highlight set whose delete button was clicked once and now asks for a second click.
     confirm_delete_set: Option<(String, Instant)>,
     blur_slider: Option<Entity<SliderState>>,
@@ -414,6 +431,7 @@ impl Workspace {
             sidebar_list: ListState::new(0, ListAlignment::Top, px(240.)),
             sidebar_rows: vec![],
             sidebar_visible: true,
+            sidebar_resizing: false,
             blur_slider: None,
             font_slider: None,
             font_input: None,
@@ -1440,6 +1458,57 @@ impl Workspace {
             self.settings.sftp_width = width;
             cx.notify();
         }
+    }
+
+    fn sidebar_width(&self, window: &Window) -> f32 {
+        sidebar_width(self.settings.sidebar_width, f32::from(window.bounds().size.width))
+    }
+
+    fn finish_sidebar_resize(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar_resizing {
+            self.sidebar_resizing = false;
+            self.save_settings(cx);
+            cx.notify();
+        }
+    }
+
+    fn render_sidebar_divider(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let workspace = cx.entity().downgrade();
+        div()
+            .id("sidebar-divider")
+            .group("sidebar-divider")
+            .w(px(ISLAND_GAP))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .justify_center()
+            .py(px(14.))
+            .cursor_col_resize()
+            .tooltip(|window, cx| Tooltip::new("Drag to resize sidebar").build(window, cx))
+            .on_drag(SidebarDivider, move |_, _, _, cx| {
+                let _ = workspace.update(cx, |this, cx| {
+                    this.sidebar_resizing = true;
+                    this.drop_target = None;
+                    cx.notify();
+                });
+                let workspace = workspace.clone();
+                cx.new(|cx| {
+                    // Release covers cancellation and letting go outside the window too.
+                    cx.on_release(move |_, cx| {
+                        let _ = workspace.update(cx, |this, cx| this.finish_sidebar_resize(cx));
+                    }).detach();
+                    SidebarDivider
+                })
+            })
+            .child(
+                div()
+                    .w(px(2.))
+                    .h_full()
+                    .rounded_full()
+                    .when(self.sidebar_resizing, |el| el.bg(p.brand))
+                    .group_hover("sidebar-divider", |s| s.bg(p.brand.opacity(0.6))),
+            )
+            .into_any_element()
     }
 
     fn sftp_menu_extras(&self) -> MenuExtras {
@@ -2596,7 +2665,7 @@ impl Workspace {
                 .into_any_element()
     }
 
-    fn render_sidebar(&mut self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_sidebar(&mut self, p: AppPalette, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         // Only the rows in view are built (hundreds of hosts would otherwise cost milliseconds
         // on every frame). Row heights are measured once and kept until the rows change.
         let rows = crate::perf::time("sidebar rows", || self.sidebar_rows());
@@ -2679,7 +2748,7 @@ impl Workspace {
             .child(list.pb(px(8.)));
 
         div()
-            .w(px(SIDEBAR_WIDTH))
+            .w(px(self.sidebar_width(window)))
             .h_full()
             .flex()
             .flex_col()
@@ -3388,7 +3457,7 @@ impl Workspace {
             })
             .child(
                 div()
-                    .when(self.sidebar_visible || minimal, |el| el.w(px(SIDEBAR_WIDTH + ISLAND_GAP * 2.)))
+                    .when(self.sidebar_visible || minimal, |el| el.w(px(self.sidebar_width(window) + ISLAND_GAP * 2.)))
                     .flex_shrink_0()
                     .h_full()
                     .pl(px(ISLAND_GAP + 8.))
@@ -3457,7 +3526,7 @@ impl Workspace {
         // The browser keeps at least 300px for the terminal when the pane is narrow.
         let window_width = f32::from(window.bounds().size.width);
         let area = window_width - ISLAND_GAP * 2.
-            - if self.sidebar_visible { SIDEBAR_WIDTH + ISLAND_GAP } else { 0. };
+            - if self.sidebar_visible { self.sidebar_width(window) + ISLAND_GAP } else { 0. };
         let pane_width = if in_split { (area - ISLAND_GAP) / 2. } else { area };
         let max = (pane_width - 300.).max(280.);
         let width = self.settings.sftp_width.min(max).max(280.);
@@ -4349,6 +4418,17 @@ impl Render for Workspace {
                 this.save_settings(cx);
                 cx.notify();
             }))
+            .on_drag_move(cx.listener(|this, event: &gpui::DragMoveEvent<SidebarDivider>, window, cx| {
+                if this.sidebar_resizing {
+                    let preferred = f32::from(event.event.position.x - event.bounds.left()) - ISLAND_GAP * 1.5;
+                    let width = sidebar_width(preferred, f32::from(window.bounds().size.width));
+                    if !this.settings.sidebar_width.is_finite() || (this.settings.sidebar_width - width).abs() >= 1. {
+                        this.settings.sidebar_width = width;
+                        cx.notify();
+                    }
+                }
+            }))
+            .on_drop(cx.listener(|this, _: &SidebarDivider, _, cx| this.finish_sidebar_resize(cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 if this.modal_open(cx) {
                     return;
@@ -4384,11 +4464,12 @@ impl Render for Workspace {
                 .min_h_0()
                 .w_full()
                 .flex()
-                .gap(px(ISLAND_GAP))
                 // The title bar above is the top margin.
                 .px(px(ISLAND_GAP))
                 .pb(px(ISLAND_GAP))
-                .when(self.sidebar_visible, |el| el.child(self.render_sidebar(p, cx)))
+                .when(self.sidebar_visible, |el| {
+                    el.child(self.render_sidebar(p, window, cx)).child(self.render_sidebar_divider(p, cx))
+                })
                 .child(self.render_main(p, window, cx))
                 .into_any_element()),
         };
@@ -4410,6 +4491,20 @@ impl Render for Workspace {
             .children(self.render_prompt_modal(p, cx))
             .children(toast)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod sidebar_width_tests {
+    use super::sidebar_width;
+
+    #[test]
+    fn resizing_keeps_navigation_and_terminal_usable() {
+        assert_eq!(sidebar_width(264., 1280.), 264.);
+        assert_eq!(sidebar_width(0., 1280.), 200.);
+        assert_eq!(sidebar_width(900., 1280.), 520.);
+        assert_eq!(sidebar_width(520., 720.), 336.);
+        assert_eq!(sidebar_width(f32::NAN, 1280.), 264.);
     }
 }
 

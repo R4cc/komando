@@ -911,6 +911,8 @@ pub struct Settings {
     pub check_for_updates: bool,
     /// Width of the SFTP file browser beside the terminal, in pixels.
     pub sftp_width: f32,
+    /// Preferred sidebar width in logical pixels, adjusted by dragging its divider.
+    pub sidebar_width: f32,
     /// The SFTP browser lists files starting with a dot.
     pub sftp_show_hidden: bool,
     /// "Rename" in the SFTP browser's context menu (F2 renames either way).
@@ -964,6 +966,7 @@ impl Default for Settings {
             background_blur_intensity: 60,
             check_for_updates: true,
             sftp_width: 540.,
+            sidebar_width: 264.,
             sftp_show_hidden: true,
             sftp_menu_rename: false,
             sftp_menu_copy_to: false,
@@ -1071,6 +1074,15 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sidebar_width_defaults_for_old_settings_and_round_trips() {
+        let mut settings: Settings = toml::from_str("font_size = 16.0").unwrap();
+        assert_eq!(settings.sidebar_width, 264.);
+        settings.sidebar_width = 410.;
+        let saved = toml::to_string(&settings).unwrap();
+        assert_eq!(toml::from_str::<Settings>(&saved).unwrap().sidebar_width, 410.);
+    }
+
     #[test]
     fn remote_desktops_round_trip_and_older_files_have_none() {
         let mut host = Host::new("win-build", "10.0.4.21");
