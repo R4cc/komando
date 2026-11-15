@@ -6,6 +6,15 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-11-15
+
+### Changed
+
+- New sunrise terminal icon throughout Windows, including the taskbar, tray,
+  notifications, Start menu, installer and Settings → About, with matching favicon assets.
+- New full-color Komando logo on the welcome screen, empty session screen, About page
+  and README. Excess background is trimmed and exterior corners are transparent.
+
 ## [0.5.3] - 2026-11-15
 
 ### Added

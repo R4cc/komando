@@ -1,9 +1,6 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-  <img src="assets/logo-light.svg" width="292" height="42" alt="Komando">
-</picture>
+<img src="assets/logo.png" width="440" alt="Komando">
 
 ### SSH, SFTP and remote desktops for Windows 11. Built with Rust.
 

@@ -482,17 +482,14 @@ pub fn section_label(text: &str, p: AppPalette) -> impl IntoElement {
 }
 
 /// Width of the logo per pixel of height.
-const LOGO_ASPECT: f32 = 1168. / 167.;
+const LOGO_ASPECT: f32 = 1500. / 344.;
 
-/// The Komando logo (">_Komando."), `height` pixels tall, in `color`: the theme's text colour
-/// makes it dark in light mode and light in dark mode.
-pub fn wordmark(height: f32, color: Hsla) -> impl IntoElement {
-    svg()
-        .path(crate::LOGO_SVG)
+/// The supplied full-color logo, preserving its artwork in both light and dark themes.
+pub fn wordmark(height: f32) -> impl IntoElement {
+    gpui::img(crate::LOGO_PNG)
         .h(px(height))
         .w(px((height * LOGO_ASPECT).round()))
         .flex_shrink_0()
-        .text_color(color)
 }
 
 fn tracked(text: &str, size: f32, weight: FontWeight, tracking: f32, color: Hsla, family: &'static str) -> gpui::Div {

@@ -999,14 +999,10 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(20.))
-                    // A hairline ring, so the dark tile doesn't dissolve into a dark panel.
+                    // The artwork includes its own rounded border and transparent corners.
                     .child(
                         div()
                             .size(px(72.))
-                            .rounded(px(16.))
-                            .border_1()
-                            .border_color(p.border)
-                            .overflow_hidden()
                             .child(gpui::img(logo()).size_full()),
                     )
                     .child(
@@ -1014,7 +1010,7 @@ impl Workspace {
                             .flex()
                             .flex_col()
                             .gap(px(6.))
-                            .child(wordmark(24., p.text))
+                            .child(wordmark(40.))
                             .child(div().text_size(px(13.)).text_color(p.text_muted).child(format!("Version {VERSION}"))),
                     ),
             )
