@@ -5,3 +5,23 @@ Credentials are stored in one encrypted Vault file (key derived from the Master 
 ## Consequences
 
 - When the Vault locks (manually or after inactivity), open Sessions stay connected. Only new connections need it unlocked again.
+
+## Timed unlocks across restarts
+
+On Windows, selecting a timed Auto-lock period with Stay unlocked enabled also remembers
+the unlock across application restarts. The derived vault key and its last-use time are
+protected by current-user Windows DPAPI in a separate local file. The Master Password is
+never saved. This is an explicit exception to the original startup behavior above: an
+unexpired remembered unlock restores access without another Master Password prompt.
+
+Time with Komando closed counts toward inactivity. Restoring access does not reset the
+last-use time; ordinary keyboard activity extends it as before. Lock now, one-use unlocks,
+and Until restart remove the saved access. A changed timeout, clock rollback, corrupted
+unlock file, or different vault requires the Master Password again. Failure to restore
+never weakens vault encryption or damages the vault file.
+
+This convenience trusts the Windows account for the selected period: software running
+as that account can access the DPAPI-protected key. The encrypted Vault remains portable;
+the separate convenience file is not part of its backup or recovery format. Until restart
+remains the default and retains the original behavior. Linux development builds do not
+persist an unlock.

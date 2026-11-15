@@ -6,6 +6,12 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Timed vault unlocks now survive Komando restarts on your Windows account. Time with
+  Komando closed counts toward the selected inactivity period; Lock now clears the saved
+  unlock, and Until restart still locks when Komando closes.
+
 ### Added
 
 - Resize the sidebar by dragging the gap beside the terminal. The divider highlights on

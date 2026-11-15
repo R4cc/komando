@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -357,7 +357,9 @@ pub struct Workspace {
     collapsed_items: HashSet<ItemKey>,
     overlay: Option<Overlay>,
     toast: Option<(SharedString, Instant)>,
-    last_activity: Instant,
+    last_activity: SystemTime,
+    /// Last activity and policy written to the Windows-protected unlock file.
+    remembered_unlock: Option<(SystemTime, u32)>,
     focus: FocusHandle,
     /// Downloads and uploads from every file browser (the sidebar's Downloads entry).
     transfers: Entity<Transfers>,
@@ -388,6 +390,15 @@ struct UnlockState {
 impl Focusable for Workspace {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
+    }
+}
+
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        // Flush activity since the last timer tick on a normal window close.
+        if let Err(err) = self.sync_remembered_unlock() {
+            log::warn!("Could not save remembered vault unlock on exit: {err:#}");
+        }
     }
 }
 
@@ -454,7 +465,8 @@ impl Workspace {
             collapsed_items: HashSet::new(),
             overlay: None,
             toast: None,
-            last_activity: Instant::now(),
+            last_activity: SystemTime::now(),
+            remembered_unlock: None,
             focus: cx.focus_handle(),
             update,
             transfers,
@@ -471,7 +483,18 @@ impl Workspace {
         crate::perf::startup("highlights compiled");
         let sub = cx.observe_window_appearance(window, |this, window, cx| this.apply_appearance(window, cx));
         this._subscriptions.push(sub);
-        // The Vault stays locked until something needs it; then the master password is asked.
+        // An unexpired timed unlock can survive a restart on this Windows account.
+        // Until-restart and one-use unlocks never restore a saved key.
+        let minutes = if this.settings.stay_unlocked { this.settings.auto_lock_minutes } else { 0 };
+        match Vault::restore_unlock(&this.data_dir, minutes, SystemTime::now()) {
+            Ok(Some((vault, activity))) => {
+                this.vault = Some(vault);
+                this.last_activity = activity;
+                this.remembered_unlock = Some((activity, minutes));
+            }
+            Ok(None) => {}
+            Err(err) => log::warn!("Could not restore the vault unlock; master password required: {err:#}"),
+        }
         if let Some(password) = &startup.master_password {
             match Vault::unlock(&this.data_dir, password) {
                 Ok(vault) => this.vault = Some(vault),
@@ -849,9 +872,10 @@ impl Workspace {
                 self.vault = Some(vault);
                 self.vault_exists = true;
                 self.unlock = None;
-                self.last_activity = Instant::now();
+                self.last_activity = SystemTime::now();
                 let pending = std::mem::take(&mut self.pending);
                 self.lock_after_use = !pending.is_empty() && !self.settings.stay_unlocked;
+                self.sync_remembered_unlock_with_notice(cx);
                 if pending.is_empty() {
                     self.focus_active(window, cx);
                 }
@@ -907,6 +931,7 @@ impl Workspace {
         if self.lock_after_use && !self.sessions.iter().any(|s| s.waiting_for_size) {
             self.lock_after_use = false;
             self.vault = None;
+            self.clear_remembered_unlock(cx);
             cx.notify();
         }
     }
@@ -917,7 +942,36 @@ impl Workspace {
             self.vault_exists = true;
             self.show_toast("Vault locked. Open sessions stay connected.", cx);
         }
+        self.clear_remembered_unlock(cx);
         cx.notify();
+    }
+
+    fn clear_remembered_unlock(&mut self, cx: &mut Context<Self>) {
+        self.remembered_unlock = None;
+        if let Err(err) = Vault::forget_unlock(&self.data_dir) {
+            log::warn!("{err:#}");
+            self.show_toast("Vault locked in this window, but its saved unlock could not be removed. Check folder permissions.", cx);
+        }
+    }
+
+    fn sync_remembered_unlock(&mut self) -> anyhow::Result<()> {
+        let minutes = if self.settings.stay_unlocked && !self.lock_after_use {
+            self.settings.auto_lock_minutes
+        } else { 0 };
+        let Some(vault) = &self.vault else { return Ok(()) };
+        let current = (self.last_activity, minutes);
+        if self.remembered_unlock != Some(current) {
+            vault.remember_unlock(minutes, self.last_activity)?;
+            self.remembered_unlock = Some(current);
+        }
+        Ok(())
+    }
+
+    fn sync_remembered_unlock_with_notice(&mut self, cx: &mut Context<Self>) {
+        if let Err(err) = self.sync_remembered_unlock() {
+            log::warn!("Could not remember vault unlock: {err:#}");
+            self.show_toast("Vault unlocked for this window, but Windows could not remember it across restarts.", cx);
+        }
     }
 
     fn start_auto_lock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -928,9 +982,11 @@ impl Workspace {
                     let minutes = this.settings.auto_lock_minutes;
                     if minutes > 0
                         && this.vault.is_some()
-                        && this.last_activity.elapsed() >= Duration::from_secs(minutes as u64 * 60)
+                        && this.last_activity.elapsed().map_or(true, |idle| idle >= Duration::from_secs(minutes as u64 * 60))
                     {
                         this.lock_vault(cx);
+                    } else if let Err(err) = this.sync_remembered_unlock() {
+                        log::warn!("Could not refresh remembered vault unlock: {err:#}");
                     }
                 });
                 if alive.is_err() {
@@ -2254,7 +2310,7 @@ impl Workspace {
         } else {
             match self.settings.auto_lock_minutes {
                 0 => "Until Komando closes".to_string(),
-                minutes => format!("Locks after {} without use", settings::auto_lock_label(minutes)),
+                minutes => format!("Locks after {} without use, including across restarts", settings::auto_lock_label(minutes)),
             }
         };
         let remember = waiting.then(|| {
@@ -2271,6 +2327,7 @@ impl Workspace {
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.settings.stay_unlocked = !this.settings.stay_unlocked;
                     this.save_settings(cx);
+                    this.sync_remembered_unlock_with_notice(cx);
                     cx.notify();
                 }))
                 .child(switch("unlock-stay-switch".into(), "Stay unlocked", stay, p))
@@ -4353,7 +4410,7 @@ impl Render for Workspace {
             .bg(p.background)
             .text_color(p.text)
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                this.last_activity = Instant::now();
+                this.last_activity = SystemTime::now();
                 if event.keystroke.key == "escape" && this.unlock_focused(window, cx) {
                     this.skip_unlock(window, cx);
                     cx.stop_propagation();

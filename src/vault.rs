@@ -20,6 +20,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::model::{CredentialId, new_id, write_atomic};
 
+mod remember;
+
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, PartialEq)]
 pub struct Credential {
     pub label: String,
@@ -123,12 +125,16 @@ impl Vault {
             .decode(&file.salt)?
             .try_into()
             .map_err(|_| anyhow!("the vault file is damaged (salt)"))?;
+        let key = derive_key(master_password, &salt, file.kdf)?;
+        Self::decrypt(path, file, salt, key)
+    }
+
+    fn decrypt(path: PathBuf, file: VaultFile, salt: [u8; 16], key: Zeroizing<[u8; 32]>) -> Result<Self> {
         let nonce = B64.decode(&file.nonce)?;
         if nonce.len() != 24 {
             bail!("the vault file is damaged (nonce)");
         }
         let ciphertext = B64.decode(&file.ciphertext)?;
-        let key = derive_key(master_password, &salt, file.kdf)?;
         let cipher = XChaCha20Poly1305::new(key.as_ref().into());
         let plaintext = Zeroizing::new(
             cipher
@@ -216,13 +222,13 @@ fn derive_key(password: &str, salt: &[u8], kdf: KdfParams) -> Result<Zeroizing<[
 mod tests {
     use super::*;
 
-    fn temp_dir() -> PathBuf {
+    pub(super) fn temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("komando-vault-{}", new_id()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    fn password(p: &str) -> Credential {
+    pub(super) fn password(p: &str) -> Credential {
         Credential { label: "ops".into(), secret: Secret::Password { password: p.into() } }
     }
 

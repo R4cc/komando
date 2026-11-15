@@ -876,7 +876,7 @@ pub struct Settings {
     /// Lines of Scrollback each Session keeps.
     pub scrollback_lines: usize,
     /// Minutes of inactivity before the Vault locks, up to 7 days. 0 means it stays unlocked
-    /// until Komando closes (it is never kept unlocked across a restart).
+    /// until Komando closes. Timed unlocks can be restored on the same Windows account.
     pub auto_lock_minutes: u32,
     /// The master password popover's "Stay unlocked": on, the Vault stays unlocked for
     /// `auto_lock_minutes`; off, it locks again once what asked for it has used it.

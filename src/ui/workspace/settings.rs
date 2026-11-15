@@ -894,6 +894,7 @@ impl Workspace {
             |this, i, _, cx| {
                 this.settings.auto_lock_minutes = AUTO_LOCK_CHOICES[i].0;
                 this.save_settings(cx);
+                this.sync_remembered_unlock_with_notice(cx);
                 cx.notify();
             },
         );
@@ -923,7 +924,7 @@ impl Workspace {
                 setting_row_below(
                     p,
                     "Auto-lock",
-                    "Lock the vault after this much inactivity, or keep it unlocked until Komando closes. Open sessions stay connected.",
+                    "Timed unlocks survive restarts on your Windows account; time with Komando closed counts as inactivity. Until restart locks on exit. Open sessions stay connected.",
                     auto_lock,
                 ),
                 setting_row(
