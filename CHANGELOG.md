@@ -6,6 +6,16 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The locked Vault indicator sits above Downloads, with its unlock popover opening upward
+  beside it.
+
+### Fixed
+
+- The locked Vault label stays on one line in narrow sidebars, and secondary hints hide
+  when needed so the Quick connect shortcut and Unlock text do not crowd the controls.
+
 ## [0.5.4] - 2026-11-15
 
 ### Changed

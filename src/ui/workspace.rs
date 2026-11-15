@@ -2195,11 +2195,11 @@ fn sanitize(s: &str) -> String {
 // ---- rendering -------------------------------------------------------------------------
 
 impl Workspace {
-    /// The sidebar's vault row, over the Projects: there while the Vault is locked, gone once
+    /// The sidebar's vault row, above Downloads: there while the Vault is locked, gone once
     /// it is unlocked. A click opens the master password popover out of it (a second click
     /// closes it), and anything else that needs the Vault opens the popover here too. Before a
     /// Vault exists the row shows only while the popover asks for a new master password.
-    pub(super) fn render_vault_row(&self, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn render_vault_row(&self, compact: bool, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let open = self.unlock.as_ref();
         if open.is_none() && (self.vault.is_some() || !self.vault_exists) {
             return None;
@@ -2235,15 +2235,15 @@ impl Workspace {
                 }
             }))
             .child(icon_el("lock-keyhole", 14., p.brand))
-            .child(div().flex_1().min_w_0().child(label))
-            .when(open.is_none(), |el| el.child(div().text_size(px(11.5)).text_color(p.brand).child("Unlock")))
+            .child(div().flex_1().min_w_0().truncate().child(label))
+            .when(open.is_none() && !compact, |el| el.child(div().flex_shrink_0().whitespace_nowrap().text_size(px(11.5)).text_color(p.brand).child("Unlock")))
             .child(icon_el("chevron-right", 14., p.brand))
             .children(open.map(|state| self.render_unlock(state, p, cx)));
         Some(row.into_any_element())
     }
 
-    /// The master password popover, drawn from the vault row's right edge out over the
-    /// terminal area, its top level with the row. It is not a modal: there is no backdrop and
+    /// The master password popover, drawn upward from the vault row's right edge over the
+    /// terminal area, its bottom level with the row. It is not a modal: there is no backdrop and
     /// the rest of the window keeps working. It must not be mistaken for a server's password
     /// question (a plain card titled "Password for …"): it carries the vault badge and a
     /// brand-coloured top edge, names Komando's vault, and says under the field that this is
@@ -2481,17 +2481,18 @@ impl Workspace {
                 |el, t| el.opacity(t).left(px(-10. * (1. - t))),
             );
         // From the row's right edge: past the sidebar's inner padding and the gap between the
-        // islands, so the card starts just inside the terminal area, its top a little above
-        // the row's. It stays in the window when the window is short.
+        // islands, so the card starts just inside the terminal area and grows upward from
+        // the footer row. It stays in the window when the window is short.
         div()
             .absolute()
-            .top_0()
+            .bottom_0()
             .right_0()
             .size_0()
             .child(
                 deferred(
                     anchored()
-                        .offset(gpui::point(px(8. + ISLAND_GAP + 8.), px(-4.)))
+                        .anchor(gpui::Anchor::BottomLeft)
+                        .offset(gpui::point(px(8. + ISLAND_GAP + 8.), px(4.)))
                         .snap_to_window_with_margin(px(ISLAND_GAP))
                         .child(card),
                 )
@@ -2786,6 +2787,10 @@ impl Workspace {
     }
 
     fn render_sidebar(&mut self, p: AppPalette, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        // Keep the primary labels readable near the 200px minimum; secondary hints return
+        // once there is room for them. Use the clamped width, including in small windows.
+        let width = self.sidebar_width(window);
+        let compact = width < 240.;
         // Only the rows in view are built (hundreds of hosts would otherwise cost milliseconds
         // on every frame). Row heights are measured once and kept until the rows change.
         let rows = crate::perf::time("sidebar rows", || self.sidebar_rows());
@@ -2860,15 +2865,14 @@ impl Workspace {
                             .hover(|s| s.bg(p.active))
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_picker(window, cx)))
                             .child(icon_el("search", 14., p.text_faint))
-                            .child(div().flex_1().child("Quick connect"))
-                            .child(kbd("Ctrl Shift K", p)),
-                    )
-                    .children(self.render_vault_row(p, cx).map(|row| div().pt(px(6.)).child(row))),
+                            .child(div().flex_1().min_w_0().truncate().child("Quick connect"))
+                            .when(!compact, |el| el.child(kbd("Ctrl Shift K", p))),
+                    ),
             )
             .child(list.pb(px(8.)));
 
         div()
-            .w(px(self.sidebar_width(window)))
+            .w(px(width))
             .h_full()
             .flex()
             .flex_col()
@@ -2881,6 +2885,7 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
+                    .children(self.render_vault_row(compact, p, cx).map(|row| div().pb(px(6.)).child(row)))
                     // Always available; the number is what needs a look.
                     .child(
                         footer_row("downloads", "download", "Downloads".into())

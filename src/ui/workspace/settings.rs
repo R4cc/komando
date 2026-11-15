@@ -284,9 +284,6 @@ impl Workspace {
                     .child(div().flex_1().child("Back to sessions"))
                     .child(kbd("Esc", p)),
             )
-            // The vault row is here too, so the master password popover comes out of the same
-            // place on every page.
-            .children(self.render_vault_row(p, cx).map(|row| div().mb(px(6.)).child(row)))
             .child(div().px(px(8.)).pt(px(4.)).pb(px(6.)).child(section_label("Settings", p)))
             .children(SettingsSection::ALL.into_iter().map(|s| {
                 let active = s == section;
@@ -313,6 +310,8 @@ impl Workspace {
                     .child(s.label())
             }))
             .child(div().flex_1())
+            // Keep the Vault and its upward-opening popover at the bottom on every page.
+            .children(self.render_vault_row(false, p, cx).map(|row| div().mb(px(6.)).child(row)))
             .when(section != SettingsSection::About, |el| {
                 el.child(
                     div()
