@@ -55,6 +55,7 @@ pub fn set_backdrop(window: &gpui::Window, on: bool) -> bool {
     let Ok(handle) = HasWindowHandle::window_handle(window) else { return false };
     let RawWindowHandle::Win32(win32) = handle.as_raw() else { return false };
     let hwnd = HWND(win32.hwnd.get() as *mut core::ffi::c_void);
+    frame::install(hwnd);
     let configure = |enabled| -> windows::core::Result<()> {
         let backdrop = if enabled { DWMSBT_MAINWINDOW } else { DWMSBT_NONE };
         let m = if enabled { -1 } else { 0 };
@@ -118,6 +119,8 @@ pub fn set_backdrop(_window: &gpui::Window, _on: bool) -> bool { false }
 /// Mica is a Windows 11 feature; elsewhere (Linux dev builds) the window stays opaque.
 pub const SUPPORTS_BACKDROP: bool = cfg!(windows);
 
+#[cfg(windows)]
+mod frame;
 #[cfg(windows)]
 mod tray;
 #[cfg(windows)]

@@ -12,6 +12,7 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- Maximized windows can be dragged from the very top edge when background blur is enabled.
 - Theme previews and the About icon have smoother rounded edges at different display
   scales. Their outer rims are trimmed and transparent edges use higher-quality resizing
   without dark or bright fringes.
