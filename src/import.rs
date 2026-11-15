@@ -421,6 +421,18 @@ mod tests {
     }
 
     #[test]
+    fn mobaxterm_ssh_sessions_without_a_command_do_not_inherit_project_commands() {
+        let found = mobaxterm::parse("[Bookmarks]\nSubRep=Atlas\nDirect=#109#0%new.lan%22%ops%%-1%0%\n").unwrap();
+        let mut lib = library();
+        lib.projects[0].startup_commands = vec![StartupCommand::new("do-not-run")];
+        let planned = plan(&found, &lib);
+        assert_eq!(apply(&found, &planned, &all(&found), &mut lib).hosts, 1);
+        let host = lib.hosts.last().unwrap();
+        assert!(!host.run_project_commands);
+        assert!(host.startup_commands.is_empty());
+    }
+
+    #[test]
     fn mobaxterm_desktops_open_their_protocol_and_keep_accounts_separate_from_ssh() {
         let found = mobaxterm::parse(concat!(
             "[Bookmarks]\nSubRep=Atlas\n",

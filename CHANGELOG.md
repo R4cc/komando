@@ -8,6 +8,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- MobaXterm imports preserve equals signs in startup commands, such as shell variable
+  assignments. Sessions without a startup command no longer run an existing Project's commands.
+  Mixed-case escape markers also work in commands and Jump Host lists.
 - Timed vault unlocks now survive Komando restarts on your Windows account. Time with
   Komando closed counts toward the selected inactivity period; Lock now clears the saved
   unlock, and Until restart still locks when Komando closes.

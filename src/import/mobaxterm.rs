@@ -3,7 +3,8 @@
 //! MobaXterm keeps its sessions in `MobaXterm.ini` (next to a portable MobaXterm.exe, in
 //! `Documents\MobaXterm` or in `%APPDATA%\MobaXterm`); "Export sessions" writes the same
 //! sections to a `.mxtsessions` file. The format isn't documented: what's read here is taken
-//! from real exports (see `testdata/`) and other clients' importers.
+//! from real exports (see `testdata/`), other clients' importers and REA/Ghidra analysis of
+//! MobaXterm 26.6 (see `docs/mobaxterm-format.md`).
 //!
 //! Each `[Bookmarks]`, `[Bookmarks_1]`, … section is one session folder: `SubRep` is its path
 //! (`Parent\Child`, empty for sessions in no folder) and `ImgNum` its icon. Every other line is
@@ -14,8 +15,8 @@
 //! account at 3 and SSH gateway at 13–15; VNC (5) has no account and its gateway is at 5–7.
 //! Desktop gateways cannot be represented by Komando's tunnel to the Host itself; those
 //! sessions are left out rather than changed to direct connections. Characters MobaXterm
-//! uses as separators are written as `__PERCENT__`, `__DIEZE__` (#) and so on. The file is
-//! written in the Windows ANSI code page (Windows-1252), not UTF-8.
+//! uses as separators are written as `__PERCENT__`, `__DIEZE__` (#), `__EQUAL__` (=) and so on.
+//! The file is written in the Windows ANSI code page (Windows-1252), not UTF-8.
 //!
 //! Saved passwords (`[Passwords]`, `[Credentials]`) are never read.
 
@@ -220,7 +221,7 @@ impl<'a> Session<'a> {
 
     /// A field holding one value per gateway hop.
     fn hops(&self, i: usize) -> Vec<String> {
-        self.fields.get(i).map(|f| f.split("__PIPE__").map(unescape).collect()).unwrap_or_default()
+        self.field(i).map(|field| field.split('|').map(|hop| hop.trim().to_string()).collect()).unwrap_or_default()
     }
 }
 
@@ -248,7 +249,9 @@ fn ssh_host(name: &str, session: &Session) -> Option<FoundHost> {
         port,
         user,
         jump_hosts: Some(gateway(session)),
-        startup_commands: command.map(|c| vec![StartupCommand::new(c)]),
+        // An empty command is known to be empty, so importing into an existing Project
+        // must not pick up that Project's Startup Commands.
+        startup_commands: Some(command.into_iter().map(StartupCommand::new).collect()),
         left_out,
         ..Default::default()
     })
@@ -305,15 +308,30 @@ fn key_label(path: &str) -> String {
     path.rsplit(['/', '\\']).find(|s| !s.is_empty()).unwrap_or(path).to_string()
 }
 
-/// MobaXterm's escapes for the characters it uses as separators.
+/// MobaXterm's session escapes. Its macro codec uses different tokens (`__EQQUAL__`,
+/// `__PIIPE__`, `__DBLDOT__`), which must remain literal in a session field.
 fn unescape(text: &str) -> String {
-    text.replace("__PIPE__", "|")
-        .replace("__PTVIRG__", ";")
-        .replace("__DBLQUO__", "\"")
-        .replace("__DIEZE__", "#")
-        .replace("__PERCENT__", "%")
-        .trim()
-        .to_string()
+    const ESCAPES: [(&str, char); 6] = [
+        ("__PIPE__", '|'), ("__PTVIRG__", ';'), ("__DBLQUO__", '"'),
+        ("__DIEZE__", '#'), ("__EQUAL__", '='), ("__PERCENT__", '%'),
+    ];
+    let mut rest = text.trim();
+    let mut decoded = String::with_capacity(rest.len());
+    while !rest.is_empty() {
+        if rest.starts_with("__") {
+            // The native decoder replaces all occurrences without regard to case.
+            let escape = ESCAPES.iter().find(|(token, _)| rest.get(..token.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(token)));
+            if let Some(&(token, character)) = escape {
+                decoded.push(character);
+                rest = &rest[token.len()..];
+                continue;
+            }
+        }
+        let character = rest.chars().next().unwrap();
+        decoded.push(character);
+        rest = &rest[character.len_utf8()..];
+    }
+    decoded
 }
 
 /// What a MobaXterm session type is called.
@@ -360,7 +378,7 @@ mod tests {
         let host = &found.groups[0].hosts[0];
         assert_eq!((host.address.as_str(), host.port, host.user.as_deref()), ("192.168.0.1", 22, Some("user")));
         assert_eq!(host.jump_hosts, Some(vec![]), "no gateway: the host connects directly");
-        assert_eq!(host.startup_commands, None);
+        assert_eq!(host.startup_commands, Some(vec![]));
         assert!(host.left_out.is_empty(), "{:?}", host.left_out);
         assert!(found.notes.is_empty());
     }
@@ -441,16 +459,18 @@ mod tests {
 
     #[test]
     fn a_gateway_with_several_hops_keeps_them_in_order() {
-        let text = "[Bookmarks]\nSubRep=\nImgNum=42\n\
-                    db=#109#0%db.lan%2222%<default>%%-1%0%%a.lan__PIPE__b.lan%22__PIPE__2200%ops__PIPE__#MobaFont#0# #-1\n";
-        let found = parse(text).unwrap();
-        assert_eq!(names(&found), [("MobaXterm", vec!["db"])], "sessions in no folder");
-        let host = &found.groups[0].hosts[0];
-        assert_eq!((host.port, host.user.as_deref()), (2222, None));
-        assert_eq!(
-            host.jump_hosts,
-            Some(vec![JumpHost { user: Some("ops".into()), ..JumpHost::new("a.lan") }, JumpHost { port: 2200, ..JumpHost::new("b.lan") }])
-        );
+        for separator in ["__PIPE__", "__pIpE__", "|"] {
+            let text = format!("[Bookmarks]\nSubRep=\nImgNum=42\n\
+                               db=#109#0%db.lan%2222%<default>%%-1%0%%a.lan{separator}b.lan%22{separator}2200%ops{separator}#MobaFont#0# #-1\n");
+            let found = parse(&text).unwrap();
+            assert_eq!(names(&found), [("MobaXterm", vec!["db"])], "sessions in no folder");
+            let host = &found.groups[0].hosts[0];
+            assert_eq!((host.port, host.user.as_deref()), (2222, None));
+            assert_eq!(
+                host.jump_hosts,
+                Some(vec![JumpHost { user: Some("ops".into()), ..JumpHost::new("a.lan") }, JumpHost { port: 2200, ..JumpHost::new("b.lan") }])
+            );
+        }
     }
 
     #[test]
@@ -469,6 +489,24 @@ mod tests {
             found.notes,
             ["\"broken\" couldn't be read and is left out.", "\"nohost\" has no host name in MobaXterm and is left out."]
         );
+    }
+
+    #[test]
+    fn session_escapes_keep_shell_assignments_and_literal_macro_tokens() {
+        // Synthetic session using the codec recovered from the 26.6 executable, not a UI export.
+        let found = parse(concat!(
+            "[Bookmarks]\nSubRep=Lab\n",
+            "Shell command=#109#0%app.example%2222%ops%%-1%0%",
+            "export MODE__eQuAl____DBLQUO__prod__DBLQUO____PTVIRG__ ",
+            "printf __DBLQUO__50__PERCENT__ Grüße __DIEZE__ok__DBLQUO__ __pipe__ cat__PTVIRG__ ",
+            "echo __EQQUAL__ __PIIPE__ __DBLDOT__#MobaFont\n",
+        )).unwrap();
+        let host = &found.groups[0].hosts[0];
+        assert_eq!((host.address.as_str(), host.port, host.user.as_deref()), ("app.example", 2222, Some("ops")));
+        assert_eq!(host.startup_commands, Some(vec![StartupCommand::new(
+            "export MODE=\"prod\"; printf \"50% Grüße #ok\" | cat; echo __EQQUAL__ __PIIPE__ __DBLDOT__"
+        )]));
+        assert!(host.left_out.is_empty() && found.notes.is_empty());
     }
 
     #[test]
