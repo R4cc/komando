@@ -153,16 +153,6 @@ Komando is built in Rust for fast startup, low memory use and responsive SSH ses
 
 <p align="center"><sub>Komando, Windows Terminal + OpenSSH and Tabby on the same Windows 11 PC. Each metric uses its own scale. Windows Terminal figures are from 2026-11-13 with different settings; Komando and Tabby were measured on 2026-11-14. <a href="docs/benchmarks.md">Method and raw data.</a></sub></p>
 
-| Application | Startup | Memory, 1 idle SSH Session | Memory, 10 idle SSH Sessions | Windows Processes, 10 Sessions | Printing a million log lines |
-|---|---:|---:|---:|---:|---:|
-| **Komando** | **187 ms** | **23.5 MB** | **28.3 MB** | **1** | **0.81 s** |
-| Windows Terminal + OpenSSH* | 351 ms | 29 MB | 127 MB | 21 | 1.4 s |
-| Tabby | 725 ms | 318.7 MB | 382.8 MB | 5 | 4.19 s |
-
-Measured on Windows 11 on 2026-11-14. *Windows Terminal figures are from 2026-11-13 with
-different settings. The [tested versions, method, ranges, raw data and reproduction scripts](docs/benchmarks.md)
-are included.
-
 ### Terminal throughput and rendering
 
 Measured on a Linux development machine, separately from the Windows results above:
@@ -253,14 +243,9 @@ separately and survive.
 <details>
 <summary><b>Why Windows 11 only?</b></summary>
 <br>
-Its users sit at Windows workstations and connect to Linux servers. Supporting one OS lets
-Komando use Windows features directly instead of going through cross-platform layers. See
-<a href="docs/adr/0001-windows-11-only.md">the decision record</a>.
+Komando currently focuses on Windows 11. Linux and macOS support are planned for the future,
+but are not a priority until Komando has an established user base.
 </details>
-
-## Coming soon
-
-Split view, Windows Hello unlock and changing the master password.
 
 ## Building and contributing
 
