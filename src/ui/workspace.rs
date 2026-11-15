@@ -621,7 +621,8 @@ impl Workspace {
         };
         // Mica: Windows blurs the desktop behind the window; our surfaces become partly
         // transparent so it shows through. The slider sets how much.
-        let blur = crate::platform::SUPPORTS_BACKDROP && self.settings.background_blur;
+        let flat = self.theme_for(app_dark).flat;
+        let blur = crate::platform::SUPPORTS_BACKDROP && self.settings.background_blur && !flat;
         window.set_background_appearance(if blur {
             gpui::WindowBackgroundAppearance::MicaBackdrop
         } else {
@@ -665,6 +666,49 @@ impl Workspace {
             // Sliders match the switches and selectors instead of the library's default.
             theme.colors.slider_bar = brand;
             theme.colors.slider_thumb = gpui::white();
+            theme.shadow = !app.flat;
+            if app.flat {
+                // Library-managed inputs, menus and overlays share Graphite's flat palette.
+                theme.colors.background = app.background;
+                theme.colors.foreground = app.text;
+                theme.colors.border = app.border;
+                theme.colors.input = app.border;
+                theme.colors.muted = app.hover;
+                theme.colors.secondary = app.hover;
+                theme.colors.secondary_foreground = app.text;
+                theme.colors.secondary_hover = app.active;
+                theme.colors.secondary_active = app.active;
+                theme.colors.primary_foreground = app.on_brand;
+                theme.colors.primary_hover = brand;
+                theme.colors.primary_active = brand;
+                theme.colors.button = app.surface;
+                theme.colors.button_foreground = app.text;
+                theme.colors.button_hover = app.hover;
+                theme.colors.button_active = app.active;
+                theme.colors.button_primary = brand;
+                theme.colors.button_primary_foreground = app.on_brand;
+                theme.colors.button_primary_hover = brand;
+                theme.colors.button_primary_active = brand;
+                theme.colors.button_secondary = app.hover;
+                theme.colors.button_secondary_foreground = app.text;
+                theme.colors.button_secondary_hover = app.active;
+                theme.colors.button_secondary_active = app.active;
+                theme.colors.selection = app.active;
+                theme.colors.link = brand;
+                theme.colors.link_hover = app.text;
+                theme.colors.link_active = brand;
+                theme.colors.list = app.surface;
+                theme.colors.list_hover = app.hover;
+                theme.colors.list_active = app.active;
+                theme.colors.list_active_border = brand;
+                theme.colors.progress_bar = brand;
+                theme.colors.switch = brand;
+                theme.colors.switch_thumb = app.text;
+                theme.colors.slider_thumb = brand;
+                theme.colors.scrollbar = app.surface;
+                theme.colors.scrollbar_thumb = app.border;
+                theme.colors.scrollbar_thumb_hover = brand;
+            }
         });
         cx.refresh_windows();
     }
@@ -2459,7 +2503,7 @@ impl Workspace {
             .bg(p.surface)
             .border_1()
             .border_color(p.border)
-            .shadow(elevation(p.dark))
+            .shadow(elevation(p))
             .child(
                 div()
                     .rounded(px(14.))
@@ -3684,7 +3728,7 @@ impl Workspace {
         let entry = self.sessions.iter().find(|s| s.id == id)?;
         let focused = self.active == Some(id);
         let project = entry.project_id.as_deref().and_then(|id| self.library.project(id));
-        let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.text_faint);
+        let color = project.map(|pr| project_color(&pr.color)).unwrap_or(if p.flat { p.brand } else { p.text_faint });
         let term_bg = cx.global::<Appearance>().term.background_hsla();
         let browser = entry.browser.clone().filter(|_| entry.sftp_open);
         // The browser keeps at least 300px for the terminal when the pane is narrow.
@@ -4040,7 +4084,7 @@ impl Workspace {
                         .bg(p.surface)
                         .border_1()
                         .border_color(p.border)
-                        .shadow(elevation(p.dark))
+                        .shadow(elevation(p))
                         .relative()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(body)
@@ -4179,7 +4223,7 @@ fn switch_with(id: SharedString, label: SharedString, on: bool, small: bool, p: 
                 .size(px(knob))
                 .rounded_full()
                 .bg(if on && !small && p.brand.l > 0.82 { p.on_brand } else { gpui::white() })
-                .shadow(elevation(false)),
+                .shadow(elevation(AppPalette { dark: false, ..p })),
         )
 }
 
@@ -4629,7 +4673,7 @@ impl Render for Workspace {
                 .bg(p.surface)
                 .border_1()
                 .border_color(p.border)
-                .shadow(elevation(p.dark))
+                .shadow(elevation(p))
                 .text_size(px(13.))
                 .text_color(p.text)
                 .child(msg.clone())

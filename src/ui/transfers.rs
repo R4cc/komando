@@ -667,7 +667,7 @@ impl Render for Transfers {
             .bg(p.surface.opacity(1.))
             .border_1()
             .border_color(p.border)
-            .shadow(elevation(p.dark))
+            .shadow(elevation(p))
             .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 if !this.popup.is_open() {
                     this.close(cx);

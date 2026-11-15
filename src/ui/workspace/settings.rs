@@ -384,7 +384,7 @@ impl Workspace {
     fn settings_appearance(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let app = self.settings.app_theme;
         let term = self.settings.terminal_theme;
-        let blur = self.settings.background_blur;
+        let blur = self.settings.background_blur && !p.flat;
         let mode_choice = segmented(
             "app-theme",
             &[("Dark", app == AppThemeSetting::Dark), ("Light", app == AppThemeSetting::Light), ("System", app == AppThemeSetting::System)],
@@ -409,7 +409,9 @@ impl Workspace {
                 this.set_terminal_theme(theme, window, cx);
             },
         );
-        let blur_hint = if crate::platform::SUPPORTS_BACKDROP {
+        let blur_hint = if p.flat {
+            "Graphite uses solid, opaque surfaces. Background blur is available with other themes."
+        } else if crate::platform::SUPPORTS_BACKDROP {
             "Windows 11 Mica: your desktop, blurred, shows through the window, even with other windows behind it."
         } else {
             "Windows 11 only. This build runs elsewhere, so the setting is saved but has no effect."
@@ -455,7 +457,8 @@ impl Workspace {
                         "Background blur",
                         blur_hint,
                         switch("blur-toggle".into(), "Background blur", blur, p)
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_background_blur(!blur, window, cx)))
+                            .when(p.flat, |el| el.opacity(0.4).cursor_default().tab_index(-1))
+                            .when(!p.flat, |el| el.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_background_blur(!blur, window, cx))))
                             .into_any_element(),
                     ),
                     setting_row(
@@ -483,8 +486,8 @@ impl Workspace {
         let themes = if dark { crate::theme::DARK_THEMES } else { crate::theme::LIGHT_THEMES };
         let current = self.theme_for(dark).id;
         let in_use = p.dark == dark;
-        let selection = crate::theme::hex(if p.dark { crate::theme::BRAND_DARK } else { crate::theme::BRAND });
-        let selection_ink = if p.dark { gpui::black() } else { gpui::white() };
+        let selection = p.brand;
+        let selection_ink = p.on_brand;
         let thumbnails = themes.iter().map(|t| {
             let selected = t.id == current;
             let id = t.id;
@@ -1643,7 +1646,7 @@ pub(super) fn group(p: AppPalette, rows: Vec<AnyElement>) -> AnyElement {
         .rounded(px(12.))
         .border_1()
         .border_color(p.border)
-        .bg(p.background)
+        .bg(if p.flat { p.surface } else { p.background })
         .flex()
         .flex_col()
         .children(rows.into_iter().enumerate().map(move |(i, row)| {

@@ -502,7 +502,7 @@ impl Render for DragPreview {
                     .bg(p.surface.opacity(1.))
                     .border_1()
                     .border_color(p.border)
-                    .shadow(elevation(p.dark))
+                    .shadow(elevation(p))
                     .font_family(crate::theme::UI_FONT)
                     .text_size(px(12.5))
                     .text_color(p.text)

@@ -465,18 +465,19 @@ pub fn island(p: AppPalette) -> gpui::Div {
         .bg(p.sidebar)
         .border_1()
         .border_color(p.border)
-        .shadow(vec![BoxShadow {
+        .when(!p.flat, |el| el.shadow(vec![BoxShadow {
             color: alpha(0x000000, if p.dark { 0.35 } else { 0.06 }),
             offset: point(px(0.), px(1.)),
             blur_radius: px(3.),
             spread_radius: px(0.),
             inset: false,
-        }])
+        }]))
 }
 
 /// Layered, low-opacity shadows for floating surfaces (dialogs, popovers).
-pub fn elevation(dark: bool) -> Vec<BoxShadow> {
-    let a = if dark { 0.5 } else { 0.10 };
+pub fn elevation(p: AppPalette) -> Vec<BoxShadow> {
+    if p.flat { return vec![]; }
+    let a = if p.dark { 0.5 } else { 0.10 };
     vec![
         BoxShadow { color: alpha(0x000000, a * 0.6), offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false },
         BoxShadow { color: alpha(0x000000, a), offset: point(px(0.), px(12.)), blur_radius: px(32.), spread_radius: px(-8.), inset: false },

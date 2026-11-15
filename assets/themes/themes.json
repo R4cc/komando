@@ -1,5 +1,11 @@
 [
   {
+    "name": "Graphite",
+    "mode": "dark",
+    "file": "01_00_graphite.png",
+    "description": "Flat, cool charcoal gray with restrained steel-blue accents."
+  },
+  {
     "name": "Ember",
     "mode": "dark",
     "file": "01_01_ember.png",

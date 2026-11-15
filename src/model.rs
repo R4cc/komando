@@ -947,7 +947,7 @@ impl Default for Settings {
         Self {
             app_theme: AppThemeSetting::Dark,
             terminal_theme: TerminalThemeSetting::Follow,
-            dark_theme: "ember".into(),
+            dark_theme: "graphite".into(),
             light_theme: "ivory".into(),
             font_family: "Cascadia Mono".into(),
             font_size: 14.0,

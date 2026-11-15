@@ -537,7 +537,7 @@ impl DesktopView {
                 .bg(p.surface)
                 .border_1()
                 .border_color(p.border)
-                .shadow(elevation(p.dark))
+                .shadow(elevation(p))
                 .flex()
                 .flex_col()
                 .gap(px(14.))
@@ -707,6 +707,7 @@ impl Render for DesktopView {
         self.refresh_image(window);
         self.follow_pane(window, cx);
         let card = self.render_card(cx);
+        let app = cx.global::<Appearance>().app;
         let connected = self.is_connected() && self.prompt.is_none();
         let dimmed = card.is_some() && self.image.is_some();
         div()
@@ -735,7 +736,7 @@ impl Render for DesktopView {
             .size_full()
             .rounded(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
             .overflow_hidden()
-            .bg(gpui::black())
+            .bg(if app.flat { app.background } else { gpui::black() })
             .child(div().absolute().inset_0().when(dimmed, |el| el.opacity(0.35)).child(self.render_picture()))
             .when_some(card, |el, card| el.child(div().absolute().inset_0().p(px(16.)).flex().items_center().justify_center().child(card)))
     }

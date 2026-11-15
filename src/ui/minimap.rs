@@ -916,7 +916,7 @@ pub fn over(
         .border_color(app.border)
         .rounded_bl(px(10.))
         .rounded_tr(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
-        .shadow(crate::ui::widgets::elevation(app.dark))
+        .shadow(crate::ui::widgets::elevation(app))
         .opacity(opacity);
     Some(controls(card, state.clone(), cx).child(strip(term, state, palette, app, highlighter, marks)).into_any_element())
 }

@@ -6,6 +6,11 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Graphite is the default dark theme, with cool charcoal surfaces and muted steel-blue
+  accents across the app, settings and terminal. Its surfaces stay flat and opaque.
+
 ### Changed
 
 - Removed the tagline from Settings → About.
