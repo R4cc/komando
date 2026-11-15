@@ -267,3 +267,12 @@ Split view, Windows Hello unlock and changing the master password.
 Build instructions, the release process and design notes are in
 [docs/development.md](docs/development.md). Terms used in the code are in [GLOSSARY.md](GLOSSARY.md),
 and design decisions in [docs/adr](docs/adr).
+
+## License
+
+Komando-authored code is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+You may use, copy, modify and redistribute it for purposes permitted by that license.
+Commercial use, including use in commercial applications, is not granted by this license.
+Redistributed copies must retain the license and required notices.
+
+Third-party dependencies, vendored code, fonts and icons retain their own licenses and notices.

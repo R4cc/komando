@@ -3,6 +3,7 @@ name = "komando"
 version = "0.5.2"
 edition = "2024"
 description = "A fast terminal for system engineers who SSH into Linux machines."
+license-file = "LICENSE"
 publish = false
 
 [dependencies]

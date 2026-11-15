@@ -6,6 +6,12 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A PolyForm Noncommercial 1.0.0 license for Komando-authored code, permitting copying,
+  modification and redistribution for noncommercial purposes. Third-party licenses remain
+  applicable to their respective components.
+
 ### Changed
 
 - Background hosts, sessions and collapsed projects show a small rotating green ring while
