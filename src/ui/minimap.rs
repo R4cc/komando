@@ -265,6 +265,7 @@ struct Run {
     from: u16,
     to: u16,
     color: Hsla,
+    attention: u8,
 }
 
 /// Runs of recently drawn lines, keyed by a hash of the line's characters and colours. Highlight
@@ -669,12 +670,23 @@ fn finish(
             }
         };
         let y = f32::from(bounds.origin.y) + i as f32 * LINE_H;
-        for run in runs.iter() {
-            let x = f32::from(bounds.origin.x) + PAD_X + run.from as f32 * CHAR_W;
-            rects.push((
-                Bounds::new(point(px(x), px(y)), size(px((run.to - run.from) as f32 * CHAR_W), px(LINE_H - 0.5))),
-                run.color,
-            ));
+        // Paint the faint text first, then emphasize matches at their original columns.
+        // Leave a gap between rows even in a wall of errors so other levels remain distinct.
+        for emphasized in [false, true] {
+            for run in runs.iter().filter(|run| (run.attention > 0) == emphasized) {
+                let x = f32::from(bounds.origin.x) + PAD_X + run.from as f32 * CHAR_W;
+                let natural_width = (run.to - run.from) as f32 * CHAR_W;
+                let width = if emphasized {
+                    natural_width.max(if run.attention == 2 { 8. } else { 6. })
+                } else {
+                    natural_width
+                }.min((f32::from(bounds.right()) - PAD_X - x).max(0.));
+                let height = if emphasized { LINE_H - 0.25 } else { LINE_H - 0.5 };
+                rects.push((
+                    Bounds::new(point(px(x), px(y)), size(px(width), px(height))),
+                    if emphasized { Hsla { a: 1., ..run.color } } else { run.color },
+                ));
+            }
         }
     }
     (geometry, rects, slider)
@@ -691,13 +703,13 @@ fn line_runs(cells: &[(usize, char, Rgb)], palette: &TerminalPalette, highlighte
         None
     };
     let mut runs: Vec<Run> = Vec::new();
-    let mut run: Option<(usize, usize, Rgb)> = None;
-    let flush = |run: &mut Option<(usize, usize, Rgb)>, runs: &mut Vec<Run>| {
-        if let Some((from, to, color)) = run.take() {
+    let mut run: Option<(usize, usize, Rgb, u8)> = None;
+    let flush = |run: &mut Option<(usize, usize, Rgb, u8)>, runs: &mut Vec<Run>| {
+        if let Some((from, to, color, attention)) = run.take() {
             let mut c = rgb_to_hsla(color);
             // A theme's ordinary foreground can be tinted without being a highlight.
             c.a *= if color == palette.foreground || c.s < 0.2 { plain_alpha } else { 0.95 };
-            runs.push(Run { from: from as u16, to: to as u16, color: c });
+            runs.push(Run { from: from as u16, to: to as u16, color: c, attention });
         }
     };
     let mut byte = 0;
@@ -708,6 +720,14 @@ fn line_runs(cells: &[(usize, char, Rgb)], palette: &TerminalPalette, highlighte
             flush(&mut run, &mut runs);
             continue;
         }
+        // Emphasize actual colored rule matches in place. Information gets the same
+        // thickness as failures; red matches get only a little extra width.
+        let attention = rule.and_then(|r| r.fg).map_or(0, |c| {
+            let (r, g, b) = (u16::from(c.r), u16::from(c.g), u16::from(c.b));
+            if r > g * 16 / 10 && r > b * 13 / 10 { 2 }
+            else if r.max(g).max(b) - r.min(g).min(b) > r.max(g).max(b) / 4 { 1 }
+            else { 0 }
+        });
         let color = match rule.and_then(|r| r.fg) {
             Some(c) => {
                 let c = highlight::readable_on(c, palette.dark);
@@ -716,10 +736,10 @@ fn line_runs(cells: &[(usize, char, Rgb)], palette: &TerminalPalette, highlighte
             None => fg,
         };
         match &mut run {
-            Some((_, to, c)) if *c == color && *to == col => *to = col + 1,
+            Some((_, to, c, a)) if *c == color && *a == attention && *to == col => *to = col + 1,
             _ => {
                 flush(&mut run, &mut runs);
-                run = Some((col, col + 1, color));
+                run = Some((col, col + 1, color, attention));
             }
         }
     }
@@ -1040,6 +1060,31 @@ mod tests {
 
     fn strip() -> Bounds<Pixels> {
         Bounds::new(point(px(0.), px(0.)), size(px(MAX_WIDTH), px(800.)))
+    }
+
+    #[test]
+    fn highlights_are_emphasized_in_place_and_stay_inside_their_rows() {
+        for palette in [TerminalPalette::dark(), TerminalPalette::light()] {
+            let mut term = Term::new(Config::default(), &TermSize::new(100, 24), VoidListener);
+            let mut parser: Processor = Processor::new();
+            let mut text = String::new();
+            for row in 0..20 {
+                text.push_str(if row == 10 { "prefix INFO detail\r\n" } else { "prefix ERROR detail\r\n" });
+            }
+            parser.advance(&mut term, text.as_bytes());
+            let (_, quads, _) = layout(&term, &mut LineCache::default(), &palette, &bundled_rules(), strip());
+            let highlights: Vec<_> = quads.iter().filter(|(_, c)| c.a == 1.).collect();
+            assert_eq!(highlights.len(), 20);
+            for (row, (bounds, _)) in highlights.iter().enumerate() {
+                assert_eq!(bounds.origin.x, px(PAD_X + 7. * CHAR_W), "keep the matched column");
+                assert_eq!(bounds.origin.y, px(row as f32 * LINE_H));
+                assert!(bounds.size.height < px(LINE_H), "dense errors must not cover adjacent rows");
+                assert_eq!(bounds.size.width, px(if row == 10 { 6. } else { 8. }));
+            }
+            assert_ne!(highlights[10].1, highlights[9].1, "info stays distinct between errors");
+            let (_, disabled, _) = layout(&term, &mut LineCache::default(), &palette, &Arc::new(Highlighter::default()), strip());
+            assert!(disabled.iter().all(|(_, c)| c.a < 1.), "disabled rules must not leave emphasis");
+        }
     }
 
     #[test]

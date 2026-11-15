@@ -8,6 +8,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- The minimap emphasizes highlighted words at their original positions, with slightly wider
+  failure matches and equally thick informational matches. Dense errors stay within their
+  own rows so other log levels remain visible.
 - Failure highlights use vivid red and warnings use bright amber so they are easier to spot
   in the terminal and minimap. Untouched default rules update automatically; customized
   highlight sets keep their colors.

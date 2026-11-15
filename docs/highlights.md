@@ -10,6 +10,12 @@ as the terminal. Only serious failures use bold text. Rules colour diagnostic wo
 values, leaving surrounding text and timestamps alone. Colours are checked at 4.5:1 contrast
 or better against all fourteen bundled Terminal Themes, including light mode.
 
+The minimap slightly enlarges colored rule matches at their original text positions. Red
+failure matches get a little extra width; informational and warning matches get the same
+thickness so they remain visible in error-heavy logs. A gap between rows prevents dense
+errors from covering neighboring output. Emphasis follows enabled highlight rules, including
+custom sets; ordinary text and ANSI colors alone do not receive this extra emphasis.
+
 The set covers:
 
 - **systemd and journal output:** service states, unit names, exit codes, failed jobs and
