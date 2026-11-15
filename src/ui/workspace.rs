@@ -259,6 +259,8 @@ enum Overlay {
     HostForm(forms::HostForm),
     /// Create a Project, or edit one.
     ProjectForm(forms::ProjectForm),
+    /// Add or edit a standalone Local Shell from Settings.
+    ShellForm,
     /// Ask before something that can't be undone.
     Confirm { title: String, body: String, action: ConfirmAction },
     /// A Host's Command History.
@@ -2112,17 +2114,24 @@ impl Workspace {
     }
 
     /// A press on the backdrop beside a dialog. Quick connect, a question and the history
-    /// close; a host or project form stays, since a stray click would throw away what was
+    /// close; a host, project or shell form stays, since a stray click would throw away what was
     /// typed into it. Escape, Cancel and the close button still close it.
     fn backdrop_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.overlay, Some(Overlay::HostForm(_) | Overlay::ProjectForm(_))) {
+        if !matches!(self.overlay, Some(Overlay::HostForm(_) | Overlay::ProjectForm(_) | Overlay::ShellForm)) {
             self.close_overlay(window, cx);
         }
     }
 
     fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.overlay, Some(Overlay::ShellForm)) {
+            self.clear_shell_editor(window, cx);
+        }
         self.overlay = None;
-        self.focus_active(window, cx);
+        if matches!(self.page, Page::Settings(_)) {
+            window.focus(&self.focus, cx);
+        } else {
+            self.focus_active(window, cx);
+        }
         cx.notify();
     }
 }
@@ -3965,6 +3974,7 @@ impl Workspace {
             }
             Overlay::HostForm(form) => self.render_host_form(form, wide, p, cx),
             Overlay::ProjectForm(form) => self.render_project_form(form, wide, p, cx),
+            Overlay::ShellForm => self.render_shell_form(p, cx),
             Overlay::History(panel) => self.render_history(panel, p, cx),
             Overlay::Confirm { title, body, .. } => form_card(
                 p,

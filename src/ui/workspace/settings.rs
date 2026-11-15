@@ -1093,22 +1093,34 @@ impl Workspace {
         self.save_library_or_toast(cx);
     }
 
-    /// Fill the form with a shell to edit it.
+    fn new_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_shell_editor(window, cx);
+        self.confirm_remove_shell = None;
+        self.overlay = Some(Overlay::ShellForm);
+        if let Some(editor) = &self.shell_editor {
+            editor.name.update(cx, |f, cx| f.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Open the form with a shell to edit it.
     fn edit_shell(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(shell) = self.library.standalone_shells().into_iter().find(|s| s.name == name) else { return };
         let Some(editor) = self.shell_editor.as_mut() else { return };
         editor.editing = Some(shell.name.clone());
         editor.icon = shell.icon.clone();
         editor.error = None;
+        editor.icon_query.update(cx, |f, cx| f.set_value("", window, cx));
         let (n, prog, args) = (editor.name.clone(), editor.program.clone(), editor.args.clone());
         n.update(cx, |f, cx| f.set_value(shell.name.clone(), window, cx));
         prog.update(cx, |f, cx| f.set_value(shell.program.clone(), window, cx));
         args.update(cx, |f, cx| f.set_value(shell.args_line(), window, cx));
+        self.overlay = Some(Overlay::ShellForm);
         n.update(cx, |f, cx| f.focus(window, cx));
         cx.notify();
     }
 
-    fn clear_shell_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn clear_shell_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = self.shell_editor.as_mut() else { return };
         editor.editing = None;
         editor.icon = None;
@@ -1122,6 +1134,9 @@ impl Workspace {
 
     /// Add the shell in the form, or save the changes to the one being edited.
     fn save_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.overlay, Some(Overlay::ShellForm)) {
+            return;
+        }
         let Some(editor) = self.shell_editor.as_ref() else { return };
         let name = editor.name.read(cx).value().trim().to_string();
         let program = editor.program.read(cx).value().trim().to_string();
@@ -1169,8 +1184,8 @@ impl Workspace {
                 self.collapsed_items.insert(new_key);
             }
         }
-        self.clear_shell_editor(window, cx);
         self.save_library_or_toast(cx);
+        self.close_overlay(window, cx);
     }
 
     fn browse_shell_program(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1209,7 +1224,7 @@ impl Workspace {
                     .p(px(16.))
                     .text_size(px(13.))
                     .text_color(p.text_faint)
-                    .child("No local shells. Add one below, or restore the ones found on this PC."),
+                    .child("No local shells. Add a local shell, or restore the ones found on this PC."),
             );
         }
         let editing = self.shell_editor.as_ref().and_then(|e| e.editing.clone());
@@ -1300,79 +1315,6 @@ impl Workspace {
             );
         }
 
-        let form = self.shell_editor.as_ref().map(|editor| {
-            let title = match &editor.editing {
-                Some(name) => format!("Edit {name}"),
-                None => "Add a shell".to_string(),
-            };
-            let program_field = div()
-                .flex()
-                .gap(px(8.))
-                .child(div().flex_1().child(Input::new(&editor.program)))
-                .child(
-                    button("shell-browse", "Browse…", ButtonKind::Secondary, p)
-                        .flex_shrink_0()
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.browse_shell_program(window, cx))),
-                )
-                .into_any_element();
-            div()
-                .rounded(px(12.))
-                .border_1()
-                .border_color(p.border)
-                .bg(p.background)
-                .p(px(18.))
-                .flex()
-                .flex_col()
-                .gap(px(14.))
-                .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(title))
-                .child(form_field("Name", None, Input::new(&editor.name).into_any_element(), p))
-                .child(form_field(
-                    "Program",
-                    Some("A program on the PATH, such as wsl.exe, or the full path to one."),
-                    program_field,
-                    p,
-                ))
-                .child(form_field(
-                    "Arguments",
-                    Some("Optional. Put an argument with spaces in double quotes."),
-                    Input::new(&editor.args).into_any_element(),
-                    p,
-                ))
-                .child(form_field(
-                    "Icon", None,
-                    div().flex().flex_col().gap(px(8.))
-                        .child(
-                            button("shell-icon-auto", "Automatic", if editor.icon.is_none() { ButtonKind::Secondary } else { ButtonKind::Ghost }, p)
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    if let Some(editor) = this.shell_editor.as_mut() { editor.icon = None; }
-                                    cx.notify();
-                                })),
-                        )
-                        .child(icon_picker(&editor.icon_query, editor.icon.as_deref().unwrap_or(""), p.brand, p, cx, |this, icon| {
-                            if let Some(editor) = this.shell_editor.as_mut() { editor.icon = Some(icon); }
-                        })).into_any_element(), p,
-                ))
-                .when_some(editor.error.clone(), |el, error| {
-                    el.child(div().text_size(px(12.5)).text_color(p.danger).child(error))
-                })
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap(px(8.))
-                        .when(editor.editing.is_some(), |el| {
-                            el.child(
-                                button("shell-cancel", "Cancel", ButtonKind::Ghost, p)
-                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.clear_shell_editor(window, cx))),
-                            )
-                        })
-                        .child(
-                            button("shell-save", if editor.editing.is_some() { "Save" } else { "Add shell" }, ButtonKind::Primary, p)
-                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.save_shell(window, cx))),
-                        ),
-                )
-        });
-
         div()
             .flex()
             .flex_col()
@@ -1390,13 +1332,105 @@ impl Workspace {
                             .child(format!("{shown} of {} shown in the sidebar. A hidden shell is still found by search.", shells.len())),
                     )
                     .child(
+                        button("shells-add", "Add local shell", ButtonKind::Primary, p)
+                            .flex_shrink_0()
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.new_shell(window, cx))),
+                    )
+                    .child(
                         button("shells-restore", "Restore detected shells", ButtonKind::Secondary, p)
                             .flex_shrink_0()
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.restore_detected_shells(cx))),
                     ),
             )
             .child(div().rounded(px(12.)).border_1().border_color(p.border).bg(p.background).child(list))
-            .children(form)
+            .into_any_element()
+    }
+
+    pub(super) fn render_shell_form(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let Some(editor) = self.shell_editor.as_ref() else {
+            return div().into_any_element();
+        };
+        let title = if editor.editing.is_some() { "Edit local shell" } else { "Add local shell" };
+        let program_field = div()
+            .flex()
+            .gap(px(8.))
+            .child(div().flex_1().min_w_0().child(Input::new(&editor.program)))
+            .child(
+                button("shell-browse", "Browse…", ButtonKind::Secondary, p)
+                    .flex_shrink_0()
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.browse_shell_program(window, cx))),
+            )
+            .into_any_element();
+        let body = div()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .child(form_field("Name", None, Input::new(&editor.name).into_any_element(), p))
+            .child(form_field("Program", Some("A program on the PATH, such as wsl.exe, or the full path to one."), program_field, p))
+            .child(form_field("Arguments", Some("Optional. Put an argument with spaces in double quotes."), Input::new(&editor.args).into_any_element(), p))
+            .child(form_field(
+                "Icon",
+                None,
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(button("shell-icon-auto", "Automatic", if editor.icon.is_none() { ButtonKind::Secondary } else { ButtonKind::Ghost }, p).on_click(
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            if let Some(editor) = this.shell_editor.as_mut() {
+                                editor.icon = None;
+                            }
+                            cx.notify();
+                        }),
+                    ))
+                    .child(icon_picker(&editor.icon_query, editor.icon.as_deref().unwrap_or(""), p.brand, p, cx, |this, icon| {
+                        if let Some(editor) = this.shell_editor.as_mut() {
+                            editor.icon = Some(icon);
+                        }
+                    }))
+                    .into_any_element(),
+                p,
+            ))
+            .into_any_element();
+        div()
+            .id("shell-form-dialog")
+            .role(gpui::Role::Dialog)
+            .aria_label(title)
+            .tab_group()
+            .w(px(560.))
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(div().p(px(24.)).pr(px(52.)).flex_shrink_0().text_size(px(16.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
+            .child(div().id("shell-form-body").flex_1().min_h_0().overflow_y_scroll().px(px(24.)).pb(px(22.)).child(body))
+            .child(
+                div()
+                    .p(px(16.))
+                    .border_t_1()
+                    .border_color(p.border)
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .when_some(editor.error.clone(), |el, error| {
+                        el.child(div().id("shell-form-error").role(gpui::Role::Alert).text_size(px(12.5)).text_color(p.danger).child(error))
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap(px(8.))
+                            .child(
+                                button("shell-cancel", "Cancel", ButtonKind::Ghost, p)
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx))),
+                            )
+                            .child(
+                                button("shell-save", if editor.editing.is_some() { "Save" } else { "Add shell" }, ButtonKind::Primary, p)
+                                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.save_shell(window, cx))),
+                            ),
+                    ),
+            )
             .into_any_element()
     }
 
