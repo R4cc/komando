@@ -136,11 +136,6 @@ impl Transfers {
         Self { items: vec![], next_id: 1, open: false, closed_at: None, filter: Filter::All, ticking: false, popup: Popup::default() }
     }
 
-    /// Whether the Downloads entry shows: once anything was transferred.
-    pub fn any(&self) -> bool {
-        !self.items.is_empty()
-    }
-
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -559,8 +554,9 @@ impl Transfers {
         let fraction = if total > 0 { (done as f32 / total as f32).clamp(0., 1.) } else { 0. };
         div()
             .id(("transfer", id))
+            .flex_shrink_0()
             .px(px(8.))
-            .py(px(7.))
+            .py(px(10.))
             .flex()
             .items_center()
             .gap(px(10.))
@@ -574,13 +570,22 @@ impl Transfers {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
+                    .gap(px(4.))
                     .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                    .child(div().truncate().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(t.name.clone()))
                     .child(
                         div()
-                            .truncate()
-                            .text_size(px(11.))
+                            .whitespace_normal()
+                            .text_size(px(13.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(p.text)
+                            .child(t.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .whitespace_normal()
+                            .text_size(px(12.))
+                            .line_height(px(17.))
                             .text_color(if failed && color == p.danger { p.danger.opacity(0.9) } else { p.text_faint })
                             .child(detail),
                     )
@@ -598,7 +603,7 @@ impl Transfers {
 }
 
 impl Render for Transfers {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = cx.global::<Appearance>().app;
         if !self.open {
             return div().into_any_element();
@@ -638,6 +643,14 @@ impl Render for Transfers {
             .map(|t| self.render_row(t, p, cx))
             .collect();
         let empty = shown.is_empty();
+        let empty_label = match self.filter {
+            Filter::All => "No transfers yet.",
+            Filter::Successful => "No successful transfers.",
+            Filter::Failed => "No failed transfers.",
+        };
+        // Reserve space for the title bar, sidebar footer, panel heading, filters and actions
+        // on shorter windows; a full-size window shows up to 440px of transfer rows.
+        let list_height = (f32::from(window.bounds().size.height) - 260.).clamp(80., 440.);
         // Whether "Clear" has anything to remove under the current filter.
         let finished = self.items.iter().any(|t| match self.filter {
             Filter::All => !matches!(t.state, State::Active),
@@ -690,7 +703,7 @@ impl Render for Transfers {
             .child(
                 div()
                     .id("transfers-list")
-                    .max_h(px(340.))
+                    .max_h(px(list_height))
                     .overflow_y_scroll()
                     .p(px(4.))
                     .flex()
@@ -698,7 +711,7 @@ impl Render for Transfers {
                     .gap(px(1.))
                     .children(shown)
                     .when(empty, |el| {
-                        el.child(div().py(px(18.)).text_center().text_size(px(12.)).text_color(p.text_faint).child("Nothing here."))
+                        el.child(div().py(px(28.)).text_center().text_size(px(12.)).text_color(p.text_faint).child(empty_label))
                     }),
             )
             .when(finished, |el| {

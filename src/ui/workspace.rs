@@ -2608,9 +2608,9 @@ impl Workspace {
             .flex_1()
             .min_h_0();
 
-        let (show_downloads, attention, downloads_open, new_download, activity) = {
+        let (attention, downloads_open, new_download, activity) = {
             let t = self.transfers.read(cx);
-            (t.any(), t.attention(), t.is_open(), t.new_download(), t.activity())
+            (t.attention(), t.is_open(), t.new_download(), t.activity())
         };
         let ring_fraction = match activity {
             Activity::Idle => None,
@@ -2692,70 +2692,68 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    // Appears with the first transfer; the number is what needs a look.
-                    .when(show_downloads, |el| {
-                        el.child(
-                            footer_row("downloads", "download", "Downloads".into())
-                                .when_some(ring_fraction, |el, fraction| {
-                                    // Around the 15px icon (8px in, centred in the 32px row):
-                                    // the combined progress of everything running.
-                                    let label = match fraction {
-                                        Some(f) => format!("Downloads, {}% done", (f * 100.).round()),
-                                        None => "Downloads, in progress".to_string(),
-                                    };
-                                    el.aria_label(label).child(
-                                        div().absolute().left(px(8. + 7.5 - 12.)).top(px(16. - 12.)).child(progress_ring(
-                                            "downloads-ring",
-                                            fraction,
-                                            24.,
-                                            2.,
-                                            p.border,
-                                            p.brand,
-                                        )),
-                                    )
-                                })
-                                // The new-download dot waits until nothing is running.
-                                .when(new_download && ring_fraction.is_none(), |el| {
-                                    el.aria_label("Downloads, new download").child(
-                                        // A dot on the icon's top-right corner (the 15px icon
-                                        // sits 8px in, 8.5px down), ringed in the sidebar's
-                                        // colour so it reads as cut out of the icon.
-                                        div()
-                                            .absolute()
-                                            .left(px(17.))
-                                            .top(px(5.5))
-                                            .size(px(10.))
-                                            .rounded_full()
-                                            .bg(p.brand)
-                                            .border_2()
-                                            .border_color(p.sidebar),
-                                    )
-                                })
-                                .relative()
-                                .when(downloads_open, |el| el.bg(p.active).text_color(p.text))
-                                .child(div().flex_1())
-                                .when(attention > 0, |el| {
-                                    el.child(
-                                        div()
-                                            .min_w(px(18.))
-                                            .h(px(18.))
-                                            .px(px(5.))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .rounded_full()
-                                            .bg(p.brand_soft)
-                                            .text_size(px(11.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(p.brand)
-                                            .child(attention.to_string()),
-                                    )
-                                })
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.transfers.update(cx, |t, cx| t.toggle(cx));
-                                })),
-                        )
-                    })
+                    // Always available; the number is what needs a look.
+                    .child(
+                        footer_row("downloads", "download", "Downloads".into())
+                            .when_some(ring_fraction, |el, fraction| {
+                                // Around the 15px icon (8px in, centred in the 32px row):
+                                // the combined progress of everything running.
+                                let label = match fraction {
+                                    Some(f) => format!("Downloads, {}% done", (f * 100.).round()),
+                                    None => "Downloads, in progress".to_string(),
+                                };
+                                el.aria_label(label).child(
+                                    div().absolute().left(px(8. + 7.5 - 12.)).top(px(16. - 12.)).child(progress_ring(
+                                        "downloads-ring",
+                                        fraction,
+                                        24.,
+                                        2.,
+                                        p.border,
+                                        p.brand,
+                                    )),
+                                )
+                            })
+                            // The new-download dot waits until nothing is running.
+                            .when(new_download && ring_fraction.is_none(), |el| {
+                                el.aria_label("Downloads, new download").child(
+                                    // A dot on the icon's top-right corner (the 15px icon
+                                    // sits 8px in, 8.5px down), ringed in the sidebar's
+                                    // colour so it reads as cut out of the icon.
+                                    div()
+                                        .absolute()
+                                        .left(px(17.))
+                                        .top(px(5.5))
+                                        .size(px(10.))
+                                        .rounded_full()
+                                        .bg(p.brand)
+                                        .border_2()
+                                        .border_color(p.sidebar),
+                                )
+                            })
+                            .relative()
+                            .when(downloads_open, |el| el.bg(p.active).text_color(p.text))
+                            .child(div().flex_1())
+                            .when(attention > 0, |el| {
+                                el.child(
+                                    div()
+                                        .min_w(px(18.))
+                                        .h(px(18.))
+                                        .px(px(5.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_full()
+                                        .bg(p.brand_soft)
+                                        .text_size(px(11.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(p.brand)
+                                        .child(attention.to_string()),
+                                )
+                            })
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.transfers.update(cx, |t, cx| t.toggle(cx));
+                            })),
+                    )
                     .child(
                         div().flex().items_center().gap(px(4.))
                             .child(
@@ -4396,12 +4394,12 @@ impl Render for Workspace {
         };
         // Downloads: floats above the sidebar's footer, from any page.
         let downloads = self.transfers.read(cx).is_open().then(|| {
-            let footer_rows = 1. + self.transfers.read(cx).any() as u8 as f32;
             div()
                 .absolute()
                 .left(px(ISLAND_GAP))
-                .bottom(px(ISLAND_GAP + 16. + footer_rows * 34. + 6.))
-                .w(px(SIDEBAR_WIDTH))
+                .bottom(px(ISLAND_GAP + 16. + 2. * 34. + 6.))
+                .w(px(480.))
+                .max_w(window.bounds().size.width - px(ISLAND_GAP * 2.))
                 .child(self.transfers.clone())
         });
         root.bg(p.canvas)

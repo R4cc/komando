@@ -6,6 +6,17 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- With Minimize to tray enabled, the window's X button and Alt+F4 now send Komando to the
+  notification area and keep sessions running. Exit in the tray menu still closes Komando.
+
+### Changed
+
+- Downloads stays visible in the sidebar, even before the first transfer or after the list
+  is cleared. Its corner popup is wider and taller, with larger details and wrapping file
+  names and messages.
+
 ## [0.5.0] - 2026-11-15
 
 ### Added
