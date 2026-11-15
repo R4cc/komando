@@ -101,16 +101,16 @@ fn key_bindings() -> Vec<KeyBinding> {
     ]
 }
 
-/// The full-color Komando sunrise logo, shared by every in-app wordmark.
-pub const LOGO_PNG: &str = "komando/logo.png";
+/// The borderless Komando wordmark, drawn in the current theme's text color.
+pub const LOGO_SVG: &str = "komando/logo.svg";
 
 /// The bundled icons, plus Komando's own artwork.
 struct Assets;
 
 impl gpui::AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
-        if path == LOGO_PNG {
-            return Ok(Some(Cow::Borrowed(include_bytes!("../assets/logo.png"))));
+        if path == LOGO_SVG {
+            return Ok(Some(Cow::Borrowed(include_bytes!("../assets/logo.svg"))));
         }
         gpui_kit_assets::AllAssets.load(path)
     }
@@ -260,9 +260,8 @@ mod tests {
 
     #[test]
     fn the_logo_is_served_alongside_the_icons() {
-        let logo = super::Assets.load(super::LOGO_PNG).unwrap().expect("logo");
-        let image = image::load_from_memory(&logo).expect("bundled logo must decode");
-        assert_eq!((image.width(), image.height()), (1500, 344));
+        let logo = super::Assets.load(super::LOGO_SVG).unwrap().expect("logo");
+        assert!(std::str::from_utf8(&logo).unwrap().starts_with("<svg"));
         assert!(super::Assets.load("icons/server.svg").unwrap().is_some());
         assert!(super::Assets.load("icons/eraser.svg").unwrap().is_some(), "the Unhighlight menu entry");
     }

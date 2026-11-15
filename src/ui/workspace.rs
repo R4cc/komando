@@ -3776,7 +3776,7 @@ impl Workspace {
             .justify_center()
             .gap(px(18.))
             .bg(p.background)
-            .child(wordmark(54.))
+            .child(wordmark(34., p.text))
             .child(div().text_size(px(13.)).text_color(p.text_muted).child("No open sessions."))
             .child(
                 div()
@@ -3828,7 +3828,7 @@ impl Workspace {
             .items_center()
             .justify_center()
             .bg(p.background)
-            .child(wordmark(80.))
+            .child(wordmark(60., p.text))
             .child(
                 div()
                     .mt(px(14.))

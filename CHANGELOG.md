@@ -8,6 +8,8 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- Restored the borderless, theme-colored text logo inside the app, including the welcome
+  screen, empty session screen and About page. The sunrise app icon is retained.
 - The locked Vault indicator sits above Downloads, with its unlock popover opening upward
   beside it.
 
