@@ -9,7 +9,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use komando::model::{AppThemeSetting, Host, Library, Project, Settings};
+use komando::model::{AppThemeSetting, Desktop, Host, Library, Project, Protocol, Settings};
 use komando::ui::workspace::{SettingsSection, Startup};
 use komando::vault::{Credential, Secret, Vault};
 
@@ -141,7 +141,12 @@ fn main() {
         host.icon = Some(icon.into());
         host
     };
-    let web01 = host("web01", "127.0.0.1", port, "server");
+    let mut web01 = host("web01", "127.0.0.1", port, "server");
+    // Show the configured protocol buttons without opening another connection.
+    if env::var_os("KOMANDO_DEMO_DESKTOPS").is_some() {
+        web01.rdp = Some(Desktop::new(Protocol::Rdp));
+        web01.vnc = Some(Desktop { through_ssh: true, ..Desktop::new(Protocol::Vnc) });
+    }
     let web02 = host("web02", "10.20.1.12", 22, "server");
     let db01 = host("db01", "127.0.0.1", port, "database");
     let lb01 = host("lb01", "10.20.1.2", 22, "network");
@@ -244,6 +249,7 @@ fn main() {
             settings: env::var("KOMANDO_DEMO_SETTINGS").ok().and_then(|s| {
                 SettingsSection::ALL.into_iter().find(|section| format!("{section:?}").eq_ignore_ascii_case(&s))
             }),
+            show_files: env::var_os("KOMANDO_DEMO_SFTP").is_some(),
             ..Default::default()
         },
     });

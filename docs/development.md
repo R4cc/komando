@@ -77,6 +77,11 @@ Komando ships for Windows only, but it also builds on Linux, which is handy for 
 screenshots. You need the X11 libraries (`libxcb`, `libxkbcommon`, `libxkbcommon-x11`). Set
 `RUST_FONTCONFIG_DLOPEN=on` if fontconfig has no pkg-config file. `examples/demo.rs` seeds a
 throwaway data folder and opens a few sessions; it's what produced the README screenshot.
+Set `KOMANDO_DEMO_THEME=dark` for README captures. `KOMANDO_DEMO_DESKTOPS=1` configures RDP
+and VNC on the demo's web01 so their toolbar buttons appear, without opening a desktop.
+`KOMANDO_DEMO_SFTP=1` opens its file browser once SSH connects; use a loopback server that
+offers SFTP for that capture (`logserver` supplies benchmark output only). Capture the real
+demo window with isolated fixture data, and check the resulting PNG before replacing an asset.
 
 ### Output throughput
 

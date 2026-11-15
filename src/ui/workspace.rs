@@ -295,6 +295,8 @@ pub struct Startup {
     pub active: Option<usize>,
     /// Open the Settings page at this section (used for screenshots).
     pub settings: Option<SettingsSection>,
+    /// Screenshot tooling: show the active Session's file browser after opening Sessions.
+    pub show_files: bool,
     /// A Local Shell to open: its Project's id (`None` when standalone) and name. Passed by the
     /// Komando that asked for this one to run the shell as administrator.
     pub open_shell: Option<(Option<String>, String)>,
@@ -306,6 +308,8 @@ pub struct Workspace {
     settings: Settings,
     #[cfg(windows)]
     tray: Option<crate::platform::Tray>,
+    #[cfg(windows)]
+    _activation: Option<crate::platform::instance::WindowBinding>,
     highlights: Vec<HighlightSet>,
     /// Rules that could not be compiled, with the reason.
     highlight_skipped: Vec<(String, String)>,
@@ -428,11 +432,20 @@ impl Workspace {
         // The ring on the Downloads entry follows the panel's progress ticks.
         let transfers_ticks = cx.observe(&transfers, |_, _, cx| cx.notify());
         let update = crate::update::take_install_error(&data_dir).map(UpdateState::Failed).unwrap_or(UpdateState::Idle);
+        #[cfg(windows)]
+        let auxiliary = startup.open_shell.is_some() && crate::elevate::is_elevated();
+        #[cfg(windows)]
+        let activation = if auxiliary { None } else {
+            crate::platform::instance::WindowBinding::new(window, &data_dir)
+                .map_err(|error| log::error!("Could not register the running window: {error:#}")).ok()
+        };
         let mut this = Self {
             data_dir,
             library,
             #[cfg(windows)]
-            tray: crate::platform::Tray::new(window, settings.minimize_to_tray),
+            tray: crate::platform::Tray::new(window, settings.minimize_to_tray, !auxiliary),
+            #[cfg(windows)]
+            _activation: activation,
             settings,
             highlights,
             highlight_skipped: vec![],
@@ -554,6 +567,24 @@ impl Workspace {
         if let Some(section) = startup.settings {
             self.highlights_expanded = self.highlights.first().map(|s| s.id.clone());
             self.open_settings(section, window, cx);
+        }
+        if startup.show_files && let Some(id) = self.active {
+            // The demo connection signs in asynchronously; the normal SFTP action remains
+            // unavailable until then. Wait for it instead of changing production behavior.
+            cx.spawn_in(window, async move |this, cx| {
+                for _ in 0..100 {
+                    let finished = this.update_in(cx, |this, window, cx| {
+                        let Some(entry) = this.sessions.iter().find(|entry| entry.id == id) else { return true };
+                        match entry.status {
+                            Status::Connected => { this.toggle_sftp(id, window, cx); true }
+                            Status::Disconnected(_) => true,
+                            Status::Connecting => false,
+                        }
+                    }).unwrap_or(true);
+                    if finished { break; }
+                    cx.background_executor().timer(Duration::from_millis(50)).await;
+                }
+            }).detach();
         }
     }
 

@@ -18,6 +18,7 @@ const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 
 pub struct Tray {
     state: Rc<State>,
+    allowed: bool,
 }
 
 struct State {
@@ -30,14 +31,14 @@ struct State {
 }
 
 impl Tray {
-    pub fn new(window: &gpui::Window, enabled: bool) -> Option<Self> {
+    pub fn new(window: &gpui::Window, enabled: bool, allowed: bool) -> Option<Self> {
         let handle = HasWindowHandle::window_handle(window).ok()?;
         let RawWindowHandle::Win32(handle) = handle.as_raw() else {
             return None;
         };
         let state = Rc::new(State {
             hwnd: HWND(handle.hwnd.get() as *mut _),
-            enabled: Cell::new(enabled),
+            enabled: Cell::new(enabled && allowed),
             attached: Cell::new(true),
             visible: Cell::new(false),
             exiting: Cell::new(false),
@@ -49,10 +50,11 @@ impl Tray {
             log::warn!("Could not install minimize-to-tray handler");
             return None;
         }
-        Some(Self { state })
+        Some(Self { state, allowed })
     }
 
     pub fn set_enabled(&self, enabled: bool) {
+        let enabled = enabled && self.allowed;
         self.state.enabled.set(enabled);
         if !enabled && self.state.visible.get() {
             self.state.restore();
@@ -198,6 +200,18 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auxiliary_windows_cannot_enable_another_tray_icon() {
+        let state = Rc::new(State {
+            hwnd: HWND::default(), enabled: Cell::new(false), visible: Cell::new(false),
+            taskbar_created: 0, attached: Cell::new(false), exiting: Cell::new(false),
+        });
+        let tray = Tray { state: state.clone(), allowed: false };
+        tray.set_enabled(true);
+        assert!(!state.enabled.get());
+        assert!(!state.visible.get());
+    }
 
     #[test]
     fn close_keeps_the_window_alive_when_tray_is_enabled() {

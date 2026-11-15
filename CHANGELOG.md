@@ -6,6 +6,17 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The README now focuses on host navigation, SSH logs, SFTP and host-linked remote desktops,
+  with fresh dark-mode app captures. Benchmarks live with the performance details.
+
+### Fixed
+
+- Launching Komando again restores the running window, including from the tray, instead
+  of starting another copy with another tray icon. Administrator shell windows remain
+  separate and close normally without adding notification icons.
+
 ## [0.5.2] - 2026-11-15
 
 ### Added

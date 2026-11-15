@@ -121,6 +121,8 @@ pub const SUPPORTS_BACKDROP: bool = cfg!(windows);
 #[cfg(windows)]
 mod tray;
 #[cfg(windows)]
+pub mod instance;
+#[cfg(windows)]
 pub use tray::Tray;
 
 /// Start loading the graphics driver on a background thread, so it overlaps with the rest of

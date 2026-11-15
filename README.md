@@ -5,9 +5,9 @@
   <img src="assets/logo-light.svg" width="292" height="42" alt="Komando">
 </picture>
 
-### A fast, lightweight SSH terminal for Windows 11. Built with Rust.
+### SSH, SFTP and remote desktops for Windows 11. Built with Rust.
 
-All your SSH servers in colour-coded projects, miliseconds away.
+Your servers, files and remote desktops in colour-coded projects.
 
 [![Latest release](https://img.shields.io/github/v/release/R4cc/komando?label=release&color=f97316)](https://github.com/R4cc/komando/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/R4cc/komando/total?color=f97316)](https://github.com/R4cc/komando/releases)
@@ -20,19 +20,7 @@ All your SSH servers in colour-coded projects, miliseconds away.
 
 <br>
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-tabby-dark.svg">
-    <img src="assets/benchmark-tabby-light.svg" width="828" alt="Komando, Windows Terminal and Tabby, in that order: startup 187, 351 and 725 ms; memory with 1 SSH Session 23.5, 29 and 318.7 MB; memory with 10 Sessions 28.3, 127 and 382.8 MB; a million log lines in 0.81, 1.4 and 4.19 seconds. Windows Terminal figures are older measurements with different settings.">
-  </picture>
-</p>
-
-<p align="center"><sub>Komando, Windows Terminal + OpenSSH and Tabby on the same Windows 11 PC. Each metric uses its own scale. Windows Terminal figures are from 2026-11-13 with different settings; Komando and Tabby were measured on 2026-11-14. <a href="docs/benchmarks.md">Method and raw data.</a></sub></p>
-
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="assets/screenshot-light.png">
-  <img src="assets/screenshot-dark.png" alt="Komando: projects of servers in the sidebar, an SSH session showing systemctl status and highlighted logs, and a minimap of the output on the right edge">
-</picture>
+<img src="assets/screenshot-dark.png" alt="Komando in dark mode: colour-coded hosts, highlighted SSH logs and a minimap, with SFTP, RDP and VNC actions in the toolbar">
 
 ## Why Komando
 
@@ -40,7 +28,7 @@ All your SSH servers in colour-coded projects, miliseconds away.
   quarter of a second, and ten open SSH sessions fit in about 29 MB.
 - **Organised.** Servers live in projects with their own colour and icon, so you always know
   whether you're typing into staging or production.
-- **Everything built in.** SSH, SFTP, an encrypted password and key vault, log highlighting.
+- **Everything built in.** SSH, SFTP, RDP and VNC, an encrypted password and key vault, log highlighting.
   No WSL, no PuTTY, no OpenSSH setup.
 - **Made for people who live in SSH.** Startup commands, jump hosts, sudo without retyping,
   reconnect in place, and every server one keystroke away.
@@ -85,8 +73,6 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 
 ### Every server one click away
 
-<img src="assets/screenshot-quick-connect.png" alt="Quick connect: typing web filters the hosts web01, web02 and web-stg01 across projects" width="560" align="right">
-
 - **Projects with colours and icons.** A coloured strip above the terminal shows which
   environment you're in.
 - **Quick connect.** <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>K</kbd>, type a few letters, pick with
@@ -99,37 +85,9 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 - **Startup commands.** `cd /srv/app`, `sudo -i` or `tmux attach` typed for you once the shell is ready.
   A command can wait for text first, such as the root prompt after `sudo -i`.
 - **Several sessions per host**, and **reconnect in place** with your output kept.
+- **Resizable navigation.** Drag the gap beside the sidebar to set its width; Komando remembers it.
 - **Local shells too.** PowerShell 7, Windows PowerShell and Command Prompt are detected; add WSL
   or Git Bash yourself.
-
-<br clear="right">
-
-### Read logs faster
-
-<img src="assets/screenshot-highlights.png" alt="Highlight rules in Settings: ERROR in red, WARN in orange, INFO in blue, with regex and case badges" width="420" align="right">
-
-- **Highlighting for terminal output.** ERROR in red, WARN in orange, `Active: active` in green:
-  69 rules for Linux and service logs are included.
-- **Your own rules.** Import and export rule sets in Tabby's format. See [Highlights](docs/highlights.md).
-- **Minimap.** The whole scrollback in miniature on the right edge, errors and warnings in colour.
-  Drag its slider or click to jump. It sits beside the output, or over it until you need it.
-- **Command rail.** A mark beside every command you ran. Click one to scroll back to it.
-- **Search the scrollback.** Ctrl+Shift+F finds text or a regular expression in all of the
-  output, highlights every match and marks them on the minimap; Enter steps back through them.
-- **Copy the whole output** as text, or as a `.txt` file to drop into Outlook or Teams.
-
-<br clear="right">
-
-### Files over SFTP
-
-<img src="assets/screenshot-sftp.png" alt="The SFTP browser beside an SSH session, listing /srv/atlas with sizes, dates and permissions">
-
-- **A file browser beside the terminal**, over the connection you already have. No second login.
-- **Upload and download** files and whole folders, or drop them in from Explorer. Create, rename,
-  copy, move and delete, with sizes, dates and permissions.
-- **Favorite folders** like `/var/log`, on every server or just one.
-- **Safe with Windows names.** Remote files called `con` or `README` and `readme` side by side
-  download without clobbering each other.
 
 ### Remote desktops over RDP and VNC
 
@@ -149,9 +107,30 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
   TLS/VeNCrypt are outside this first version. Project sharing covers SSH; the experimental
   MobaXterm import also supports direct RDP and VNC sessions.
 
-### Secure by default
+### Files over SFTP
 
-<img src="assets/screenshot-vault.png" alt="The vault asks for the master password before web01 signs in with a saved key" width="380" align="right">
+<img src="assets/screenshot-sftp.png" alt="Dark-mode SFTP browser beside live SSH logs, listing deployment folders and files with sizes, dates and permissions">
+
+- **A file browser beside the terminal**, over the connection you already have. No second login.
+- **Upload and download** files and whole folders, or drop them in from Explorer. Create, rename,
+  copy, move and delete, with sizes, dates and permissions.
+- **Favorite folders** like `/var/log`, on every server or just one.
+- **Safe with Windows names.** Remote files called `con` or `README` and `readme` side by side
+  download without clobbering each other.
+
+### Read logs faster
+
+- **Highlighting for terminal output.** ERROR in red, WARN in orange, `Active: active` in green:
+  built-in rules cover Linux and service logs.
+- **Your own rules.** Import and export rule sets in Tabby's format. See [Highlights](docs/highlights.md).
+- **Minimap.** The whole scrollback in miniature on the right edge, errors and warnings in colour.
+  Drag its slider or click to jump. It sits beside the output, or over it until you need it.
+- **Command rail.** A mark beside every command you ran. Click one to scroll back to it.
+- **Search the scrollback.** Ctrl+Shift+F finds text or a regular expression in all of the
+  output, highlights every match and marks them on the minimap; Enter steps back through them.
+- **Copy the whole output** as text, or as a `.txt` file to drop into Outlook or Teams.
+
+### Secure by default
 
 - **Encrypted vault** for passwords and SSH keys: Argon2id and XChaCha20-Poly1305, locked by your
   master password. Auto-locks after a time you choose while your sessions stay connected.
@@ -161,11 +140,18 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
   OpenSSH `known_hosts` is honoured.
 - **OpenSSH and PuTTY (`.ppk`) keys** both work.
 
-<br clear="right">
-
 ## Performance
 
 Komando is built in Rust for fast startup, low memory use and responsive SSH sessions.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-tabby-dark.svg">
+    <img src="assets/benchmark-tabby-light.svg" width="828" alt="Komando, Windows Terminal and Tabby, in that order: startup 187, 351 and 725 ms; memory with 1 SSH Session 23.5, 29 and 318.7 MB; memory with 10 Sessions 28.3, 127 and 382.8 MB; a million log lines in 0.81, 1.4 and 4.19 seconds. Windows Terminal figures are older measurements with different settings.">
+  </picture>
+</p>
+
+<p align="center"><sub>Komando, Windows Terminal + OpenSSH and Tabby on the same Windows 11 PC. Each metric uses its own scale. Windows Terminal figures are from 2026-11-13 with different settings; Komando and Tabby were measured on 2026-11-14. <a href="docs/benchmarks.md">Method and raw data.</a></sub></p>
 
 | Application | Startup | Memory, 1 idle SSH Session | Memory, 10 idle SSH Sessions | Windows Processes, 10 Sessions | Printing a million log lines |
 |---|---:|---:|---:|---:|---:|
