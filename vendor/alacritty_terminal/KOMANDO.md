@@ -1,6 +1,6 @@
 # alacritty_terminal 0.26.0, patched for Komando
 
-This is alacritty_terminal 0.26.0 from crates.io with two changes, used through
+This is alacritty_terminal 0.26.0 from crates.io with three changes, used through
 `[patch.crates-io]` in Komando's `Cargo.toml`, against the patched vte in `vendor/vte` (see
 its `KOMANDO.md`). `komando.patch` holds the changes as a diff against the published crate.
 
@@ -28,7 +28,8 @@ calls `wrapline` at the same points.
 The change touches `src/term/mod.rs` (`Term::input_ascii` in the `Handler` impl, and the test
 module declaration) and adds `src/term/komando_tests.rs`. The second change (below) touches
 `src/grid/mod.rs`, `src/grid/storage.rs` and `src/grid/resize.rs`. New items are marked
-`Komando patch`. Everything else here is the published crate as it is, with `Cargo.lock`, the registry's
+`Komando patch`. The third change covers Windows PTY resource ownership (below).
+Everything else here is the published crate as it is, with `Cargo.lock`, the registry's
 bookkeeping files and the reference test recordings (`tests/ref/`, 46 MB) left out.
 
 ## The change: the next recycled row is loaded ahead
@@ -149,6 +150,23 @@ median of 8 interleaved runs each:
 | 100,000 lines, next 900,000 lines | 0.399 s | 0.395 s |
 | 10,000 lines, whole run | 0.290 s | 0.282 s |
 | 0 (no source is set) | 0.255 s | 0.256 s |
+
+## The change: Windows PTY resource ownership
+
+`src/tty/windows/conpty.rs` now owns the pseudo-console immediately after creation,
+keeps the pipe ends in RAII wrappers, deletes initialized process attribute lists, and
+closes both handles returned by `CreateProcessW`. A failed pseudo-console creation returns
+an error instead of panicking. Failed shell launches previously leaked five native handles
+per attempt, and successful launches also retained pipe, process and thread handles.
+
+`src/tty/windows/child.rs` duplicates the borrowed process handle for the exit watcher's
+lifetime. The watcher owns the callback context and cancels its wait synchronously before
+freeing that context and closing its handle, including when the shell is closed before it
+exits. This prevents callback races and releases contexts whose callbacks never run.
+
+Komando's Windows tests in `src/session/local.rs` check handle counts in an isolated process
+after repeated failed and successful launches, and run cmd and PowerShell through the
+actual session event loop to check final output and exit notification.
 
 ## Updating alacritty_terminal
 

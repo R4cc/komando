@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::io::{Error, Result};
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::io::IntoRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::{mem, ptr};
 
 use windows_sys::Win32::Foundation::{HANDLE, S_OK};
@@ -15,7 +15,8 @@ use windows_sys::core::{HRESULT, PWSTR};
 use windows_sys::{s, w};
 
 use windows_sys::Win32::System::Threading::{
-    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, EXTENDED_STARTUPINFO_PRESENT,
+    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
+    EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
     InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION,
     STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, UpdateProcThreadAttribute,
 };
@@ -94,6 +95,16 @@ pub struct Conpty {
     api: ConptyApi,
 }
 
+// Komando patch: release the native allocation inside the attribute list before its
+// backing buffer goes away, including when creating the child process fails.
+struct AttributeList(LPPROC_THREAD_ATTRIBUTE_LIST);
+
+impl Drop for AttributeList {
+    fn drop(&mut self) {
+        unsafe { DeleteProcThreadAttributeList(self.0) }
+    }
+}
+
 impl Drop for Conpty {
     fn drop(&mut self) {
         // XXX: This will block until the conout pipe is drained. Will cause a deadlock if the
@@ -122,14 +133,19 @@ pub fn new(config: &Options, window_size: WindowSize) -> Result<Pty> {
     let result = unsafe {
         (api.create)(
             window_size.into(),
-            conin_pty_handle.into_raw_handle() as HANDLE,
-            conout_pty_handle.into_raw_handle() as HANDLE,
+            conin_pty_handle.as_raw_handle() as HANDLE,
+            conout_pty_handle.as_raw_handle() as HANDLE,
             0,
             &mut pty_handle as *mut _,
         )
     };
 
-    assert_eq!(result, S_OK);
+    if result != S_OK {
+        return Err(Error::other(format!("CreatePseudoConsole failed: {result:#010x}")));
+    }
+    // Own the pseudo-console immediately so every later error closes it. The pipe
+    // ends passed above stay owned too; CreatePseudoConsole does not consume them.
+    let conpty = Conpty { handle: pty_handle, api };
 
     let mut success;
 
@@ -158,18 +174,10 @@ pub fn new(config: &Options, window_size: WindowSize) -> Result<Pty> {
         }
     }
 
-    let mut attr_list: Box<[u8]> = vec![0; size].into_boxed_slice();
+    let mut attr_list = vec![0usize; size.div_ceil(mem::size_of::<usize>())].into_boxed_slice();
 
-    // Set startup info's attribute list & initialize it
-    //
-    // Lint failure is spurious; it's because winapi's definition of PROC_THREAD_ATTRIBUTE_LIST
-    // implies it is one pointer in size (32 or 64 bits) but really this is just a dummy value.
-    // Casting a *mut u8 (pointer to 8 bit type) might therefore not be aligned correctly in
-    // the compiler's eyes.
-    #[allow(clippy::cast_ptr_alignment)]
-    {
-        startup_info_ex.lpAttributeList = attr_list.as_mut_ptr() as _;
-    }
+    // Komando patch: the native attribute list needs pointer-aligned backing storage.
+    startup_info_ex.lpAttributeList = attr_list.as_mut_ptr() as _;
 
     unsafe {
         success = InitializeProcThreadAttributeList(
@@ -183,6 +191,8 @@ pub fn new(config: &Options, window_size: WindowSize) -> Result<Pty> {
             return Err(Error::last_os_error());
         }
     }
+
+    let _attributes = AttributeList(startup_info_ex.lpAttributeList);
 
     // Set thread attribute list's Pseudo Console to the specified ConPTY.
     unsafe {
@@ -234,11 +244,22 @@ pub fn new(config: &Options, window_size: WindowSize) -> Result<Pty> {
         }
     }
 
+    // CreateProcess returns two owned handles. The watcher duplicates the process
+    // handle for its own lifetime; neither original may be leaked.
+    let process = unsafe { OwnedHandle::from_raw_handle(proc_info.hProcess) };
+    let _thread = unsafe { OwnedHandle::from_raw_handle(proc_info.hThread) };
+
     let conin = UnblockedWriter::new(conin, PIPE_CAPACITY);
     let conout = UnblockedReader::new(conout, PIPE_CAPACITY);
-
-    let child_watcher = ChildExitWatcher::new(proc_info.hProcess)?;
-    let conpty = Conpty { handle: pty_handle as HPCON, api };
+    let child_watcher = match ChildExitWatcher::new(process.as_raw_handle()) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            // The child is already running. Close it with the output reader still
+            // alive, just as Pty's normal backend-first drop order does.
+            drop(conpty);
+            return Err(error);
+        },
+    };
 
     Ok(Pty::new(conpty, conout, conin, child_watcher))
 }

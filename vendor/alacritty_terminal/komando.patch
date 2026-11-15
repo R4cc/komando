@@ -812,3 +812,223 @@
  #[cfg(test)]
  mod tests {
      use super::*;
+--- a/src/tty/windows/child.rs
++++ b/src/tty/windows/child.rs
+@@ -2,6 +2,7 @@
+ use std::io::Error;
+ use std::num::NonZeroU32;
+ use std::os::windows::process::ExitStatusExt;
++use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+ use std::process::ExitStatus;
+ use std::ptr;
+ use std::sync::atomic::{AtomicPtr, Ordering};
+@@ -10,9 +11,9 @@
+ use polling::os::iocp::{CompletionPacket, PollerIocpExt};
+ use polling::{Event, Poller};
+ 
+-use windows_sys::Win32::Foundation::{BOOLEAN, FALSE, HANDLE};
++use windows_sys::Win32::Foundation::{BOOLEAN, FALSE, HANDLE, DuplicateHandle, DUPLICATE_SAME_ACCESS, INVALID_HANDLE_VALUE};
+ use windows_sys::Win32::System::Threading::{
+-    GetExitCodeProcess, GetProcessId, INFINITE, RegisterWaitForSingleObject, UnregisterWait,
++    GetCurrentProcess, GetExitCodeProcess, GetProcessId, INFINITE, RegisterWaitForSingleObject, UnregisterWaitEx,
+     WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE,
+ };
+ 
+@@ -35,7 +36,9 @@
+         return;
+     }
+ 
+-    let event_tx: Box<_> = unsafe { Box::from_raw(ctx as *mut ChildExitSender) };
++    // Komando patch: the watcher owns this context until cancellation has waited
++    // for any running callback. A callback that never fires must not leak it.
++    let event_tx = unsafe { &*(ctx as *const ChildExitSender) };
+ 
+     let mut exit_code = 0_u32;
+     let child_handle = event_tx.child_handle.load(Ordering::Relaxed) as HANDLE;
+@@ -53,17 +56,26 @@
+     wait_handle: AtomicPtr<c_void>,
+     event_rx: mpsc::Receiver<ChildEvent>,
+     interest: Arc<Mutex<Option<Interest>>>,
+-    child_handle: AtomicPtr<c_void>,
++    child_handle: OwnedHandle,
++    _sender: Box<ChildExitSender>,
+     pid: Option<NonZeroU32>,
+ }
+ 
+ impl ChildExitWatcher {
+     pub fn new(child_handle: HANDLE) -> Result<ChildExitWatcher, Error> {
++        // Preserve the public borrowed-handle API while keeping the handle valid
++        // throughout the wait, including its asynchronous callback.
++        let mut duplicate = ptr::null_mut();
++        if unsafe { DuplicateHandle(GetCurrentProcess(), child_handle, GetCurrentProcess(), &mut duplicate, 0, 0, DUPLICATE_SAME_ACCESS) } == 0 {
++            return Err(Error::last_os_error());
++        }
++        let owned_handle = unsafe { OwnedHandle::from_raw_handle(duplicate) };
++        let child_handle = owned_handle.as_raw_handle();
+         let (event_tx, event_rx) = mpsc::channel();
+ 
+         let mut wait_handle: HANDLE = ptr::null_mut();
+         let interest = Arc::new(Mutex::new(None));
+-        let sender_ref = Box::new(ChildExitSender {
++        let mut sender_ref = Box::new(ChildExitSender {
+             sender: event_tx,
+             interest: interest.clone(),
+             child_handle: AtomicPtr::from(child_handle),
+@@ -74,7 +86,7 @@
+                 &mut wait_handle,
+                 child_handle,
+                 Some(child_exit_callback),
+-                Box::into_raw(sender_ref).cast(),
++                (&mut *sender_ref as *mut ChildExitSender).cast(),
+                 INFINITE,
+                 WT_EXECUTEINWAITTHREAD | WT_EXECUTEONLYONCE,
+             )
+@@ -88,7 +100,8 @@
+                 event_rx,
+                 interest,
+                 pid,
+-                child_handle: AtomicPtr::from(child_handle),
++                child_handle: owned_handle,
++                _sender: sender_ref,
+                 wait_handle: AtomicPtr::from(wait_handle),
+             })
+         }
+@@ -115,7 +128,7 @@
+     /// If you terminate the process using this handle, the terminal will get a
+     /// timeout error, and the child watcher will emit an `Exited` event.
+     pub fn raw_handle(&self) -> HANDLE {
+-        self.child_handle.load(Ordering::Relaxed) as HANDLE
++        self.child_handle.as_raw_handle()
+     }
+ 
+     /// Retrieve the Process ID associated to the underlying child process.
+@@ -127,7 +140,9 @@
+ impl Drop for ChildExitWatcher {
+     fn drop(&mut self) {
+         unsafe {
+-            UnregisterWait(self.wait_handle.load(Ordering::Relaxed) as HANDLE);
++            // No mutex held here: the callback can finish before its context and
++            // process handle are dropped. A cancelled wait releases the context too.
++            UnregisterWaitEx(self.wait_handle.load(Ordering::Relaxed) as HANDLE, INVALID_HANDLE_VALUE);
+         }
+     }
+ }
+--- a/src/tty/windows/conpty.rs
++++ b/src/tty/windows/conpty.rs
+@@ -3,7 +3,7 @@
+ use std::ffi::OsStr;
+ use std::io::{Error, Result};
+ use std::os::windows::ffi::OsStrExt;
+-use std::os::windows::io::IntoRawHandle;
++use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+ use std::{mem, ptr};
+ 
+ use windows_sys::Win32::Foundation::{HANDLE, S_OK};
+@@ -15,7 +15,8 @@
+ use windows_sys::{s, w};
+ 
+ use windows_sys::Win32::System::Threading::{
+-    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, EXTENDED_STARTUPINFO_PRESENT,
++    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
++    EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
+     InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION,
+     STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, UpdateProcThreadAttribute,
+ };
+@@ -94,6 +95,16 @@
+     api: ConptyApi,
+ }
+ 
++// Komando patch: release the native allocation inside the attribute list before its
++// backing buffer goes away, including when creating the child process fails.
++struct AttributeList(LPPROC_THREAD_ATTRIBUTE_LIST);
++
++impl Drop for AttributeList {
++    fn drop(&mut self) {
++        unsafe { DeleteProcThreadAttributeList(self.0) }
++    }
++}
++
+ impl Drop for Conpty {
+     fn drop(&mut self) {
+         // XXX: This will block until the conout pipe is drained. Will cause a deadlock if the
+@@ -122,14 +133,19 @@
+     let result = unsafe {
+         (api.create)(
+             window_size.into(),
+-            conin_pty_handle.into_raw_handle() as HANDLE,
+-            conout_pty_handle.into_raw_handle() as HANDLE,
++            conin_pty_handle.as_raw_handle() as HANDLE,
++            conout_pty_handle.as_raw_handle() as HANDLE,
+             0,
+             &mut pty_handle as *mut _,
+         )
+     };
+ 
+-    assert_eq!(result, S_OK);
++    if result != S_OK {
++        return Err(Error::other(format!("CreatePseudoConsole failed: {result:#010x}")));
++    }
++    // Own the pseudo-console immediately so every later error closes it. The pipe
++    // ends passed above stay owned too; CreatePseudoConsole does not consume them.
++    let conpty = Conpty { handle: pty_handle, api };
+ 
+     let mut success;
+ 
+@@ -158,18 +174,10 @@
+         }
+     }
+ 
+-    let mut attr_list: Box<[u8]> = vec![0; size].into_boxed_slice();
+-
+-    // Set startup info's attribute list & initialize it
+-    //
+-    // Lint failure is spurious; it's because winapi's definition of PROC_THREAD_ATTRIBUTE_LIST
+-    // implies it is one pointer in size (32 or 64 bits) but really this is just a dummy value.
+-    // Casting a *mut u8 (pointer to 8 bit type) might therefore not be aligned correctly in
+-    // the compiler's eyes.
+-    #[allow(clippy::cast_ptr_alignment)]
+-    {
+-        startup_info_ex.lpAttributeList = attr_list.as_mut_ptr() as _;
+-    }
++    let mut attr_list = vec![0usize; size.div_ceil(mem::size_of::<usize>())].into_boxed_slice();
++
++    // Komando patch: the native attribute list needs pointer-aligned backing storage.
++    startup_info_ex.lpAttributeList = attr_list.as_mut_ptr() as _;
+ 
+     unsafe {
+         success = InitializeProcThreadAttributeList(
+@@ -183,6 +191,8 @@
+             return Err(Error::last_os_error());
+         }
+     }
++
++    let _attributes = AttributeList(startup_info_ex.lpAttributeList);
+ 
+     // Set thread attribute list's Pseudo Console to the specified ConPTY.
+     unsafe {
+@@ -234,11 +244,22 @@
+         }
+     }
+ 
++    // CreateProcess returns two owned handles. The watcher duplicates the process
++    // handle for its own lifetime; neither original may be leaked.
++    let process = unsafe { OwnedHandle::from_raw_handle(proc_info.hProcess) };
++    let _thread = unsafe { OwnedHandle::from_raw_handle(proc_info.hThread) };
++
+     let conin = UnblockedWriter::new(conin, PIPE_CAPACITY);
+     let conout = UnblockedReader::new(conout, PIPE_CAPACITY);
+-
+-    let child_watcher = ChildExitWatcher::new(proc_info.hProcess)?;
+-    let conpty = Conpty { handle: pty_handle as HPCON, api };
++    let child_watcher = match ChildExitWatcher::new(process.as_raw_handle()) {
++        Ok(watcher) => watcher,
++        Err(error) => {
++            // The child is already running. Close it with the output reader still
++            // alive, just as Pty's normal backend-first drop order does.
++            drop(conpty);
++            return Err(error);
++        },
++    };
+ 
+     Ok(Pty::new(conpty, conout, conin, child_watcher))
+ }

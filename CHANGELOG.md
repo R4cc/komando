@@ -6,16 +6,23 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
-### Fixed
-
-- With Minimize to tray enabled, the window's X button and Alt+F4 now send Komando to the
-  notification area and keep sessions running. Exit in the tray menu still closes Komando.
+## [0.5.1] - 2026-11-15
 
 ### Changed
 
 - Downloads stays visible in the sidebar, even before the first transfer or after the list
   is cleared. Its corner popup is wider and taller, with larger details and wrapping file
   names and messages.
+
+### Fixed
+
+- Starting and closing Local Shells releases their Windows console, pipe and process
+  resources, including when the shell cannot start. A Windows console creation failure
+  is reported as an error instead of crashing Komando.
+- Portable updates use a separate download for each attempt. Opening another Komando
+  window no longer removes an update being downloaded or waiting to be installed.
+- With Minimize to tray enabled, the window's X button and Alt+F4 now send Komando to the
+  notification area and keep sessions running. Exit in the tray menu still closes Komando.
 
 ## [0.5.0] - 2026-11-15
 

@@ -486,11 +486,32 @@ pub fn replace_exe(exe: &Path, new_exe: &Path) -> Result<()> {
 /// best effort and a later start finishes it.
 pub fn clean_up() {
     if let Ok(exe) = std::env::current_exe() {
-        let _ = fs::remove_file(old_exe(&exe));
-        let _ = fs::remove_file(exe.with_extension("download"));
-        let _ = fs::remove_file(exe.with_extension("part"));
+        clean_up_portable(&exe);
     }
     remove_installers(&installer_dir());
+}
+
+fn clean_up_portable(exe: &Path) {
+    let _ = fs::remove_file(old_exe(exe));
+    let Some(dir) = exe.parent() else { return };
+    let Some(cutoff) = std::time::SystemTime::now().checked_sub(Duration::from_secs(7 * 24 * 60 * 60)) else { return };
+    let prefix = portable_download_prefix(exe);
+    let legacy = [exe.with_extension("download"), exe.with_extension("part")];
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let ours = legacy.contains(&path)
+            || (name.starts_with(&prefix) && matches!(path.extension().and_then(|s| s.to_str()), Some("download" | "part")));
+        if ours && entry.metadata().is_ok_and(|m| m.is_file() && m.modified().is_ok_and(|at| at < cutoff)) {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn portable_download_prefix(exe: &Path) -> String {
+    format!("{}.komando-update-", exe.file_name().unwrap_or_default().to_string_lossy())
 }
 
 /// Remove only week-old downloads from our own directory. A second Komando window may
@@ -515,11 +536,14 @@ fn installer_dir() -> PathBuf {
 
 /// Where a download for `kind` goes.
 ///
-/// Each attempt gets a fresh filename so it never has to overwrite an installer still
-/// open from an earlier attempt.
+/// Each attempt gets a fresh filename so windows cannot overwrite one another's files.
+/// Portable downloads stay beside the program so replacement is a same-volume rename.
 pub fn download_path(kind: &InstallKind, release: &Release) -> PathBuf {
     match kind {
-        InstallKind::Portable { exe } => exe.with_extension("download"),
+        InstallKind::Portable { exe } => {
+            let unique = uuid::Uuid::new_v4().simple().to_string();
+            exe.with_file_name(format!("{}{unique}.download", portable_download_prefix(exe)))
+        }
         _ => {
             let unique = uuid::Uuid::new_v4().simple().to_string();
             installer_dir().join(format!("Komando-{}-x64-{unique}.msi", release.version_text()))
@@ -856,6 +880,45 @@ mod tests {
             assert!(!release.is_available_for(kind));
             assert!(release.asset_for(kind).is_none());
         }
+    }
+
+    #[test]
+    fn starting_another_portable_copy_keeps_recent_update_files() {
+        let dir = TestDir::new();
+        let exe = dir.0.join("komando.exe");
+        let release = parse_release(api("v9.0.1", &["Komando-9.0.1-x64.exe"])).unwrap();
+        let active = download_path(&InstallKind::Portable { exe: exe.clone() }, &release);
+        fs::write(&active, b"verified download").unwrap();
+        fs::write(active.with_extension("part"), b"in progress").unwrap();
+        clean_up_portable(&exe);
+        assert_eq!(fs::read(&active).unwrap(), b"verified download");
+        assert_eq!(fs::read(active.with_extension("part")).unwrap(), b"in progress");
+    }
+
+    #[test]
+    fn portable_cleanup_removes_only_its_own_stale_downloads() {
+        let dir = TestDir::new();
+        let exe = dir.0.join("komando.exe");
+        let old = std::time::SystemTime::now() - Duration::from_secs(8 * 24 * 60 * 60);
+        for name in ["komando.download", "komando.part", "komando.exe.komando-update-abc.download", "komando.exe.komando-update-abc.part", "unrelated.part", "another.exe.komando-update-abc.download"] {
+            fs::File::create(dir.0.join(name)).unwrap().set_modified(old).unwrap();
+        }
+        fs::write(dir.0.join("komando.part"), b"legacy active download").unwrap();
+        clean_up_portable(&exe);
+        let mut left: Vec<_> = fs::read_dir(&dir.0).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["another.exe.komando-update-abc.download", "komando.part", "unrelated.part"]);
+    }
+
+    #[test]
+    fn portable_downloads_do_not_share_files_between_windows() {
+        let release = parse_release(api("v9.0.1", &["Komando-9.0.1-x64.exe"])).unwrap();
+        let dir = TestDir::new();
+        let kind = InstallKind::Portable { exe: dir.0.join("komando.exe") };
+        let (a, b) = (download_path(&kind, &release), download_path(&kind, &release));
+        assert_ne!(a, b, "two windows must not overwrite each other's update");
+        assert_ne!(a.with_extension("part"), b.with_extension("part"));
+        assert_eq!(a.parent(), Some(dir.0.as_path()), "stay on the executable's volume for rename");
     }
 
     #[test]

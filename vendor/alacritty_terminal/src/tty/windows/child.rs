@@ -2,6 +2,7 @@ use std::ffi::c_void;
 use std::io::Error;
 use std::num::NonZeroU32;
 use std::os::windows::process::ExitStatusExt;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::process::ExitStatus;
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -10,9 +11,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use polling::os::iocp::{CompletionPacket, PollerIocpExt};
 use polling::{Event, Poller};
 
-use windows_sys::Win32::Foundation::{BOOLEAN, FALSE, HANDLE};
+use windows_sys::Win32::Foundation::{BOOLEAN, FALSE, HANDLE, DuplicateHandle, DUPLICATE_SAME_ACCESS, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, GetProcessId, INFINITE, RegisterWaitForSingleObject, UnregisterWait,
+    GetCurrentProcess, GetExitCodeProcess, GetProcessId, INFINITE, RegisterWaitForSingleObject, UnregisterWaitEx,
     WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE,
 };
 
@@ -35,7 +36,9 @@ extern "system" fn child_exit_callback(ctx: *mut c_void, timed_out: BOOLEAN) {
         return;
     }
 
-    let event_tx: Box<_> = unsafe { Box::from_raw(ctx as *mut ChildExitSender) };
+    // Komando patch: the watcher owns this context until cancellation has waited
+    // for any running callback. A callback that never fires must not leak it.
+    let event_tx = unsafe { &*(ctx as *const ChildExitSender) };
 
     let mut exit_code = 0_u32;
     let child_handle = event_tx.child_handle.load(Ordering::Relaxed) as HANDLE;
@@ -53,17 +56,26 @@ pub struct ChildExitWatcher {
     wait_handle: AtomicPtr<c_void>,
     event_rx: mpsc::Receiver<ChildEvent>,
     interest: Arc<Mutex<Option<Interest>>>,
-    child_handle: AtomicPtr<c_void>,
+    child_handle: OwnedHandle,
+    _sender: Box<ChildExitSender>,
     pid: Option<NonZeroU32>,
 }
 
 impl ChildExitWatcher {
     pub fn new(child_handle: HANDLE) -> Result<ChildExitWatcher, Error> {
+        // Preserve the public borrowed-handle API while keeping the handle valid
+        // throughout the wait, including its asynchronous callback.
+        let mut duplicate = ptr::null_mut();
+        if unsafe { DuplicateHandle(GetCurrentProcess(), child_handle, GetCurrentProcess(), &mut duplicate, 0, 0, DUPLICATE_SAME_ACCESS) } == 0 {
+            return Err(Error::last_os_error());
+        }
+        let owned_handle = unsafe { OwnedHandle::from_raw_handle(duplicate) };
+        let child_handle = owned_handle.as_raw_handle();
         let (event_tx, event_rx) = mpsc::channel();
 
         let mut wait_handle: HANDLE = ptr::null_mut();
         let interest = Arc::new(Mutex::new(None));
-        let sender_ref = Box::new(ChildExitSender {
+        let mut sender_ref = Box::new(ChildExitSender {
             sender: event_tx,
             interest: interest.clone(),
             child_handle: AtomicPtr::from(child_handle),
@@ -74,7 +86,7 @@ impl ChildExitWatcher {
                 &mut wait_handle,
                 child_handle,
                 Some(child_exit_callback),
-                Box::into_raw(sender_ref).cast(),
+                (&mut *sender_ref as *mut ChildExitSender).cast(),
                 INFINITE,
                 WT_EXECUTEINWAITTHREAD | WT_EXECUTEONLYONCE,
             )
@@ -88,7 +100,8 @@ impl ChildExitWatcher {
                 event_rx,
                 interest,
                 pid,
-                child_handle: AtomicPtr::from(child_handle),
+                child_handle: owned_handle,
+                _sender: sender_ref,
                 wait_handle: AtomicPtr::from(wait_handle),
             })
         }
@@ -115,7 +128,7 @@ impl ChildExitWatcher {
     /// If you terminate the process using this handle, the terminal will get a
     /// timeout error, and the child watcher will emit an `Exited` event.
     pub fn raw_handle(&self) -> HANDLE {
-        self.child_handle.load(Ordering::Relaxed) as HANDLE
+        self.child_handle.as_raw_handle()
     }
 
     /// Retrieve the Process ID associated to the underlying child process.
@@ -127,7 +140,9 @@ impl ChildExitWatcher {
 impl Drop for ChildExitWatcher {
     fn drop(&mut self) {
         unsafe {
-            UnregisterWait(self.wait_handle.load(Ordering::Relaxed) as HANDLE);
+            // No mutex held here: the callback can finish before its context and
+            // process handle are dropped. A cancelled wait releases the context too.
+            UnregisterWaitEx(self.wait_handle.load(Ordering::Relaxed) as HANDLE, INVALID_HANDLE_VALUE);
         }
     }
 }
