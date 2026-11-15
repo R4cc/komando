@@ -36,7 +36,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#E2B365",
+      "foregroundColor": "#FFAA00",
       "isMatchGroup": true,
       "matchGroup": "1"
     },
@@ -46,7 +46,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#E2B365",
+      "foregroundColor": "#FFAA00",
       "isMatchGroup": true,
       "matchGroup": "1"
     },
@@ -56,7 +56,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82",
+      "foregroundColor": "#FF4D4F",
       "bold": true
     },
     {
@@ -65,7 +65,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82",
+      "foregroundColor": "#FF4D4F",
       "bold": true
     },
     {
@@ -74,7 +74,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#E2B365"
+      "foregroundColor": "#FFAA00"
     },
     {
       "text": "^\\s*(?:(?:Current mode|Mode from config file):\\s*|SELINUX=)?(enforcing)\\s*$",
@@ -92,7 +92,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#E2B365",
+      "foregroundColor": "#FFAA00",
       "isMatchGroup": true,
       "matchGroup": "1"
     },
@@ -112,7 +112,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82",
+      "foregroundColor": "#FF4D4F",
       "bold": true,
       "isMatchGroup": true,
       "matchGroup": "1"
@@ -123,7 +123,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82",
+      "foregroundColor": "#FF4D4F",
       "isMatchGroup": true,
       "matchGroup": "1"
     },
@@ -163,7 +163,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82",
+      "foregroundColor": "#FF4D4F",
       "isMatchGroup": true,
       "matchGroup": "1"
     },
@@ -201,7 +201,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82"
+      "foregroundColor": "#FF4D4F"
     },
     {
       "text": "\\bresult=(exit-code|signal|core-dump|timeout|watchdog|start-limit-hit|resources|protocol)\\b",
@@ -209,7 +209,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82",
+      "foregroundColor": "#FF4D4F",
       "isMatchGroup": true,
       "matchGroup": "1"
     },
@@ -219,7 +219,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82"
+      "foregroundColor": "#FF4D4F"
     },
     {
       "text": "\\b(?:success=yes|res=success)\\b",
@@ -235,7 +235,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#E2B365",
+      "foregroundColor": "#FFAA00",
       "isMatchGroup": true,
       "matchGroup": "1"
     },
@@ -255,7 +255,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#E2B365"
+      "foregroundColor": "#FFAA00"
     },
     {
       "text": "\\b(?:GPG check FAILED|Failed to download metadata|Cannot download repomd\\.xml|conflicting requests|nothing provides)\\b",
@@ -263,7 +263,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82"
+      "foregroundColor": "#FF4D4F"
     },
     {
       "text": "^\\s*(?:Error:\\s+)?(Unable to find a match|No match for argument)\\b",
@@ -271,7 +271,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#E2B365",
+      "foregroundColor": "#FFAA00",
       "isMatchGroup": true,
       "matchGroup": "1"
     },
@@ -299,7 +299,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#E2B365",
+      "foregroundColor": "#FFAA00",
       "isMatchGroup": true,
       "matchGroup": "1"
     },
@@ -317,7 +317,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#E2B365"
+      "foregroundColor": "#FFAA00"
     },
     {
       "text": "\\bRH(?:BA|EA)-\\d{4}:\\d+\\b",
@@ -333,7 +333,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82",
+      "foregroundColor": "#FF4D4F",
       "bold": true
     },
     {
@@ -342,7 +342,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82"
+      "foregroundColor": "#FF4D4F"
     },
     {
       "text": "\\b(?:I/O error|EXT4-fs error|Corruption detected|no space left on device|read-only file system)\\b",
@@ -350,7 +350,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82"
+      "foregroundColor": "#FF4D4F"
     },
     {
       "text": "\\b(?:permission denied|access denied|authentication fail(?:ed|ure)|Failed password|Invalid user|Connection refused|CONNECTION_REFUSED|No route to host|host unreachable|Network is unreachable|Activation failed|split-brain|quorum lost|lost quorum)\\b",
@@ -358,7 +358,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82"
+      "foregroundColor": "#FF4D4F"
     },
     {
       "text": "\\bstate change:\\s+\\S+\\s+->\\s+(failed)\\b",
@@ -366,7 +366,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82",
+      "foregroundColor": "#FF4D4F",
       "isMatchGroup": true,
       "matchGroup": "1"
     },
@@ -386,7 +386,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#E2B365",
+      "foregroundColor": "#FFAA00",
       "isMatchGroup": true,
       "matchGroup": "1"
     },
@@ -406,7 +406,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#E2B365",
+      "foregroundColor": "#FFAA00",
       "isMatchGroup": true,
       "matchGroup": "1"
     },
@@ -416,7 +416,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82",
+      "foregroundColor": "#FF4D4F",
       "bold": true
     },
     {
@@ -425,7 +425,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82"
+      "foregroundColor": "#FF4D4F"
     },
     {
       "text": "\\b(?:WARNING|WARN|timed out|timeout|expired|NOT_READY|degraded|deprecated|deprecation|high load|throttling)\\b",
@@ -433,7 +433,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#E2B365"
+      "foregroundColor": "#FFAA00"
     },
     {
       "text": "\\bunhealthy\\b",
@@ -441,7 +441,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#F28B82"
+      "foregroundColor": "#FF4D4F"
     },
     {
       "text": "\\bhealthy\\b",
@@ -491,7 +491,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#E2B365"
+      "foregroundColor": "#FFAA00"
     },
     {
       "text": "\\bpromoted\\b",
@@ -507,7 +507,7 @@
       "isRegExp": true,
       "isCaseSensitive": false,
       "foreground": true,
-      "foregroundColor": "#E2B365"
+      "foregroundColor": "#FFAA00"
     },
     {
       "text": "\\b(?:Primary|Secondary)\\b",

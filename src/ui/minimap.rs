@@ -695,7 +695,8 @@ fn line_runs(cells: &[(usize, char, Rgb)], palette: &TerminalPalette, highlighte
     let flush = |run: &mut Option<(usize, usize, Rgb)>, runs: &mut Vec<Run>| {
         if let Some((from, to, color)) = run.take() {
             let mut c = rgb_to_hsla(color);
-            c.a *= if c.s < 0.2 { plain_alpha } else { 0.95 };
+            // A theme's ordinary foreground can be tinted without being a highlight.
+            c.a *= if color == palette.foreground || c.s < 0.2 { plain_alpha } else { 0.95 };
             runs.push(Run { from: from as u16, to: to as u16, color: c });
         }
     };
@@ -994,6 +995,47 @@ mod tests {
     fn bundled_rules() -> Arc<Highlighter> {
         let sets = crate::highlight::parse(include_str!("../../assets/highlights/default.json")).unwrap();
         Arc::new(Highlighter::from_sets(&sets, &[]))
+    }
+
+    #[test]
+    fn ordinary_text_stays_faint_in_every_theme() {
+        let rules = bundled_rules();
+        for theme in crate::theme::DARK_THEMES.iter().chain(crate::theme::LIGHT_THEMES) {
+            let palette = TerminalPalette::from_theme(theme);
+            let cells: Vec<_> = "plain ERROR WARN"
+                .chars()
+                .enumerate()
+                .map(|(col, ch)| (col, ch, palette.foreground))
+                .collect();
+            let runs = line_runs(&cells, &palette, &rules);
+            assert_eq!(runs.len(), 3);
+            assert!(runs[0].color.a <= 0.3, "{}: ordinary text competes with highlights", theme.name);
+            assert!(runs[1].color.a >= 0.9, "{}: error should stand out", theme.name);
+            assert!(runs[2].color.a >= 0.9, "{}: warning should stand out", theme.name);
+        }
+    }
+
+    #[test]
+    fn severity_highlights_stay_vivid_in_the_minimap() {
+        let rules = bundled_rules();
+        for palette in [TerminalPalette::dark(), TerminalPalette::light()] {
+            for word in ["ERROR", "FATAL", "PANIC", "CRITICAL", "WARN", "WARNING"] {
+                let cells: Vec<_> = word
+                    .chars()
+                    .enumerate()
+                    .map(|(col, ch)| (col, ch, Rgb { r: 180, g: 180, b: 180 }))
+                    .collect();
+                let runs = line_runs(&cells, &palette, &rules);
+                assert!(!runs.is_empty());
+                for run in runs.iter() {
+                    let color: gpui::Rgba = run.color.into();
+                    let max = color.r.max(color.g).max(color.b);
+                    let min = color.r.min(color.g).min(color.b);
+                    assert!((max - min) / max >= 0.65, "{word} is too pale on dark={}", palette.dark);
+                    assert!(color.a >= 0.9, "{word} should stand out from plain output");
+                }
+            }
+        }
     }
 
     fn strip() -> Bounds<Pixels> {

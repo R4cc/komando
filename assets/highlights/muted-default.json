@@ -1,0 +1,561 @@
+{
+  "id": "bd7f1935-5cd8-4330-a95a-f9088c85e282",
+  "name": "Linux & RHEL",
+  "keywords": [
+    {
+      "text": "\\b(?:errors?|fail(?:ed|ures?)?|dropped|lost)[:=]\\s*0\\b|\\b0\\s+(?:errors?|failures?|failed|dropped|lost)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#A6ADB9"
+    },
+    {
+      "text": "^\\s*Overall Status:\\s*(Disabled)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87BFEA",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*Overall Status:\\s*(Registered|Current)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87C999",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*Overall Status:\\s*(Not Registered|Unknown|Invalid|Insufficient)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#E2B365",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "\\b(avc:\\s+denied)\\b[^\\r\\n]*\\bpermissive=1\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#E2B365",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "\\bavc:\\s+denied\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82",
+      "bold": true
+    },
+    {
+      "text": "\\b(?:USER_)?SELINUX_ERR\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82",
+      "bold": true
+    },
+    {
+      "text": "\\bpermissive=1\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#E2B365"
+    },
+    {
+      "text": "^\\s*(?:(?:Current mode|Mode from config file):\\s*|SELINUX=)?(enforcing)\\s*$",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87C999",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*(?:(?:Current mode|Mode from config file|SELinux status):\\s*|SELINUX=)?(permissive|disabled)\\s*$",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#E2B365",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*SELinux status:\\s*(enabled)\\s*$",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87C999",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*Active:\\s*(failed|maintenance)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82",
+      "bold": true,
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*Loaded:\\s*(not-found|bad-setting|error)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*Active:\\s*(active\\b(?:\\s+\\((?:running|exited|waiting|listening)\\))?)",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87C999",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*Active:\\s*(inactive\\b(?:\\s+\\(dead\\))?)",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#A6ADB9",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*Active:\\s*(activating|deactivating|reloading|refreshing)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87BFEA",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*(?:[\u25cf\u25cb\u00d7]\\s*)?[A-Za-z0-9_@:.\\-]+\\.(?:service|socket|target|timer|mount|automount|path|slice|scope|swap)\\s+\\S+\\s+(failed|maintenance)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*(?:[\u25cf\u25cb\u00d7]\\s*)?[A-Za-z0-9_@:.\\-]+\\.(?:service|socket|target|timer|mount|automount|path|slice|scope|swap)\\s+\\S+\\s+(active)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87C999",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*(?:[\u25cf\u25cb\u00d7]\\s*)?[A-Za-z0-9_@:.\\-]+\\.(?:service|socket|target|timer|mount|automount|path|slice|scope|swap)\\s+\\S+\\s+(inactive)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#A6ADB9",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "\\bstatus=0/SUCCESS\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87C999"
+    },
+    {
+      "text": "\\bstatus=[1-9]\\d*/[A-Z0-9_-]+\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82"
+    },
+    {
+      "text": "\\bresult=(exit-code|signal|core-dump|timeout|watchdog|start-limit-hit|resources|protocol)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "\\b(?:success=no|res=failed)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82"
+    },
+    {
+      "text": "\\b(?:success=yes|res=success)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87C999"
+    },
+    {
+      "text": "^\\s*(?:State:\\s*)?(degraded|maintenance)\\s*$",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#E2B365",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*(?:State:\\s*)?(running|active)\\s*$",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87C999",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "\\b(?:This system is not registered|not entitled|Unable to read consumer identity|No enabled repositories)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#E2B365"
+    },
+    {
+      "text": "\\b(?:GPG check FAILED|Failed to download metadata|Cannot download repomd\\.xml|conflicting requests|nothing provides)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82"
+    },
+    {
+      "text": "^\\s*(?:Error:\\s+)?(Unable to find a match|No match for argument)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#E2B365",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*(?:Complete!|Dependencies resolved\\.|Nothing to do\\.|Transaction (?:test|check) succeeded\\.)\\s*$",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87C999"
+    },
+    {
+      "text": "^\\s*(Installing|Upgrading|Downgrading|Reinstalling|Verifying|Preparing|Running (?:scriptlet|transaction(?: test| check)?))\\s*:",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87BFEA",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*(Removing|Erasing|Obsoleting)\\s*:",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#E2B365",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*Transaction Summary\\s*$",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87BFEA"
+    },
+    {
+      "text": "\\b(?:RHSA-\\d{4}:\\d+|CVE-\\d{4}-\\d{4,})\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#E2B365"
+    },
+    {
+      "text": "\\bRH(?:BA|EA)-\\d{4}:\\d+\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87BFEA"
+    },
+    {
+      "text": "\\b(?:Kernel panic|soft lockup|hard LOCKUP|hung task|blocked for more than)\\b|\\b(?:Oops|BUG):",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82",
+      "bold": true
+    },
+    {
+      "text": "\\b(?:Out of memory|oom-kill|oom-killer|OOM|Killed process|OutOfMemoryError|NullPointerException|[A-Za-z0-9_]*Exception|Segmentation fault|core dumped)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82"
+    },
+    {
+      "text": "\\b(?:I/O error|EXT4-fs error|Corruption detected|no space left on device|read-only file system)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82"
+    },
+    {
+      "text": "\\b(?:permission denied|access denied|authentication fail(?:ed|ure)|Failed password|Invalid user|Connection refused|CONNECTION_REFUSED|No route to host|host unreachable|Network is unreachable|Activation failed|split-brain|quorum lost|lost quorum)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82"
+    },
+    {
+      "text": "\\bstate change:\\s+\\S+\\s+->\\s+(failed)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "\\bstate change:\\s+\\S+\\s+->\\s+(activated)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87C999",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "\\bstate change:\\s+\\S+\\s+->\\s+(disconnected|unavailable|deactivating|prepare|config|ip-config|need-auth)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#E2B365",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*\\S+\\s+(?:ethernet|wifi|bridge|bond|vlan|loopback|tun|vxlan|team|infiniband)\\s+(connected)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87C999",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "^\\s*\\S+\\s+(?:ethernet|wifi|bridge|bond|vlan|loopback|tun|vxlan|team|infiniband)\\s+(disconnected|connecting|unavailable)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#E2B365",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "\\b(?:EMERG(?:ENCY)?|ALERT|CRIT(?:ICAL)?|FATAL|PANIC)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82",
+      "bold": true
+    },
+    {
+      "text": "\\b(?:ERROR|ERR|FAILED|FAILURE|DENIED|UNAVAILABLE)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82"
+    },
+    {
+      "text": "\\b(?:WARNING|WARN|timed out|timeout|expired|NOT_READY|degraded|deprecated|deprecation|high load|throttling)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#E2B365"
+    },
+    {
+      "text": "\\bunhealthy\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#F28B82"
+    },
+    {
+      "text": "\\bhealthy\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87C999"
+    },
+    {
+      "text": "\\bhealth:\\s*(starting)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87BFEA",
+      "isMatchGroup": true,
+      "matchGroup": "1"
+    },
+    {
+      "text": "\\b(?:Started|Reached target|Finished)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": true,
+      "foreground": true,
+      "foregroundColor": "#87C999"
+    },
+    {
+      "text": "\\b(?:Starting|Reloading)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": true,
+      "foreground": true,
+      "foregroundColor": "#87BFEA"
+    },
+    {
+      "text": "\\b(?:Stopped|Stopping|inactive)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#A6ADB9"
+    },
+    {
+      "text": "\\b(?:Restarting|reboot|shutdown|fencing|stonith)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#E2B365"
+    },
+    {
+      "text": "\\bpromoted\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87C999"
+    },
+    {
+      "text": "\\bdemoted\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#E2B365"
+    },
+    {
+      "text": "\\b(?:Primary|Secondary)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87BFEA"
+    },
+    {
+      "text": "\\b(?:Standby|Passive)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#A6ADB9"
+    },
+    {
+      "text": "\\b(?:INFO|NOTICE)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#87BFEA"
+    },
+    {
+      "text": "\\b(?:DEBUG|TRACE)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#A6ADB9"
+    },
+    {
+      "text": "\\b(?:systemd(?:-[a-z]+)?|kernel|SELinux|NetworkManager|firewalld|sshd|sudo|auditd|setroubleshoot|fapolicyd|sssd(?:_[a-z]+)?|chronyd|dnf5?|yum|rpm|subscription-manager|rhsmcertd|insights-client|tuned|kdump|podman|conmon|crun|pacemaker(?:-[a-z]+)?|corosync|pcsd|multipathd|lvm|quorum|witness)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#B6A0D9"
+    },
+    {
+      "text": "\\b[A-Za-z0-9_@:.\\-]+\\.(?:service|socket|target|timer|mount|automount|path|slice|scope|swap)\\b",
+      "enabled": true,
+      "isRegExp": true,
+      "isCaseSensitive": false,
+      "foreground": true,
+      "foregroundColor": "#B6A0D9"
+    }
+  ]
+}

@@ -8,11 +8,16 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- Failure highlights use vivid red and warnings use bright amber so they are easier to spot
+  in the terminal and minimap. Untouched default rules update automatically; customized
+  highlight sets keep their colors.
 - The README now focuses on host navigation, SSH logs, SFTP and host-linked remote desktops,
   with fresh dark-mode app captures. Benchmarks live with the performance details.
 
 ### Fixed
 
+- Ordinary text stays faint in the minimap on tinted themes, so error and warning
+  highlights stand out from surrounding output.
 - Launching Komando again restores the running window, including from the tray, instead
   of starting another copy with another tray icon. Administrator shell windows remain
   separate and close normally without adding notification icons.
