@@ -44,7 +44,7 @@ pub fn copy_file_to_clipboard(path: &std::path::Path) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("clipboard busy: {e}"))?;
     clipboard_win::raw::empty().map_err(|e| anyhow::anyhow!("clipboard: {e}"))?;
     clipboard_win::raw::set_file_list(&[path.as_str()]).map_err(|e| anyhow::anyhow!("clipboard: {e}"))?;
-    Ok(" to the clipboard. Paste it into Explorer, Outlook or Teams.".into())
+    Ok(" to the clipboard.".into())
 }
 
 #[cfg(not(windows))]

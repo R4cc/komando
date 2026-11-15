@@ -22,6 +22,7 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- Clipboard confirmations are concise and no longer suggest apps to paste into.
 - Add and edit Local Shells in a focused dialog, keeping the Settings list compact and
   Save and Cancel visible while choosing an icon.
 
