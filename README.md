@@ -77,7 +77,7 @@ If your company blocks unknown programs entirely (AppLocker), this won't help.
 password or key, it asks you to choose a master password for the vault. Your data stays on your
 machine in `%APPDATA%\Komando`.
 
-**Coming from Tabby?** Settings → Import brings your SSH profiles over.
+**Coming from Tabby or MobaXterm?** Settings → Import brings your SSH profiles and sessions over (MobaXterm import is experimental).
 
 ## Features
 
@@ -216,8 +216,8 @@ still reach the shell on your server.
 <summary><b>Is it an alternative to PuTTY, MobaXterm, Tabby or Windows Terminal?</b></summary>
 <br>
 Yes, if you mostly work on Linux servers over SSH. Komando combines a GPU-rendered terminal, a
-built-in SSH and SFTP client and a server manager, and it reads PuTTY keys and Tabby profiles and
-highlight rules.
+built-in SSH and SFTP client and a server manager, and it reads PuTTY keys, Tabby profiles and
+highlight rules, and MobaXterm sessions.
 </details>
 
 <details>

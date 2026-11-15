@@ -1,7 +1,8 @@
-//! Settings → Import: bring Hosts over from Tabby, or from a Project File someone shared.
+//! Settings → Import: bring Hosts over from Tabby or MobaXterm, or from a Project File someone
+//! shared.
 //!
-//! Three steps on the page itself: find the file (Tabby's configuration automatically, or the
-//! user picks it), pick the groups and hosts to bring over, then review what comes over and
+//! Three steps on the page itself: find the file (Tabby's or MobaXterm's settings automatically,
+//! or the user picks it), pick the groups and hosts to bring over, then review what comes over and
 //! what doesn't before anything is saved. Reading and matching live in `crate::import` and
 //! `crate::share`.
 
@@ -12,7 +13,7 @@ use gpui::Toggled;
 
 use super::settings::group;
 use super::*;
-use crate::import::{self, Applied, Duplicate, Found, FoundHost, Plan, Target, tabby};
+use crate::import::{self, Applied, Duplicate, Found, FoundHost, Plan, Target, mobaxterm, tabby};
 use crate::model::JumpHost;
 use crate::share;
 
@@ -25,8 +26,8 @@ pub(super) enum ImportFlow {
     /// Nothing loaded yet.
     #[default]
     Start,
-    /// Tabby isn't in the usual places: the user is asked to pick its file.
-    NotFound,
+    /// The other client's settings aren't in the usual places: the user is asked to pick the file.
+    NotFound(Source),
     /// The picked or found file couldn't be read, or has no SSH profiles.
     Failed { from: Source, path: PathBuf, error: String },
     Pick(Selection),
@@ -38,6 +39,7 @@ pub(super) enum ImportFlow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Source {
     Tabby,
+    MobaXterm,
     /// A Project File made with "Share project…".
     ProjectFile,
 }
@@ -47,6 +49,7 @@ impl Source {
     fn name(self) -> &'static str {
         match self {
             Source::Tabby => "Tabby",
+            Source::MobaXterm => "MobaXterm",
             Source::ProjectFile => "the project file",
         }
     }
@@ -100,15 +103,27 @@ impl Workspace {
     /// for it.
     fn start_tabby_import(&mut self, cx: &mut Context<Self>) {
         match tabby::find_config() {
-            Some(path) => self.load_tabby(path, cx),
+            Some(path) => self.load_client(Source::Tabby, path, cx),
             None => {
-                self.import = ImportFlow::NotFound;
+                self.import = ImportFlow::NotFound(Source::Tabby);
                 cx.notify();
             }
         }
     }
 
-    /// Ask for the file to import from: Tabby's configuration or a Project File.
+    /// "Import from MobaXterm": read MobaXterm.ini if it is in the usual place, or ask for it
+    /// (or for exported sessions).
+    fn start_mobaxterm_import(&mut self, cx: &mut Context<Self>) {
+        match mobaxterm::find_config() {
+            Some(path) => self.load_client(Source::MobaXterm, path, cx),
+            None => {
+                self.import = ImportFlow::NotFound(Source::MobaXterm);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Ask for the file to import from: Tabby's or MobaXterm's settings, or a Project File.
     fn choose_import_file(&mut self, from: Source, window: &mut Window, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
@@ -121,8 +136,9 @@ impl Workspace {
             let Some(path) = paths.into_iter().next() else { return };
             let _ = this.update(cx, |this, cx| match from {
                 Source::ProjectFile => this.load_project_file(path, cx),
+                Source::MobaXterm => this.load_client(from, path, cx),
                 Source::Tabby => match tabby::config_in(&path) {
-                    Ok(config) => this.load_tabby(config, cx),
+                    Ok(config) => this.load_client(from, config, cx),
                     Err(err) => {
                         this.import = ImportFlow::Failed { from, path, error: format!("{err:#}") };
                         cx.notify();
@@ -149,18 +165,23 @@ impl Workspace {
         ImportFlow::Pick(Selection { from, source, found, plan, picked, open })
     }
 
-    fn load_tabby(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.import = match tabby::read(&path, &is_icon) {
-            Err(err) => ImportFlow::Failed { from: Source::Tabby, path, error: format!("{err:#}") },
+    /// Read another client's settings: Tabby's or MobaXterm's.
+    fn load_client(&mut self, from: Source, path: PathBuf, cx: &mut Context<Self>) {
+        let (read, none) = match from {
+            Source::MobaXterm => (mobaxterm::read(&path), "There are no SSH sessions in this file."),
+            _ => (tabby::read(&path, &is_icon), "There are no SSH profiles in this file."),
+        };
+        self.import = match read {
+            Err(err) => ImportFlow::Failed { from, path, error: format!("{err:#}") },
             Ok(found) if found.groups.is_empty() => {
-                let mut error = "There are no SSH profiles in this file.".to_string();
+                let mut error = none.to_string();
                 for note in &found.notes {
                     error.push(' ');
                     error.push_str(note);
                 }
-                ImportFlow::Failed { from: Source::Tabby, path, error }
+                ImportFlow::Failed { from, path, error }
             }
-            Ok(found) => self.selection(Source::Tabby, path, found),
+            Ok(found) => self.selection(from, path, found),
         };
         cx.notify();
     }
@@ -227,7 +248,7 @@ impl Workspace {
         let plan = import::plan(&selection.found, &library);
         let applied = import::apply(&selection.found, &plan, &selection.picked, &mut library);
         let from = match selection.from {
-            Source::Tabby => "Tabby".to_string(),
+            Source::Tabby | Source::MobaXterm => selection.from.name().to_string(),
             Source::ProjectFile => selection.found.groups.first().map(|g| g.name.clone()).unwrap_or_default(),
         };
         if let Err(err) = self.commit_library(library) {
@@ -244,7 +265,7 @@ impl Workspace {
     pub(super) fn settings_import(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         match &self.import {
             ImportFlow::Start => self.import_start(None, p, cx),
-            ImportFlow::NotFound => self.import_start(Some(self.import_not_found(p, cx)), p, cx),
+            ImportFlow::NotFound(from) => self.import_start(Some(self.import_not_found(*from, p, cx)), p, cx),
             ImportFlow::Failed { from, path, error } => self.import_start(Some(self.import_failed(*from, path, error, p, cx)), p, cx),
             ImportFlow::Pick(selection) => self.import_pick(selection, p, cx),
             ImportFlow::Review(selection) => self.import_review(selection, p, cx),
@@ -276,6 +297,37 @@ impl Workspace {
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start_tabby_import(cx))),
             )
             .into_any_element();
+        let moba_row = div()
+            .flex()
+            .items_center()
+            .gap(px(14.))
+            .child(badge("terminal", p.brand, 36.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child("MobaXterm"))
+                            .child(tag("Experimental", p.warning, p)),
+                    )
+                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(
+                        "Copies your SSH sessions' names, host names, ports, users, SSH gateways (as jump hosts) and \
+                         execute commands (as startup commands). Session folders become projects. Passwords and keys \
+                         stay in MobaXterm. MobaXterm's format isn't documented, so check the review before importing.",
+                    )),
+            )
+            .child(
+                button("import-mobaxterm", "Import from MobaXterm", ButtonKind::Secondary, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start_mobaxterm_import(cx))),
+            )
+            .into_any_element();
         let project_row = div()
             .flex()
             .items_center()
@@ -300,12 +352,26 @@ impl Workspace {
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_import_file(Source::ProjectFile, window, cx))),
             )
             .into_any_element();
-        let mut rows = vec![row, project_row];
+        let mut rows = vec![row, moba_row, project_row];
         rows.extend(problem);
         group(p, rows)
     }
 
-    fn import_not_found(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn import_not_found(&self, from: Source, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        if from == Source::MobaXterm {
+            return notice(
+                "search-x",
+                p.warning,
+                "Komando couldn't find MobaXterm's sessions on this PC.",
+                "An installed MobaXterm keeps them in MobaXterm.ini in Documents\\MobaXterm or %APPDATA%\\MobaXterm; a \
+                 portable one keeps it next to MobaXterm.exe. You can also export your sessions from MobaXterm's \
+                 Sessions panel to a .mxtsessions file and choose that file here.",
+                button("import-choose", "Choose MobaXterm file…", ButtonKind::Secondary, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_import_file(Source::MobaXterm, window, cx)))
+                    .into_any_element(),
+                p,
+            );
+        }
         let place = if cfg!(windows) { "%APPDATA%\\tabby" } else { "Tabby's settings folder" };
         notice(
             "search-x",
@@ -391,6 +457,7 @@ impl Workspace {
                 .role(gpui::Role::Button)
                 .aria_label(match selection.from {
                     Source::Tabby => format!("Profile group: {}", found.name),
+                    Source::MobaXterm => format!("Session folder: {}", found.name),
                     Source::ProjectFile => format!("Project: {}", found.name),
                 })
                 .aria_expanded(open)
@@ -631,7 +698,7 @@ impl Workspace {
         left.push(info_line(
             "x",
             match selection.from {
-                Source::Tabby => {
+                Source::Tabby | Source::MobaXterm => {
                     "Passwords and keys. Komando asks for the password the first time you connect and can save it in its vault; \
                      a key file can be added in the host's settings."
                 }
@@ -673,7 +740,10 @@ impl Workspace {
                     .gap(px(4.))
                     .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Review the import"))
                     .child(div().text_size(px(12.5)).text_color(p.text_muted).child(match selection.from {
-                        Source::Tabby => format!("{summary} Settings marked with an X were set in Tabby and don't come over."),
+                        Source::Tabby | Source::MobaXterm => format!(
+                            "{summary} Settings marked with an X were set in {} and don't come over.",
+                            selection.from.name()
+                        ),
                         Source::ProjectFile => {
                             format!("{summary} Each host keeps the user, jump hosts and startup commands it has in the shared project.")
                         }

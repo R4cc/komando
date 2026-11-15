@@ -6,6 +6,16 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Experimental: import your SSH sessions from MobaXterm in Settings → Import. Komando reads MobaXterm.ini
+  from Documents\MobaXterm or %APPDATA%\MobaXterm, or a file you exported from MobaXterm's
+  sessions. Session folders become projects, an SSH gateway becomes the host's jump hosts and
+  an execute command becomes a startup command. Passwords and keys stay in MobaXterm; the
+  review lists, per host, a private key or proxy that doesn't come over, and how many RDP,
+  VNC or other non-SSH sessions were left out. MobaXterm's file format isn't documented, so
+  check the review before importing.
+
 ## [0.4.4] - 2026-11-14
 
 ### Added
