@@ -85,6 +85,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn komando_default_keeps_the_supplied_colors_fonts_radius_and_zero_shadows() {
+        let source = SOURCES.iter().find(|s| s.id == crate::theme::DEFAULT_THEME).unwrap();
+        for dark in [false, true] {
+            let styles = &source.styles[if dark { "dark" } else { "light" }];
+            let expected = ThemeColors::read(&|key| parse_color(&styles[key]).unwrap());
+            let resolved = load(dark).into_iter().find(|t| t.id == crate::theme::DEFAULT_THEME).unwrap();
+            assert_eq!(resolved.colors, expected, "the supplied default must not inherit palette refinements");
+            assert_eq!(resolved.colors.background == 0, dark);
+            assert_eq!(resolved.font_sans, "Inter");
+            assert_eq!(resolved.font_mono, "JetBrains Mono");
+            assert_eq!(resolved.radius, 8.);
+            assert_eq!(resolved.shadow, ThemeShadow { color: 0, opacity: 0., x: 0., y: 0., blur: 0., spread: 0. });
+        }
+    }
+
+    #[test]
     fn css_tokens_preserve_hex_and_convert_oklch() {
         assert_eq!(parse_color("#FFF").unwrap(), 0xffffff);
         assert_eq!(parse_color("#FFFF").unwrap(), 0xffffff);

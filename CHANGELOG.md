@@ -14,6 +14,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- Komando Default now uses flat black and white surfaces in dark mode and neutral
+  light surfaces with a mint-green primary color in light mode. It uses Inter,
+  JetBrains Mono, an 8 px base radius and no shadows.
 - Theme previews show four adjacent color blocks in a narrower selector. Removed the
   tagline from the welcome screen.
 - Refined each theme's light and dark palettes with clearer surface hierarchy, readable

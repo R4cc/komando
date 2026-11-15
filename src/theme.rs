@@ -116,6 +116,7 @@ impl AppPalette {
         let c = t.colors;
         let hover = hex(c.background).blend(hex(c.accent).opacity(0.35));
         let text_muted = hex(readable(readable(c.muted_foreground, c.background, 4.5), packed(hover), 4.5));
+        let (active, active_text) = active_colors(c);
         Self {
             dark: t.dark,
             font_family: t.font_sans, mono_family: t.font_mono, radius: t.radius.clamp(6., 8.), shadow: t.shadow,
@@ -124,12 +125,12 @@ impl AppPalette {
             popover: hex(c.popover), popover_text: hex(readable(c.popover_foreground, c.popover, 4.5)),
             hover, hover_text: hex(readable(c.foreground, packed(hover), 4.5)),
             muted: hex(c.muted), muted_text: hex(readable(c.muted_foreground, c.muted, 4.5)),
-            active: hex(c.accent), active_text: hex(readable(c.accent_foreground, c.accent, 4.5)),
+            active, active_text,
             border: hex(c.border), input: hex(c.input), focus: hex(c.ring),
             text: hex(readable(c.foreground, c.background, 4.5)),
             text_muted, text_faint: text_muted,
             brand: hex(c.primary), on_brand: hex(readable(c.primary_foreground, c.primary, 4.5)),
-            brand_soft: hex(c.accent), secondary: hex(c.secondary),
+            brand_soft: active, secondary: hex(c.secondary),
             on_secondary: hex(readable(c.secondary_foreground, c.secondary, 4.5)),
             danger: hex(c.destructive), on_danger: hex(readable(c.destructive_foreground, c.destructive, 4.5)),
             success: hex(if t.dark { 0x86b98b } else { 0x347044 }),
@@ -168,8 +169,7 @@ impl AppPalette {
         self.on_brand = hex(readable(c.primary_foreground, c.primary, 4.5));
         self.border = hex(c.border);
         self.focus = hex(c.ring);
-        self.active = hex(c.accent);
-        self.active_text = hex(readable(c.accent_foreground, c.accent, 4.5));
+        (self.active, self.active_text) = active_colors(c);
         self.brand_soft = self.active;
         self
     }
@@ -191,8 +191,13 @@ impl AppPalette {
 
     /// Visible hover/press feedback without sacrificing a button's text contrast.
     pub fn interactive_surface(self, background: Hsla, foreground: Hsla, pressed: bool) -> Hsla {
-        let overlay = hex(if self.dark { 0xffffff } else { 0 }).opacity(if pressed { 0.12 } else { 0.07 });
-        hex(readable(packed(background.blend(overlay)), packed(foreground), 4.5))
+        let target = if self.dark { 0xffffff } else { 0 };
+        let amount = if pressed { 0.12 } else { 0.07 };
+        let candidate = background.blend(hex(target).opacity(amount));
+        let candidate = if packed(candidate) == packed(background) || contrast(packed(candidate), packed(foreground)) < 4.5 {
+            background.blend(hex(target ^ 0xffffff).opacity(amount))
+        } else { candidate };
+        hex(readable(packed(candidate), packed(foreground), 4.5))
     }
 
     pub fn translucent(mut self, t: f32) -> Self {
@@ -202,6 +207,17 @@ impl AppPalette {
         self.background.a *= 1. - 0.55 * t;
         self
     }
+}
+
+/// Some source themes use the same gray for accent and muted surfaces. Use their
+/// primary pair for selected controls so the checked segment remains visible.
+fn active_colors(c: ThemeColors) -> (Hsla, Hsla) {
+    let (background, foreground) = if contrast(c.accent, c.muted) < 1.15 {
+        (c.primary, c.primary_foreground)
+    } else {
+        (c.accent, c.accent_foreground)
+    };
+    (hex(background), hex(readable(foreground, background, 4.5)))
 }
 
 fn packed(color: Hsla) -> u32 {
@@ -496,11 +512,11 @@ mod tests {
         assert_eq!(p.mono_family, "JetBrains Mono");
         assert_eq!(p.corner(8.), gpui::px(8.));
         let default = AppPalette::dark();
-        assert_eq!(default.font_family, "Outfit");
-        assert_eq!(default.mono_family, "Geist Mono");
+        assert_eq!(default.font_family, "Inter");
+        assert_eq!(default.mono_family, "JetBrains Mono");
         assert_eq!(default.corner(8.), gpui::px(8.));
-        assert_eq!(default.shadow.blur, 3.);
-        assert_eq!(default.shadow.opacity, 0.1);
+        assert_eq!(default.shadow.blur, 0.);
+        assert_eq!(default.shadow.opacity, 0.);
         assert!(TerminalPalette::from_theme(theme(true, "fl-theme")).dark);
     }
 
@@ -510,12 +526,14 @@ mod tests {
             let c = t.colors;
             assert_eq!(luminance(c.background) < 0.2, t.dark, "{} mode", t.name);
             assert_eq!(TerminalPalette::from_theme(t).dark, t.dark);
-            for surface in [c.background, c.sidebar, c.card, c.popover] {
-                assert_ne!(surface, 0, "{} avoids featureless black", t.name);
+            if t.id != DEFAULT_THEME {
+                for surface in [c.background, c.sidebar, c.card, c.popover] {
+                    assert_ne!(surface, 0, "{} avoids featureless black", t.name);
+                }
             }
             assert_ne!(c.background, c.card, "{} panel hierarchy", t.name);
-            assert!(contrast(c.accent, c.muted) >= 1.15, "{} {} selected controls", t.name, t.dark);
             let p = AppPalette::from_theme(t);
+            assert!(contrast(value(p.active), value(p.muted)) >= 1.15, "{} {} selected controls", t.name, t.dark);
             for context in [p, p.panel()] {
                 assert_ne!(context.hover, context.active, "hover is separate from selection");
                 for bg in [context.background, context.surface, context.popover, context.hover] {
@@ -533,6 +551,18 @@ mod tests {
                     assert!(contrast(value(state), value(fg)) >= 4.48, "{} button state text", t.name);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn default_light_selection_uses_its_primary_without_changing_source_gray_tokens() {
+        let t = theme(false, DEFAULT_THEME);
+        assert_eq!(t.colors.accent, t.colors.muted);
+        let p = AppPalette::from_theme(t);
+        for context in [p, p.panel(), p.navigation().panel()] {
+            assert_eq!(value(context.active), t.colors.primary);
+            assert_eq!(context.brand_soft, context.active);
+            assert!(contrast(value(context.active_text), value(context.active)) >= 4.48);
         }
     }
 
