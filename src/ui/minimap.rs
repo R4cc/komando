@@ -787,7 +787,14 @@ fn strip(
         },
         move |_bounds, (rects, slider, found), window, _cx| {
             if let Some(slider) = slider {
-                window.paint_quad(fill(slider, slider_color(&app, paint_state.hovered.get(), paint_state.dragging())));
+                // Float inside the strip like the other scroll thumbs. Keep the original
+                // geometry for dragging, including when a long log makes the thumb tiny.
+                let thumb = slider.inset(px(2.).min(slider.size.height / 4.));
+                let radius = px(6.).min(thumb.size.height / 2.);
+                window.paint_quad(
+                    fill(thumb, slider_color(&app, paint_state.hovered.get(), paint_state.dragging()))
+                        .corner_radii(radius),
+                );
             }
             for (bounds, color) in rects.into_iter().chain(found) {
                 window.paint_quad(fill(bounds, color));

@@ -19,6 +19,8 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- The minimap's visible-area selection has rounded, inset corners that fit the terminal
+  panel, including at the top and bottom of a full-height minimap.
 - Ordinary text stays faint in the minimap on tinted themes, so error and warning
   highlights stand out from surrounding output.
 - Launching Komando again restores the running window, including from the tray, instead
