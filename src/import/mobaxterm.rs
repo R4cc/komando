@@ -1,4 +1,4 @@
-//! Reading SSH sessions from MobaXterm.
+//! Reading SSH, RDP and VNC sessions from MobaXterm.
 //!
 //! MobaXterm keeps its sessions in `MobaXterm.ini` (next to a portable MobaXterm.exe, in
 //! `Documents\MobaXterm` or in `%APPDATA%\MobaXterm`); "Export sessions" writes the same
@@ -10,7 +10,10 @@
 //! a session, `name=#icon#fields#terminal#…`, where `fields` are `%`-separated: 0 is the
 //! session type (0 SSH, 4 RDP, …), 1–3 host, port and user. For SSH, 7 is "Execute command",
 //! 8–10 the SSH gateway's hosts, ports and users (one per hop, separated by `__PIPE__`), 14 the
-//! private key, and 19–22 the proxy's type (0: none), host, port and user. Characters MobaXterm
+//! private key, and 19–22 the proxy's type (0: none), host, port and user. RDP (4) has its
+//! account at 3 and SSH gateway at 13–15; VNC (5) has no account and its gateway is at 5–7.
+//! Desktop gateways cannot be represented by Komando's tunnel to the Host itself; those
+//! sessions are left out rather than changed to direct connections. Characters MobaXterm
 //! uses as separators are written as `__PERCENT__`, `__DIEZE__` (#) and so on. The file is
 //! written in the Windows ANSI code page (Windows-1252), not UTF-8.
 //!
@@ -21,7 +24,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 
 use super::{Found, FoundGroup, FoundHost, LeftOut};
-use crate::model::{JumpHost, StartupCommand};
+use crate::model::{JumpHost, Protocol, StartupCommand};
 
 /// The file name MobaXterm keeps its settings and sessions in.
 pub const CONFIG_FILE: &str = "MobaXterm.ini";
@@ -100,15 +103,29 @@ pub fn parse(text: &str) -> Result<Found> {
                     continue;
                 }
             };
-            if session.kind() != "0" {
-                let label = type_label(session.kind());
-                match other_types.iter_mut().find(|(l, _)| *l == label) {
-                    Some((_, n)) => *n += 1,
-                    None => other_types.push((label, 1)),
+            let host = match session.kind() {
+                "0" => ssh_host(&name, &session),
+                "4" | "5" => {
+                    let (protocol, gateway_host) = if session.kind() == "4" { (Protocol::Rdp, 13) } else { (Protocol::Vnc, 5) };
+                    if session.field(gateway_host).is_some() {
+                        notes.push(format!(
+                            "\"{name}\" ({}) uses an SSH gateway and is left out: Komando can only tunnel a desktop through SSH on the destination itself.",
+                            protocol.label()
+                        ));
+                        continue;
+                    }
+                    desktop_host(&name, &session, protocol)
                 }
-                continue;
-            }
-            let Some(host) = ssh_host(&name, &session) else {
+                kind => {
+                    let label = type_label(kind);
+                    match other_types.iter_mut().find(|(l, _)| *l == label) {
+                        Some((_, n)) => *n += 1,
+                        None => other_types.push((label, 1)),
+                    }
+                    continue;
+                }
+            };
+            let Some(host) = host else {
                 notes.push(format!("\"{name}\" has no host name in MobaXterm and is left out."));
                 continue;
             };
@@ -132,7 +149,7 @@ pub fn parse(text: &str) -> Result<Found> {
         let total: usize = other_types.iter().map(|(_, n)| n).sum();
         let kinds: Vec<String> = other_types.iter().map(|(k, n)| format!("{n} {k}")).collect();
         let sessions = if total == 1 { "session stays" } else { "sessions stay" };
-        notes.insert(0, format!("Komando imports SSH sessions only: {} {sessions} in MobaXterm.", join_and(&kinds)));
+        notes.insert(0, format!("Komando imports SSH, RDP and VNC sessions: {} {sessions} in MobaXterm.", join_and(&kinds)));
     }
     Ok(Found { groups, notes })
 }
@@ -237,6 +254,24 @@ fn ssh_host(name: &str, session: &Session) -> Option<FoundHost> {
     })
 }
 
+/// Direct desktop sessions keep their protocol and account. RDP accepts `DOMAIN\user` or
+/// a UPN in its user field; VNC has no user. Desktop preferences use Komando's settings.
+fn desktop_host(name: &str, session: &Session, protocol: Protocol) -> Option<FoundHost> {
+    let address = session.field(1)?;
+    Some(FoundHost {
+        name: if name.is_empty() { address.clone() } else { name.to_string() },
+        address,
+        protocol,
+        port: port(session.field(2).as_deref()).unwrap_or_else(|| protocol.default_port()),
+        user: if protocol == Protocol::Rdp { session.field(3).and_then(user) } else { None },
+        icon: Some("monitor".into()),
+        jump_hosts: Some(vec![]),
+        startup_commands: Some(vec![]),
+        left_out: vec![LeftOut::new("Desktop preferences", "Uses Komando's remote desktop settings")],
+        ..Default::default()
+    })
+}
+
 /// The SSH gateway's hops, in the order they're passed through. Hops without a host are skipped.
 fn gateway(session: &Session) -> Vec<JumpHost> {
     let ports = session.hops(9);
@@ -331,18 +366,68 @@ mod tests {
     }
 
     #[test]
-    fn execute_command_proxy_nested_folders_and_other_types() {
+    fn execute_command_proxy_nested_folders_and_rdp() {
         let found = fixture(include_bytes!("testdata/mobaxterm-proxy.mxtsessions"));
         assert_eq!(
             names(&found),
-            [("Folder 1", vec!["192.168.0.1 (user)"]), ("Folder 2 / Folder 3", vec!["192.168.0.1 Pönorama"])],
+            [("Folder 1", vec!["192.168.0.1 (user)"]), ("Folder 2 / Folder 3", vec!["192.168.0.1 (rdpadmin)", "192.168.0.1 Pönorama"])],
             "decoded as Windows-1252; the empty Folder 2 adds no project"
         );
-        let host = &found.groups[1].hosts[0];
+        let rdp = &found.groups[1].hosts[0];
+        assert_eq!((rdp.protocol, rdp.port, rdp.user.as_deref()), (Protocol::Rdp, 3389, Some("rdpadmin")));
+        assert_eq!(rdp.startup_commands, Some(vec![]), "RDP flags are not SSH commands");
+        assert_eq!(rdp.jump_hosts, Some(vec![]), "RDP flags are not SSH gateways");
+        let host = &found.groups[1].hosts[1];
         assert_eq!(host.startup_commands, Some(vec![StartupCommand::new("echo 'hello world'")]));
         assert_eq!(host.jump_hosts, Some(vec![]));
         assert_eq!(host.left_out, [LeftOut::new("Proxy", "192.168.1.1:22")]);
-        assert_eq!(found.notes, ["Komando imports SSH sessions only: 1 RDP session stays in MobaXterm."]);
+        assert!(found.notes.is_empty());
+    }
+
+    #[test]
+    fn desktop_protocols_accounts_and_default_or_custom_ports() {
+        // Synthetic bookmarks using the protocol-specific layouts. A custom icon never
+        // determines the protocol. VNC field 3 is a flag, not a user name.
+        let found = parse(concat!(
+            "[Bookmarks]\nSubRep=Desktops\\Lab\n",
+            "Windows=#42#4%win.lan%3390%ACME\\alice%0%-1%-1%-1%-1%0%0%-1%%%%%0%0%%-1#MobaFont\n",
+            "Windows default=#91#4%win2.lan%%<default>%\n",
+            "Console=#128#5%vnc.lan%5902%-1%0%%22%%%-1#MobaFont\n",
+            "Console default=#128#5%vnc2.lan%0%-1%\n",
+            "Bad port=#128#5%vnc3.lan%70000%-1%\n",
+            "No host=#91#4%%3389%admin%\n",
+            "[Passwords]\nadmin@win.lan=not-imported\n",
+            "[Credentials]\nACME=not-imported-either\n",
+        )).unwrap();
+        assert_eq!(found.groups[0].name, "Desktops / Lab");
+        let hosts = &found.groups[0].hosts;
+        assert_eq!(hosts.len(), 5);
+        assert_eq!((hosts[0].protocol, hosts[0].port, hosts[0].user.as_deref()), (Protocol::Rdp, 3390, Some("ACME\\alice")));
+        assert_eq!((hosts[1].port, hosts[1].user.as_deref()), (3389, None));
+        assert_eq!((hosts[2].protocol, hosts[2].port, hosts[2].user.as_deref()), (Protocol::Vnc, 5902, None));
+        assert_eq!((hosts[3].port, hosts[4].port), (5900, 5900));
+        for host in hosts {
+            assert_eq!(host.jump_hosts, Some(vec![]));
+            assert_eq!(host.startup_commands, Some(vec![]));
+            assert_eq!(host.left_out, [LeftOut::new("Desktop preferences", "Uses Komando's remote desktop settings")]);
+        }
+        assert_eq!(found.notes, ["\"No host\" has no host name in MobaXterm and is left out."]);
+    }
+
+    #[test]
+    fn desktop_ssh_gateways_are_left_out_instead_of_becoming_direct_connections() {
+        let found = parse(concat!(
+            "[Bookmarks]\nSubRep=\n",
+            "Windows=#91#4%win.lan%3389%admin%0%-1%-1%-1%-1%0%0%-1%%bastion.lan%2222%jump%0%0%%-1#MobaFont\n",
+            "Console=#128#5%127.0.0.1%5901%-1%0%bastion.lan%22%jump%%-1#MobaFont\n",
+            "Telnet=#98#1%switch.lan%23%\n",
+            "Direct=#128#5%vnc.lan%5900%-1%0%%22%%%-1#MobaFont\n",
+        )).unwrap();
+        assert_eq!(names(&found), [("MobaXterm", vec!["Direct"])]);
+        assert_eq!(found.notes.len(), 3);
+        assert_eq!(found.notes[0], "Komando imports SSH, RDP and VNC sessions: 1 Telnet session stays in MobaXterm.");
+        assert!(found.notes[1].starts_with("\"Windows\" (RDP) uses an SSH gateway and is left out:"));
+        assert!(found.notes[2].starts_with("\"Console\" (VNC) uses an SSH gateway and is left out:"));
     }
 
     #[test]
@@ -350,7 +435,8 @@ mod tests {
         let found = fixture(include_bytes!("testdata/mobaxterm-gateway.mxtsessions"));
         let host = &found.groups[0].hosts[0];
         assert_eq!(host.jump_hosts, Some(vec![JumpHost { user: Some("jump_host_admin".into()), ..JumpHost::new("192.168.4.4") }]));
-        assert_eq!(found.groups[1].hosts[0].jump_hosts, Some(vec![]), "the other session has no gateway");
+        let direct = found.groups[1].hosts.iter().find(|host| host.protocol.is_ssh()).unwrap();
+        assert_eq!(direct.jump_hosts, Some(vec![]), "the other SSH session has no gateway");
     }
 
     #[test]

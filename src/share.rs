@@ -203,6 +203,7 @@ pub fn read(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
             jump_hosts: Some(resolved.jump_hosts.into_iter().map(|r| r.jump).collect()),
             startup_commands: Some(resolved.startup_commands),
             left_out: vec![],
+            ..Default::default()
         });
     }
     if hosts.is_empty() {

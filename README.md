@@ -77,7 +77,9 @@ If your company blocks unknown programs entirely (AppLocker), this won't help.
 password or key, it asks you to choose a master password for the vault. Your data stays on your
 machine in `%APPDATA%\Komando`.
 
-**Coming from Tabby or MobaXterm?** Settings → Import brings your SSH profiles and sessions over (MobaXterm import is experimental).
+**Coming from Tabby or MobaXterm?** Settings → Import brings your SSH profiles and sessions over.
+The experimental MobaXterm importer also brings over direct RDP and VNC sessions; desktop
+sessions using an SSH gateway are left out with an explanation. Passwords stay in MobaXterm.
 
 ## Features
 
@@ -144,7 +146,8 @@ machine in `%APPDATA%\Komando`.
   ask for trust. Settings → Remote desktop controls RDP resizing, VNC sharing and remembered
   certificates. RDP supports TLS and NLA with NTLM; VNC supports no authentication and classic
   VNC passwords. Clipboard, audio and drive redirection, RD Gateway, Kerberos and VNC
-  TLS/VeNCrypt are outside this first version. Project sharing and imports still cover SSH.
+  TLS/VeNCrypt are outside this first version. Project sharing covers SSH; the experimental
+  MobaXterm import also supports direct RDP and VNC sessions.
 
 ### Secure by default
 

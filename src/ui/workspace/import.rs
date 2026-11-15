@@ -28,7 +28,7 @@ pub(super) enum ImportFlow {
     Start,
     /// The other client's settings aren't in the usual places: the user is asked to pick the file.
     NotFound(Source),
-    /// The picked or found file couldn't be read, or has no SSH profiles.
+    /// The picked or found file couldn't be read, or has no supported sessions.
     Failed { from: Source, path: PathBuf, error: String },
     Pick(Selection),
     Review(Selection),
@@ -87,11 +87,12 @@ fn is_icon(name: &str) -> bool {
     all_icons().iter().any(|n| n == name)
 }
 
-/// `user@address:port`, leaving out the default port.
+/// The desktop protocol (when applicable) and `user@address:port`, without the default port.
 fn login(host: &FoundHost) -> String {
     let user = host.user.as_deref().map(|u| format!("{u}@")).unwrap_or_default();
-    let port = if host.port == 22 { String::new() } else { format!(":{}", host.port) };
-    format!("{user}{}{port}", host.address)
+    let port = if host.port == host.protocol.default_port() { String::new() } else { format!(":{}", host.port) };
+    let protocol = if host.protocol.is_ssh() { String::new() } else { format!("{} · ", host.protocol.label()) };
+    format!("{protocol}{user}{}{port}", host.address)
 }
 
 fn hosts_label(n: usize) -> String {
@@ -168,7 +169,7 @@ impl Workspace {
     /// Read another client's settings: Tabby's or MobaXterm's.
     fn load_client(&mut self, from: Source, path: PathBuf, cx: &mut Context<Self>) {
         let (read, none) = match from {
-            Source::MobaXterm => (mobaxterm::read(&path), "There are no SSH sessions in this file."),
+            Source::MobaXterm => (mobaxterm::read(&path), "There are no importable SSH, RDP or VNC sessions in this file."),
             _ => (tabby::read(&path, &is_icon), "There are no SSH profiles in this file."),
         };
         self.import = match read {
@@ -318,9 +319,10 @@ impl Workspace {
                             .child(tag("Experimental", p.warning, p)),
                     )
                     .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(
-                        "Copies your SSH sessions' names, host names, ports, users, SSH gateways (as jump hosts) and \
-                         execute commands (as startup commands). Session folders become projects. Passwords and keys \
-                         stay in MobaXterm. MobaXterm's format isn't documented, so check the review before importing.",
+                        "Copies SSH, RDP and VNC sessions with their names, host names, ports and users. SSH gateways \
+                         and execute commands come over for SSH sessions. Desktop sessions open RDP or VNC directly; \
+                         desktops using an SSH gateway are left out. Session folders become projects. Passwords, keys \
+                         and desktop preferences stay in MobaXterm. Check the review before importing.",
                     )),
             )
             .child(

@@ -26,7 +26,9 @@ testing the protocol adapters and maintaining their dependencies.
   ZRLE updates. New VNC configurations default to SSH because classic VNC has no transport
   encryption. TLS/VeNCrypt and proprietary authentication are not silently downgraded.
 - The initial scope excludes clipboard, audio, drives, printers, RD Gateway, Kerberos and
-  multi-monitor sessions. Project files and imports remain SSH-only for now.
+  multi-monitor sessions. Project files and the Tabby import remain SSH-only. The experimental
+  MobaXterm import also supports direct RDP and VNC sessions (ADR 0011); desktop SSH gateways
+  cannot be represented by the tunnel to the Host itself and are left out explicitly.
 - Protocol work runs outside the UI thread. Picture notifications coalesce while rectangles
   are applied in order; replaced images are released from GPUI's atlas. Dropping a connection
   cancels handshakes and prompts as well as active sessions.
