@@ -6,6 +6,11 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Short-lived local shells reliably report that they have exited, even when they finish
+  before Komando's session event loop starts listening.
+
 ## [0.5.1] - 2026-11-15
 
 ### Changed

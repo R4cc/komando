@@ -94,6 +94,47 @@ mod tests {
     }
 
     #[test]
+    fn a_shell_that_exits_before_registration_still_reports_its_exit() {
+        use alacritty_terminal::tty::{self, Shell};
+        use crate::session::{EventProxy, GridSize, SessionEvent, Status, new_term};
+        use std::time::{Duration, Instant};
+        use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+        use windows::Win32::System::Threading::WaitForSingleObject;
+
+        let size = GridSize { cols: 80, rows: 24, cell_width: 8, cell_height: 16 };
+        let options = tty::Options {
+            shell: Some(Shell::new("cmd.exe".into(), vec!["/D".into(), "/C".into(), "echo KOMANDO_EARLY_EXIT".into()])),
+            escape_args: true,
+            drain_on_exit: true,
+            ..Default::default()
+        };
+        let pty = tty::new(&options, size.window_size(), 0).unwrap();
+        // Force exit before EventLoop::spawn registers interest in child events.
+        assert_eq!(unsafe { WaitForSingleObject(HANDLE(pty.child_watcher().raw_handle()), 5_000) }, WAIT_OBJECT_0);
+        std::thread::sleep(Duration::from_millis(200));
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        let proxy = EventProxy::new(tx);
+        let term = new_term(size, 100, proxy.clone());
+        let event_loop = alacritty_terminal::event_loop::EventLoop::new(term.clone(), proxy.clone(), pty, true, false).unwrap();
+        let sink = crate::session::InputSink::Local(event_loop.channel());
+        proxy.set_responder(sink.clone());
+        event_loop.spawn();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(SessionEvent::Status(Status::Disconnected(_))) = rx.try_recv() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                sink.close();
+                panic!("the exit before registration was lost");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let output: String = term.lock().grid().display_iter().map(|cell| cell.c).collect();
+        assert!(output.contains("KOMANDO_EARLY_EXIT"), "lost the shell's final output: {output:?}");
+    }
+
+    #[test]
     fn conpty_releases_resources_after_failed_and_successful_launches() {
         const CHILD: &str = "KOMANDO_CONPTY_RESOURCE_TEST";
         // Isolate handle counts from other tests' files, sockets and threads.

@@ -163,6 +163,10 @@ per attempt, and successful launches also retained pipe, process and thread hand
 lifetime. The watcher owns the callback context and cancels its wait synchronously before
 freeing that context and closing its handle, including when the shell is closed before it
 exits. This prevents callback races and releases contexts whose callbacks never run.
+If the child exits before the event loop registers interest, registration replays the exit
+wakeup; otherwise short-lived shells can keep a session waiting forever despite having
+already exited. A Windows regression test delays registration until after the child exits
+and checks that the session reports its exit and preserves its final output.
 
 Komando's Windows tests in `src/session/local.rs` check handle counts in an isolated process
 after repeated failed and successful launches, and run cmd and PowerShell through the

@@ -5,7 +5,7 @@ use std::os::windows::process::ExitStatusExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::process::ExitStatus;
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
 use polling::os::iocp::{CompletionPacket, PollerIocpExt};
@@ -28,6 +28,7 @@ struct ChildExitSender {
     sender: mpsc::Sender<ChildEvent>,
     interest: Arc<Mutex<Option<Interest>>>,
     child_handle: AtomicPtr<c_void>,
+    exited: AtomicBool,
 }
 
 /// WinAPI callback to run when child process exits.
@@ -45,6 +46,7 @@ extern "system" fn child_exit_callback(ctx: *mut c_void, timed_out: BOOLEAN) {
     let status = unsafe { GetExitCodeProcess(child_handle, &mut exit_code) };
     let exit_status = if status == FALSE { None } else { Some(ExitStatus::from_raw(exit_code)) };
     event_tx.sender.send(ChildEvent::Exited(exit_status)).ok();
+    event_tx.exited.store(true, Ordering::Release);
 
     let interest = event_tx.interest.lock().unwrap();
     if let Some(interest) = interest.as_ref() {
@@ -79,6 +81,7 @@ impl ChildExitWatcher {
             sender: event_tx,
             interest: interest.clone(),
             child_handle: AtomicPtr::from(child_handle),
+            exited: AtomicBool::new(false),
         });
 
         let success = unsafe {
@@ -112,7 +115,15 @@ impl ChildExitWatcher {
     }
 
     pub fn register(&self, poller: &Arc<Poller>, event: Event) {
-        *self.interest.lock().unwrap() = Some(Interest { poller: poller.clone(), event });
+        let mut interest = self.interest.lock().unwrap();
+        *interest = Some(Interest { poller: poller.clone(), event });
+        // The process can exit before the event loop registers its interest. The callback
+        // queues its event even without interest, so replay the wakeup on registration.
+        // Hold the callback's mutex across the check: either we see its queued exit or
+        // it sees our new interest and posts the wakeup itself.
+        if self._sender.exited.load(Ordering::Acquire) {
+            poller.post(CompletionPacket::new(event)).ok();
+        }
     }
 
     pub fn deregister(&self) {

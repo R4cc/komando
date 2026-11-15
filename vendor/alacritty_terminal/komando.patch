@@ -1,15 +1,15 @@
 --- a/src/grid/mod.rs
 +++ b/src/grid/mod.rs
 @@ -2,6 +2,7 @@
- 
+
  use std::cmp::{max, min};
  use std::ops::{Bound, Deref, Index, IndexMut, Range, RangeBounds};
 +use std::sync::Arc;
- 
+
  #[cfg(feature = "serde")]
  use serde::{Deserialize, Serialize};
 @@ -18,6 +19,18 @@
- 
+
  pub use self::row::Row;
  use self::storage::Storage;
 +
@@ -24,7 +24,7 @@
 +    /// `columns` and `rows_left` after a resize or a change of the history's size.
 +    fn take_rows(&self, columns: usize, count: usize, rows_left: usize, rows: &mut Vec<Row<T>>);
 +}
- 
+
  pub trait GridCell: Sized {
      /// Check if the cell contains any content.
 @@ -158,6 +171,7 @@
@@ -33,7 +33,7 @@
          self.max_scroll_limit = history_size;
 +        self.report_rows_left();
      }
- 
+
      pub fn scroll_display(&mut self, scroll: Scroll) {
 @@ -293,6 +307,9 @@
              for i in (region.end.0..screen_lines).rev().map(Line::from) {
@@ -47,7 +47,7 @@
              for i in (region.start.0..region.end.0 - positions as i32).map(Line::from) {
 @@ -353,6 +370,18 @@
  }
- 
+
  impl<T> Grid<T> {
 +    /// Komando patch: take new rows from `source` while the history grows, or build them all
 +    /// here with `None`.
@@ -67,19 +67,19 @@
 --- a/src/grid/resize.rs
 +++ b/src/grid/resize.rs
 @@ -33,6 +33,9 @@
- 
+
          // Restore template cell.
          self.cursor.template = template;
 +
 +        // Komando patch: rows of the old width are no use any more.
 +        self.report_rows_left();
      }
- 
+
      /// Add lines to the visible area.
 --- a/src/grid/row.rs
 +++ b/src/grid/row.rs
 @@ -112,6 +112,35 @@
- 
+
  #[allow(clippy::len_without_is_empty)]
  impl<T> Row<T> {
 +    /// Komando patch: ask the CPU to start loading the cells `reset` will touch (the occupied
@@ -121,14 +121,14 @@
  use std::mem::MaybeUninit;
  use std::ops::{Index, IndexMut};
 +use std::sync::Arc;
- 
+
  #[cfg(feature = "serde")]
  use serde::{Deserialize, Serialize};
- 
+
 -use super::Row;
 +use super::{Row, RowSource};
  use crate::index::Line;
- 
+
  /// Maximum number of buffered lines outside of the grid for performance optimization.
 @@ -50,6 +51,10 @@
      /// As long as `len` is bigger than `inner`, it is also possible to grow the scrollback buffer
@@ -139,20 +139,20 @@
 +    #[cfg_attr(feature = "serde", serde(skip))]
 +    row_source: Option<(Arc<dyn RowSource<T>>, usize)>,
  }
- 
+
  impl<T: PartialEq> PartialEq for Storage<T> {
 @@ -72,7 +77,7 @@
          let mut inner = Vec::with_capacity(visible_lines);
          inner.resize_with(visible_lines, || Row::new(columns));
- 
+
 -        Storage { inner, zero: 0, visible_lines, len: visible_lines }
 +        Storage { inner, zero: 0, visible_lines, len: visible_lines, row_source: None }
      }
- 
+
      /// Increase the number of lines in the buffer.
 @@ -131,10 +136,43 @@
              self.rezero();
- 
+
              let realloc_size = self.inner.len() + max(additional_rows, MAX_CACHE_SIZE);
 +            // Komando patch: rows from the row source first, as far as it has them ready.
 +            if self.row_source.is_some() {
@@ -160,7 +160,7 @@
 +            }
              self.inner.resize_with(realloc_size, || Row::new(columns));
          }
- 
+
          self.len += additional_rows;
 +    }
 +
@@ -192,10 +192,10 @@
 +            self.inner.truncate(start);
 +        }
      }
- 
+
      #[inline]
 @@ -182,6 +220,18 @@
- 
+
          let len = self.inner.len();
          self.zero = (self.zero as isize + count + len as isize) as usize % len;
 +    }
@@ -211,7 +211,7 @@
 +            self.inner[(self.zero + len - 1) % len].prefetch();
 +        }
      }
- 
+
      /// Rotate all existing lines down in history.
 @@ -354,6 +404,7 @@
              zero: 0,
@@ -219,7 +219,7 @@
              len: 3,
 +            row_source: None,
          };
- 
+
          // Grow buffer.
 @@ -365,6 +416,7 @@
              zero: 0,
@@ -228,14 +228,14 @@
 +            row_source: None,
          };
          expected.inner.append(&mut vec![filled_row('\0'); MAX_CACHE_SIZE]);
- 
+
 @@ -395,6 +447,7 @@
              zero: 1,
              visible_lines: 3,
              len: 3,
 +            row_source: None,
          };
- 
+
          // Grow buffer.
 @@ -406,6 +459,7 @@
              zero: 0,
@@ -244,14 +244,14 @@
 +            row_source: None,
          };
          expected.inner.append(&mut vec![filled_row('\0'); MAX_CACHE_SIZE]);
- 
+
 @@ -433,6 +487,7 @@
              zero: 1,
              visible_lines: 3,
              len: 3,
 +            row_source: None,
          };
- 
+
          // Shrink buffer.
 @@ -444,6 +499,7 @@
              zero: 1,
@@ -267,7 +267,7 @@
              len: 3,
 +            row_source: None,
          };
- 
+
          // Shrink buffer.
 @@ -480,6 +537,7 @@
              zero: 0,
@@ -283,7 +283,7 @@
              len: 6,
 +            row_source: None,
          };
- 
+
          // Shrink buffer.
 @@ -536,6 +595,7 @@
              zero: 2,
@@ -299,7 +299,7 @@
              len: 2,
 +            row_source: None,
          };
- 
+
          // Truncate buffer.
 @@ -581,6 +642,7 @@
              zero: 0,
@@ -315,7 +315,7 @@
              len: 2,
 +            row_source: None,
          };
- 
+
          // Truncate buffer.
 @@ -616,6 +679,7 @@
              zero: 0,
@@ -331,7 +331,7 @@
              len: 6,
 +            row_source: None,
          };
- 
+
          // Shrink buffer.
 @@ -680,6 +745,7 @@
              zero: 2,
@@ -347,7 +347,7 @@
              len: 4,
 +            row_source: None,
          };
- 
+
          assert_eq!(storage.inner, growing_expected.inner);
 @@ -723,6 +790,7 @@
              zero: 2,
@@ -355,7 +355,7 @@
              len: 6,
 +            row_source: None,
          };
- 
+
          // Initialize additional lines.
 @@ -740,7 +808,8 @@
          ];
@@ -364,7 +364,7 @@
 -        let expected_storage = Storage { inner: expected_inner, zero: 0, visible_lines: 0, len: 9 };
 +        let expected_storage =
 +            Storage { inner: expected_inner, zero: 0, visible_lines: 0, len: 9, row_source: None };
- 
+
          assert_eq!(storage.len, expected_storage.len);
          assert_eq!(storage.zero, expected_storage.zero);
 @@ -754,6 +823,7 @@
@@ -373,7 +373,7 @@
              len: 3,
 +            row_source: None,
          };
- 
+
          storage.rotate(2);
 --- a/src/term/komando_tests.rs
 +++ b/src/term/komando_tests.rs
@@ -800,11 +800,11 @@
 +            bytes = &bytes[count..];
          }
      }
- 
+
 @@ -2504,6 +2581,10 @@
      }
  }
- 
+
 +// Komando patch.
 +#[cfg(test)]
 +mod komando_tests;
@@ -814,18 +814,20 @@
      use super::*;
 --- a/src/tty/windows/child.rs
 +++ b/src/tty/windows/child.rs
-@@ -2,6 +2,7 @@
+@@ -2,17 +2,18 @@
  use std::io::Error;
  use std::num::NonZeroU32;
  use std::os::windows::process::ExitStatusExt;
 +use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
  use std::process::ExitStatus;
  use std::ptr;
- use std::sync::atomic::{AtomicPtr, Ordering};
-@@ -10,9 +11,9 @@
+-use std::sync::atomic::{AtomicPtr, Ordering};
++use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+ use std::sync::{Arc, Mutex, mpsc};
+
  use polling::os::iocp::{CompletionPacket, PollerIocpExt};
  use polling::{Event, Poller};
- 
+
 -use windows_sys::Win32::Foundation::{BOOLEAN, FALSE, HANDLE};
 +use windows_sys::Win32::Foundation::{BOOLEAN, FALSE, HANDLE, DuplicateHandle, DUPLICATE_SAME_ACCESS, INVALID_HANDLE_VALUE};
  use windows_sys::Win32::System::Threading::{
@@ -833,19 +835,34 @@
 +    GetCurrentProcess, GetExitCodeProcess, GetProcessId, INFINITE, RegisterWaitForSingleObject, UnregisterWaitEx,
      WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE,
  };
- 
-@@ -35,7 +36,9 @@
+
+@@ -27,6 +28,7 @@
+     sender: mpsc::Sender<ChildEvent>,
+     interest: Arc<Mutex<Option<Interest>>>,
+     child_handle: AtomicPtr<c_void>,
++    exited: AtomicBool,
+ }
+
+ /// WinAPI callback to run when child process exits.
+@@ -35,13 +37,16 @@
          return;
      }
- 
+
 -    let event_tx: Box<_> = unsafe { Box::from_raw(ctx as *mut ChildExitSender) };
 +    // Komando patch: the watcher owns this context until cancellation has waited
 +    // for any running callback. A callback that never fires must not leak it.
 +    let event_tx = unsafe { &*(ctx as *const ChildExitSender) };
- 
+
      let mut exit_code = 0_u32;
      let child_handle = event_tx.child_handle.load(Ordering::Relaxed) as HANDLE;
-@@ -53,17 +56,26 @@
+     let status = unsafe { GetExitCodeProcess(child_handle, &mut exit_code) };
+     let exit_status = if status == FALSE { None } else { Some(ExitStatus::from_raw(exit_code)) };
+     event_tx.sender.send(ChildEvent::Exited(exit_status)).ok();
++    event_tx.exited.store(true, Ordering::Release);
+
+     let interest = event_tx.interest.lock().unwrap();
+     if let Some(interest) = interest.as_ref() {
+@@ -53,20 +58,30 @@
      wait_handle: AtomicPtr<c_void>,
      event_rx: mpsc::Receiver<ChildEvent>,
      interest: Arc<Mutex<Option<Interest>>>,
@@ -854,7 +871,7 @@
 +    _sender: Box<ChildExitSender>,
      pid: Option<NonZeroU32>,
  }
- 
+
  impl ChildExitWatcher {
      pub fn new(child_handle: HANDLE) -> Result<ChildExitWatcher, Error> {
 +        // Preserve the public borrowed-handle API while keeping the handle valid
@@ -866,7 +883,7 @@
 +        let owned_handle = unsafe { OwnedHandle::from_raw_handle(duplicate) };
 +        let child_handle = owned_handle.as_raw_handle();
          let (event_tx, event_rx) = mpsc::channel();
- 
+
          let mut wait_handle: HANDLE = ptr::null_mut();
          let interest = Arc::new(Mutex::new(None));
 -        let sender_ref = Box::new(ChildExitSender {
@@ -874,7 +891,11 @@
              sender: event_tx,
              interest: interest.clone(),
              child_handle: AtomicPtr::from(child_handle),
-@@ -74,7 +86,7 @@
++            exited: AtomicBool::new(false),
+         });
+
+         let success = unsafe {
+@@ -74,7 +89,7 @@
                  &mut wait_handle,
                  child_handle,
                  Some(child_exit_callback),
@@ -883,7 +904,7 @@
                  INFINITE,
                  WT_EXECUTEINWAITTHREAD | WT_EXECUTEONLYONCE,
              )
-@@ -88,7 +100,8 @@
+@@ -88,7 +103,8 @@
                  event_rx,
                  interest,
                  pid,
@@ -893,16 +914,33 @@
                  wait_handle: AtomicPtr::from(wait_handle),
              })
          }
-@@ -115,7 +128,7 @@
+@@ -99,7 +115,15 @@
+     }
+
+     pub fn register(&self, poller: &Arc<Poller>, event: Event) {
+-        *self.interest.lock().unwrap() = Some(Interest { poller: poller.clone(), event });
++        let mut interest = self.interest.lock().unwrap();
++        *interest = Some(Interest { poller: poller.clone(), event });
++        // The process can exit before the event loop registers its interest. The callback
++        // queues its event even without interest, so replay the wakeup on registration.
++        // Hold the callback's mutex across the check: either we see its queued exit or
++        // it sees our new interest and posts the wakeup itself.
++        if self._sender.exited.load(Ordering::Acquire) {
++            poller.post(CompletionPacket::new(event)).ok();
++        }
+     }
+
+     pub fn deregister(&self) {
+@@ -115,7 +139,7 @@
      /// If you terminate the process using this handle, the terminal will get a
      /// timeout error, and the child watcher will emit an `Exited` event.
      pub fn raw_handle(&self) -> HANDLE {
 -        self.child_handle.load(Ordering::Relaxed) as HANDLE
 +        self.child_handle.as_raw_handle()
      }
- 
+
      /// Retrieve the Process ID associated to the underlying child process.
-@@ -127,7 +140,9 @@
+@@ -127,7 +151,9 @@
  impl Drop for ChildExitWatcher {
      fn drop(&mut self) {
          unsafe {
@@ -922,11 +960,11 @@
 -use std::os::windows::io::IntoRawHandle;
 +use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
  use std::{mem, ptr};
- 
+
  use windows_sys::Win32::Foundation::{HANDLE, S_OK};
 @@ -15,7 +15,8 @@
  use windows_sys::{s, w};
- 
+
  use windows_sys::Win32::System::Threading::{
 -    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, EXTENDED_STARTUPINFO_PRESENT,
 +    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
@@ -937,7 +975,7 @@
 @@ -94,6 +95,16 @@
      api: ConptyApi,
  }
- 
+
 +// Komando patch: release the native allocation inside the attribute list before its
 +// backing buffer goes away, including when creating the child process fails.
 +struct AttributeList(LPPROC_THREAD_ATTRIBUTE_LIST);
@@ -963,7 +1001,7 @@
              &mut pty_handle as *mut _,
          )
      };
- 
+
 -    assert_eq!(result, S_OK);
 +    if result != S_OK {
 +        return Err(Error::other(format!("CreatePseudoConsole failed: {result:#010x}")));
@@ -971,13 +1009,13 @@
 +    // Own the pseudo-console immediately so every later error closes it. The pipe
 +    // ends passed above stay owned too; CreatePseudoConsole does not consume them.
 +    let conpty = Conpty { handle: pty_handle, api };
- 
+
      let mut success;
- 
+
 @@ -158,18 +174,10 @@
          }
      }
- 
+
 -    let mut attr_list: Box<[u8]> = vec![0; size].into_boxed_slice();
 -
 -    // Set startup info's attribute list & initialize it
@@ -994,7 +1032,7 @@
 +
 +    // Komando patch: the native attribute list needs pointer-aligned backing storage.
 +    startup_info_ex.lpAttributeList = attr_list.as_mut_ptr() as _;
- 
+
      unsafe {
          success = InitializeProcThreadAttributeList(
 @@ -183,6 +191,8 @@
@@ -1003,13 +1041,13 @@
      }
 +
 +    let _attributes = AttributeList(startup_info_ex.lpAttributeList);
- 
+
      // Set thread attribute list's Pseudo Console to the specified ConPTY.
      unsafe {
 @@ -234,11 +244,22 @@
          }
      }
- 
+
 +    // CreateProcess returns two owned handles. The watcher duplicates the process
 +    // handle for its own lifetime; neither original may be leaked.
 +    let process = unsafe { OwnedHandle::from_raw_handle(proc_info.hProcess) };
@@ -1029,6 +1067,6 @@
 +            return Err(error);
 +        },
 +    };
- 
+
      Ok(Pty::new(conpty, conout, conin, child_watcher))
  }
