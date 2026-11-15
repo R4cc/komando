@@ -1,4 +1,4 @@
-//! Named theme dropdowns with source-palette swatches and native menu keyboard handling.
+//! Named theme dropdowns with palette swatches and native menu keyboard handling.
 use std::rc::Rc;
 use gpui::{App, IntoElement, Window, SharedString, div, px, prelude::*};
 use gpui_component::{button::Button, menu::{DropdownMenu, PopupMenuItem}, tooltip::Tooltip};
@@ -28,7 +28,7 @@ pub fn dropdown(
         })
 }
 
-/// Shared by the closed selector and each dropdown row; swatches are source colors.
+/// Shared by the closed selector and each dropdown row; swatches show the tuned colors.
 fn theme_choice(t: &'static crate::theme::ThemeSpec, p: AppPalette) -> impl IntoElement {
     div().w_full().min_w(px(310.)).h(px(28.)).flex().items_center().gap(px(16.))
         .child(div().flex_1().child(t.name))

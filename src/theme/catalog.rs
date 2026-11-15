@@ -1,4 +1,4 @@
-//! Exact source exports are embedded; conversion happens once, never during painting.
+//! Source exports plus individually tuned native palettes; conversion happens once.
 
 use std::{collections::BTreeMap, sync::LazyLock};
 use serde::Deserialize;
@@ -16,9 +16,16 @@ static SOURCES: LazyLock<Vec<Source<'static>>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("../../assets/themes/catalog.json")).expect("bundled theme catalog")
 });
 
+type Refinements = BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>;
+static REFINEMENTS: LazyLock<Refinements> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../../assets/themes/refinements.json")).expect("bundled theme refinements")
+});
+
 pub(super) fn load(dark: bool) -> Vec<ThemeSpec> {
     SOURCES.iter().map(|source| {
-        let styles = &source.styles[if dark { "dark" } else { "light" }];
+        let mode = if dark { "dark" } else { "light" };
+        let mut styles = source.styles[mode].clone();
+        styles.extend(REFINEMENTS[source.id][mode].clone());
         let color = |key: &str| parse_color(&styles[key]).unwrap_or_else(|e| panic!("{} {key}: {e}", source.name));
         let number = |key: &str| styles[key].trim_end_matches("px").parse::<f32>().expect("theme dimension");
         ThemeSpec {

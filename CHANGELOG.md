@@ -14,6 +14,11 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- Refined each theme's light and dark palettes with clearer surface hierarchy, readable
+  secondary text and consistent accents. FL-Theme now has a true dark variant; Mint and
+  Gold retain their signature colors in both modes.
+- Buttons and controls use restrained rounding, with a 6–8 px base radius, and clearer
+  hover, pressed and selected states.
 - Theme selectors are dropdowns with names and palette swatches, hover highlighting
   and keyboard navigation. Komando Default replaces the previous theme collection.
 - The terminal follows the theme's font unless a custom font is set. New settings use

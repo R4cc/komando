@@ -71,7 +71,7 @@ pub enum ButtonKind {
     Danger,
 }
 
-/// A 32px-high text button. Hit area is the full pill.
+/// A 32px-high text button. Hit area is the full surface.
 pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, kind: ButtonKind, p: AppPalette) -> Stateful<gpui::Div> {
     let label = label.into();
     button_shell(id, kind, p).0.aria_label(label.clone()).child(label)
@@ -90,14 +90,15 @@ pub fn icon_text_button(
     el.aria_label(label.clone()).gap(px(8.)).child(icon_el(icon, 15., fg)).child(label)
 }
 
-/// A button's pill without its content, and the colour its content is drawn in.
+/// A button's surface without its content, and the colour its content is drawn in.
 fn button_shell(id: impl Into<ElementId>, kind: ButtonKind, p: AppPalette) -> (Stateful<gpui::Div>, Hsla) {
     let (bg, fg, hover, border) = match kind {
-        ButtonKind::Primary => (p.brand, p.on_brand, p.brand, None),
-        ButtonKind::Secondary => (p.secondary, p.on_secondary, p.secondary, Some(p.border)),
+        ButtonKind::Primary => (p.brand, p.on_brand, p.interactive_surface(p.brand, p.on_brand, false), None),
+        ButtonKind::Secondary => (p.secondary, p.on_secondary, p.interactive_surface(p.secondary, p.on_secondary, false), Some(p.border)),
         ButtonKind::Ghost => (gpui::transparent_black(), p.text_muted, p.hover, None),
-        ButtonKind::Danger => (p.danger, p.on_danger, p.danger, None),
+        ButtonKind::Danger => (p.danger, p.on_danger, p.interactive_surface(p.danger, p.on_danger, false), None),
     };
+    let pressed = p.interactive_surface(if kind == ButtonKind::Ghost { p.hover } else { bg }, fg, true);
     let el = div()
         .id(id)
         .role(gpui::Role::Button)
@@ -117,7 +118,8 @@ fn button_shell(id: impl Into<ElementId>, kind: ButtonKind, p: AppPalette) -> (S
         .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
         .cursor_pointer()
-        .hover(move |s| s.bg(hover));
+        .hover(move |s| s.bg(hover))
+        .active(move |s| s.bg(pressed));
     (el, fg)
 }
 

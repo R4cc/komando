@@ -43,7 +43,7 @@ pub struct ThemeShadow {
 }
 
 /// One native variant of an embedded source theme. Layout and terminal font overrides
-/// remain user settings; source colors, UI fonts, radii and shadows live here.
+/// remain user settings; refined colors and source fonts, radii and shadows live here.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThemeSpec {
     pub id: &'static str,
@@ -114,19 +114,20 @@ impl AppPalette {
 
     pub fn from_theme(t: &ThemeSpec) -> Self {
         let c = t.colors;
+        let hover = hex(c.background).blend(hex(c.accent).opacity(0.35));
+        let text_muted = hex(readable(readable(c.muted_foreground, c.background, 4.5), packed(hover), 4.5));
         Self {
             dark: t.dark,
-            font_family: t.font_sans, mono_family: t.font_mono, radius: t.radius, shadow: t.shadow,
+            font_family: t.font_sans, mono_family: t.font_mono, radius: t.radius.clamp(6., 8.), shadow: t.shadow,
             canvas: hex(c.background), background: hex(c.background), sidebar: hex(c.sidebar),
             surface: hex(c.card), surface_text: hex(readable(c.card_foreground, c.card, 4.5)),
             popover: hex(c.popover), popover_text: hex(readable(c.popover_foreground, c.popover, 4.5)),
-            hover: hex(c.accent), hover_text: hex(readable(c.accent_foreground, c.accent, 4.5)),
+            hover, hover_text: hex(readable(c.foreground, packed(hover), 4.5)),
             muted: hex(c.muted), muted_text: hex(readable(c.muted_foreground, c.muted, 4.5)),
             active: hex(c.accent), active_text: hex(readable(c.accent_foreground, c.accent, 4.5)),
             border: hex(c.border), input: hex(c.input), focus: hex(c.ring),
             text: hex(readable(c.foreground, c.background, 4.5)),
-            text_muted: hex(readable(c.muted_foreground, c.background, 4.5)),
-            text_faint: hex(readable(c.muted_foreground, c.background, 4.5)),
+            text_muted, text_faint: text_muted,
             brand: hex(c.primary), on_brand: hex(readable(c.primary_foreground, c.primary, 4.5)),
             brand_soft: hex(c.accent), secondary: hex(c.secondary),
             on_secondary: hex(readable(c.secondary_foreground, c.secondary, 4.5)),
@@ -141,13 +142,13 @@ impl AppPalette {
         let c = self.navigation;
         self.background = self.sidebar;
         self.text = hex(readable(c.sidebar_foreground, c.sidebar, 4.5));
-        self.text_muted = self.text;
-        self.text_faint = self.text.opacity(0.8);
-        self.hover = hex(c.sidebar_accent);
-        self.hover_text = hex(readable(c.sidebar_accent_foreground, c.sidebar_accent, 4.5));
-        self.active = self.hover;
-        self.active_text = self.hover_text;
-        self.brand_soft = self.hover;
+        self.hover = self.sidebar.blend(hex(c.sidebar_accent).opacity(0.35));
+        self.hover_text = self.text;
+        self.text_muted = hex(readable(readable(c.muted_foreground, c.sidebar, 4.5), packed(self.hover), 4.5));
+        self.text_faint = self.text_muted;
+        self.active = hex(c.sidebar_accent);
+        self.active_text = hex(readable(c.sidebar_accent_foreground, c.sidebar_accent, 4.5));
+        self.brand_soft = self.active;
         self.brand = hex(c.sidebar_primary);
         self.on_brand = hex(readable(c.sidebar_primary_foreground, c.sidebar_primary, 4.5));
         self.border = hex(c.sidebar_border);
@@ -159,17 +160,17 @@ impl AppPalette {
         let c = self.navigation;
         self.background = self.surface;
         self.text = self.surface_text;
-        self.text_muted = hex(readable(c.muted_foreground, c.card, 4.5));
+        self.hover = self.surface.blend(hex(c.accent).opacity(0.35));
+        self.hover_text = hex(readable(c.card_foreground, packed(self.hover), 4.5));
+        self.text_muted = hex(readable(readable(c.muted_foreground, c.card, 4.5), packed(self.hover), 4.5));
         self.text_faint = self.text_muted;
         self.brand = hex(c.primary);
         self.on_brand = hex(readable(c.primary_foreground, c.primary, 4.5));
         self.border = hex(c.border);
         self.focus = hex(c.ring);
-        self.hover = hex(c.accent);
-        self.hover_text = hex(readable(c.accent_foreground, c.accent, 4.5));
-        self.active = self.hover;
-        self.active_text = self.hover_text;
-        self.brand_soft = self.hover;
+        self.active = hex(c.accent);
+        self.active_text = hex(readable(c.accent_foreground, c.accent, 4.5));
+        self.brand_soft = self.active;
         self
     }
 
@@ -182,8 +183,17 @@ impl AppPalette {
         self
     }
 
-    /// Preserve native size hierarchy while taking the source theme's base corner radius.
-    pub fn corner(self, base: f32) -> gpui::Pixels { gpui::px((base + self.radius - 8.).max(0.)) }
+    /// Keep controls gently rounded and preserve the larger corners of panels.
+    /// Source radii cannot turn compact buttons into pills or make controls square.
+    pub fn corner(self, base: f32) -> gpui::Pixels {
+        gpui::px((base + self.radius.clamp(6., 8.) - 8.).clamp(4., 12.))
+    }
+
+    /// Visible hover/press feedback without sacrificing a button's text contrast.
+    pub fn interactive_surface(self, background: Hsla, foreground: Hsla, pressed: bool) -> Hsla {
+        let overlay = hex(if self.dark { 0xffffff } else { 0 }).opacity(if pressed { 0.12 } else { 0.07 });
+        hex(readable(packed(background.blend(overlay)), packed(foreground), 4.5))
+    }
 
     pub fn translucent(mut self, t: f32) -> Self {
         let t = t.clamp(0., 1.);
@@ -194,8 +204,14 @@ impl AppPalette {
     }
 }
 
-/// Preserve supplied foregrounds when readable. Otherwise minimally move them towards
-/// black or white; never change a source background or lose a foreground/background pair.
+fn packed(color: Hsla) -> u32 {
+    let c: Rgba = color.into();
+    let ch = |c: f32| (c * 255.).round() as u32;
+    (ch(c.r) << 16) | (ch(c.g) << 8) | ch(c.b)
+}
+
+/// Preserve a color when readable against its pair. Otherwise minimally move it
+/// towards black or white, keeping its hue for as long as possible.
 fn readable(fg: u32, bg: u32, minimum: f32) -> u32 {
     if contrast(fg, bg) >= minimum { return fg; }
     let target: u32 = if contrast(0, bg) > contrast(0xffffff, bg) { 0 } else { 0xffffff };
@@ -466,28 +482,77 @@ mod tests {
     }
 
     #[test]
-    fn native_roles_preserve_distinct_source_colors_and_styles() {
+    fn refined_roles_reach_panels_and_preserve_source_typography() {
         let t = theme(true, "qrafthive");
         let p = AppPalette::from_theme(t);
         let nav = p.navigation();
-        assert_eq!(value(p.brand), 0xc1253d);
-        assert_eq!(value(nav.brand), 0x1da1f2);
-        assert_eq!(value(nav.panel().brand), 0xc1253d);
-        assert_eq!(value(p.secondary), 0xf0f3f4);
-        assert_eq!(value(p.hover), 0x061622);
-        assert_eq!(value(p.popover), 0x202020);
+        assert_eq!(value(p.brand), t.colors.primary);
+        assert_eq!(value(nav.brand), t.colors.sidebar_primary);
+        assert_eq!(value(nav.panel().brand), t.colors.primary);
+        assert_eq!(value(p.secondary), t.colors.secondary);
+        assert_eq!(value(p.active), t.colors.accent);
+        assert_eq!(value(p.popover), t.colors.popover);
         assert_eq!(p.font_family, "Outfit");
         assert_eq!(p.mono_family, "JetBrains Mono");
         assert_eq!(p.corner(8.), gpui::px(8.));
         let default = AppPalette::dark();
         assert_eq!(default.font_family, "Outfit");
         assert_eq!(default.mono_family, "Geist Mono");
-        assert_eq!(default.corner(8.), gpui::px(16.));
+        assert_eq!(default.corner(8.), gpui::px(8.));
         assert_eq!(default.shadow.blur, 3.);
         assert_eq!(default.shadow.opacity, 0.1);
-        // FL-Theme publishes a light background for both modes; keep it faithfully.
-        assert_eq!(theme(true, "fl-theme").colors.background, 0xf1f5f8);
-        assert!(!TerminalPalette::from_theme(theme(true, "fl-theme")).dark);
+        assert!(TerminalPalette::from_theme(theme(true, "fl-theme")).dark);
+    }
+
+    #[test]
+    fn refined_variants_have_distinct_controls_and_matching_modes() {
+        for t in themes(false).iter().chain(themes(true)) {
+            let c = t.colors;
+            assert_eq!(luminance(c.background) < 0.2, t.dark, "{} mode", t.name);
+            assert_eq!(TerminalPalette::from_theme(t).dark, t.dark);
+            for surface in [c.background, c.sidebar, c.card, c.popover] {
+                assert_ne!(surface, 0, "{} avoids featureless black", t.name);
+            }
+            assert_ne!(c.background, c.card, "{} panel hierarchy", t.name);
+            assert!(contrast(c.accent, c.muted) >= 1.15, "{} {} selected controls", t.name, t.dark);
+            let p = AppPalette::from_theme(t);
+            for context in [p, p.panel()] {
+                assert_ne!(context.hover, context.active, "hover is separate from selection");
+                for bg in [context.background, context.surface, context.popover, context.hover] {
+                    assert!(contrast(value(context.text_muted), value(bg)) >= 4.48,
+                        "{} {} secondary text on {:?}", t.name, t.dark, bg);
+                }
+            }
+            let nav = p.navigation();
+            assert!(contrast(value(nav.text_muted), value(nav.background)) >= 4.48);
+            assert!(contrast(value(nav.text_muted), value(nav.hover)) >= 4.48);
+            for (bg, fg) in [(p.brand, p.on_brand), (p.secondary, p.on_secondary), (p.danger, p.on_danger)] {
+                for pressed in [false, true] {
+                    let state = p.interactive_surface(bg, fg, pressed);
+                    assert_ne!(state, bg, "{} button feedback", t.name);
+                    assert!(contrast(value(state), value(fg)) >= 4.48, "{} button state text", t.name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn source_radius_cannot_make_controls_square_or_pill_shaped() {
+        for radius in [0., 4., 8., 16., 64., 9999.] {
+            let mut source = *theme(true, DEFAULT_THEME);
+            source.radius = radius;
+            let p = AppPalette::from_theme(&source);
+            assert!((6. ..=8.).contains(&p.radius));
+            for base in [3., 4., 6., 7., 8., 10.] {
+                let radius = f32::from(p.corner(base));
+                assert!((4. ..=10.).contains(&radius), "compact control corner {radius}");
+            }
+            assert!(p.corner(12.) > p.corner(8.), "panels retain their size hierarchy");
+            assert!(p.corner(24.) <= gpui::px(12.));
+            let mut library = gpui_component::Theme::default();
+            p.apply_components(&mut library);
+            assert!((6. ..=8.).contains(&f32::from(library.radius)));
+        }
     }
 
     #[test]
