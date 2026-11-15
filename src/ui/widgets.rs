@@ -151,14 +151,18 @@ pub fn shell_icon(program: &str) -> Option<&'static str> {
     let file = program.rsplit(['\\', '/']).next().unwrap_or(program).to_lowercase();
     let name = file.strip_suffix(".exe").unwrap_or(&file);
     match name {
-        "pwsh" | "pwsh-preview" => Some("devicon:powershell"),
-        "powershell" => Some("devicon:powershell"),
-        "cmd" => Some("shell:cmd"),
-        "wsl" => Some("devicon:linux"),
+        "pwsh" | "pwsh-preview" | "powershell" => Some("tabler:brand-powershell"),
+        "cmd" => Some("tabler:terminal-2"),
+        "wsl" => Some("simpleicons:linux"),
         // Git Bash and friends on Windows are not Linux; elsewhere these are the system's shell.
-        "bash" | "zsh" | "fish" | "sh" | "dash" | "ksh" if !file.ends_with(".exe") => Some("devicon:linux"),
+        "bash" | "zsh" | "fish" | "sh" | "dash" | "ksh" if !file.ends_with(".exe") => Some("simpleicons:linux"),
         _ => None,
     }
+}
+
+/// Automatic shell accents stay legible on each theme; manual Host/Project icons use their chosen color.
+pub fn shell_icon_color(icon: &str, p: AppPalette) -> Hsla {
+    crate::icons::find_symbol(icon).and_then(|icon| icon.color(p.dark)).unwrap_or(p.text_muted)
 }
 
 type ShellFrames = Vec<(u16, std::sync::Arc<gpui::Image>)>;
@@ -223,6 +227,9 @@ pub fn is_artwork(name: &str) -> bool {
 /// A Lucide icon by name (e.g. "server"), drawn in `color`. `shell:` and `devicon:` IDs
 /// preserve their full-color artwork instead.
 pub fn icon_el(name: &str, size: f32, color: Hsla) -> AnyElement {
+    if let Some(icon) = crate::icons::find_symbol(name) {
+        return svg().data(icon.svg).size(px(size)).flex_shrink_0().text_color(color).into_any_element();
+    }
     if let Some(icon) = crate::icons::find(name) {
         return gpui::img(icon.image()).size(px(size)).object_fit(gpui::ObjectFit::Contain).flex_shrink_0().into_any_element();
     }
@@ -560,12 +567,12 @@ mod tests {
 
     #[test]
     fn shells_get_their_own_icons() {
-        assert_eq!(shell_icon("pwsh.exe"), Some("devicon:powershell"));
-        assert_eq!(shell_icon(r"C:\Program Files\PowerShell\7\pwsh.exe"), Some("devicon:powershell"));
-        assert_eq!(shell_icon("powershell.exe"), Some("devicon:powershell"));
-        assert_eq!(shell_icon("CMD.EXE"), Some("shell:cmd"));
-        assert_eq!(shell_icon("wsl.exe"), Some("devicon:linux"));
-        assert_eq!(shell_icon("/bin/bash"), Some("devicon:linux"));
+        assert_eq!(shell_icon("pwsh.exe"), Some("tabler:brand-powershell"));
+        assert_eq!(shell_icon(r"C:\Program Files\PowerShell\7\pwsh.exe"), Some("tabler:brand-powershell"));
+        assert_eq!(shell_icon("powershell.exe"), Some("tabler:brand-powershell"));
+        assert_eq!(shell_icon("CMD.EXE"), Some("tabler:terminal-2"));
+        assert_eq!(shell_icon("wsl.exe"), Some("simpleicons:linux"));
+        assert_eq!(shell_icon("/bin/bash"), Some("simpleicons:linux"));
         // Git Bash on Windows isn't Linux.
         assert_eq!(shell_icon(r"C:\Program Files\Git\bin\bash.exe"), None);
         assert_eq!(shell_icon("nu.exe"), None);

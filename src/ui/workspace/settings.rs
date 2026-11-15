@@ -1245,7 +1245,7 @@ impl Workspace {
                     .gap(px(12.))
                     .rounded(px(8.))
                     .when(editing.as_deref() == Some(name.as_str()), |el| el.bg(p.active))
-                    .child(div().when(shell.hidden, |el| el.opacity(0.5)).child(icon_el(icon, 18., p.text_muted)))
+                    .child(div().when(shell.hidden, |el| el.opacity(0.5)).child(icon_el(icon, 18., shell_icon_color(icon, p))))
                     .child(
                         div()
                             .flex_1()

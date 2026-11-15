@@ -10,6 +10,9 @@ All notable changes to Komando are listed here. The format follows
 
 - Restored the borderless, theme-colored text logo inside the app, including the welcome
   screen, empty session screen and About page. The sunrise app icon is retained.
+- Default PowerShell and Command Prompt icons use Tabler outlines. WSL distributions use
+  matching monochrome Simple Icons marks with theme-aware accents. Shell icons are clearer
+  at 16 px and stay visible while idle; the new symbols are also available in icon search.
 - The locked Vault indicator sits above Downloads, with its unlock popover opening upward
   beside it.
 

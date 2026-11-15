@@ -1,0 +1,97 @@
+[
+  {
+    "title": "Ubuntu",
+    "hex": "E95420",
+    "source": "https://design.ubuntu.com/resources",
+    "guidelines": "https://design.ubuntu.com/brand"
+  },
+  {
+    "title": "Debian",
+    "hex": "A81D33",
+    "source": "https://www.debian.org/logos",
+    "guidelines": "https://www.debian.org/logos/",
+    "license": {
+      "type": "CC-BY-SA-3.0"
+    }
+  },
+  {
+    "title": "Kali Linux",
+    "hex": "557C94",
+    "source": "https://www.kali.org/docs/policy/trademark/",
+    "guidelines": "https://www.kali.org/docs/policy/trademark/"
+  },
+  {
+    "title": "openSUSE",
+    "hex": "73BA25",
+    "source": "https://github.com/openSUSE/artwork/blob/33e94aa76837c09f03d1712705949b71a246a53b/logos/buttons/button-colour.svg",
+    "guidelines": "https://en.opensuse.org/Portal:Artwork"
+  },
+  {
+    "title": "Fedora",
+    "hex": "51A2DA",
+    "source": "https://docs.fedoraproject.org/en-US/project/brand/",
+    "guidelines": "https://fedoraproject.org/wiki/Legal:Trademark_guidelines",
+    "license": {
+      "type": "custom",
+      "url": "https://docs.fedoraproject.org/en-US/project/brand/"
+    }
+  },
+  {
+    "title": "AlmaLinux",
+    "hex": "000000",
+    "source": "https://almalinux.org",
+    "guidelines": "https://almalinux.org/p/the-almalinux-os-trademark-usage-policy/"
+  },
+  {
+    "title": "Rocky Linux",
+    "hex": "10B981",
+    "source": "https://github.com/rocky-linux/branding/blob/94e97dd30b87d909cc4f6a6838a2926f77f9ac47/logo/src/icon-black.svg",
+    "license": {
+      "type": "CC-BY-SA-4.0"
+    }
+  },
+  {
+    "title": "CentOS",
+    "hex": "262577",
+    "source": "https://wiki.centos.org/ArtWork/Brand/Logo"
+  },
+  {
+    "title": "Red Hat",
+    "hex": "EE0000",
+    "source": "https://www.redhat.com/en/about/brand/new-brand/details"
+  },
+  {
+    "title": "Arch Linux",
+    "hex": "1793D1",
+    "source": "https://www.archlinux.org/art",
+    "guidelines": "https://wiki.archlinux.org/index.php/DeveloperWiki:TrademarkPolicy#Logo_Usage_Guidelines"
+  },
+  {
+    "title": "Gentoo",
+    "hex": "54487A",
+    "source": "https://wiki.gentoo.org/wiki/Project:Artwork/Artwork#Variations_of_the_.22g.22_logo",
+    "guidelines": "https://www.gentoo.org/inside-gentoo/foundation/name-logo-guidelines.html",
+    "license": {
+      "type": "CC-BY-SA-2.5"
+    }
+  },
+  {
+    "title": "NixOS",
+    "hex": "5277C3",
+    "source": "https://brand.nixos.org/logos/nixos-logomark-black-flat-minimal.svg",
+    "guidelines": "https://brand.nixos.org/documents/nixos-branding-guide.pdf",
+    "license": {
+      "type": "CC-BY-4.0"
+    }
+  },
+  {
+    "title": "Linux Mint",
+    "hex": "86BE43",
+    "source": "https://github.com/linuxmint/brand-logo/blob/540ac3b08e987866d77a340f557f994c988ac2ae/ring-mono-green.svg"
+  },
+  {
+    "title": "Linux",
+    "hex": "FCC624",
+    "source": "https://www.linuxfoundation.org/the-linux-mark/"
+  }
+]

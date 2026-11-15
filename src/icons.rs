@@ -4,6 +4,27 @@ use crate::model::LocalShell;
 
 mod catalog;
 pub use catalog::ICONS;
+mod symbols;
+pub use symbols::SYMBOLS;
+
+/// Theme-colored SVG symbols, separate from full-color Devicon artwork.
+pub struct SymbolIcon {
+    pub id: &'static str,
+    pub search: &'static str,
+    pub svg: &'static [u8],
+    color_dark: Option<u32>,
+    color_light: Option<u32>,
+}
+
+impl SymbolIcon {
+    pub fn color(&self, dark: bool) -> Option<gpui::Hsla> {
+        (if dark { self.color_dark } else { self.color_light }).map(crate::theme::hex)
+    }
+}
+
+pub fn find_symbol(id: &str) -> Option<&'static SymbolIcon> {
+    SYMBOLS.iter().find(|icon| icon.id == id)
+}
 
 pub struct BrandIcon {
     pub id: &'static str,
@@ -24,23 +45,25 @@ pub fn find(id: &str) -> Option<&'static BrandIcon> {
 
 pub fn label(id: &str) -> String {
     if id == "shell:cmd" { return "Command Prompt".into(); }
+    if let Some(name) = id.strip_prefix("tabler:") { return format!("{} (Tabler outline)", name.replace('-', " ")); }
+    if let Some(name) = id.strip_prefix("simpleicons:") { return format!("{name} (Simple Icons)"); }
     id.strip_prefix("devicon:").map(|name| format!("{name} (Devicon)")).unwrap_or_else(|| id.to_string())
 }
 
 pub fn distro_icon(name: &str) -> &'static str {
     let name = name.to_ascii_lowercase();
     for (needle, icon) in [
-        ("ubuntu", "ubuntu"), ("debian", "debian"), ("kali", "kalilinux"),
-        ("opensuse", "opensuse"), ("suse", "opensuse"), ("fedora", "fedora"),
-        ("almalinux", "almalinux"), ("rocky", "rockylinux"), ("centos", "centos"),
-        ("redhat", "redhat"), ("rhel", "redhat"), ("arch", "archlinux"),
-        ("gentoo", "gentoo"), ("nixos", "nixos"), ("mint", "linuxmint"),
+        ("ubuntu", "simpleicons:ubuntu"), ("debian", "simpleicons:debian"), ("kali", "simpleicons:kalilinux"),
+        ("opensuse", "simpleicons:opensuse"), ("suse", "simpleicons:opensuse"), ("fedora", "simpleicons:fedora"),
+        ("almalinux", "simpleicons:almalinux"), ("rocky", "simpleicons:rockylinux"), ("centos", "simpleicons:centos"),
+        ("redhat", "simpleicons:redhat"), ("rhel", "simpleicons:redhat"), ("arch", "simpleicons:archlinux"),
+        ("gentoo", "simpleicons:gentoo"), ("nixos", "simpleicons:nixos"), ("mint", "simpleicons:linuxmint"),
     ] {
         if name.contains(needle) {
-            return ICONS.iter().find(|i| i.id.strip_prefix("devicon:") == Some(icon)).map_or("devicon:linux", |i| i.id);
+            return icon;
         }
     }
-    "devicon:linux"
+    "simpleicons:linux"
 }
 
 /// Explicit artwork wins; WSL's -d/--distribution argument identifies its distro.
@@ -65,14 +88,14 @@ mod tests {
     #[test]
     fn distro_arguments_and_explicit_choices_survive() {
         let mut shell = LocalShell { name: "My Linux".into(), program: "wsl.exe".into(), args: vec!["--distribution".into(), "Ubuntu-24.04".into()], ..Default::default() };
-        assert_eq!(shell_icon(&shell), "devicon:ubuntu");
+        assert_eq!(shell_icon(&shell), "simpleicons:ubuntu");
         shell.args = vec!["--distribution=Debian".into()];
-        assert_eq!(shell_icon(&shell), "devicon:debian");
+        assert_eq!(shell_icon(&shell), "simpleicons:debian");
         shell.icon = Some("devicon:fedora".into());
         assert_eq!(shell_icon(&shell), "devicon:fedora");
-        assert_eq!(distro_icon("Unknown custom distro"), "devicon:linux");
+        assert_eq!(distro_icon("Unknown custom distro"), "simpleicons:linux");
         for name in ["Ubuntu", "Debian", "kali-linux", "openSUSE-Tumbleweed", "FedoraLinux-42", "ArchLinux", "AlmaLinux", "RockyLinux"] {
-            assert!(find(distro_icon(name)).is_some(), "{name}");
+            assert!(find_symbol(distro_icon(name)).is_some(), "{name}");
         }
     }
     #[test]
@@ -89,6 +112,9 @@ mod tests {
         let renderer = gpui::SvgRenderer::new(Arc::new(gpui_kit_assets::AllAssets));
         for id in ["devicon:powershell", "devicon:linux", "devicon:ubuntu", "devicon:debian", "devicon:docker", "devicon:kubernetes", "devicon:github"] {
             renderer.render_single_frame(find(id).unwrap().svg, 1.).unwrap_or_else(|e| panic!("{id}: {e}"));
+        }
+        for icon in &SYMBOLS {
+            renderer.render_single_frame(icon.svg, 1.).unwrap_or_else(|e| panic!("{}: {e}", icon.id));
         }
     }
 }

@@ -30,7 +30,7 @@ use crate::ui::terminal_view::{TerminalEvent, TerminalView};
 use crate::ui::transfers::{Activity, Transfers, TransfersChanged};
 use crate::ui::widgets::{
     Busy, BusyPhase, ButtonKind, ISLAND_GAP, ISLAND_RADIUS, badge, busy_done, button, elevation, icon_button, icon_el, icon_text_button, island,
-    is_artwork, password_input, progress_ring, section_label, spinner, status_dot, wordmark,
+    is_artwork, password_input, progress_ring, section_label, shell_icon_color, spinner, status_dot, wordmark,
 };
 use crate::vault::{Credential, Secret, Vault};
 
@@ -206,6 +206,13 @@ impl SidebarItem {
         match self {
             Self::Host { host, .. } => host.icon.clone().unwrap_or_else(|| "server".into()),
             Self::Shell { shell, .. } => crate::icons::shell_icon(&shell).into(),
+        }
+    }
+
+    fn icon_color(&self, icon: &str, color: Hsla, p: AppPalette) -> Hsla {
+        match self {
+            Self::Shell { .. } => shell_icon_color(icon, p),
+            Self::Host { .. } => color,
         }
     }
 }
@@ -3003,6 +3010,8 @@ impl Workspace {
         let any_live = sessions.iter().any(|s| s.is_live());
         let session_id = main.map(|s| s.id);
         let icon = item.icon();
+        let icon_size = if matches!(item, SidebarItem::Shell { .. }) { 16. } else { 15. };
+        let icon_color = item.icon_color(&icon, if active || live { color } else { p.text_faint }, p);
 
         let ws = cx.entity().downgrade();
         let menu_item_src = item.clone();
@@ -3104,8 +3113,8 @@ impl Workspace {
         let item_for_new = item.clone();
         let toggle_key = key.clone();
         let dragged = self.dragged(item, None, color);
-        // A shell's coloured icon is dimmed like the tinted ones when it's idle.
-        let dim = !(active || live) && is_artwork(&icon);
+        // Shell identities stay clear while idle; their labels and status carry activity.
+        let dim = !(active || live) && is_artwork(&icon) && matches!(item, SidebarItem::Host { .. });
         let mut rows = vec![];
         rows.push(
             div()
@@ -3134,7 +3143,7 @@ impl Workspace {
                     div()
                         .flex_shrink_0()
                         .when(dim, |el| el.opacity(0.55))
-                        .child(icon_el(&icon, 15., if active || live { color } else { p.text_faint })),
+                        .child(icon_el(&icon, icon_size, icon_color)),
                 )
                 .child(
                     div()
@@ -3271,6 +3280,9 @@ impl Workspace {
             };
             notifications::completion_menu(menu, &ws, &[id], cx)
         };
+        let icon = item.icon();
+        let icon_size = if matches!(item, SidebarItem::Shell { .. }) { 16. } else { 12. };
+        let icon_color = item.icon_color(&icon, if active || live { color } else { p.text_faint }, p);
         div()
             .id(SharedString::from(format!("session-{id}")))
             .group("session-row")
@@ -3298,11 +3310,11 @@ impl Workspace {
             }))
             .child(
                 div()
-                    .w(px(12.))
+                    .w(px(icon_size))
                     .flex_shrink_0()
                     .flex()
                     .justify_center()
-                    .child(icon_el(&item.icon(), 12., if active || live { color } else { p.text_faint })),
+                    .child(icon_el(&icon, icon_size, icon_color)),
             )
             .child(
                 div()
@@ -3917,7 +3929,7 @@ impl Workspace {
                         }
                         SidebarItem::Shell { project, shell } => (
                             crate::icons::shell_icon(&shell).to_string(),
-                            project.as_ref().map(|p| project_color(&p.color)).unwrap_or(p.brand),
+                            shell_icon_color(crate::icons::shell_icon(&shell), p),
                             shell.name.clone(),
                             match project {
                                 Some(project) => format!("Local shell · {}", project.name),
@@ -4171,7 +4183,7 @@ fn switch_with(id: SharedString, label: SharedString, on: bool, small: bool, p: 
         )
 }
 
-/// The bundled Lucide names, native Command Prompt artwork and Devicon IDs, sorted.
+/// The bundled Lucide names, legacy artwork, Devicon IDs and shell symbols, sorted.
 fn all_icons() -> &'static [String] {
     static ICONS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     ICONS.get_or_init(|| {
@@ -4186,6 +4198,7 @@ fn all_icons() -> &'static [String] {
             .collect();
         names.push("shell:cmd".into());
         names.extend(crate::icons::ICONS.iter().map(|icon| icon.id.to_string()));
+        names.extend(crate::icons::SYMBOLS.iter().map(|icon| icon.id.to_string()));
         names.sort();
         names.dedup();
         names
@@ -4195,7 +4208,7 @@ fn all_icons() -> &'static [String] {
 /// Shown before anything is typed: icons for servers and the things that run on them.
 const SUGGESTED_ICONS: &[&str] = &[
     "folder", "server", "database", "globe", "shield", "hard-drive", "cpu", "network", "cloud", "box", "router",
-    "devicon:powershell", "shell:cmd", "devicon:linux", "devicon:ubuntu", "devicon:debian", "devicon:docker", "devicon:kubernetes",
+    "tabler:brand-powershell", "tabler:terminal-2", "simpleicons:linux", "simpleicons:ubuntu", "simpleicons:debian", "devicon:docker", "devicon:kubernetes",
     "container", "monitor", "laptop", "terminal", "code", "git-branch", "key-round", "lock", "mail", "cloud-cog",
     "server-cog", "database-backup", "rocket", "flame", "activity", "bug", "building-2", "factory", "house",
     "flask-conical", "wrench", "zap", "radio-tower", "satellite", "warehouse",
@@ -4214,7 +4227,7 @@ fn search_icons(query: &str) -> (Vec<&'static str>, usize) {
         return (shown, 0);
     }
     let rank = |id: &str| {
-        let name = if id == "shell:cmd" { "command-prompt-cmd-windows-terminal" } else { id.strip_prefix("devicon:").unwrap_or(id) };
+        let name = if id == "shell:cmd" { "command-prompt-cmd-windows-terminal" } else { id.split_once(':').map_or(id, |(_, name)| name) };
         if name == q {
             Some(0)
         } else if name.starts_with(&q) {
@@ -4223,7 +4236,9 @@ fn search_icons(query: &str) -> (Vec<&'static str>, usize) {
             Some(2)
         } else if name.contains(&q) || (id.starts_with("devicon:") && name.replace('-', "").contains(&q.replace('-', ""))) {
             Some(3)
-        } else if crate::icons::find(id).is_some_and(|icon| icon.search.to_lowercase().replace(' ', "-").contains(&q)) || (q == "devicon" && id.starts_with("devicon:")) {
+        } else if crate::icons::find(id).is_some_and(|icon| icon.search.to_lowercase().replace(' ', "-").contains(&q))
+            || crate::icons::find_symbol(id).is_some_and(|icon| icon.search.to_lowercase().replace(' ', "-").contains(&q))
+            || (q == "devicon" && id.starts_with("devicon:")) {
             Some(4)
         } else {
             None
@@ -4701,7 +4716,7 @@ mod icon_search_tests {
 
     #[test]
     fn brand_names_and_aliases_are_searchable_alongside_lucide() {
-        for (query, expected) in [("ubuntu", "devicon:ubuntu"), ("powershell", "devicon:powershell"), ("k8s", "devicon:kubernetes"), ("arm64", "devicon:aarch64"), ("Rocky Linux", "devicon:rockylinux"), ("Linux Mint", "devicon:linuxmint")] {
+        for (query, expected) in [("ubuntu", "devicon:ubuntu"), ("powershell", "devicon:powershell"), ("tabler", "tabler:brand-powershell"), ("cmd", "tabler:terminal-2"), ("simple icons", "simpleicons:ubuntu"), ("k8s", "devicon:kubernetes"), ("arm64", "devicon:aarch64"), ("Rocky Linux", "devicon:rockylinux"), ("Linux Mint", "devicon:linuxmint")] {
             let (hits, _) = search_icons(query);
             assert!(hits.contains(&expected), "{query}: {hits:?}");
         }
