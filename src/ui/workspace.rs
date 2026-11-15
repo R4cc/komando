@@ -2020,8 +2020,10 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(password_input(&state.password, p))
-            .when(creating, |el| el.child(password_input(&state.confirm, p)))
+            // Inset by the focus ring's width, so the ring lines up with the card below
+            // instead of reaching past it.
+            .child(div().px(px(3.)).child(password_input(&state.password, p)))
+            .when(creating, |el| el.child(div().px(px(3.)).child(password_input(&state.confirm, p))))
             .child(match &state.error {
                 Some(error) => div()
                     .flex()
