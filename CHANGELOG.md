@@ -10,6 +10,10 @@ All notable changes to Komando are listed here. The format follows
 
 - Resize the sidebar by dragging the gap beside the terminal. The divider highlights on
   hover, and Komando remembers your preferred width between launches.
+- The experimental MobaXterm importer now brings over direct RDP and VNC sessions, including
+  their ports and RDP accounts, and opens each with its original protocol. The review identifies
+  desktop sessions and lists preferences that stay behind. Desktops using an SSH gateway are
+  left out with an explanation; passwords are never imported.
 
 ### Fixed
 

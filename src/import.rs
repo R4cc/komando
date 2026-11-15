@@ -1,13 +1,13 @@
-//! Importing Hosts from other SSH clients.
+//! Importing Hosts from other remote-access clients.
 //!
 //! An importer (`tabby`, `mobaxterm`, or `crate::share` for a Project File) reads the files
-//! into `Found`: groups of hosts with what Komando takes over (name, address, port, user, icon,
+//! into `Found`: groups of hosts with what Komando takes over (name, address, protocol, port, user, icon,
 //! and from MobaXterm or a Project File also Jump Hosts and Startup Commands) and the settings
 //! it leaves behind. `plan` then matches that against the Library: which Project each group goes
 //! into and which hosts are already there. `apply` adds the hosts the user picked. Secrets
 //! never come over (see docs/adr/0008-importing-from-tabby.md).
 
-use crate::model::{Host, Inherited, JumpHost, Library, Project, ProjectId, StartupCommand, resolve};
+use crate::model::{Desktop, Host, Inherited, JumpHost, Library, Project, ProjectId, Protocol, StartupCommand, resolve};
 use crate::theme::PROJECT_COLORS;
 
 pub mod mobaxterm;
@@ -47,6 +47,9 @@ pub struct FoundGroup {
 pub struct FoundHost {
     pub name: String,
     pub address: String,
+    /// The session's protocol, port and user. Desktop sessions become a Host that opens its
+    /// Remote Desktop; these are not its SSH port or SSH user.
+    pub protocol: Protocol,
     pub port: u16,
     pub user: Option<String>,
     /// Lucide icon name, if the host's icon has a match.
@@ -102,9 +105,9 @@ pub enum Target {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Duplicate {
     No,
-    /// A Host with the same address, port and user is in the Library: its name and Project.
+    /// The same protocol, address, port and user is in the Library: its Host and Project.
     InKomando { host: String, project: String },
-    /// The same address, port and user is listed earlier in this import, under this name.
+    /// The same protocol, address, port and user was listed earlier, under this name.
     Earlier { host: String },
 }
 
@@ -114,9 +117,23 @@ impl Duplicate {
     }
 }
 
-/// What tells two hosts apart for duplicates: where they connect and as whom.
-fn same_login(a: (&str, u16, Option<&str>), b: (&str, u16, Option<&str>)) -> bool {
-    a.0.trim().eq_ignore_ascii_case(b.0.trim()) && a.1 == b.1 && a.2 == b.2
+/// What tells two sessions apart for duplicates: protocol, destination and account.
+#[derive(PartialEq)]
+struct Login {
+    protocol: Protocol,
+    address: String,
+    port: u16,
+    user: Option<String>,
+}
+
+impl Login {
+    fn new(protocol: Protocol, address: &str, port: u16, user: Option<&str>) -> Self {
+        Self { protocol, address: address.trim().to_ascii_lowercase(), port, user: user.map(str::to_string) }
+    }
+
+    fn found(host: &FoundHost) -> Self {
+        Self::new(host.protocol, &host.address, host.port, host.user.as_deref())
+    }
 }
 
 fn same_name(a: &str, b: &str) -> bool {
@@ -125,19 +142,31 @@ fn same_name(a: &str, b: &str) -> bool {
 
 /// Match what was found against the Library: the Project each group goes into and which
 /// hosts are already there. A host counts as already there when any Host connects to the
-/// same address and port as the same user, in whichever Project it is.
+/// same protocol, address and port as the same user, in whichever Project it is.
 pub fn plan(found: &Found, library: &Library) -> Plan {
-    let existing: Vec<(&str, u16, Option<String>, &str, &str)> = library
+    let existing: Vec<(Login, &str, &str)> = library
         .projects
         .iter()
         .flat_map(|project| {
-            library.hosts_of(project).map(move |host| {
+            library.hosts_of(project).flat_map(move |host| {
                 let user = resolve(host, project).user;
-                (host.address.as_str(), host.port, user, host.name.as_str(), project.name.as_str())
+                let mut logins = vec![Login::new(Protocol::Ssh, &host.address, host.port, user.as_deref())];
+                for protocol in host.desktops() {
+                    let desktop = host.desktop(protocol).unwrap();
+                    let account = match protocol {
+                        Protocol::Rdp => desktop.user.as_ref().or(user.as_ref()).map(|user| match &desktop.domain {
+                            Some(domain) if !domain.is_empty() && !user.contains('\\') && !user.contains('@') => format!("{domain}\\{user}"),
+                            _ => user.clone(),
+                        }),
+                        _ => None,
+                    };
+                    logins.push(Login::new(protocol, &host.address, desktop.port, account.as_deref()));
+                }
+                logins.into_iter().map(move |login| (login, host.name.as_str(), project.name.as_str()))
             })
         })
         .collect();
-    let mut seen: Vec<(&FoundHost, &str)> = vec![];
+    let mut seen: Vec<(Login, &str)> = vec![];
     let groups = found
         .groups
         .iter()
@@ -150,19 +179,17 @@ pub fn plan(found: &Found, library: &Library) -> Plan {
                 .hosts
                 .iter()
                 .map(|host| {
-                    let login = (host.address.as_str(), host.port, host.user.as_deref());
-                    let duplicate = if let Some((_, _, _, name, project)) =
-                        existing.iter().find(|(a, p, u, _, _)| same_login((a, *p, u.as_deref()), login))
+                    let login = Login::found(host);
+                    let duplicate = if let Some((_, name, project)) = existing.iter().find(|(existing, _, _)| *existing == login)
                     {
                         Duplicate::InKomando { host: name.to_string(), project: project.to_string() }
-                    } else if let Some((earlier, _)) =
-                        seen.iter().find(|(h, _)| same_login((&h.address, h.port, h.user.as_deref()), login))
+                    } else if let Some((_, name)) = seen.iter().find(|(earlier, _)| *earlier == login)
                     {
-                        Duplicate::Earlier { host: earlier.name.clone() }
+                        Duplicate::Earlier { host: name.to_string() }
                     } else {
                         Duplicate::No
                     };
-                    seen.push((host, &group.name));
+                    seen.push((login, &host.name));
                     duplicate
                 })
                 .collect();
@@ -186,7 +213,8 @@ pub struct Applied {
 /// group's user, Jump Hosts and Startup Commands as its defaults, and its color or the next
 /// preset color not yet used. A host whose user is its Project's default user takes it from
 /// the Project; otherwise it gets its own, and one without a user in a group with one is
-/// asked for it. A host with known Jump Hosts and Startup Commands
+/// asked for it. Desktop sessions instead configure a Remote Desktop with its own port and
+/// account, opening that protocol by default and leaving SSH sign-in unset. A host with known Jump Hosts and Startup Commands
 /// takes the Project's when they start its own list and gets the rest as its own; otherwise
 /// it switches the Project's off and gets the whole list, so it reaches its machine the same
 /// way in a Project with other defaults. No Credential is ever set.
@@ -235,13 +263,30 @@ pub fn apply(found: &Found, plan: &Plan, picked: &[Vec<bool>], library: &mut Lib
         let project_commands = library.projects[index].startup_commands.clone();
         for found in chosen {
             let mut host = Host::new(found.name.trim(), found.address.trim());
-            host.port = found.port;
-            host.user = match &found.user {
-                Some(user) if Some(user) != default_user.as_ref() => Inherited::Own(user.clone()),
-                // No user although its group has one: the user is asked when connecting.
-                None if group.default_user.is_some() => Inherited::Off,
-                _ => Inherited::Project,
-            };
+            if found.protocol.is_ssh() {
+                host.port = found.port;
+                host.user = match &found.user {
+                    Some(user) if Some(user) != default_user.as_ref() => Inherited::Own(user.clone()),
+                    // No user although its group has one: the user is asked when connecting.
+                    None if group.default_user.is_some() => Inherited::Off,
+                    _ => Inherited::Project,
+                };
+            } else {
+                let desktop = Desktop {
+                    port: found.port,
+                    user: if found.protocol == Protocol::Rdp { found.user.clone() } else { None },
+                    ..Desktop::new(found.protocol)
+                };
+                match found.protocol {
+                    Protocol::Rdp => host.rdp = Some(desktop),
+                    Protocol::Vnc => host.vnc = Some(desktop),
+                    Protocol::Ssh => unreachable!(),
+                }
+                host.opens = found.protocol;
+                // Desktop users and passwords are independent of SSH and Project defaults.
+                host.user = Inherited::Off;
+                host.credential = Inherited::Off;
+            }
             host.icon = found.icon.clone();
             host.color = found.color.clone();
             if let Some(route) = &found.jump_hosts {
@@ -340,6 +385,74 @@ mod tests {
                 Duplicate::Earlier { host: "db".into() },
             ]
         );
+    }
+
+    #[test]
+    fn duplicate_checks_distinguish_protocols_and_find_desktops_on_existing_hosts() {
+        let mut lib = library();
+        lib.hosts[0].rdp = Some(Desktop {
+            port: 3390,
+            user: Some("alice".into()),
+            domain: Some("ACME".into()),
+            ..Desktop::new(Protocol::Rdp)
+        });
+        lib.hosts[0].vnc = Some(Desktop::new(Protocol::Vnc));
+        let session = |name, protocol, port, user| FoundHost { protocol, port, ..found_host(name, "WEB01.lan", user) };
+        let found = Found {
+            groups: vec![group("Desktops", None, vec![
+                session("existing RDP", Protocol::Rdp, 3390, Some("ACME\\alice")),
+                session("other account", Protocol::Rdp, 3390, Some("ACME\\bob")),
+                session("other port", Protocol::Rdp, 3389, Some("ACME\\alice")),
+                session("existing VNC", Protocol::Vnc, 5900, None),
+                session("SSH on desktop port", Protocol::Ssh, 3390, Some("ACME\\alice")),
+                session("new RDP", Protocol::Rdp, 2222, Some("ops")),
+                session("new VNC", Protocol::Vnc, 2222, None),
+                session("new SSH", Protocol::Ssh, 2222, Some("ops")),
+                session("RDP again", Protocol::Rdp, 2222, Some("ops")),
+            ])],
+            notes: vec![],
+        };
+        let existing = Duplicate::InKomando { host: "web01".into(), project: "Atlas".into() };
+        assert_eq!(plan(&found, &lib).groups[0].hosts, [
+            existing.clone(), Duplicate::No, Duplicate::No, existing,
+            Duplicate::No, Duplicate::No, Duplicate::No, Duplicate::No,
+            Duplicate::Earlier { host: "new RDP".into() },
+        ]);
+    }
+
+    #[test]
+    fn mobaxterm_desktops_open_their_protocol_and_keep_accounts_separate_from_ssh() {
+        let found = mobaxterm::parse(concat!(
+            "[Bookmarks]\nSubRep=Atlas\n",
+            "Windows=#91#4%win.lan%3390%ACME\\alice%0%\n",
+            "Ask user=#91#4%win2.lan%3389%<default>%0%\n",
+            "Console=#128#5%vnc.lan%5901%-1%0%%22%%%-1\n",
+        )).unwrap();
+        let mut lib = library();
+        lib.projects[0].credential = Some("project-secret".into());
+        lib.projects[0].jump_hosts = vec![jump("project-gateway")];
+        lib.projects[0].startup_commands = vec![StartupCommand::new("do-not-run")];
+        let planned = plan(&found, &lib);
+        assert_eq!(apply(&found, &planned, &all(&found), &mut lib).hosts, 3);
+        for (name, protocol, port, user) in [
+            ("Windows", Protocol::Rdp, 3390, Some("ACME\\alice")),
+            ("Ask user", Protocol::Rdp, 3389, None),
+            ("Console", Protocol::Vnc, 5901, None),
+        ] {
+            let host = lib.hosts.iter().find(|h| h.name == name).unwrap();
+            assert_eq!(host.opens_with(), protocol);
+            assert_eq!(host.port, 22, "the desktop port never becomes an SSH port");
+            assert_eq!((host.user.clone(), host.credential.clone()), (Inherited::Off, Inherited::Off));
+            let desktop = host.desktop(protocol).unwrap();
+            assert_eq!((desktop.port, desktop.user.as_deref()), (port, user));
+            assert!(desktop.credential.is_none() && !desktop.through_ssh);
+            assert!(host.jump_hosts.is_empty() && host.startup_commands.is_empty());
+            assert!(!host.use_project_jump_hosts && !host.run_project_commands);
+            let saved = toml::to_string(host).unwrap();
+            assert_eq!(toml::from_str::<Host>(&saved).unwrap(), *host);
+        }
+        let repeated = plan(&found, &lib);
+        assert!(repeated.groups[0].hosts.iter().all(Duplicate::is_duplicate), "re-importing finds the saved desktops");
     }
 
     #[test]
