@@ -21,7 +21,7 @@ use crate::model::{
     self, AppThemeSetting, CredentialSource, Host, Library, LocalShell, Project, Settings, TerminalThemeSetting,
 };
 use crate::session::{self, Status, ssh};
-use crate::theme::{AppPalette, Appearance, TerminalPalette, UI_FONT, alpha, project_color};
+use crate::theme::{AppPalette, Appearance, TerminalPalette, alpha, project_color};
 use crate::model::Protocol;
 use crate::ui::connect_route::RouteCard;
 use crate::ui::desktop_view::DesktopView;
@@ -621,8 +621,7 @@ impl Workspace {
         };
         // Mica: Windows blurs the desktop behind the window; our surfaces become partly
         // transparent so it shows through. The slider sets how much.
-        let flat = self.theme_for(app_dark).flat;
-        let blur = crate::platform::SUPPORTS_BACKDROP && self.settings.background_blur && !flat;
+        let blur = crate::platform::SUPPORTS_BACKDROP && self.settings.background_blur;
         window.set_background_appearance(if blur {
             gpui::WindowBackgroundAppearance::MicaBackdrop
         } else {
@@ -637,7 +636,7 @@ impl Workspace {
         cx.set_global(Appearance {
             app: AppPalette::from_theme(self.theme_for(app_dark)).translucent(t),
             term: TerminalPalette::from_theme(self.theme_for(term_dark)).translucent(t),
-            font_family: self.settings.font_family.clone().into(),
+            font_family: if self.settings.font_family.trim().is_empty() { self.theme_for(term_dark).font_mono.into() } else { self.settings.font_family.clone().into() },
             font_size: self.settings.font_size,
         });
         gpui_component::Theme::change(
@@ -646,70 +645,7 @@ impl Workspace {
             cx,
         );
         let app = cx.global::<Appearance>().app;
-        let brand = app.brand;
-        gpui_component::Theme::update(cx, |theme| {
-            // Window-level menus and overlays must use the same font as the workspace.
-            theme.font_family = UI_FONT.into();
-            // gpui-component's Root paints this under the whole window. Komando paints its
-            // own canvas (translucent with the background blur on); an opaque colour here
-            // would hide the blurred backdrop behind it.
-            theme.colors.background = gpui::transparent_black();
-            // Menus (right-click on hosts and projects) use the app's own surfaces.
-            theme.colors.popover = app.surface.opacity(1.);
-            theme.colors.popover_foreground = app.text;
-            theme.colors.accent = app.active;
-            theme.colors.accent_foreground = app.text;
-            theme.colors.muted_foreground = app.text_muted;
-            theme.colors.primary = brand;
-            theme.colors.ring = brand;
-            theme.colors.caret = brand;
-            // Sliders match the switches and selectors instead of the library's default.
-            theme.colors.slider_bar = brand;
-            theme.colors.slider_thumb = gpui::white();
-            theme.shadow = !app.flat;
-            if app.flat {
-                // Library-managed inputs, menus and overlays share Graphite's flat palette.
-                theme.colors.background = app.background;
-                theme.colors.foreground = app.text;
-                theme.colors.border = app.border;
-                theme.colors.input = app.border;
-                theme.colors.muted = app.hover;
-                theme.colors.secondary = app.hover;
-                theme.colors.secondary_foreground = app.text;
-                theme.colors.secondary_hover = app.active;
-                theme.colors.secondary_active = app.active;
-                theme.colors.primary_foreground = app.on_brand;
-                theme.colors.primary_hover = brand;
-                theme.colors.primary_active = brand;
-                theme.colors.button = app.surface;
-                theme.colors.button_foreground = app.text;
-                theme.colors.button_hover = app.hover;
-                theme.colors.button_active = app.active;
-                theme.colors.button_primary = brand;
-                theme.colors.button_primary_foreground = app.on_brand;
-                theme.colors.button_primary_hover = brand;
-                theme.colors.button_primary_active = brand;
-                theme.colors.button_secondary = app.hover;
-                theme.colors.button_secondary_foreground = app.text;
-                theme.colors.button_secondary_hover = app.active;
-                theme.colors.button_secondary_active = app.active;
-                theme.colors.selection = app.active;
-                theme.colors.link = brand;
-                theme.colors.link_hover = app.text;
-                theme.colors.link_active = brand;
-                theme.colors.list = app.surface;
-                theme.colors.list_hover = app.hover;
-                theme.colors.list_active = app.active;
-                theme.colors.list_active_border = brand;
-                theme.colors.progress_bar = brand;
-                theme.colors.switch = brand;
-                theme.colors.switch_thumb = app.text;
-                theme.colors.slider_thumb = brand;
-                theme.colors.scrollbar = app.surface;
-                theme.colors.scrollbar_thumb = app.border;
-                theme.colors.scrollbar_thumb_hover = brand;
-            }
-        });
+        gpui_component::Theme::update(cx, |theme| app.apply_components(theme));
         cx.refresh_windows();
     }
 
@@ -2262,21 +2198,21 @@ impl Workspace {
             .role(gpui::Role::Button)
             .aria_label(if open.is_some() { label.to_string() } else { format!("{label}, unlock") })
             .tab_index(0)
-            .focus_visible(move |s| s.border_2().border_color(p.brand))
+            .focus_visible(move |s| s.border_2().border_color(p.focus))
             .relative()
             .h(px(34.))
             .px(px(10.))
             .flex()
             .items_center()
             .gap(px(8.))
-            .rounded(px(8.))
+            .rounded(p.corner(8.))
             .border_1()
             .border_color(p.brand.opacity(if open.is_some() { 0.6 } else { 0.3 }))
-            .bg(if open.is_some() { p.brand_soft } else { p.brand_soft.opacity(0.5) })
+            .bg(p.brand_soft)
             .cursor_pointer()
             .text_size(px(12.5))
             .font_weight(FontWeight::MEDIUM)
-            .text_color(p.text)
+            .text_color(p.active_text)
             .hover(|s| s.bg(p.brand_soft))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 if this.unlock.is_some() {
@@ -2285,10 +2221,10 @@ impl Workspace {
                     this.show_unlock("Unlock to connect with your saved passwords and keys.", window, cx);
                 }
             }))
-            .child(icon_el("lock-keyhole", 14., p.brand))
+            .child(icon_el("lock-keyhole", 14., p.active_text))
             .child(div().flex_1().min_w_0().truncate().child(label))
-            .when(open.is_none() && !compact, |el| el.child(div().flex_shrink_0().whitespace_nowrap().text_size(px(11.5)).text_color(p.brand).child("Unlock")))
-            .child(icon_el("chevron-right", 14., p.brand))
+            .when(open.is_none() && !compact, |el| el.child(div().flex_shrink_0().whitespace_nowrap().text_size(px(11.5)).text_color(p.active_text).child("Unlock")))
+            .child(icon_el("chevron-right", 14., p.active_text))
             .children(open.map(|state| self.render_unlock(state, p, cx)));
         Some(row.into_any_element())
     }
@@ -2300,6 +2236,7 @@ impl Workspace {
     /// brand-coloured top edge, names Komando's vault, and says under the field that this is
     /// not the server's password.
     fn render_unlock(&self, state: &UnlockState, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let p = p.panel();
         let creating = state.creating;
         let waiting = !self.pending.is_empty();
         let skip_label = if self.pending.iter().any(|job| matches!(job, Pending::Open { .. })) {
@@ -2400,7 +2337,7 @@ impl Workspace {
                 .gap(px(8.))
                 .px(px(10.))
                 .py(px(8.))
-                .rounded(px(8.))
+                .rounded(p.corner(8.))
                 .bg(p.warning.opacity(0.1))
                 .border_1()
                 .border_color(p.warning.opacity(0.3))
@@ -2435,7 +2372,7 @@ impl Workspace {
                 .gap(px(10.))
                 .px(px(10.))
                 .py(px(8.))
-                .rounded(px(8.))
+                .rounded(p.corner(8.))
                 .bg(p.hover)
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -2499,14 +2436,14 @@ impl Workspace {
             .occlude()
             .relative()
             .w(px(380.))
-            .rounded(px(14.))
+            .rounded(p.corner(14.))
             .bg(p.surface)
             .border_1()
             .border_color(p.border)
             .shadow(elevation(p))
             .child(
                 div()
-                    .rounded(px(14.))
+                    .rounded(p.corner(14.))
                     // A brand-coloured top edge, which the plain server questions don't have.
                     .border_t_4()
                     .border_color(p.brand)
@@ -2596,7 +2533,7 @@ impl Workspace {
 
     /// One row of the sidebar list, built only when it's in view.
     fn render_sidebar_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
-        let p = cx.global::<Appearance>().app;
+        let p = cx.global::<Appearance>().app.navigation();
         let Some(row) = self.sidebar_rows.get(ix).cloned() else { return div().into_any_element() };
         let element = match row {
             SidebarRow::Shell { index, .. } => match self.sidebar_shells().get(index).cloned() {
@@ -2646,7 +2583,7 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .gap(px(10.))
-                        .rounded(px(8.))
+                        .rounded(p.corner(8.))
                         .cursor_pointer()
                         .text_size(px(12.5))
                         .text_color(p.text_faint)
@@ -2713,8 +2650,8 @@ impl Workspace {
             })
             .when(lit, |el| {
                 el.bg(blue.opacity(if p.dark { 0.16 } else { 0.1 }))
-                    .when(first, |el| el.rounded_t(px(10.)))
-                    .when(last, |el| el.rounded_b(px(10.)))
+                    .when(first, |el| el.rounded_t(p.corner(10.)))
+                    .when(last, |el| el.rounded_b(p.corner(10.)))
             })
             .on_drag_move(cx.listener(move |this, event: &gpui::DragMoveEvent<DraggedItem>, _, cx| {
                 this.drag_over_project(&over, ix, event, cx)
@@ -2765,7 +2702,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .rounded(px(8.))
+                    .rounded(p.corner(8.))
                     .cursor_pointer()
                     .hover(|s| s.bg(p.hover))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -2806,7 +2743,7 @@ impl Workspace {
                             .absolute()
                             .right(px(26.))
                             .top(px(3.))
-                            .rounded(px(7.))
+                            .rounded(p.corner(7.))
                             .bg(p.sidebar)
                             .invisible()
                             .group_hover("project-row", |s| s.visible())
@@ -2838,6 +2775,7 @@ impl Workspace {
     }
 
     fn render_sidebar(&mut self, p: AppPalette, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let p = p.navigation();
         // Keep the primary labels readable near the 200px minimum; secondary hints return
         // once there is room for them. Use the clamped width, including in small windows.
         let width = self.sidebar_width(window);
@@ -2868,17 +2806,17 @@ impl Workspace {
                 .role(gpui::Role::Button)
                 .aria_label(label.clone())
                 .tab_index(0)
-                .focus_visible(move |s| s.border_2().border_color(p.brand))
+                .focus_visible(move |s| s.border_2().border_color(p.focus))
                 .h(px(32.))
                 .px(px(8.))
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .rounded(px(8.))
+                .rounded(p.corner(8.))
                 .cursor_pointer()
                 .text_size(px(12.5))
                 .text_color(p.text_muted)
-                .hover(|s| s.bg(p.hover).text_color(p.text))
+                .hover(|s| s.bg(p.hover).text_color(p.hover_text))
                 .child(icon_el(icon, 15., p.text_faint))
                 .child(label)
         };
@@ -2900,24 +2838,24 @@ impl Workspace {
                             .role(gpui::Role::Button)
                             .aria_label("Quick connect")
                             .tab_index(0)
-                            .focus_visible(move |s| s.border_2().border_color(p.brand))
+                            .focus_visible(move |s| s.border_2().border_color(p.focus))
                             .h(px(34.))
                             .px(px(10.))
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .rounded(px(8.))
+                            .rounded(p.corner(8.))
                             .bg(p.hover)
                             .border_1()
                             .border_color(p.border)
                             .cursor_pointer()
                             .text_size(px(12.5))
-                            .text_color(p.text_faint)
+                            .text_color(p.hover_text)
                             .hover(|s| s.bg(p.active))
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_picker(window, cx)))
-                            .child(icon_el("search", 14., p.text_faint))
+                            .child(icon_el("search", 14., p.hover_text))
                             .child(div().flex_1().min_w_0().truncate().child("Quick connect"))
-                            .when(!compact, |el| el.child(kbd("Ctrl Shift K", p))),
+                            .when(!compact, |el| el.child(kbd("Ctrl Shift K", p.highlighted()))),
                     ),
             )
             .child(list.pb(px(8.)));
@@ -2976,7 +2914,7 @@ impl Workspace {
                                 )
                             })
                             .relative()
-                            .when(downloads_open, |el| el.bg(p.active).text_color(p.text))
+                            .when(downloads_open, |el| el.bg(p.active).text_color(p.active_text))
                             .child(div().flex_1())
                             .when(attention > 0, |el| {
                                 el.child(
@@ -3173,9 +3111,9 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .rounded(px(8.))
+                .rounded(p.corner(8.))
                 .cursor_pointer()
-                .when(active, |el| el.bg(p.active))
+                .when(active, |el| el.bg(p.active).text_color(p.active_text))
                 .when(!active, |el| el.hover(|s| s.bg(p.hover)))
                 .when(beside && !active && !expanded, |el| el.bg(p.hover))
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
@@ -3194,7 +3132,8 @@ impl Workspace {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_color(if active || live { p.text } else { p.text_muted })
+                        .text_color(if active { p.active_text } else if live { p.text } else { p.text_muted })
+                        .when(!active, |el| el.group_hover("item-row", |s| s.text_color(p.hover_text)))
                         .child(item.label().to_string()),
                 )
                 // On hover the status is repeated just before the close button, keeping
@@ -3225,7 +3164,7 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(6.))
+                            .rounded(p.corner(6.))
                             .hover(|s| s.bg(p.hover))
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 cx.stop_propagation();
@@ -3242,7 +3181,7 @@ impl Workspace {
                         .id("item-hover-actions")
                         .right(px(if grouped { 30. } else { 4. }))
                         .top(px(5.))
-                        .rounded(px(7.))
+                        .rounded(p.corner(7.))
                         .bg(p.sidebar)
                         .invisible()
                         .group_hover("item-row", |s| s.visible())
@@ -3250,7 +3189,7 @@ impl Workspace {
                             div()
                                 .flex()
                                 .gap(px(2.))
-                                .rounded(px(7.))
+                                .rounded(p.corner(7.))
                                 .bg(if active { p.active } else { p.hover })
                                 .child(
                                     icon_button(SharedString::from(format!("another-{key:?}")), "plus", p)
@@ -3339,9 +3278,9 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(px(11.))
-            .rounded(px(8.))
+            .rounded(p.corner(8.))
             .cursor_pointer()
-            .when(active, |el| el.bg(p.active))
+            .when(active, |el| el.bg(p.active).text_color(p.active_text))
             .when(!active, |el| el.hover(|s| s.bg(p.hover)))
             .when(beside, |el| el.bg(p.hover))
             .on_drag(dragged, self.drag_preview(cx))
@@ -3365,7 +3304,8 @@ impl Workspace {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_color(if active || live { p.text } else { p.text_muted })
+                    .text_color(if active { p.active_text } else if live { p.text } else { p.text_muted })
+                    .when(!active, |el| el.group_hover("session-row", |s| s.text_color(p.hover_text)))
                     .child(title.clone()),
             )
             // Titles can repeat (two shells in the same folder); the number tells them apart.
@@ -3392,7 +3332,7 @@ impl Workspace {
                     .id("session-hover-actions")
                     .right(px(4.))
                     .top(px(3.))
-                    .rounded(px(7.))
+                    .rounded(p.corner(7.))
                     .bg(p.sidebar)
                     .invisible()
                     .group_hover("session-row", |s| s.visible())
@@ -3401,7 +3341,7 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap(px(4.))
-                            .rounded(px(7.))
+                            .rounded(p.corner(7.))
                             .bg(if active { p.active } else { p.hover })
                             .child(status_indicator(Some(&session.status), self.background_busy(session), p))
                             .child(
@@ -3505,7 +3445,7 @@ impl Workspace {
         let sftp_ready = matches!(entry.status, Status::Connected);
         let sftp_enabled = sftp_ready || sftp_open;
         let sftp_color = if sftp_open {
-            p.brand
+            p.active_text
         } else if sftp_ready {
             p.text_muted
         } else {
@@ -3561,7 +3501,7 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .rounded(px(7.))
+                            .rounded(p.corner(7.))
                             .border_1()
                             .border_color(if sftp_open {
                                 p.brand.opacity(0.7)
@@ -3728,7 +3668,7 @@ impl Workspace {
         let entry = self.sessions.iter().find(|s| s.id == id)?;
         let focused = self.active == Some(id);
         let project = entry.project_id.as_deref().and_then(|id| self.library.project(id));
-        let color = project.map(|pr| project_color(&pr.color)).unwrap_or(if p.flat { p.brand } else { p.text_faint });
+        let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.brand);
         let term_bg = cx.global::<Appearance>().term.background_hsla();
         let browser = entry.browser.clone().filter(|_| entry.sftp_open);
         // The browser keeps at least 300px for the terminal when the pane is narrow.
@@ -3795,7 +3735,7 @@ impl Workspace {
                         div().w(px(width)).flex_shrink_0().h_full().pt(px(10.)).pr(px(8.)).pb(px(8.)).child(
                             div()
                                 .size_full()
-                                .rounded(px(12.))
+                                .rounded(p.corner(12.))
                                 .border_1()
                                 .border_color(p.border)
                                 .bg(p.sidebar)
@@ -3811,7 +3751,7 @@ impl Workspace {
                     div()
                         .absolute()
                         .inset_0()
-                        .rounded(px(ISLAND_RADIUS))
+                        .rounded(p.corner(ISLAND_RADIUS))
                         .border_t_2()
                         .border_color(if focused { color } else { color.opacity(0.3) }),
                 )
@@ -3855,7 +3795,7 @@ impl Workspace {
     fn render_welcome(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let shells = welcome_shells(self.library.standalone_shells().into_iter().filter(|s| !s.hidden).collect());
         let hero = |id: SharedString, icon: &str, label: String, kind: ButtonKind| {
-            icon_text_button(id, icon, label, kind, p).h(px(44.)).px(px(20.)).gap(px(10.)).rounded(px(10.)).text_size(px(14.))
+            icon_text_button(id, icon, label, kind, p).h(px(44.)).px(px(20.)).gap(px(10.)).rounded(p.corner(10.)).text_size(px(14.))
         };
         let mut actions = vec![
             hero("welcome-add".into(), "plus", "Add connection".into(), ButtonKind::Primary)
@@ -3989,7 +3929,7 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap(px(12.))
-                            .rounded(px(8.))
+                            .rounded(p.corner(8.))
                             .cursor_pointer()
                             .role(gpui::Role::ListBoxOption)
                             .aria_label(format!("{name}, {detail}"))
@@ -4080,7 +4020,7 @@ impl Workspace {
                         .max_h_full()
                         .flex()
                         .flex_col()
-                        .rounded(px(14.))
+                        .rounded(p.corner(14.))
                         .bg(p.surface)
                         .border_1()
                         .border_color(p.border)
@@ -4152,18 +4092,18 @@ fn segmented<L: Into<SharedString> + Clone>(
                 .aria_label(label.clone())
                 .aria_toggled(if *selected { gpui::Toggled::True } else { gpui::Toggled::False })
                 .tab_index(0)
-                .focus_visible(move |s| s.border_2().border_color(p.brand))
+                .focus_visible(move |s| s.border_2().border_color(p.focus))
                 .h(px(26.))
                 .px(px(10.))
                 .flex()
                 .items_center()
-                .rounded(px(6.))
+                .rounded(p.corner(6.))
                 .cursor_pointer()
                 .text_size(px(12.5))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(if *selected { p.text } else { p.text_muted })
-                .when(*selected, |el| el.bg(p.brand_soft).text_color(p.brand))
-                .when(!*selected, |el| el.hover(|s| s.text_color(p.text)))
+                .text_color(if *selected { p.active_text } else { p.muted_text })
+                .when(*selected, |el| el.bg(p.brand_soft).font_weight(FontWeight::SEMIBOLD))
+                .when(!*selected, |el| el.hover(|s| s.bg(p.hover).text_color(p.hover_text)))
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| pick(this, i, window, cx)))
                 .child(label)
         })
@@ -4176,8 +4116,8 @@ fn segmented<L: Into<SharedString> + Clone>(
         .flex_shrink_0()
         .p(px(3.))
         .gap(px(2.))
-        .rounded(px(9.))
-        .bg(p.hover)
+        .rounded(p.corner(9.))
+        .bg(p.muted)
         .border_1()
         .border_color(p.border)
         .children(items)
@@ -4198,7 +4138,7 @@ fn small_switch(id: SharedString, label: impl Into<SharedString>, on: bool, p: A
 fn switch_with(id: SharedString, label: SharedString, on: bool, small: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
     let (w, h, knob) = if small { (26., 14., 10.) } else { (32., 18., 14.) };
     // The off track has to be visible on its own, not only through the knob's position.
-    let off = if p.dark { alpha(0xffffff, 0.16) } else { alpha(0x000000, 0.2) };
+    let off = p.border;
     let on_color = if small { p.text_muted.opacity(0.6) } else { p.brand };
     div()
         .id(id)
@@ -4206,7 +4146,7 @@ fn switch_with(id: SharedString, label: SharedString, on: bool, small: bool, p: 
         .aria_label(label)
         .aria_toggled(if on { gpui::Toggled::True } else { gpui::Toggled::False })
         .tab_index(0)
-        .focus_visible(move |s| s.border_2().border_color(p.brand))
+        .focus_visible(move |s| s.border_2().border_color(p.focus))
         .w(px(w))
         .h(px(h))
         .flex_shrink_0()
@@ -4216,14 +4156,13 @@ fn switch_with(id: SharedString, label: SharedString, on: bool, small: bool, p: 
         .bg(if on { on_color } else { off })
         .flex()
         .when(on, |el| el.justify_end())
-        // A white knob disappears on a very light accent (Graphite's), so it takes the
-        // accent's own text colour there.
+        // Keep the knob readable on every supplied primary color.
         .child(
             div()
                 .size(px(knob))
                 .rounded_full()
-                .bg(if on && !small && p.brand.l > 0.82 { p.on_brand } else { gpui::white() })
-                .shadow(elevation(AppPalette { dark: false, ..p })),
+                .bg(if on && !small { p.on_brand } else { p.text })
+                .shadow(elevation(p)),
         )
 }
 
@@ -4335,12 +4274,12 @@ fn icon_picker(
             .aria_label(format!("Icon: {}", crate::icons::label(name)))
             .aria_toggled(if is_selected { gpui::Toggled::True } else { gpui::Toggled::False })
             .tab_index(0)
-            .focus_visible(move |s| s.border_2().border_color(p.brand))
+            .focus_visible(move |s| s.border_2().border_color(p.focus))
             .size(px(36.))
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(8.))
+            .rounded(p.corner(8.))
             .cursor_pointer()
             .border_1()
             .border_color(if is_selected { color } else { p.border })
@@ -4515,12 +4454,12 @@ fn strip_action(id: &'static str, icon: &str, label: &'static str, danger: bool,
         .role(gpui::Role::Button)
         .aria_label(label)
         .tab_index(0)
-        .focus_visible(move |s| s.border_2().border_color(p.brand))
+        .focus_visible(move |s| s.border_2().border_color(p.focus))
         .size(px(26.))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(7.))
+        .rounded(p.corner(7.))
         .cursor_pointer()
         .hover(move |s| s.bg(hover_bg))
         // The strip sits in the title bar, whose drag area is everywhere behind it. Without
@@ -4551,7 +4490,7 @@ fn kbd(keys: &str, p: AppPalette) -> impl IntoElement {
         .line_height(px(14.))
         .flex()
         .items_center()
-        .rounded(px(4.))
+        .rounded(p.corner(4.))
         .border_1()
         .border_color(p.border)
         .text_size(px(10.5))
@@ -4571,7 +4510,7 @@ impl Render for Workspace {
             .relative()
             .flex()
             .flex_col()
-            .font_family(UI_FONT)
+            .font_family(p.font_family)
             .bg(p.background)
             .text_color(p.text)
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -4669,7 +4608,7 @@ impl Render for Workspace {
                 .right(px(20.))
                 .px(px(14.))
                 .py(px(10.))
-                .rounded(px(10.))
+                .rounded(p.corner(10.))
                 .bg(p.surface)
                 .border_1()
                 .border_color(p.border)

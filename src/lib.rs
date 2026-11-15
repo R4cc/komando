@@ -42,13 +42,24 @@ use crate::ui::workspace::{
     PrevSession, QuickConnect, ToggleSftp, ToggleSidebar, Workspace,
 };
 
-pub const FONTS: [&[u8]; 6] = [
+pub const FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/CascadiaMono-Regular.ttf"),
     include_bytes!("../assets/fonts/CascadiaMono-Bold.ttf"),
     include_bytes!("../assets/fonts/Geist-Regular.ttf"),
     include_bytes!("../assets/fonts/Geist-Medium.ttf"),
     include_bytes!("../assets/fonts/Geist-SemiBold.ttf"),
     include_bytes!("../assets/fonts/Geist-Bold.ttf"),
+    include_bytes!("../assets/fonts/themes/dmsans/DMSans[opsz,wght].ttf"),
+    include_bytes!("../assets/fonts/themes/firacode/FiraCode[wght].ttf"),
+    include_bytes!("../assets/fonts/themes/geistmono/GeistMono[wght].ttf"),
+    include_bytes!("../assets/fonts/themes/ibmplexmono/IBMPlexMono-Bold.ttf"),
+    include_bytes!("../assets/fonts/themes/ibmplexmono/IBMPlexMono-Medium.ttf"),
+    include_bytes!("../assets/fonts/themes/ibmplexmono/IBMPlexMono-Regular.ttf"),
+    include_bytes!("../assets/fonts/themes/ibmplexmono/IBMPlexMono-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/themes/inter/Inter[opsz,wght].ttf"),
+    include_bytes!("../assets/fonts/themes/jetbrainsmono/JetBrainsMono[wght].ttf"),
+    include_bytes!("../assets/fonts/themes/outfit/Outfit[wght].ttf"),
+    include_bytes!("../assets/fonts/themes/plusjakartasans/PlusJakartaSans[wght].ttf"),
 ];
 
 /// Fonts, component library and key bindings. Shared by the app and the screenshot tool.

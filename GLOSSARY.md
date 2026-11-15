@@ -120,9 +120,9 @@ Light or dark mode for Komando's chrome: sidebar, dialogs and settings. (Setting
 `app_theme`; the UI calls it **Mode**.)
 
 **Theme**:
-A named set of colours for one mode, covering the chrome and the terminal: accent, tinted
-greys, text and terminal background (Ember, Midnight, Ivory, …). Dark and light Themes are
-separate lists; the user picks one of each, and the mode decides which one shows.
+A named appearance for one mode, covering the app and terminal colors, default fonts,
+corner rounding and shadows (Komando Default, Noctua, Sage Green, …). The user picks a
+Theme for each mode; a separately chosen terminal font takes precedence.
 
 **Terminal Theme**:
 Whether the terminal follows the App Theme or always uses the dark or light Theme's terminal

@@ -8,4 +8,5 @@ pub mod popup;
 pub mod terminal_view;
 pub mod transfers;
 pub mod widgets;
+pub mod theme_picker;
 pub mod workspace;

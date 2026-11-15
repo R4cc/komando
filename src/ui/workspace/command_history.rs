@@ -323,7 +323,7 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap(px(12.))
-                            .rounded(px(6.))
+                            .rounded(p.corner(6.))
                             .cursor_pointer()
                             .hover(|s| s.bg(p.hover))
                             .tooltip(|window, cx| Tooltip::new("Click to copy the command").build(window, cx))
@@ -332,7 +332,7 @@ impl Workspace {
                                 div()
                                     .flex_shrink_0()
                                     .w(px(132.))
-                                    .font_family("Cascadia Mono")
+                                    .font_family(p.mono_family)
                                     .text_size(px(11.5))
                                     .text_color(p.text_faint)
                                     .child(entry.at.format("%Y-%m-%d %H:%M:%S").to_string()),
@@ -343,7 +343,7 @@ impl Workspace {
                                     .min_w_0()
                                     .flex()
                                     .gap(px(6.))
-                                    .font_family("Cascadia Mono")
+                                    .font_family(p.mono_family)
                                     .text_size(px(12.5))
                                     .when(!prompt.is_empty(), |el| {
                                         el.child(div().flex_shrink_0().max_w(px(220.)).truncate().text_color(p.text_faint).child(prompt.to_string()))

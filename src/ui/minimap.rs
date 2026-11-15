@@ -914,8 +914,8 @@ pub fn over(
         .border_l_1()
         .border_b_1()
         .border_color(app.border)
-        .rounded_bl(px(10.))
-        .rounded_tr(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
+        .rounded_bl(app.corner(10.))
+        .rounded_tr(app.corner(crate::ui::widgets::ISLAND_RADIUS - 1.))
         .shadow(crate::ui::widgets::elevation(app))
         .opacity(opacity);
     Some(controls(card, state.clone(), cx).child(strip(term, state, palette, app, highlighter, marks)).into_any_element())
@@ -1027,7 +1027,7 @@ mod tests {
     #[test]
     fn ordinary_text_stays_faint_in_every_theme() {
         let rules = bundled_rules();
-        for theme in crate::theme::DARK_THEMES.iter().chain(crate::theme::LIGHT_THEMES) {
+        for theme in crate::theme::DARK_THEMES.iter().chain(crate::theme::LIGHT_THEMES.iter()) {
             let palette = TerminalPalette::from_theme(theme);
             let cells: Vec<_> = "plain ERROR WARN"
                 .chars()

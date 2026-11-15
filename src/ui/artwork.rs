@@ -104,11 +104,16 @@ mod tests {
     }
 
     #[test]
-    fn light_thumbnail_has_no_dark_matte_at_its_top_edge() {
-        let source = include_bytes!("../../assets/themes/02_01_ivory.png");
+    fn trimming_a_source_rim_keeps_a_light_top_edge() {
+        let mut source = image::RgbaImage::from_pixel(128, 128, image::Rgba([0, 0, 0, 255]));
+        for y in 8..120 {
+            for x in 8..120 {
+                source.put_pixel(x, y, image::Rgba([248, 236, 220, 255]));
+            }
+        }
         for scale in [1., 1.25, 1.5, 2.] {
             let side = (46_f32 * scale).ceil() as u32;
-            let image = rasterize(source, side, 0.0625, 0.22);
+            let image = resample(&source, side, 0.0625, 0.22);
             let top = image.get_pixel(side / 2, 0);
             assert!(top[0] > 150 && top[1] > 150 && top[2] > 150, "dark source matte survives at {scale}x: {top:?}");
         }

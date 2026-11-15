@@ -1099,7 +1099,7 @@ impl Workspace {
             )))
             .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(name))
             .child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.text_faint).child(about));
-        let card = div().flex().flex_col().gap(px(10.)).p(px(12.)).rounded(px(10.)).border_1().border_color(p.border).child(header);
+        let card = div().flex().flex_col().gap(px(10.)).p(px(12.)).rounded(p.corner(10.)).border_1().border_color(p.border).child(header);
         if !row.on {
             return card.into_any_element();
         }
@@ -1265,7 +1265,7 @@ impl Workspace {
                 .aria_label(format!("Project color: {cname}"))
                 .aria_toggled(if selected { gpui::Toggled::True } else { gpui::Toggled::False })
                 .tab_index(0)
-                .focus_visible(move |s| s.border_2().border_color(p.brand))
+                .focus_visible(move |s| s.border_2().border_color(p.focus))
                 .size(px(26.))
                 .rounded_full()
                 .p(px(3.))
@@ -1401,12 +1401,12 @@ fn commands_preview(commands: &[String], p: AppPalette) -> AnyElement {
     div()
         .px(px(10.))
         .py(px(8.))
-        .rounded(px(8.))
+        .rounded(p.corner(8.))
         .bg(p.hover)
         .flex()
         .flex_col()
         .gap(px(2.))
-        .font_family("Cascadia Mono")
+        .font_family(p.mono_family)
         .text_size(px(12.))
         .text_color(p.text_muted)
         .children(commands.iter().map(|c| div().truncate().child(c.clone())))
@@ -1431,7 +1431,7 @@ fn form_error(message: String, p: AppPalette) -> AnyElement {
         .gap(px(8.))
         .px(px(12.))
         .py(px(9.))
-        .rounded(px(8.))
+        .rounded(p.corner(8.))
         .bg(p.danger.opacity(0.1))
         .text_size(px(12.5))
         .text_color(p.danger)

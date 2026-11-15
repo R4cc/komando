@@ -464,13 +464,13 @@ impl Workspace {
                 })
                 .aria_expanded(open)
                 .tab_index(0)
-                .focus_visible(move |s| s.border_2().border_color(p.brand))
+                .focus_visible(move |s| s.border_2().border_color(p.focus))
                 .h(px(52.))
                 .px(px(12.))
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .rounded(px(10.))
+                .rounded(p.corner(10.))
                 .cursor_pointer()
                 .hover(|s| s.bg(p.hover))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_import_open(g, cx)))
@@ -499,7 +499,7 @@ impl Workspace {
                         ),
                 )
                 .child(icon_el(if open { "chevron-down" } else { "chevron-right" }, 14., p.text_faint));
-            let mut card = div().flex().flex_col().rounded(px(12.)).border_1().border_color(p.border).bg(p.background).p(px(4.)).child(header);
+            let mut card = div().flex().flex_col().rounded(p.corner(12.)).border_1().border_color(p.border).bg(p.background).p(px(4.)).child(header);
             if open {
                 let mut list = div().flex().flex_col().pl(px(26.)).pb(px(4.));
                 for (h, (host, duplicate)) in found.hosts.iter().zip(&planned.hosts).enumerate() {
@@ -528,7 +528,7 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap(px(10.))
-                            .rounded(px(8.))
+                            .rounded(p.corner(8.))
                             .cursor_pointer()
                             .hover(|s| s.bg(p.hover))
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_import_host(g, h, cx)))
@@ -846,13 +846,13 @@ fn checkbox(id: impl Into<gpui::ElementId>, label: &str, state: Toggled, p: AppP
         .aria_label(SharedString::from(label.to_string()))
         .aria_toggled(state)
         .tab_index(0)
-        .focus_visible(move |s| s.border_2().border_color(p.brand))
+        .focus_visible(move |s| s.border_2().border_color(p.focus))
         .size(px(16.))
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(4.))
+        .rounded(p.corner(4.))
         .cursor_pointer()
         .when(on, |el| el.bg(p.brand))
         .when(!on, |el| el.border_1().border_color(p.text_faint))
@@ -865,7 +865,7 @@ fn tag(text: &str, color: Hsla, p: AppPalette) -> impl IntoElement {
     div()
         .px(px(7.))
         .py(px(1.))
-        .rounded(px(6.))
+        .rounded(p.corner(6.))
         .bg(color.opacity(if p.dark { 0.14 } else { 0.12 }))
         .text_size(px(11.5))
         .text_color(color)

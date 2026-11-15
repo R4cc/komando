@@ -152,7 +152,7 @@ impl Render for DragGhost {
         div()
             .px(px(10.))
             .py(px(5.))
-            .rounded(px(7.))
+            .rounded(p.corner(7.))
             .bg(p.surface.opacity(1.))
             .border_1()
             .border_color(p.border)
@@ -1462,7 +1462,7 @@ fn tool_button(id: impl Into<gpui::ElementId>, icon: &str, tip: &'static str, en
         .flex_shrink_0()
         .items_center()
         .justify_center()
-        .rounded(px(7.))
+        .rounded(p.corner(7.))
         .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
         .when(enabled, |el| el.cursor_pointer().hover(move |s| s.bg(p.hover)))
         .child(icon_el(icon, 15., if enabled { p.text_muted } else { p.text_faint.opacity(0.5) }))
@@ -1486,7 +1486,7 @@ fn labeled_button(
         .flex_shrink_0()
         .items_center()
         .gap(px(6.))
-        .rounded(px(8.))
+        .rounded(p.corner(8.))
         .border_1()
         .border_color(p.border)
         .bg(p.hover)
@@ -1524,7 +1524,7 @@ impl FileBrowser {
                     .flex_shrink_0()
                     .items_center()
                     .justify_center()
-                    .rounded(px(8.))
+                    .rounded(p.corner(8.))
                     .border_1()
                     .border_color(p.border)
                     .child(icon_el("folder-open", 15., p.text_muted)),
@@ -1626,10 +1626,10 @@ impl FileBrowser {
                         .flex()
                         .flex_shrink_0()
                         .items_center()
-                        .rounded(px(5.))
+                        .rounded(p.corner(5.))
                         .cursor_pointer()
                         .text_color(if last { p.text } else { p.text_muted })
-                        .hover(|s| s.bg(p.active).text_color(p.text))
+                        .hover(|s| s.bg(p.active).text_color(p.active_text))
                         .drag_over::<DraggedFiles>(move |s, d, _, _| if d.source == me { s.bg(p.brand_soft) } else { s })
                         .on_drop(cx.listener({
                             let target = target.clone();
@@ -1653,7 +1653,7 @@ impl FileBrowser {
                 .items_center()
                 .gap(px(1.))
                 .overflow_hidden()
-                .rounded(px(8.))
+                .rounded(p.corner(8.))
                 .border_1()
                 .border_color(p.border)
                 .bg(p.hover)
@@ -1675,7 +1675,7 @@ impl FileBrowser {
                 div()
                     .flex()
                     .flex_shrink_0()
-                    .rounded(px(8.))
+                    .rounded(p.corner(8.))
                     .border_1()
                     .border_color(p.border)
                     .child(tool_button("sftp-back", "chevron-left", "Back (Alt+Left)", can_back, p).on_click(cx.listener(
@@ -1697,7 +1697,7 @@ impl FileBrowser {
                     .flex_shrink_0()
                     .items_center()
                     .justify_center()
-                    .rounded(px(8.))
+                    .rounded(p.corner(8.))
                     .border_1()
                     .border_color(if self.favorites_open { p.brand.opacity(0.6) } else { p.border })
                     .when(self.favorites_open, |el| el.bg(p.active))
@@ -1806,6 +1806,7 @@ impl FileBrowser {
             let Some(&entry_ix) = self.rows.get(ix - has_parent as usize) else { continue };
             let entry = self.entries[entry_ix].clone();
             let selected = self.selected.contains(&entry.path);
+            let p = if selected { p.highlighted() } else { p };
             let locked = entry.locked();
             let renaming = matches!(&self.edit, Some(Edit { kind: EditKind::Rename { path }, .. }) if *path == entry.path);
             let perm_tip: SharedString = permission_text(&entry, &identity).into();
@@ -1833,7 +1834,7 @@ impl FileBrowser {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .child(div().min_w_0().truncate().text_color(name_color).child(entry.name.clone()))
+                    .child(div().min_w_0().truncate().text_color(name_color).group_hover("sftp-row", |s| s.text_color(p.hover_text)).child(entry.name.clone()))
                     .when(locked, |el| {
                         let tip = perm_tip.clone();
                         el.child(
@@ -1874,7 +1875,7 @@ impl FileBrowser {
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .rounded(px(6.))
+                .rounded(p.corner(6.))
                 .text_size(px(13.))
                 .when(selected, |el| el.bg(p.active))
                 .when(!selected, |el| el.hover(|s| s.bg(p.hover)))
@@ -1904,7 +1905,7 @@ impl FileBrowser {
                         .flex_shrink_0()
                         .text_right()
                         .text_size(px(12.))
-                        .text_color(p.text_muted)
+                        .text_color(p.text_muted).group_hover("sftp-row", |s| s.text_color(p.hover_text))
                         .child(match (entry.kind, entry.size) {
                             (Kind::Dir, _) | (_, None) => "—".to_string(),
                             (_, Some(size)) => format_size(size),
@@ -1917,7 +1918,7 @@ impl FileBrowser {
                             .flex_shrink_0()
                             .truncate()
                             .text_size(px(12.))
-                            .text_color(p.text_muted)
+                            .text_color(p.text_muted).group_hover("sftp-row", |s| s.text_color(p.hover_text))
                             .child(format_time(entry.mtime)),
                     )
                 })
@@ -1930,7 +1931,7 @@ impl FileBrowser {
                             .flex_shrink_0()
                             .font_family(mono.clone())
                             .text_size(px(11.5))
-                            .text_color(if locked { p.text_faint } else { p.text_muted })
+                            .text_color(if locked { p.text_faint } else { p.text_muted }).group_hover("sftp-row", |s| s.text_color(p.hover_text))
                             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                             .child(entry.mode_string()),
                     )
@@ -1943,7 +1944,7 @@ impl FileBrowser {
                         .flex_shrink_0()
                         .items_center()
                         .justify_center()
-                        .rounded(px(5.))
+                        .rounded(p.corner(5.))
                         .cursor_pointer()
                         .when(!selected, |el| el.invisible().group_hover("sftp-row", |s| s.visible()))
                         .hover(|s| s.bg(p.active))
@@ -1992,7 +1993,7 @@ impl FileBrowser {
             .flex()
             .items_center()
             .gap(px(8.))
-            .rounded(px(6.))
+            .rounded(p.corner(6.))
             .text_size(px(13.))
             .text_color(p.text_muted)
             .hover(|s| s.bg(p.hover))
@@ -2031,7 +2032,7 @@ impl FileBrowser {
                 .flex_shrink_0()
                 .items_center()
                 .gap(px(8.))
-                .rounded(px(6.))
+                .rounded(p.corner(6.))
                 .bg(p.active)
                 .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                     if event.keystroke.key == "escape" {
@@ -2203,7 +2204,7 @@ impl FileBrowser {
                 .flex()
                 .items_start()
                 .gap(px(8.))
-                .rounded(px(8.))
+                .rounded(p.corner(8.))
                 .bg(bg)
                 .text_size(px(12.))
                 .line_height(px(17.))
@@ -2255,7 +2256,7 @@ impl FileBrowser {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(5.))
+                    .rounded(p.corner(5.))
                     .cursor_pointer()
                     .hover(|s| s.bg(p.active))
                     .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
@@ -2272,7 +2273,7 @@ impl FileBrowser {
                 .flex()
                 .items_center()
                 .gap(px(9.))
-                .rounded(px(7.))
+                .rounded(p.corner(7.))
                 .cursor_pointer()
                 .when(current, |el| el.bg(p.hover))
                 .hover(|s| s.bg(p.hover))
@@ -2301,7 +2302,7 @@ impl FileBrowser {
                         .right(px(4.))
                         .top(px(9.))
                         .flex()
-                        .rounded(px(6.))
+                        .rounded(p.corner(6.))
                         .bg(p.surface.opacity(1.))
                         .invisible()
                         .group_hover("fav-row", |s| s.visible())
@@ -2372,7 +2373,7 @@ impl FileBrowser {
                 .items_center()
                 .justify_center()
                 .gap(px(6.))
-                .rounded(px(7.))
+                .rounded(p.corner(7.))
                 .border_1()
                 .border_color(p.border)
                 .text_size(px(11.5))
@@ -2399,7 +2400,7 @@ impl FileBrowser {
                 .occlude()
                 .flex()
                 .flex_col()
-                .rounded(px(10.))
+                .rounded(p.corner(10.))
                 .bg(p.surface.opacity(1.))
                 .border_1()
                 .border_color(p.border)
@@ -2575,7 +2576,7 @@ impl FileBrowser {
                 .justify_center()
                 .pt(px(110.))
                 .px(px(16.))
-                .rounded(px(12.))
+                .rounded(p.corner(12.))
                 .bg(crate::theme::alpha(0x000000, if p.dark { 0.4 } else { 0.15 }))
                 .child(
                     div()
@@ -2585,7 +2586,7 @@ impl FileBrowser {
                         .flex()
                         .flex_col()
                         .gap(px(12.))
-                        .rounded(px(12.))
+                        .rounded(p.corner(12.))
                         .bg(p.surface.opacity(1.))
                         .border_1()
                         .border_color(p.border)
@@ -2774,7 +2775,7 @@ impl Render for FileBrowser {
             .drag_over::<ExternalPaths>(move |s, _, _, _| s.border_color(p.brand).bg(p.brand_soft.opacity(0.4)))
             .border_1()
             .border_color(gpui::transparent_black())
-            .rounded(px(12.))
+            .rounded(p.corner(12.))
             .when(ready, |el| {
                 el.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                     if let Some(cwd) = this.cwd.clone() {

@@ -20,7 +20,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use zeroize::Zeroizing;
 
 use crate::desktop::{self, Button, Connection, DesktopEvent, DesktopPrompt, Input as DesktopInput, Key, Protocol, SignIn, Status, Target};
-use crate::theme::{Appearance, UI_FONT};
+use crate::theme::{Appearance};
 use crate::ui::widgets::{ButtonKind, button, elevation, icon_el, password_input, spinner};
 
 /// The key context of a desktop pane, so Tab goes to the remote desktop instead of moving focus.
@@ -533,7 +533,7 @@ impl DesktopView {
                 .w(px(420.))
                 .max_w_full()
                 .p(px(20.))
-                .rounded(px(14.))
+                .rounded(p.corner(14.))
                 .bg(p.surface)
                 .border_1()
                 .border_color(p.border)
@@ -541,7 +541,7 @@ impl DesktopView {
                 .flex()
                 .flex_col()
                 .gap(px(14.))
-                .font_family(UI_FONT)
+                .font_family(p.font_family)
                 .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
                 .child(body)
                 .when(!actions.is_empty(), |el| el.child(div().flex().justify_end().gap(px(8.)).children(actions)))
@@ -552,9 +552,9 @@ impl DesktopView {
             div()
                 .px(px(10.))
                 .py(px(8.))
-                .rounded(px(8.))
+                .rounded(p.corner(8.))
                 .bg(p.hover)
-                .font_family("Cascadia Mono")
+                .font_family(p.mono_family)
                 .text_size(px(12.))
                 .text_color(p.text)
                 .child(s)
@@ -594,7 +594,7 @@ impl DesktopView {
                                     .child(
                                         div()
                                             .size(px(16.))
-                                            .rounded(px(4.))
+                                            .rounded(p.corner(4.))
                                             .border_1()
                                             .border_color(if ticked { p.brand } else { p.border })
                                             .when(ticked, |el| el.bg(p.brand))
@@ -734,9 +734,9 @@ impl Render for DesktopView {
             })
             .relative()
             .size_full()
-            .rounded(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
+            .rounded(app.corner(crate::ui::widgets::ISLAND_RADIUS - 1.))
             .overflow_hidden()
-            .bg(if app.flat { app.background } else { gpui::black() })
+            .bg(app.background)
             .child(div().absolute().inset_0().when(dimmed, |el| el.opacity(0.35)).child(self.render_picture()))
             .when_some(card, |el, card| el.child(div().absolute().inset_0().p(px(16.)).flex().items_center().justify_center().child(card)))
     }

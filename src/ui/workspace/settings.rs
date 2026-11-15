@@ -120,16 +120,6 @@ fn logo() -> &'static crate::ui::artwork::Artwork {
     LOGO.get_or_init(|| crate::ui::artwork::Artwork::png(include_bytes!("../../../assets/icon.png"), 0.01, 0.22))
 }
 
-fn theme_thumbnail(theme: &crate::theme::ThemeSpec) -> &'static crate::ui::artwork::Artwork {
-    static IMAGES: OnceLock<std::collections::HashMap<&'static str, crate::ui::artwork::Artwork>> = OnceLock::new();
-    &IMAGES.get_or_init(|| {
-        crate::theme::DARK_THEMES
-            .iter()
-            .chain(crate::theme::LIGHT_THEMES)
-            .map(|t| (t.thumbnail_file, crate::ui::artwork::Artwork::png(t.thumbnail_png, 0.0625, 0.22)))
-            .collect()
-    })[theme.thumbnail_file]
-}
 
 impl Workspace {
     pub(super) fn open_settings(&mut self, section: SettingsSection, window: &mut Window, cx: &mut Context<Self>) {
@@ -197,7 +187,7 @@ impl Workspace {
         }
         if self.font_input.is_none() {
             let family = self.settings.font_family.clone();
-            let input = cx.new(|cx| InputState::new(window, cx).default_value(family).placeholder("Cascadia Mono"));
+            let input = cx.new(|cx| InputState::new(window, cx).default_value(family).placeholder("Theme default"));
             let sub = cx.subscribe_in(&input, window, |this, input, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
                     let value = input.read(cx).value().trim().to_string();
@@ -246,7 +236,9 @@ impl Workspace {
     }
 
     pub(super) fn render_settings(&self, section: SettingsSection, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let nav = island(p)
+        let nav = {
+        let p = p.navigation();
+        island(p)
             .id("settings-navigation")
             .role(gpui::Role::TabList)
             .aria_label("Settings")
@@ -263,18 +255,18 @@ impl Workspace {
                     .role(gpui::Role::Button)
                     .aria_label("Back to sessions")
                     .tab_index(0)
-                    .focus_visible(move |s| s.border_2().border_color(p.brand))
+                    .focus_visible(move |s| s.border_2().border_color(p.focus))
                     .h(px(36.))
                     .px(px(8.))
                     .mb(px(6.))
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .rounded(px(8.))
+                    .rounded(p.corner(8.))
                     .cursor_pointer()
                     .text_size(px(13.))
                     .text_color(p.text_muted)
-                    .hover(|s| s.bg(p.hover).text_color(p.text))
+                    .hover(|s| s.bg(p.hover).text_color(p.hover_text))
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_settings(window, cx)))
                     .child(icon_el("arrow-left", 15., p.text_muted))
                     .child(div().flex_1().child("Back to sessions"))
@@ -289,20 +281,20 @@ impl Workspace {
                     .aria_label(s.label())
                     .aria_selected(active)
                     .tab_index(0)
-                    .focus_visible(move |st| st.border_2().border_color(p.brand))
+                    .focus_visible(move |st| st.border_2().border_color(p.focus))
                     .h(px(36.))
                     .px(px(8.))
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .rounded(px(8.))
+                    .rounded(p.corner(8.))
                     .cursor_pointer()
                     .text_size(px(13.))
                     .text_color(if active { p.text } else { p.text_muted })
-                    .when(active, |el| el.bg(p.active).font_weight(FontWeight::MEDIUM))
-                    .when(!active, |el| el.hover(|st| st.bg(p.hover).text_color(p.text)))
+                    .when(active, |el| el.bg(p.active).text_color(p.active_text).font_weight(FontWeight::MEDIUM))
+                    .when(!active, |el| el.hover(|st| st.bg(p.hover).text_color(p.hover_text)))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_settings(s, window, cx)))
-                    .child(icon_el(s.icon(), 16., if active { p.brand } else { p.text_faint }))
+                    .child(icon_el(s.icon(), 16., if active { p.active_text } else { p.text_faint }))
                     .child(s.label())
             }))
             .child(div().flex_1())
@@ -317,9 +309,12 @@ impl Workspace {
                         .text_color(p.text_faint)
                         .child(format!("Komando {VERSION}")),
                 )
-            });
+            })
+        };
 
-        let body = match section {
+        let body = {
+        let p = p.panel();
+        match section {
             SettingsSection::Appearance => self.settings_appearance(p, cx),
             SettingsSection::Terminal => self.settings_terminal(p, cx),
             SettingsSection::FileBrowser => self.settings_file_browser(p, cx),
@@ -329,6 +324,7 @@ impl Workspace {
             SettingsSection::Import => self.settings_import(p, cx),
             SettingsSection::Security => self.settings_security(p, cx),
             SettingsSection::About => self.settings_about(p, cx),
+        }
         };
         let content = island(p)
             .id("settings-content")
@@ -384,7 +380,7 @@ impl Workspace {
     fn settings_appearance(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let app = self.settings.app_theme;
         let term = self.settings.terminal_theme;
-        let blur = self.settings.background_blur && !p.flat;
+        let blur = self.settings.background_blur;
         let mode_choice = segmented(
             "app-theme",
             &[("Dark", app == AppThemeSetting::Dark), ("Light", app == AppThemeSetting::Light), ("System", app == AppThemeSetting::System)],
@@ -409,9 +405,7 @@ impl Workspace {
                 this.set_terminal_theme(theme, window, cx);
             },
         );
-        let blur_hint = if p.flat {
-            "Graphite uses solid, opaque surfaces. Background blur is available with other themes."
-        } else if crate::platform::SUPPORTS_BACKDROP {
+        let blur_hint = if crate::platform::SUPPORTS_BACKDROP {
             "Windows 11 Mica: your desktop, blurred, shows through the window, even with other windows behind it."
         } else {
             "Windows 11 only. This build runs elsewhere, so the setting is saved but has no effect."
@@ -457,8 +451,7 @@ impl Workspace {
                         "Background blur",
                         blur_hint,
                         switch("blur-toggle".into(), "Background blur", blur, p)
-                            .when(p.flat, |el| el.opacity(0.4).cursor_default().tab_index(-1))
-                            .when(!p.flat, |el| el.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_background_blur(!blur, window, cx))))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_background_blur(!blur, window, cx)))
                             .into_any_element(),
                     ),
                     setting_row(
@@ -480,115 +473,16 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Original theme artwork at the existing compact size. Picking a theme in the mode
-    /// in use applies its palette at once; each mode retains its own selection.
+    /// A native dropdown with names and actual palette colors, also usable by keyboard.
     fn theme_picker(&self, dark: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let themes = if dark { crate::theme::DARK_THEMES } else { crate::theme::LIGHT_THEMES };
-        let current = self.theme_for(dark).id;
-        let in_use = p.dark == dark;
-        let selection = p.brand;
-        let selection_ink = p.on_brand;
-        let thumbnails = themes.iter().map(|t| {
-            let selected = t.id == current;
-            let id = t.id;
-            let thumbnail = div()
-                .size(px(46.))
-                .flex_shrink_0()
-                .relative()
-                // Trim the baked rim and filter transparent edges at this monitor's scale.
-                .child(theme_thumbnail(t).element(46.))
-                .when(selected, |el| {
-                    el.child(
-                        div()
-                            .absolute()
-                            .right(px(6.))
-                            .bottom(px(6.))
-                            .size(px(19.))
-                            .rounded_full()
-                            .bg(selection)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon_el("check", 12., selection_ink)),
-                    )
-                });
-            div()
-                .id(SharedString::from(format!("theme-{}-{id}", if dark { "dark" } else { "light" })))
-                .role(gpui::Role::RadioButton)
-                .aria_label(format!("{} theme: {}", if dark { "Dark" } else { "Light" }, t.name))
-                .aria_toggled(if selected { gpui::Toggled::True } else { gpui::Toggled::False })
-                .tab_index(0)
-                .focus_visible(move |s| s.border_2().border_color(selection))
-                .w(px(72.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(7.))
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_theme(dark, id, window, cx)))
-                .child(
-                    div()
-                        .p(px(3.))
-                        .rounded(px(14.))
-                        .border_2()
-                        .border_color(if selected { selection } else { gpui::transparent_black() })
-                        .when(!selected, |el| el.hover(|s| s.border_color(p.border)))
-                        .child(thumbnail),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .font_weight(if selected { FontWeight::MEDIUM } else { FontWeight::NORMAL })
-                        .text_color(if selected { p.text } else { p.text_muted })
-                        .child(t.name),
-                )
+        let current = self.theme_for(dark);
+        let ws = cx.entity().downgrade();
+        let dropdown = crate::ui::theme_picker::dropdown(dark, current, p, move |id, window, cx| {
+            let _ = ws.update(cx, |this, cx| this.set_theme(dark, id, window, cx));
         });
-        div()
-            .id(if dark { "dark-theme-picker" } else { "light-theme-picker" })
-            .role(gpui::Role::RadioGroup)
-            .aria_label(if dark { "Dark theme" } else { "Light theme" })
-            .flex()
-            .flex_col()
-            .gap(px(14.))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(
-                                div()
-                                    .text_size(px(13.5))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(p.text)
-                                    .child(if dark { "Dark theme" } else { "Light theme" }),
-                            )
-                            .when(in_use, |el| {
-                                el.child(
-                                    div()
-                                        .px(px(7.))
-                                        .py(px(1.))
-                                        .rounded_full()
-                                        .bg(p.brand_soft)
-                                        .text_size(px(11.))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(p.brand)
-                                        .child("In use"),
-                                )
-                            }),
-                    )
-                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(if dark {
-                        "Colours of the app and the terminal in dark mode."
-                    } else {
-                        "Colours of the app and the terminal in light mode."
-                    })),
-            )
-            .child(div().flex().flex_wrap().gap(px(6.)).children(thumbnails))
-            .into_any_element()
+        setting_row_below(p, if dark { "Dark theme" } else { "Light theme" },
+            if dark { "App and terminal colors in dark mode." } else { "App and terminal colors in light mode." },
+            div().w_full().max_w(px(420.)).child(dropdown).into_any_element())
     }
 
     fn settings_terminal(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -656,7 +550,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "Font",
-                    "A monospaced font installed on this PC. Cascadia Mono is built in. Press Enter to apply.",
+                    "Leave empty to use the theme’s font, or enter a monospaced font. Press Enter to apply.",
                     div().w(px(260.)).children(font_input).into_any_element(),
                 ),
                 setting_row(
@@ -1030,7 +924,7 @@ impl Workspace {
                                 .child(
                                     div()
                                         .id("data-path")
-                                        .font_family("Cascadia Mono")
+                                        .font_family(p.mono_family)
                                         .text_size(px(12.))
                                         .text_color(p.text_muted)
                                         .truncate()
@@ -1234,7 +1128,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap(px(12.))
-                    .rounded(px(8.))
+                    .rounded(p.corner(8.))
                     .when(editing.as_deref() == Some(name.as_str()), |el| el.bg(p.active))
                     .child(div().when(shell.hidden, |el| el.opacity(0.5)).child(icon_el(icon, 18., shell_icon_color(icon, p))))
                     .child(
@@ -1328,7 +1222,7 @@ impl Workspace {
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.restore_detected_shells(cx))),
                     ),
             )
-            .child(div().rounded(px(12.)).border_1().border_color(p.border).bg(p.background).child(list))
+            .child(div().rounded(p.corner(12.)).border_1().border_color(p.border).bg(p.background).child(list))
             .into_any_element()
     }
 
@@ -1447,13 +1341,13 @@ impl Workspace {
                     .aria_label(format!("Highlight set: {}", set.name))
                     .aria_expanded(open)
                     .tab_index(0)
-                    .focus_visible(move |s| s.border_2().border_color(p.brand))
+                    .focus_visible(move |s| s.border_2().border_color(p.focus))
                     .h(px(48.))
                     .px(px(10.))
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .rounded(px(8.))
+                    .rounded(p.corner(8.))
                     .cursor_pointer()
                     .hover(|s| s.bg(p.hover))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -1548,7 +1442,7 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .gap(px(10.))
-                        .rounded(px(6.))
+                        .rounded(p.corner(6.))
                         .when(!rule.enabled, |el| el.opacity(0.45))
                         // The pattern as a chip around its text, shown on the terminal's background.
                         .child(
@@ -1563,9 +1457,9 @@ impl Workspace {
                                     .min_w_0()
                                     .px(px(8.))
                                     .py(px(3.))
-                                    .rounded(px(5.))
+                                    .rounded(p.corner(5.))
                                     .bg(bg)
-                                    .font_family("Cascadia Mono")
+                                    .font_family(p.mono_family)
                                     .text_size(px(12.))
                                     .text_color(fg)
                                     .when(rule.bold.unwrap_or(false), |el| el.font_weight(FontWeight::BOLD))
@@ -1581,7 +1475,7 @@ impl Workspace {
                                 .h(px(18.))
                                 .flex()
                                 .items_center()
-                                .rounded(px(4.))
+                                .rounded(p.corner(4.))
                                 .border_1()
                                 .border_color(p.border)
                                 .text_size(px(10.5))
@@ -1633,7 +1527,7 @@ impl Workspace {
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.import_highlights(window, cx))),
                     ),
             )
-            .child(div().rounded(px(12.)).border_1().border_color(p.border).bg(p.background).child(list))
+            .child(div().rounded(p.corner(12.)).border_1().border_color(p.border).bg(p.background).child(list))
             .children(skipped)
             .into_any_element()
     }
@@ -1643,10 +1537,10 @@ impl Workspace {
 pub(super) fn group(p: AppPalette, rows: Vec<AnyElement>) -> AnyElement {
     let count = rows.len();
     div()
-        .rounded(px(12.))
+        .rounded(p.corner(12.))
         .border_1()
         .border_color(p.border)
-        .bg(if p.flat { p.surface } else { p.background })
+        .bg(p.surface)
         .flex()
         .flex_col()
         .children(rows.into_iter().enumerate().map(move |(i, row)| {
@@ -1703,7 +1597,7 @@ fn value_label(text: String, p: AppPalette) -> AnyElement {
     div()
         .min_w(px(44.))
         .text_right()
-        .font_family("Cascadia Mono")
+        .font_family(p.mono_family)
         .text_size(px(12.))
         .text_color(p.text_muted)
         .child(text)

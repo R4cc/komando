@@ -395,7 +395,7 @@ pub(super) fn strip_pill(
         .flex()
         .items_center()
         .gap(px(6.))
-        .rounded(px(7.))
+        .rounded(p.corner(7.))
         .border_1()
         .border_color(if on { p.brand.opacity(0.7) } else { p.border })
         .when(on, |el| el.bg(p.brand_soft))

@@ -8,18 +8,23 @@ All notable changes to Komando are listed here. The format follows
 
 ### Added
 
-- Graphite is the default dark theme, with cool charcoal surfaces and muted steel-blue
-  accents across the app, settings and terminal. Its surfaces stay flat and opaque.
+- Nine themes with light and dark variants: Komando Default, Sage Green, Noctua,
+  AstroVista, QraftHive 1.0, Gold?, Mint Theme, FL-Theme and Salesforce. Each includes
+  matching app and terminal colors, UI and terminal fonts, corner rounding and shadows.
 
 ### Changed
 
+- Theme selectors are dropdowns with names and palette swatches, hover highlighting
+  and keyboard navigation. Komando Default replaces the previous theme collection.
+- The terminal follows the theme's font unless a custom font is set. New settings use
+  solid backgrounds, and removed theme selections fall back to Komando Default.
 - Removed the tagline from Settings → About.
 
 ### Fixed
 
 - Maximized windows can be dragged from the very top edge when background blur is enabled.
-- Theme previews and the About icon have smoother rounded edges at different display
-  scales. Their outer rims are trimmed and transparent edges use higher-quality resizing
+- The About icon has smoother rounded edges at different display
+  scales. Its outer rim is trimmed and transparent edges use higher-quality resizing
   without dark or bright fringes.
 
 ## [0.5.5] - 2026-11-15

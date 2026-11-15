@@ -8,7 +8,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{Animation, AnimationExt as _, AnyElement, FontWeight, Hsla, IntoElement, ParentElement, Styled, div, px};
 
 use crate::session::HopStep;
-use crate::theme::{AppPalette, UI_FONT};
+use crate::theme::{AppPalette};
 use crate::ui::widgets::{badge, icon_el};
 
 /// One Host on the way, as its card shows it.
@@ -129,9 +129,9 @@ impl ConnectRoute {
         let page = div()
             .absolute()
             .inset_0()
-            .rounded(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
+            .rounded(p.corner(crate::ui::widgets::ISLAND_RADIUS - 1.))
             .bg(p.background)
-            .font_family(UI_FONT)
+            .font_family(p.font_family)
             .flex()
             .flex_col()
             .items_center()
@@ -169,7 +169,7 @@ impl ConnectRoute {
                                 .gap(px(8.))
                                 .px(px(12.))
                                 .py(px(9.))
-                                .rounded(px(8.))
+                                .rounded(p.corner(8.))
                                 .bg(p.danger.opacity(0.1))
                                 .text_size(px(12.5))
                                 .line_height(px(18.))
@@ -218,7 +218,7 @@ impl ConnectRoute {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .rounded(px(12.))
+            .rounded(p.corner(12.))
             .bg(p.surface)
             .border_1()
             .border_color(border)
@@ -271,7 +271,7 @@ impl ConnectRoute {
                     .left(px(-4.))
                     .right(px(-4.))
                     .bottom(px(-4.))
-                    .rounded(px(15.))
+                    .rounded(p.corner(15.))
                     .border_2()
                     .border_color(p.success)
                     .with_animation(

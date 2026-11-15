@@ -12,7 +12,7 @@ use gpui::{
 
 use std::time::{Duration, Instant};
 
-use crate::theme::{AppPalette, UI_FONT, alpha};
+use crate::theme::{AppPalette, alpha};
 use gpui::Focusable as _;
 use gpui_component::input::{Input, InputState};
 use gpui_component::tooltip::Tooltip;
@@ -27,7 +27,7 @@ pub fn caps_lock_indicator(id: impl Into<ElementId>, p: AppPalette) -> impl Into
         .items_center()
         .gap(px(4.))
         .flex_shrink_0()
-        .font_family(UI_FONT)
+        .font_family(p.font_family)
         .text_size(px(11.))
         .text_color(p.warning)
         .child(icon_el("arrow-big-up-dash", 14., p.warning))
@@ -93,31 +93,26 @@ pub fn icon_text_button(
 /// A button's pill without its content, and the colour its content is drawn in.
 fn button_shell(id: impl Into<ElementId>, kind: ButtonKind, p: AppPalette) -> (Stateful<gpui::Div>, Hsla) {
     let (bg, fg, hover, border) = match kind {
-        // Near-black on orange: white would read at only about 3:1.
-        ButtonKind::Primary => (p.brand, p.on_brand, p.brand.opacity(0.88), None),
-        ButtonKind::Secondary => (p.hover, p.text, p.active, Some(p.border)),
+        ButtonKind::Primary => (p.brand, p.on_brand, p.brand, None),
+        ButtonKind::Secondary => (p.secondary, p.on_secondary, p.secondary, Some(p.border)),
         ButtonKind::Ghost => (gpui::transparent_black(), p.text_muted, p.hover, None),
-        // red-600 in both themes: white text on the lighter dark-theme red was 2.8:1.
-        ButtonKind::Danger => {
-            let red = crate::theme::hex(0xdc2626);
-            (red, gpui::white(), red.opacity(0.88), None)
-        }
+        ButtonKind::Danger => (p.danger, p.on_danger, p.danger, None),
     };
     let el = div()
         .id(id)
         .role(gpui::Role::Button)
         .tab_index(0)
-        .focus_visible(move |s| s.border_2().border_color(p.brand))
+        .focus_visible(move |s| s.border_2().border_color(p.focus))
         .h(px(32.))
         .px(px(14.))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(8.))
+        .rounded(p.corner(8.))
         .bg(bg)
         .when_some(border, |el, b| el.border_1().border_color(b))
         .text_color(fg)
-        .font_family(UI_FONT)
+        .font_family(p.font_family)
         .text_size(px(13.))
         .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
@@ -133,15 +128,15 @@ pub fn icon_button(id: impl Into<ElementId>, icon: &str, p: AppPalette) -> State
         .role(gpui::Role::Button)
         .aria_label(icon.replace('-', " "))
         .tab_index(0)
-        .focus_visible(move |s| s.border_2().border_color(p.brand))
+        .focus_visible(move |s| s.border_2().border_color(p.focus))
         .size(px(30.))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(7.))
+        .rounded(p.corner(7.))
         .text_color(p.text_muted)
         .cursor_pointer()
-        .hover(move |s| s.bg(p.hover).text_color(p.text))
+        .hover(move |s| s.bg(p.hover).text_color(p.hover_text))
         .child(icon_el(icon, 16., p.text_muted))
 }
 
@@ -461,32 +456,27 @@ pub const ISLAND_GAP: f32 = 8.;
 
 pub fn island(p: AppPalette) -> gpui::Div {
     div()
-        .rounded(px(ISLAND_RADIUS))
-        .bg(p.sidebar)
+        .rounded(p.corner(ISLAND_RADIUS))
+        .bg(p.background)
         .border_1()
         .border_color(p.border)
-        .when(!p.flat, |el| el.shadow(vec![BoxShadow {
-            color: alpha(0x000000, if p.dark { 0.35 } else { 0.06 }),
-            offset: point(px(0.), px(1.)),
-            blur_radius: px(3.),
-            spread_radius: px(0.),
-            inset: false,
-        }]))
+        .shadow(elevation(p))
 }
 
 /// Layered, low-opacity shadows for floating surfaces (dialogs, popovers).
 pub fn elevation(p: AppPalette) -> Vec<BoxShadow> {
-    if p.flat { return vec![]; }
-    let a = if p.dark { 0.5 } else { 0.10 };
-    vec![
-        BoxShadow { color: alpha(0x000000, a * 0.6), offset: point(px(0.), px(1.)), blur_radius: px(2.), spread_radius: px(0.), inset: false },
-        BoxShadow { color: alpha(0x000000, a), offset: point(px(0.), px(12.)), blur_radius: px(32.), spread_radius: px(-8.), inset: false },
-    ]
+    let s = p.shadow;
+    if s.opacity <= 0. { return vec![]; }
+    vec![BoxShadow {
+        color: alpha(s.color, s.opacity), offset: point(px(s.x), px(s.y)),
+        blur_radius: px(s.blur), spread_radius: px(s.spread), inset: false,
+    }]
+
 }
 
 /// Small uppercase section label. Copy stays in natural case; it is uppercased here.
 pub fn section_label(text: &str, p: AppPalette) -> impl IntoElement {
-    tracked(&text.to_uppercase(), 10.5, FontWeight::SEMIBOLD, 0.6, p.text_faint, UI_FONT)
+    tracked(&text.to_uppercase(), 10.5, FontWeight::SEMIBOLD, 0.6, p.text_faint, p.font_family)
 }
 
 /// Width of the logo per pixel of height.
@@ -532,7 +522,6 @@ pub fn badge(icon: &str, color: Hsla, size: f32) -> impl IntoElement {
         .map(|el| match letter {
             None if is_artwork(icon) => el.child(icon_el(icon, (size * 0.85).round(), color)),
             Some(letter) => el
-                .font_family(UI_FONT)
                 .text_size(px(size * 0.5))
                 .font_weight(FontWeight::BOLD)
                 .child(letter),

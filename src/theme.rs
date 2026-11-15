@@ -5,159 +5,187 @@ use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 use gpui::{Hsla, Rgba, rgb, rgba};
 
-/// KOMANDO brand orange (orange-600, for light themes). Only for Komando's own chrome,
-/// never for Project colors.
-pub const BRAND: u32 = 0xea580c;
-/// The brand orange on dark surfaces (orange-500).
-pub const BRAND_DARK: u32 = 0xf97316;
+mod catalog;
+mod components;
+use std::sync::LazyLock;
 
-/// A Theme: the colours of the app and the terminal for one mode. Dark and light themes are
-/// separate lists, picked separately, so each mode can have its own character.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ThemeSpec {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub dark: bool,
-    /// Solid surfaces without Mica or decorative shadows.
-    pub flat: bool,
-    /// Original selector artwork, embedded so portable builds need no external assets.
-    pub thumbnail_file: &'static str,
-    pub thumbnail_png: &'static [u8],
-    /// Buttons, switches, selections, links.
-    pub accent: u32,
-    pub selected: Option<u32>,
-    /// The window background the islands float on, the islands, the sidebar and dialogs.
-    pub canvas: u32,
-    pub background: u32,
-    pub sidebar: u32,
-    pub surface: u32,
-    pub text: u32,
-    pub text_muted: u32,
-    pub text_faint: u32,
-    pub term_background: u32,
-    pub term_foreground: u32,
-    pub term_ansi: Option<[Rgb; 16]>,
-}
+pub const DEFAULT_THEME: &str = "komando-default";
 
-macro_rules! spec {
-    ($id:literal, $name:literal, $dark:literal, $thumbnail:literal, $accent:expr,
-     [$canvas:expr, $background:expr, $sidebar:expr, $surface:expr],
-     [$text:expr, $text_muted:expr, $text_faint:expr], [$term_background:expr, $term_foreground:expr]) => {
-        ThemeSpec {
-            id: $id, name: $name, dark: $dark, flat: false,
-            thumbnail_file: $thumbnail,
-            thumbnail_png: include_bytes!(concat!("../assets/themes/", $thumbnail)),
-            accent: $accent, selected: None, canvas: $canvas, background: $background, sidebar: $sidebar, surface: $surface,
-            text: $text, text_muted: $text_muted, text_faint: $text_faint,
-            term_background: $term_background, term_foreground: $term_foreground, term_ansi: None,
+macro_rules! color_tokens {
+    ($($field:ident),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        pub struct ThemeColors { $(pub $field: u32,)+ }
+        impl ThemeColors {
+            fn read(color: &impl Fn(&str) -> u32) -> Self {
+                Self { $($field: color(&stringify!($field).replace('_', "-")),)+ }
+            }
         }
     };
 }
 
-/// Dark themes. The first is the default.
-pub const DARK_THEMES: &[ThemeSpec] = &[
-    ThemeSpec {
-        flat: true,
-        selected: Some(0x3a4a58),
-        term_ansi: Some(GRAPHITE_ANSI),
-        ..spec!("graphite", "Graphite", true, "01_00_graphite.png", 0x7c90a9, [0x25272b, 0x25272b, 0x222328, 0x1f1f27], [0xf2f2f3, 0xa1a3aa, 0xa1a3aa], [0x25272b, 0xf2f2f3])
-    },
-    spec!("ember", "Ember", true, "01_01_ember.png", BRAND_DARK, [0x15110f, 0x1d1714, 0x211b17, 0x2b231d], [0xf4ede6, 0xb8a69a, 0xa08b7c], [0x1b1512, 0xe4d5c9]),
-    spec!("midnight", "Midnight", true, "01_02_midnight.png", 0x60a5fa, [0x0c1220, 0x111b2d, 0x162136, 0x1e2b43], [0xe6edfa, 0xa0b2cf, 0x8a9fbe], [0x101a2b, 0xd0dcef]),
-    spec!("forest", "Forest", true, "01_03_forest.png", 0x4ade80, [0x0d1711, 0x122019, 0x17271e, 0x1e3025], [0xe5f1e8, 0xa1bba9, 0x89a792], [0x101e16, 0xd0e3d5]),
-    spec!("twilight", "Twilight", true, "01_04_twilight.png", 0xb794f6, [0x160f22, 0x1e162e, 0x241b37, 0x2e2344], [0xf0e8fa, 0xb6a6cd, 0xa18ebc], [0x1c142a, 0xe0d3ee]),
-    spec!("rose", "Rosé", true, "01_05_rose.png", 0xf472b6, [0x1c0f17, 0x27151f, 0x2e1925, 0x38202e], [0xfae8f1, 0xc7a5b7, 0xb38fa1], [0x24121c, 0xedd4e1]),
-    spec!("glacier", "Glacier", true, "01_06_glacier.png", 0x67d5e8, [0x0c151b, 0x111e26, 0x16252e, 0x1d303b], [0xe5f3f7, 0xa1bac5, 0x88a5b2], [0x0f1c24, 0xcfe6ee]),
-    spec!("obsidian", "Obsidian", true, "01_07_obsidian.png", 0xd4d4d8, [0x101011, 0x171718, 0x1c1c1e, 0x252527], [0xededee, 0xadadb2, 0x909098], [0x141415, 0xd6d6d9]),
-];
+color_tokens! {
+    background, foreground, card, card_foreground, popover, popover_foreground,
+    primary, primary_foreground, secondary, secondary_foreground, muted, muted_foreground,
+    accent, accent_foreground, destructive, destructive_foreground, border, input, ring,
+    sidebar, sidebar_foreground, sidebar_primary, sidebar_primary_foreground,
+    sidebar_accent, sidebar_accent_foreground, sidebar_border, sidebar_ring,
+    chart_1, chart_2, chart_3, chart_4, chart_5,
+}
 
-/// Light themes, the counterparts of the dark ones. The first is the default.
-pub const LIGHT_THEMES: &[ThemeSpec] = &[
-    spec!("ivory", "Ivory", false, "02_01_ivory.png", 0xb95c20, [0xeee3d6, 0xfffbf5, 0xfaf2e8, 0xfffdf9], [0x2c2119, 0x665345, 0x7d6959], [0xfffaf2, 0x392b20]),
-    spec!("sky", "Sky", false, "02_02_sky.png", 0x2563c5, [0xe0e9f7, 0xf8fbff, 0xeef4fd, 0xfcfdff], [0x17243b, 0x4b5d78, 0x5e708a], [0xf6faff, 0x23334e]),
-    spec!("sage", "Sage", false, "02_03_sage.png", 0x47764c, [0xe0eadb, 0xf9fcf6, 0xf0f6eb, 0xfcfef9], [0x1e2b1c, 0x50624a, 0x63745b], [0xf6faf1, 0x2b3925]),
-    spec!("lavender", "Lavender", false, "02_04_lavender.png", 0x7c3aed, [0xe9e0f5, 0xfcf9ff, 0xf4edfc, 0xfefcff], [0x251936, 0x5f4e75, 0x78648d], [0xfbf7ff, 0x332344]),
-    spec!("blossom", "Blossom", false, "02_05_blossom.png", 0xbe326e, [0xf2dfe8, 0xfff9fc, 0xfceef4, 0xfffcfd], [0x321b26, 0x704c5f, 0x866377], [0xfff6fa, 0x402331]),
-    spec!("sand", "Sand", false, "02_06_sand.png", 0x94683f, [0xece0cf, 0xfffaf2, 0xf8efdf, 0xfffcf7], [0x302619, 0x68583f, 0x7b6a4f], [0xfdf7ed, 0x3b3021]),
-    spec!("slate", "Slate", false, "02_07_slate.png", 0x596275, [0xe1e3e9, 0xfbfcfe, 0xf0f2f6, 0xfefeff], [0x202530, 0x535c6d, 0x636e7e], [0xf8f9fc, 0x2c3340]),
-];
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThemeShadow {
+    pub color: u32,
+    pub opacity: f32,
+    pub x: f32,
+    pub y: f32,
+    pub blur: f32,
+    pub spread: f32,
+}
 
-/// The dark or light theme with this id, or the default one.
+/// One native variant of an embedded source theme. Layout and terminal font overrides
+/// remain user settings; source colors, UI fonts, radii and shadows live here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThemeSpec {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub source: &'static str,
+    pub dark: bool,
+    pub colors: ThemeColors,
+    pub font_sans: &'static str,
+    pub font_mono: &'static str,
+    pub radius: f32,
+    pub shadow: ThemeShadow,
+}
+
+pub static DARK_THEMES: LazyLock<Vec<ThemeSpec>> = LazyLock::new(|| catalog::load(true));
+pub static LIGHT_THEMES: LazyLock<Vec<ThemeSpec>> = LazyLock::new(|| catalog::load(false));
+
+pub fn themes(dark: bool) -> &'static [ThemeSpec] {
+    if dark { &DARK_THEMES } else { &LIGHT_THEMES }
+}
+
+/// Removed and unknown theme IDs resolve to Komando Default in the requested mode.
 pub fn theme(dark: bool, id: &str) -> &'static ThemeSpec {
-    // Retain saved selections from before the supplied artwork established these names.
-    let id = match (dark, id) {
-        (true, "dusk") => "twilight",
-        (false, "ember") => "ivory",
-        (false, "paper") => "sand",
-        (false, "graphite") => "slate",
-        _ => id,
-    };
-    let list = if dark { DARK_THEMES } else { LIGHT_THEMES };
+    let list = themes(dark);
     list.iter().find(|t| t.id == id).unwrap_or(&list[0])
 }
 
 #[derive(Clone, Copy)]
 pub struct AppPalette {
     pub dark: bool,
-    pub flat: bool,
-    /// The window background the islands float on.
+    pub font_family: &'static str,
+    pub mono_family: &'static str,
+    pub radius: f32,
+    pub shadow: ThemeShadow,
     pub canvas: Hsla,
     pub background: Hsla,
     pub sidebar: Hsla,
     pub surface: Hsla,
+    pub surface_text: Hsla,
+    pub popover: Hsla,
+    pub popover_text: Hsla,
     pub hover: Hsla,
+    pub hover_text: Hsla,
+    pub muted: Hsla,
+    pub muted_text: Hsla,
     pub active: Hsla,
+    pub active_text: Hsla,
     pub border: Hsla,
+    pub input: Hsla,
+    pub focus: Hsla,
     pub text: Hsla,
     pub text_muted: Hsla,
     pub text_faint: Hsla,
     pub brand: Hsla,
     pub brand_soft: Hsla,
-    /// Text and icons on a `brand` background: near-black or white, whichever reads better.
     pub on_brand: Hsla,
+    pub secondary: Hsla,
+    pub on_secondary: Hsla,
     pub danger: Hsla,
+    pub on_danger: Hsla,
     pub success: Hsla,
     pub warning: Hsla,
+    navigation: ThemeColors,
 }
 
 impl AppPalette {
-    pub fn dark() -> Self {
-        Self::from_theme(&DARK_THEMES[0])
-    }
-
-    pub fn light() -> Self {
-        Self::from_theme(&LIGHT_THEMES[0])
-    }
+    pub fn dark() -> Self { Self::from_theme(&DARK_THEMES[0]) }
+    pub fn light() -> Self { Self::from_theme(&LIGHT_THEMES[0]) }
 
     pub fn from_theme(t: &ThemeSpec) -> Self {
-        let (ink, glare) = if t.dark { (0xffffff, 1.) } else { (0x000000, 0.8) };
+        let c = t.colors;
         Self {
             dark: t.dark,
-            flat: t.flat,
-            canvas: hex(t.canvas),
-            background: hex(t.background),
-            sidebar: hex(t.sidebar),
-            surface: hex(t.surface),
-            hover: if t.flat { hex(0x2e3137) } else { alpha(ink, 0.05 * glare) },
-            active: t.selected.map(hex).unwrap_or_else(|| alpha(ink, 0.08 * glare + if t.dark { 0. } else { 0.006 })),
-            border: if t.flat { hex(0x3a3d44) } else { alpha(t.text, if t.dark { 0.07 } else { 0.09 }) },
-            text: hex(t.text),
-            text_muted: hex(t.text_muted),
-            text_faint: hex(t.text_faint),
-            brand: hex(t.accent),
-            brand_soft: if t.flat { hex(0x24282d) } else { alpha(t.accent, if t.dark { 0.16 } else { 0.10 }) },
-            on_brand: hex(if t.flat { t.surface } else { on_color(t.accent) }),
-            danger: hex(if t.dark { 0xf87171 } else { 0xdc2626 }),
-            success: hex(if t.dark { 0x4ade80 } else { 0x16a34a }),
-            // amber-700 in light themes: 5:1 on white, so warning text reads.
-            warning: hex(if t.dark { 0xfbbf24 } else { 0xb45309 }),
+            font_family: t.font_sans, mono_family: t.font_mono, radius: t.radius, shadow: t.shadow,
+            canvas: hex(c.background), background: hex(c.background), sidebar: hex(c.sidebar),
+            surface: hex(c.card), surface_text: hex(readable(c.card_foreground, c.card, 4.5)),
+            popover: hex(c.popover), popover_text: hex(readable(c.popover_foreground, c.popover, 4.5)),
+            hover: hex(c.accent), hover_text: hex(readable(c.accent_foreground, c.accent, 4.5)),
+            muted: hex(c.muted), muted_text: hex(readable(c.muted_foreground, c.muted, 4.5)),
+            active: hex(c.accent), active_text: hex(readable(c.accent_foreground, c.accent, 4.5)),
+            border: hex(c.border), input: hex(c.input), focus: hex(c.ring),
+            text: hex(readable(c.foreground, c.background, 4.5)),
+            text_muted: hex(readable(c.muted_foreground, c.background, 4.5)),
+            text_faint: hex(readable(c.muted_foreground, c.background, 4.5)),
+            brand: hex(c.primary), on_brand: hex(readable(c.primary_foreground, c.primary, 4.5)),
+            brand_soft: hex(c.accent), secondary: hex(c.secondary),
+            on_secondary: hex(readable(c.secondary_foreground, c.secondary, 4.5)),
+            danger: hex(c.destructive), on_danger: hex(readable(c.destructive_foreground, c.destructive, 4.5)),
+            success: hex(if t.dark { 0x86b98b } else { 0x347044 }),
+            warning: hex(if t.dark { 0xd9bc7b } else { 0x865a12 }), navigation: c,
         }
     }
 
-    /// Let the window backdrop (Mica) show through. `t` is 0 (opaque) to 1. The canvas
-    /// becomes almost clear, islands half-clear; dialogs (`surface`) stay opaque.
+    /// Apply sidebar-specific foreground, selection, primary, border and focus tokens.
+    pub fn navigation(mut self) -> Self {
+        let c = self.navigation;
+        self.background = self.sidebar;
+        self.text = hex(readable(c.sidebar_foreground, c.sidebar, 4.5));
+        self.text_muted = self.text;
+        self.text_faint = self.text.opacity(0.8);
+        self.hover = hex(c.sidebar_accent);
+        self.hover_text = hex(readable(c.sidebar_accent_foreground, c.sidebar_accent, 4.5));
+        self.active = self.hover;
+        self.active_text = self.hover_text;
+        self.brand_soft = self.hover;
+        self.brand = hex(c.sidebar_primary);
+        self.on_brand = hex(readable(c.sidebar_primary_foreground, c.sidebar_primary, 4.5));
+        self.border = hex(c.sidebar_border);
+        self.focus = hex(c.sidebar_ring);
+        self
+    }
+
+    pub fn panel(mut self) -> Self {
+        let c = self.navigation;
+        self.background = self.surface;
+        self.text = self.surface_text;
+        self.text_muted = hex(readable(c.muted_foreground, c.card, 4.5));
+        self.text_faint = self.text_muted;
+        self.brand = hex(c.primary);
+        self.on_brand = hex(readable(c.primary_foreground, c.primary, 4.5));
+        self.border = hex(c.border);
+        self.focus = hex(c.ring);
+        self.hover = hex(c.accent);
+        self.hover_text = hex(readable(c.accent_foreground, c.accent, 4.5));
+        self.active = self.hover;
+        self.active_text = self.hover_text;
+        self.brand_soft = self.hover;
+        self
+    }
+
+    pub fn highlighted(mut self) -> Self {
+        self.background = self.active;
+        self.text = self.active_text;
+        self.text_muted = self.active_text;
+        self.text_faint = self.active_text;
+        self.brand = self.active_text;
+        self
+    }
+
+    /// Preserve native size hierarchy while taking the source theme's base corner radius.
+    pub fn corner(self, base: f32) -> gpui::Pixels { gpui::px((base + self.radius - 8.).max(0.)) }
+
     pub fn translucent(mut self, t: f32) -> Self {
-        if self.flat { return self; }
         let t = t.clamp(0., 1.);
         self.canvas.a *= 1. - 0.92 * t;
         self.sidebar.a *= 1. - 0.55 * t;
@@ -166,10 +194,25 @@ impl AppPalette {
     }
 }
 
-/// Near-black or white, whichever has more contrast on `bg`.
-fn on_color(bg: u32) -> u32 {
-    const INK: u32 = 0x1c1917;
-    if contrast(INK, bg) >= contrast(0xffffff, bg) { INK } else { 0xffffff }
+/// Preserve supplied foregrounds when readable. Otherwise minimally move them towards
+/// black or white; never change a source background or lose a foreground/background pair.
+fn readable(fg: u32, bg: u32, minimum: f32) -> u32 {
+    if contrast(fg, bg) >= minimum { return fg; }
+    let target: u32 = if contrast(0, bg) > contrast(0xffffff, bg) { 0 } else { 0xffffff };
+    let mix = |amount: f32| {
+        let ch = |shift: u32| {
+            let a = ((fg >> shift) & 255u32) as f32;
+            let b = ((target >> shift) & 255u32) as f32;
+            (a + (b - a) * amount).round() as u32
+        };
+        (ch(16) << 16) | (ch(8) << 8) | ch(0)
+    };
+    let (mut low, mut high) = (0., 1.);
+    for _ in 0..16 {
+        let mid = (low + high) / 2.;
+        if contrast(mix(mid), bg) >= minimum { high = mid; } else { low = mid; }
+    }
+    mix(high)
 }
 
 /// WCAG relative luminance of `0xrrggbb`.
@@ -190,13 +233,13 @@ pub fn contrast(a: u32, b: u32) -> f32 {
 #[derive(Clone, PartialEq)]
 pub struct TerminalPalette {
     pub dark: bool,
-    pub flat: bool,
     pub background: Rgb,
     /// Opacity of the terminal's own background (below 1 when the backdrop shows through).
     pub background_alpha: f32,
     pub foreground: Rgb,
     pub cursor: Rgb,
     pub selection: Hsla,
+    pub selection_foreground: Rgb,
     pub ansi: [Rgb; 16],
 }
 
@@ -212,29 +255,32 @@ impl TerminalPalette {
     /// Theme-specific terminal neutrals and optional ANSI colours. Reds, greens, etc.
     /// retain their meaning in programs across all themes.
     pub fn from_theme(t: &ThemeSpec) -> Self {
-        let mut ansi = t.term_ansi.unwrap_or(if t.dark { DARK_ANSI } else { LIGHT_ANSI });
-        // Keep ANSI black lifted on dark backgrounds so black output stays visible.
-        if !t.dark {
-            ansi[0] = rgb8(t.term_foreground);
+        let c = t.colors;
+        let dark_surface = luminance(c.background) < 0.2;
+        let mut ansi = if dark_surface { DARK_ANSI } else { LIGHT_ANSI };
+        // Gently tint semantic ANSI hues towards the theme, then keep colored text readable.
+        // Programs still get red/green/blue meanings, rather than a primary hue in every slot.
+        for (_, color) in ansi.iter_mut().enumerate().filter(|(i, _)| i % 8 != 0 && i % 8 != 7) {
+            let blend = |channel: u8, shift: u32| ((channel as u32 * 9 + ((c.primary >> shift) & 255)) / 10) as u8;
+            let tinted = Rgb { r: blend(color.r, 16), g: blend(color.g, 8), b: blend(color.b, 0) };
+            let packed = ((tinted.r as u32) << 16) | ((tinted.g as u32) << 8) | tinted.b as u32;
+            *color = rgb8(readable(packed, c.background, 4.5));
         }
-        ansi[7] = rgb8(if t.dark { t.term_foreground } else { t.text_faint });
-        ansi[8] = rgb8(t.text_muted);
-        ansi[15] = rgb8(if t.dark { t.text } else { t.text_muted });
+        ansi[0] = rgb8(if dark_surface { readable(0x454850, c.background, 1.5) } else { c.foreground });
+        ansi[7] = rgb8(c.foreground);
+        ansi[8] = rgb8(readable(c.muted_foreground, c.background, 4.5));
+        ansi[15] = rgb8(c.foreground);
         Self {
-            dark: t.dark,
-            flat: t.flat,
-            background: rgb8(t.term_background),
-            background_alpha: 1.,
-            foreground: rgb8(t.term_foreground),
-            cursor: rgb8(if t.flat { t.accent } else { t.text }),
-            selection: t.selected.map(hex).unwrap_or_else(|| alpha(t.accent, if t.dark { 0.30 } else { 0.20 })),
-            ansi,
+            dark: dark_surface,
+            background: rgb8(c.background), background_alpha: 1.,
+            foreground: rgb8(readable(c.foreground, c.background, 4.5)),
+            cursor: rgb8(readable(c.primary, c.background, 3.)),
+            selection: hex(c.accent), selection_foreground: rgb8(readable(c.accent_foreground, c.accent, 4.5)), ansi,
         }
     }
 
     /// The terminal keeps more of its background than the islands so text stays readable.
     pub fn translucent(mut self, t: f32) -> Self {
-        if self.flat { return self; }
         self.background_alpha = 1. - 0.45 * t.clamp(0., 1.);
         self
     }
@@ -350,15 +396,6 @@ pub fn rgb_to_hsla(c: Rgb) -> Hsla {
     rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32).into()
 }
 
-/// Muted semantic colours for Graphite; ANSI blue follows its steel-blue accent.
-#[rustfmt::skip]
-const GRAPHITE_ANSI: [Rgb; 16] = [
-    rgb8(0x454850), rgb8(0xc28b8f), rgb8(0x9caf98), rgb8(0xc3b590),
-    rgb8(0x7c90a9), rgb8(0xad9bb9), rgb8(0x8eafb6), rgb8(0xa1a3aa),
-    rgb8(0x777b85), rgb8(0xd4a1a5), rgb8(0xb0c2aa), rgb8(0xd4c7a4),
-    rgb8(0x9bacc1), rgb8(0xc0afcb), rgb8(0xa4c2c8), rgb8(0xf2f2f3),
-];
-
 #[rustfmt::skip]
 const DARK_ANSI: [Rgb; 16] = [
     // Semantic colours are shared; from_theme replaces the neutral slots.
@@ -384,139 +421,131 @@ const fn rgb8(v: u32) -> Rgb {
 mod tests {
     use super::*;
 
+    fn value(h: Hsla) -> u32 {
+        let c: Rgba = h.into();
+        let ch = |c: f32| (c * 255.).round() as u32;
+        (ch(c.r) << 16) | (ch(c.g) << 8) | ch(c.b)
+    }
+
     #[test]
-    fn project_colors_accept_presets_and_hex() {
+    fn catalog_has_all_nine_sources_in_both_modes() {
+        let expected = ["Komando Default", "Sage Green", "Noctua", "AstroVista", "QraftHive 1.0", "Gold?", "Mint Theme", "FL-Theme", "Salesforce"];
+        for dark in [false, true] {
+            let list = themes(dark);
+            assert_eq!(list.len(), 9);
+            let mut ids = std::collections::HashSet::new();
+            for (t, name) in list.iter().zip(expected) {
+                assert_eq!(t.name, name);
+                assert_eq!(t.dark, dark);
+                assert!(ids.insert(t.id));
+                assert!(t.source.starts_with("https://tweakcn.com/themes/"));
+                assert!(!t.font_sans.is_empty() && !t.font_mono.is_empty());
+                assert!(t.radius.is_finite() && t.radius >= 0.);
+            }
+        }
+    }
+
+    #[test]
+    fn removed_ids_and_missing_settings_resolve_to_komando_default() {
+        let settings: crate::model::Settings = toml::from_str("").unwrap();
+        assert_eq!(settings.dark_theme, DEFAULT_THEME);
+        assert_eq!(settings.light_theme, DEFAULT_THEME);
+        assert!(settings.font_family.is_empty());
+        for dark in [false, true] {
+            for old in ["graphite", "ember", "ivory", "nope"] {
+                assert_eq!(theme(dark, old).id, DEFAULT_THEME);
+            }
+        }
+        let mut saved = settings;
+        saved.dark_theme = "noctua".into();
+        saved.light_theme = "salesforce".into();
+        saved.font_family = "Cascadia Mono".into();
+        let loaded: crate::model::Settings = toml::from_str(&toml::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(saved, loaded);
+        assert_eq!(theme(true, &loaded.dark_theme).name, "Noctua");
+    }
+
+    #[test]
+    fn native_roles_preserve_distinct_source_colors_and_styles() {
+        let t = theme(true, "qrafthive");
+        let p = AppPalette::from_theme(t);
+        let nav = p.navigation();
+        assert_eq!(value(p.brand), 0xc1253d);
+        assert_eq!(value(nav.brand), 0x1da1f2);
+        assert_eq!(value(nav.panel().brand), 0xc1253d);
+        assert_eq!(value(p.secondary), 0xf0f3f4);
+        assert_eq!(value(p.hover), 0x061622);
+        assert_eq!(value(p.popover), 0x202020);
+        assert_eq!(p.font_family, "Outfit");
+        assert_eq!(p.mono_family, "JetBrains Mono");
+        assert_eq!(p.corner(8.), gpui::px(8.));
+        let default = AppPalette::dark();
+        assert_eq!(default.font_family, "Outfit");
+        assert_eq!(default.mono_family, "Geist Mono");
+        assert_eq!(default.corner(8.), gpui::px(16.));
+        assert_eq!(default.shadow.blur, 3.);
+        assert_eq!(default.shadow.opacity, 0.1);
+        // FL-Theme publishes a light background for both modes; keep it faithfully.
+        assert_eq!(theme(true, "fl-theme").colors.background, 0xf1f5f8);
+        assert!(!TerminalPalette::from_theme(theme(true, "fl-theme")).dark);
+    }
+
+    #[test]
+    fn effective_foreground_pairs_and_terminal_selections_are_readable() {
+        for t in themes(false).iter().chain(themes(true)) {
+            let p = AppPalette::from_theme(t);
+            let nav = p.navigation();
+            let term = TerminalPalette::from_theme(t);
+            for (fg, bg) in [(p.text, p.background), (p.text_muted, p.background), (p.surface_text, p.surface),
+                (p.popover_text, p.popover), (p.on_brand, p.brand), (p.on_secondary, p.secondary),
+                (p.active_text, p.active), (p.muted_text, p.muted), (p.on_danger, p.danger), (nav.text, nav.background), (nav.active_text, nav.active)] {
+                assert!(contrast(value(fg), value(bg)) >= 4.48, "{} {} contrast", t.name, t.dark);
+            }
+            assert!(contrast(value(rgb_to_hsla(term.foreground)), value(rgb_to_hsla(term.background))) >= 4.48);
+            assert!(contrast(value(rgb_to_hsla(term.selection_foreground)), value(term.selection)) >= 4.48);
+            for index in [1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14] {
+                assert!(contrast(value(rgb_to_hsla(term.ansi[index])), t.colors.background) >= 4.48, "{} ANSI {index}", t.name);
+            }
+        }
+    }
+
+    #[test]
+    fn source_styles_reach_library_controls_and_reset_when_switching() {
+        let mut library = gpui_component::Theme::default();
+        for id in ["noctua", "mint", "komando-default", "salesforce"] {
+            let p = AppPalette::from_theme(theme(true, id));
+            p.apply_components(&mut library);
+            assert_eq!(library.font_family.as_ref(), p.font_family);
+            assert_eq!(library.radius, gpui::px(p.radius));
+            assert_eq!(library.shadow, p.shadow.opacity > 0.);
+            assert_eq!(library.colors.popover, p.popover);
+            assert_eq!(library.colors.primary, p.brand);
+            assert_eq!(library.colors.button_primary_foreground, p.on_brand);
+            assert_eq!(library.colors.secondary, p.secondary);
+            assert_eq!(library.colors.ring, p.focus);
+            assert_eq!(crate::ui::widgets::elevation(p).is_empty(), p.shadow.opacity == 0.);
+        }
+    }
+
+    #[test]
+    fn xterm_extended_colors_and_color_queries_remain_standard() {
+        for p in [TerminalPalette::dark(), TerminalPalette::light()] {
+            assert_eq!(p.indexed(16), rgb8(0));
+            assert_eq!(p.indexed(196), rgb8(0xff0000));
+            assert_eq!(p.indexed(232), rgb8(0x080808));
+            assert_eq!(p.indexed(255), rgb8(0xeeeeee));
+            assert_eq!(p.color_at(1), p.ansi[1]);
+            assert_eq!(p.color_at(NamedColor::Foreground as usize), p.foreground);
+            assert_eq!(p.color_at(NamedColor::Background as usize), p.background);
+            assert_eq!(p.color_at(NamedColor::Cursor as usize), p.cursor);
+        }
+    }
+
+    #[test]
+    fn project_colors_are_independent_of_theme() {
         assert_eq!(project_color("red"), hex(0xef4444));
         assert_eq!(project_color("#123456"), hex(0x123456));
         assert_eq!(project_color("nonsense"), hex(0x64748b));
-    }
-
-    /// Every theme keeps its text readable: body and secondary text at 4.5:1 or better on
-    /// the islands and the sidebar, the accent at 3:1 (it marks controls and links), and the
-    /// terminal text at 7:1.
-    #[test]
-    fn themes_are_readable() {
-        for t in DARK_THEMES.iter().chain(LIGHT_THEMES) {
-            for bg in [t.background, t.sidebar, t.surface] {
-                for (what, fg, min) in [("text", t.text, 7.), ("muted", t.text_muted, 4.5), ("faint", t.text_faint, 4.5), ("accent", t.accent, 3.)] {
-                    let c = contrast(fg, bg);
-                    assert!(c >= min, "{} ({}): {what} {fg:06x} on {bg:06x} is {c:.2}:1", t.name, if t.dark { "dark" } else { "light" });
-                }
-            }
-            let c = contrast(t.term_foreground, t.term_background);
-            assert!(c >= 7., "{}: terminal text is {c:.2}:1", t.name);
-            let c = contrast(on_color(t.accent), t.accent);
-            assert!(c >= 4.5, "{}: button text on accent is {c:.2}:1", t.name);
-        }
-    }
-
-    #[test]
-    fn theme_ids_are_unique_and_unknown_ids_fall_back() {
-        for list in [DARK_THEMES, LIGHT_THEMES] {
-            let mut ids: Vec<_> = list.iter().map(|t| t.id).collect();
-            ids.sort();
-            ids.dedup();
-            assert_eq!(ids.len(), list.len());
-        }
-        assert_eq!(theme(true, "nope").id, "graphite");
-        assert_eq!(theme(false, "nope").id, "ivory");
-        assert_eq!(theme(false, "sky").name, "Sky");
-    }
-
-    #[test]
-    fn themes_match_supplied_artwork_manifest() {
-        let manifest: Vec<serde_json::Value> = serde_json::from_str(include_str!("../assets/themes/themes.json")).unwrap();
-        let themes: Vec<_> = DARK_THEMES.iter().chain(LIGHT_THEMES).collect();
-        assert_eq!(themes.len(), manifest.len());
-        for (t, entry) in themes.iter().zip(manifest) {
-            assert_eq!(t.name, entry["name"].as_str().unwrap());
-            assert_eq!(if t.dark { "dark" } else { "light" }, entry["mode"].as_str().unwrap());
-            assert_eq!(t.thumbnail_file, entry["file"].as_str().unwrap());
-            assert!(t.thumbnail_png.starts_with(b"\x89PNG\r\n\x1a\n"), "{} is not a PNG", t.name);
-        }
-    }
-
-    #[test]
-    fn renamed_themes_keep_saved_selections() {
-        for (dark, old, new) in [
-            (true, "dusk", "twilight"),
-            (true, "graphite", "graphite"),
-            (true, "ember", "ember"),
-            (true, "obsidian", "obsidian"),
-            (false, "ember", "ivory"),
-            (false, "paper", "sand"),
-            (false, "graphite", "slate"),
-        ] {
-            let mut settings = crate::model::Settings::default();
-            if dark { settings.dark_theme = old.into(); } else { settings.light_theme = old.into(); }
-            let saved = toml::to_string(&settings).unwrap();
-            let loaded: crate::model::Settings = toml::from_str(&saved).unwrap();
-            assert_eq!(theme(dark, if dark { &loaded.dark_theme } else { &loaded.light_theme }).id, new);
-        }
-    }
-
-    #[test]
-    fn xterm_256_cube_and_grays() {
-        let p = TerminalPalette::dark();
-        assert_eq!(p.indexed(16), Rgb { r: 0, g: 0, b: 0 });
-        assert_eq!(p.indexed(196), Rgb { r: 255, g: 0, b: 0 });
-        assert_eq!(p.indexed(232), Rgb { r: 8, g: 8, b: 8 });
-        assert_eq!(p.indexed(255), Rgb { r: 238, g: 238, b: 238 });
-    }
-
-    #[test]
-    fn graphite_defaults_cover_app_terminal_and_saved_settings() {
-        let settings: crate::model::Settings = toml::from_str("").unwrap();
-        let t = theme(true, &settings.dark_theme);
-        assert_eq!(t.id, "graphite");
-        assert_eq!(t, &DARK_THEMES[0]);
-        let saved = toml::to_string(&settings).unwrap();
-        let loaded: crate::model::Settings = toml::from_str(&saved).unwrap();
-        assert_eq!(theme(true, &loaded.dark_theme).id, "graphite");
-        let app = AppPalette::dark();
-        let term = TerminalPalette::dark();
-        assert_eq!(app.canvas, hex(0x25272b));
-        assert_eq!(app.sidebar, hex(0x222328));
-        assert_eq!(app.surface, hex(0x1f1f27));
-        assert_eq!(app.active, hex(0x3a4a58));
-        assert_eq!(app.brand, hex(0x7c90a9));
-        assert_eq!(app.text, hex(0xf2f2f3));
-        assert_eq!(app.text_muted, hex(0xa1a3aa));
-        assert_eq!(term.background, rgb8(0x25272b));
-        assert_eq!(term.foreground, rgb8(0xf2f2f3));
-        assert_eq!(term.selection, app.active);
-        assert_eq!(term.ansi[4], rgb8(0x7c90a9));
-        assert!(contrast(t.text, t.selected.unwrap()) >= 7.);
-        assert!(contrast(t.text_muted, t.background) >= 4.5);
-        assert!(contrast(t.surface, t.accent) >= 4.5);
-        assert!(contrast(t.accent, 0x24282d) >= 4.5);
-    }
-
-    #[test]
-    fn graphite_stays_flat_when_background_blur_is_enabled() {
-        for intensity in [0., 0.6, 1.] {
-            let app = AppPalette::dark().translucent(intensity);
-            assert!(app.flat);
-            for color in [app.canvas, app.background, app.sidebar, app.surface, app.hover, app.active, app.brand_soft, app.border] {
-                assert_eq!(color.a, 1.);
-            }
-            assert!(crate::ui::widgets::elevation(app).is_empty());
-            assert_eq!(TerminalPalette::dark().translucent(intensity).background_alpha, 1.);
-        }
-        let ember = theme(true, "ember");
-        assert!(AppPalette::from_theme(ember).translucent(0.6).canvas.a < 1.);
-        assert!(TerminalPalette::from_theme(ember).translucent(0.6).background_alpha < 1.);
-        assert!(!crate::ui::widgets::elevation(AppPalette::from_theme(ember)).is_empty());
-    }
-
-    #[test]
-    fn color_queries_use_xterm_numbering() {
-        let p = TerminalPalette::dark();
-        assert_eq!(p.color_at(1), p.ansi[1]);
-        assert_eq!(p.color_at(196), Rgb { r: 255, g: 0, b: 0 });
-        assert_eq!(p.color_at(NamedColor::Foreground as usize), p.foreground);
-        assert_eq!(p.color_at(NamedColor::Background as usize), p.background);
-        assert_eq!(p.color_at(NamedColor::Cursor as usize), p.cursor);
     }
 }
 

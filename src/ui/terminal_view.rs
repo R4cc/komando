@@ -40,7 +40,7 @@ use crate::session::{
     Answer, EventProxy, GridSize, InputSink, Prompt, Remembered, SessionEvent, SharedTerm, Status, new_term,
     scrollback_text,
 };
-use crate::theme::{Appearance, UI_FONT, rgb_to_hsla};
+use crate::theme::{Appearance, rgb_to_hsla};
 use crate::ui::box_drawing::{self, Prim};
 use crate::ui::widgets::{button, caps_lock_indicator, icon_el, password_input, ButtonKind};
 
@@ -1678,7 +1678,7 @@ impl TerminalView {
                     .max_w(px(520.))
                     .px(px(14.))
                     .py(px(10.))
-                    .rounded(px(12.))
+                    .rounded(p.corner(12.))
                     .bg(p.surface)
                     .border_1()
                     .border_color(p.border)
@@ -1698,7 +1698,7 @@ impl TerminalView {
                     )
                     .child(
                         div()
-                            .font_family(UI_FONT)
+                            .font_family(p.font_family)
                             .text_size(px(12.))
                             .text_color(p.text_muted)
                             .whitespace_nowrap()
@@ -1809,7 +1809,7 @@ impl TerminalView {
             div()
                 .w(px(420.))
                 .p(px(20.))
-                .rounded(px(14.))
+                .rounded(p.corner(14.))
                 .bg(p.surface)
                 .border_1()
                 .border_color(p.border)
@@ -1817,7 +1817,7 @@ impl TerminalView {
                 .flex()
                 .flex_col()
                 .gap(px(14.))
-                .font_family(UI_FONT)
+                .font_family(p.font_family)
                 .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title.to_string()))
                 .child(body)
                 .child(div().flex().justify_end().gap(px(8.)).children(actions))
@@ -1828,9 +1828,9 @@ impl TerminalView {
             div()
                 .px(px(10.))
                 .py(px(8.))
-                .rounded(px(8.))
+                .rounded(p.corner(8.))
                 .bg(p.hover)
-                .font_family("Cascadia Mono")
+                .font_family(p.mono_family)
                 .text_size(px(12.))
                 .text_color(p.text)
                 .child(s)
@@ -1896,7 +1896,7 @@ impl TerminalView {
                                 .child(
                                     div()
                                         .size(px(16.))
-                                        .rounded(px(4.))
+                                        .rounded(p.corner(4.))
                                         .border_1()
                                         .border_color(if ticked { p.brand } else { p.border })
                                         .when(ticked, |el| el.bg(p.brand))
@@ -1961,12 +1961,12 @@ impl TerminalView {
                         .gap(px(10.))
                         .px(px(14.))
                         .py(px(9.))
-                        .rounded(px(10.))
+                        .rounded(p.corner(10.))
                         .bg(p.surface)
                         .border_1()
                         .border_color(p.border)
                         .shadow(crate::ui::widgets::elevation(p))
-                        .font_family(UI_FONT)
+                        .font_family(p.font_family)
                         .text_size(px(13.))
                         .child(div().size(px(8.)).rounded_full().bg(p.text_faint))
                         .child(div().text_color(p.text).child(reason.clone()))
@@ -2051,6 +2051,7 @@ struct RowContext<'a> {
     dark: bool,
     default_bg: Rgb,
     selection: Hsla,
+    selection_foreground: Rgb,
     cursor: Option<CursorSnap>,
     focused: bool,
 }
@@ -2201,6 +2202,7 @@ fn layout_row(
             }
             bold |= rule.bold;
         }
+        if cell.selected { fg = ctx.selection_foreground; }
         let width = cell_width(cell);
         if block_cursor && cursor_here.is_some_and(|k| k.col == cell.col) {
             fg = bg;
@@ -2220,7 +2222,7 @@ fn layout_row(
         }
 
         let mut color = rgb_to_hsla(fg);
-        if cell.flags.contains(Flags::DIM) {
+        if cell.flags.contains(Flags::DIM) && !cell.selected {
             color.a *= 0.66;
         }
 
@@ -2667,6 +2669,7 @@ fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &
         dark: look.palette.dark,
         default_bg: look.palette.background,
         selection: look.palette.selection,
+        selection_foreground: look.palette.selection_foreground,
         cursor,
         focused: look.focused,
     };
@@ -3274,7 +3277,7 @@ impl Render for TerminalView {
             .size_full()
             .flex()
             // Inside a rounded island: round our own background too, 1px in for the border.
-            .rounded(px(crate::ui::widgets::ISLAND_RADIUS - 1.))
+            .rounded(app.corner(crate::ui::widgets::ISLAND_RADIUS - 1.))
             .bg(term_bg)
             // A program that takes the mouse gets an arrow, as in xterm; shift still selects.
             .map(|el| if mouse_reporting { el.cursor_default() } else { el.cursor_text() })
@@ -3295,7 +3298,7 @@ impl Render for TerminalView {
                             .right(px(16.))
                             .px(px(8.))
                             .py(px(5.))
-                            .rounded(px(6.))
+                            .rounded(app.corner(6.))
                             .bg(app.surface)
                             .border_1()
                             .border_color(app.border)
@@ -3623,6 +3626,21 @@ mod tests {
         assert_eq!(at(0, 1), None, "plain text");
         assert_eq!(at(1, 7), None, "the command being typed isn't highlighted");
         assert_eq!(at(0, 50), None, "past the end of the line");
+    }
+
+    #[test]
+    fn terminal_selection_uses_the_theme_foreground_even_for_dim_text() {
+        for theme in crate::theme::themes(false).iter().chain(crate::theme::themes(true)) {
+            let mut grid = Grid::new(30, 3);
+            grid.palette = TerminalPalette::from_theme(theme);
+            grid.cursor_visible = false;
+            grid.feed("\x1b[2mSelected\x1b[0m");
+            grid.select(SelectionType::Simple, (0, 0), (0, 7));
+            grid.frame("selected dim text");
+            let expected = crate::theme::rgb_to_hsla(grid.palette.selection_foreground);
+            let glyph = grid.cache.rows[0].glyphs.iter().find(|g| g.id == gpui::GlyphId('S' as u32)).unwrap();
+            assert_eq!(glyph.color, expected, "{} selection text", theme.name);
+        }
     }
 
     #[test]

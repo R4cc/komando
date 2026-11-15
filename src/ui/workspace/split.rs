@@ -443,7 +443,7 @@ impl Workspace {
         let rect = div().flex_1().min_w_0().h_full().p(px(6.)).child(
             div()
                 .size_full()
-                .rounded(px(ISLAND_RADIUS - 4.))
+                .rounded(p.corner(ISLAND_RADIUS - 4.))
                 .border_2()
                 .border_color(blue.opacity(0.85))
                 .bg(blue.opacity(if p.dark { 0.12 } else { 0.09 })),
@@ -498,12 +498,12 @@ impl Render for DragPreview {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .rounded(px(8.))
+                    .rounded(p.corner(8.))
                     .bg(p.surface.opacity(1.))
                     .border_1()
                     .border_color(p.border)
                     .shadow(elevation(p))
-                    .font_family(crate::theme::UI_FONT)
+                    .font_family(p.font_family)
                     .text_size(px(12.5))
                     .text_color(p.text)
                     .child(div().flex_shrink_0().child(icon_el(&self.icon, 14., self.color)))

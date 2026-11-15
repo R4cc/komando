@@ -875,6 +875,7 @@ pub struct Settings {
     pub dark_theme: String,
     /// The Theme (by id, see `theme::LIGHT_THEMES`) used in light mode.
     pub light_theme: String,
+    /// Empty follows the selected Terminal Theme's bundled font; a name overrides it.
     pub font_family: String,
     pub font_size: f32,
     /// Lines of Scrollback each Session keeps.
@@ -947,9 +948,9 @@ impl Default for Settings {
         Self {
             app_theme: AppThemeSetting::Dark,
             terminal_theme: TerminalThemeSetting::Follow,
-            dark_theme: "graphite".into(),
-            light_theme: "ivory".into(),
-            font_family: "Cascadia Mono".into(),
+            dark_theme: crate::theme::DEFAULT_THEME.into(),
+            light_theme: crate::theme::DEFAULT_THEME.into(),
+            font_family: String::new(),
             font_size: 14.0,
             scrollback_lines: 100_000,
             auto_lock_minutes: 0,
@@ -965,7 +966,7 @@ impl Default for Settings {
             minimap_placement: MinimapPlacement::Beside,
             minimap_delay_ms: 300,
             disabled_highlight_sets: vec![],
-            background_blur: true,
+            background_blur: false,
             minimize_to_tray: true,
             background_blur_intensity: 60,
             check_for_updates: true,

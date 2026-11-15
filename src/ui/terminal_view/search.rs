@@ -22,7 +22,7 @@ use gpui_component::tooltip::Tooltip;
 
 use super::{SEARCH_CONTEXT, SearchNewer, SearchOlder, TerminalView};
 use crate::search::{self, Matches, Query, Refreshed, Snapshot};
-use crate::theme::{AppPalette, Appearance, UI_FONT};
+use crate::theme::{AppPalette, Appearance};
 use crate::ui::minimap::SearchMarks;
 use crate::ui::widgets::icon_el;
 
@@ -457,12 +457,12 @@ impl TerminalView {
                 .items_center()
                 .gap(px(2.))
                 .p(px(4.))
-                .rounded(px(10.))
+                .rounded(p.corner(10.))
                 .bg(p.surface)
                 .border_1()
                 .border_color(p.border)
                 .shadow(crate::ui::widgets::elevation(p))
-                .font_family(UI_FONT)
+                .font_family(p.font_family)
                 .cursor_default()
                 .on_mouse_down(MouseButton::Left, stop)
                 .on_mouse_down(MouseButton::Middle, stop)
@@ -525,7 +525,7 @@ fn tool(id: &'static str, icon: &str, tip: &'static str, enabled: bool, p: AppPa
         .flex_shrink_0()
         .items_center()
         .justify_center()
-        .rounded(px(6.))
+        .rounded(p.corner(6.))
         .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
         .when(enabled, |el| el.cursor_pointer().hover(move |s| s.bg(p.hover)))
         .child(icon_el(icon, 15., if enabled { p.text_muted } else { p.text_faint.opacity(0.5) }))
@@ -540,7 +540,7 @@ fn toggle(id: &'static str, icon: &str, tip: &'static str, on: bool, p: AppPalet
         .flex_shrink_0()
         .items_center()
         .justify_center()
-        .rounded(px(6.))
+        .rounded(p.corner(6.))
         .cursor_pointer()
         .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
         .when(on, |el| el.bg(p.brand_soft).border_1().border_color(p.brand))
