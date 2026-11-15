@@ -451,6 +451,9 @@ fn default_port() -> u16 {
 pub struct LocalShell {
     pub name: String,
     pub program: String,
+    /// None selects artwork from the program or WSL distribution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     /// Left out of the sidebar (standalone shells only); still found by search, and shown
@@ -610,6 +613,7 @@ impl Library {
     /// Bring back the shells detected on this PC: shown again if hidden, added if removed.
     /// Shells added by hand stay.
     pub fn restore_detected_shells(&mut self) {
+        crate::wsl::refresh();
         let shells = self.standalone_shells_mut();
         for detected in default_shells() {
             match shells.iter_mut().find(|s| s.name == detected.name) {
@@ -999,10 +1003,13 @@ pub fn default_shells() -> Vec<LocalShell> {
     {
         let mut shells = Vec::new();
         if which("pwsh.exe") {
-            shells.push(LocalShell { name: "PowerShell 7".into(), program: "pwsh.exe".into(), args: vec!["-NoLogo".into()], hidden: false });
+            shells.push(LocalShell { name: "PowerShell 7".into(), program: "pwsh.exe".into(), args: vec!["-NoLogo".into()], icon: None, hidden: false });
         }
-        shells.push(LocalShell { name: "Windows PowerShell".into(), program: "powershell.exe".into(), args: vec!["-NoLogo".into()], hidden: false });
-        shells.push(LocalShell { name: "Command Prompt".into(), program: "cmd.exe".into(), args: vec![], hidden: false });
+        shells.push(LocalShell { name: "Windows PowerShell".into(), program: "powershell.exe".into(), args: vec!["-NoLogo".into()], icon: None, hidden: false });
+        shells.push(LocalShell { name: "Command Prompt".into(), program: "cmd.exe".into(), args: vec![], icon: None, hidden: false });
+        for name in crate::wsl::distributions() {
+            shells.push(LocalShell { name: format!("{name} (WSL)"), program: "wsl.exe".into(), args: vec!["--distribution".into(), name.clone()], ..LocalShell::default() });
+        }
         shells
     }
     #[cfg(not(windows))]
@@ -1615,12 +1622,15 @@ startup_commands = [\"uptime\"]
     fn hidden_shells_round_trip_and_old_files_still_load() {
         let lib: Library = toml::from_str("[[shells]]\nname = \"cmd\"\nprogram = \"cmd.exe\"\n").unwrap();
         assert!(!lib.standalone_shells()[0].hidden);
+        assert_eq!(lib.standalone_shells()[0].icon, None);
         let text = toml::to_string_pretty(&lib).unwrap();
         assert!(!text.contains("hidden"), "only written when set: {text}");
         let mut lib = lib;
         lib.standalone_shells_mut()[0].hidden = true;
+        lib.standalone_shells_mut()[0].icon = Some("devicon:ubuntu".into());
         let back: Library = toml::from_str(&toml::to_string_pretty(&lib).unwrap()).unwrap();
         assert!(back.standalone_shells()[0].hidden);
+        assert_eq!(back.standalone_shells()[0].icon.as_deref(), Some("devicon:ubuntu"));
     }
 
     #[test]

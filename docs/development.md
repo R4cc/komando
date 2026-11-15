@@ -56,6 +56,19 @@ install for the current user only (no administrator rights) or for all users; fo
 installs, `msiexec /i Komando-0.2.0-x64.msi /qn` installs for the current user and adding `ALLUSERS=1`
 installs for all users.
 
+## Icon artwork and local shells
+
+The icon picker combines Lucide with the embedded Devicon catalog. Devicon SVGs retain their
+colors and work offline; [the asset notice](../assets/devicon/README.md) records the pinned
+upstream revision, license and update command. Command Prompt keeps its native artwork.
+
+Local Shells have an optional saved icon override. Automatic selection recognizes PowerShell
+and WSL distribution names from `-d`, `--distribution` or `--distribution=...`. Unknown custom
+distributions use the generic Linux icon; users can select another in Settings → Local shells.
+Registered WSL distributions are read from the current user's Lxss registration, without
+starting Linux. Discovery is cached; Restore detected shells refreshes it and retains manual
+icons. Docker/Rancher internal utility distributions are excluded.
+
 ## Remote desktop checks
 
 `cargo test --lib desktop --locked` covers framebuffer rectangles and overlapping CopyRect,

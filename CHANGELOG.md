@@ -11,6 +11,14 @@ All notable changes to Komando are listed here. The format follows
 - A PolyForm Noncommercial 1.0.0 license for Komando-authored code, permitting copying,
   modification and redistribution for noncommercial purposes. Third-party licenses remain
   applicable to their respective components.
+- Full-color Devicon artwork for technology and Linux distribution icons, searchable alongside
+  the existing icons in Project and Host forms and the Local Shell icon selector.
+- Registered WSL 1 and WSL 2 distributions appear among detected Local Shells with matching
+  distribution artwork. Local Shell icons can be selected manually or left on Automatic.
+- Right-click a Host or terminal Session receiving output and choose **Notify when done**
+  for a one-time Windows notification after four seconds of quiet. Click the notification
+  to restore Komando and show that exact Session. Choose **Cancel notification** to stop
+  waiting; disconnecting or closing the Session also cancels it.
 
 ### Changed
 

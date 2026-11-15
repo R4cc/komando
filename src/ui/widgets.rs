@@ -151,12 +151,12 @@ pub fn shell_icon(program: &str) -> Option<&'static str> {
     let file = program.rsplit(['\\', '/']).next().unwrap_or(program).to_lowercase();
     let name = file.strip_suffix(".exe").unwrap_or(&file);
     match name {
-        "pwsh" | "pwsh-preview" => Some("shell:pwsh"),
-        "powershell" => Some("shell:powershell"),
+        "pwsh" | "pwsh-preview" => Some("devicon:powershell"),
+        "powershell" => Some("devicon:powershell"),
         "cmd" => Some("shell:cmd"),
-        "wsl" => Some("shell:linux"),
+        "wsl" => Some("devicon:linux"),
         // Git Bash and friends on Windows are not Linux; elsewhere these are the system's shell.
-        "bash" | "zsh" | "fish" | "sh" | "dash" | "ksh" if !file.ends_with(".exe") => Some("shell:linux"),
+        "bash" | "zsh" | "fish" | "sh" | "dash" | "ksh" if !file.ends_with(".exe") => Some("devicon:linux"),
         _ => None,
     }
 }
@@ -217,12 +217,15 @@ impl gpui::RenderOnce for ShellArtwork {
 
 /// Whether an icon name is full-colour artwork rather than a Lucide icon drawn in one colour.
 pub fn is_artwork(name: &str) -> bool {
-    name.starts_with("shell:")
+    name.starts_with("shell:") || crate::icons::find(name).is_some()
 }
 
-/// A Lucide icon by name (e.g. "server"), drawn in `color`. `shell:` names are a shell's own
-/// full-colour icon instead, which ignores `color`.
+/// A Lucide icon by name (e.g. "server"), drawn in `color`. `shell:` and `devicon:` IDs
+/// preserve their full-color artwork instead.
 pub fn icon_el(name: &str, size: f32, color: Hsla) -> AnyElement {
+    if let Some(icon) = crate::icons::find(name) {
+        return gpui::img(icon.image()).size(px(size)).object_fit(gpui::ObjectFit::Contain).flex_shrink_0().into_any_element();
+    }
     if let Some(frames) = shell_frames(name) {
         return ShellArtwork { frames, size }.into_any_element();
     }
@@ -558,12 +561,12 @@ mod tests {
 
     #[test]
     fn shells_get_their_own_icons() {
-        assert_eq!(shell_icon("pwsh.exe"), Some("shell:pwsh"));
-        assert_eq!(shell_icon(r"C:\Program Files\PowerShell\7\pwsh.exe"), Some("shell:pwsh"));
-        assert_eq!(shell_icon("powershell.exe"), Some("shell:powershell"));
+        assert_eq!(shell_icon("pwsh.exe"), Some("devicon:powershell"));
+        assert_eq!(shell_icon(r"C:\Program Files\PowerShell\7\pwsh.exe"), Some("devicon:powershell"));
+        assert_eq!(shell_icon("powershell.exe"), Some("devicon:powershell"));
         assert_eq!(shell_icon("CMD.EXE"), Some("shell:cmd"));
-        assert_eq!(shell_icon("wsl.exe"), Some("shell:linux"));
-        assert_eq!(shell_icon("/bin/bash"), Some("shell:linux"));
+        assert_eq!(shell_icon("wsl.exe"), Some("devicon:linux"));
+        assert_eq!(shell_icon("/bin/bash"), Some("devicon:linux"));
         // Git Bash on Windows isn't Linux.
         assert_eq!(shell_icon(r"C:\Program Files\Git\bin\bash.exe"), None);
         assert_eq!(shell_icon("nu.exe"), None);

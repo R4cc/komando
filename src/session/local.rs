@@ -71,7 +71,7 @@ mod tests {
             ("cmd.exe", vec!["/D", "/C", "echo KOMANDO_CONPTY_OK"]),
             ("powershell.exe", vec!["-NoLogo", "-NoProfile", "-Command", "Write-Output 'KOMANDO_CONPTY_OK'"]),
         ] {
-            let shell = LocalShell { name: program.into(), program: program.into(), args: args.into_iter().map(str::to_owned).collect(), hidden: false };
+            let shell = LocalShell { name: program.into(), program: program.into(), args: args.into_iter().map(str::to_owned).collect(), icon: None, hidden: false };
             let size = GridSize { cols: 80, rows: 24, cell_width: 8, cell_height: 16 };
             let (tx, mut rx) = futures::channel::mpsc::unbounded();
             let proxy = EventProxy::new(tx);

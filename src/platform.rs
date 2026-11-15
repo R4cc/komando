@@ -121,6 +121,10 @@ pub const SUPPORTS_BACKDROP: bool = cfg!(windows);
 #[cfg(windows)]
 mod tray;
 #[cfg(windows)]
+mod notifications;
+#[cfg(windows)]
+pub use notifications::Notifications;
+#[cfg(windows)]
 pub mod instance;
 #[cfg(windows)]
 pub use tray::Tray;

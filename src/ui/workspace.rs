@@ -30,7 +30,7 @@ use crate::ui::terminal_view::{TerminalEvent, TerminalView};
 use crate::ui::transfers::{Activity, Transfers, TransfersChanged};
 use crate::ui::widgets::{
     Busy, BusyPhase, ButtonKind, ISLAND_GAP, ISLAND_RADIUS, badge, busy_done, button, elevation, icon_button, icon_el, icon_text_button, island,
-    is_artwork, password_input, progress_ring, section_label, shell_icon, spinner, status_dot, wordmark,
+    is_artwork, password_input, progress_ring, section_label, spinner, status_dot, wordmark,
 };
 use crate::vault::{Credential, Secret, Vault};
 
@@ -38,6 +38,7 @@ mod command_history;
 mod desktops;
 mod forms;
 mod import;
+mod notifications;
 mod settings;
 mod split;
 mod updates;
@@ -204,7 +205,7 @@ impl SidebarItem {
     fn icon(&self) -> String {
         match self {
             Self::Host { host, .. } => host.icon.clone().unwrap_or_else(|| "server".into()),
-            Self::Shell { shell, .. } => shell_icon(&shell.program).unwrap_or("square-terminal").into(),
+            Self::Shell { shell, .. } => crate::icons::shell_icon(&shell).into(),
         }
     }
 }
@@ -310,6 +311,9 @@ pub struct Workspace {
     tray: Option<crate::platform::Tray>,
     #[cfg(windows)]
     _activation: Option<crate::platform::instance::WindowBinding>,
+    #[cfg(windows)]
+    notifications: Option<crate::platform::Notifications>,
+    completion_watches: notifications::CompletionWatches,
     highlights: Vec<HighlightSet>,
     /// Rules that could not be compiled, with the reason.
     highlight_skipped: Vec<(String, String)>,
@@ -446,6 +450,9 @@ impl Workspace {
             tray: crate::platform::Tray::new(window, settings.minimize_to_tray, !auxiliary),
             #[cfg(windows)]
             _activation: activation,
+            #[cfg(windows)]
+            notifications: None,
+            completion_watches: Default::default(),
             settings,
             highlights,
             highlight_skipped: vec![],
@@ -516,6 +523,7 @@ impl Workspace {
         }
         this.vault_exists = Vault::exists(&this.data_dir);
         this.start_auto_lock(window, cx);
+        this.start_notifications(window, cx);
         if let Some(message) = library_error {
             this.show_toast_for(message, Duration::from_secs(20), cx);
         }
@@ -1192,6 +1200,12 @@ impl Workspace {
                         }
                     }
                 }
+                if let Some(entry) = this.sessions.iter().find(|s| s.id == id)
+                    && this.completion_watches.update(id, entry.busy, &entry.status)
+                {
+                    let label = entry.label.to_string();
+                    this.notify_output_done(id, &label, cx);
+                }
                 cx.notify();
             }
             TerminalEvent::Remember { hop, what } => match what {
@@ -1421,6 +1435,7 @@ impl Workspace {
 
     /// Start a new connection in the same terminal: the earlier output stays above.
     fn reconnect(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_completion_notification(id);
         let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
         let (view, kind, project_id) = (entry.view.clone(), entry.kind.clone(), entry.project_id.clone());
         let SessionView::Terminal(view) = view else {
@@ -1667,6 +1682,7 @@ impl Workspace {
     /// × on a live Session disconnects it but keeps its output (the item goes idle and a
     /// click reconnects). × on a Session that is already disconnected discards it.
     fn close_session(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_completion_notification(id);
         let Some(index) = self.sessions.iter().position(|s| s.id == id) else { return };
         if self.sessions[index].is_live() {
             match self.sessions[index].view.clone() {
@@ -2078,6 +2094,7 @@ impl Workspace {
         let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.sessions).into_iter().partition(|s| matches(s));
         self.sessions = kept;
         for entry in &gone {
+            self.cancel_completion_notification(entry.id);
             entry.view.close(cx);
             self.last_active.retain(|_, v| *v != entry.id);
             let partner = self.leave_split(entry.id).filter(|p| !gone.iter().any(|g| g.id == *p));
@@ -2980,7 +2997,8 @@ impl Workspace {
         // Beside the Session shown, unless that is the one this would show.
         let can_split = self.active.is_some() && self.placement_possible(&key);
         let history = self.settings.command_history;
-        let item_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+        let completion_ids: Vec<usize> = sessions.iter().map(|s| s.id).collect();
+        let item_menu = move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
             let item = menu_item_src.clone();
             let (open, another) = (item.clone(), item.clone());
             let mut menu = menu
@@ -3016,6 +3034,7 @@ impl Workspace {
                     menu = menu.item(menu_item("Close session", "x", &ws, move |this, window, cx| this.close_session(id, window, cx)));
                 }
             }
+            menu = notifications::completion_menu(menu, &ws, &completion_ids, cx);
             if let SidebarItem::Host { project, host } = &item {
                 let (pa, ha) = (project.id.clone(), host.id.clone());
                 let (pb, hb) = (project.id.clone(), host.id.clone());
@@ -3226,8 +3245,8 @@ impl Workspace {
         let dropped = !live;
         let title = session_title(session);
         let ws = cx.entity().downgrade();
-        let session_menu = move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
-            if dropped {
+        let session_menu = move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
+            let menu = if dropped {
                 menu.item(menu_item("Reconnect", "refresh-cw", &ws, move |this, window, cx| {
                     this.activate(id, window, cx);
                     this.reconnect(id, window, cx);
@@ -3235,7 +3254,8 @@ impl Workspace {
                 .item(menu_item("Close", "x", &ws, move |this, window, cx| this.close_session(id, window, cx)))
             } else {
                 menu.item(menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.close_session(id, window, cx)))
-            }
+            };
+            notifications::completion_menu(menu, &ws, &[id], cx)
         };
         div()
             .id(SharedString::from(format!("session-{id}")))
@@ -3776,7 +3796,7 @@ impl Workspace {
                 .into_any_element(),
         ];
         for (label, shell) in shells {
-            let icon = shell_icon(&shell.program).unwrap_or("square-terminal");
+            let icon = crate::icons::shell_icon(&shell);
             actions.push(
                 hero(SharedString::from(format!("welcome-shell-{label}")), icon, label, ButtonKind::Secondary)
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
@@ -3882,7 +3902,7 @@ impl Workspace {
                             (r.icon.clone(), project_color(&r.color), host.name.clone(), format!("{}{via} · {}", destination(&r), project.name))
                         }
                         SidebarItem::Shell { project, shell } => (
-                            shell_icon(&shell.program).unwrap_or("square-terminal").to_string(),
+                            crate::icons::shell_icon(&shell).to_string(),
                             project.as_ref().map(|p| project_color(&p.color)).unwrap_or(p.brand),
                             shell.name.clone(),
                             match project {
@@ -4136,7 +4156,7 @@ fn switch_with(id: SharedString, label: SharedString, on: bool, small: bool, p: 
         )
 }
 
-/// Every icon name in the bundled Lucide set ("server", "database-backup", …), sorted.
+/// The bundled Lucide names, native Command Prompt artwork and Devicon IDs, sorted.
 fn all_icons() -> &'static [String] {
     static ICONS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     ICONS.get_or_init(|| {
@@ -4149,6 +4169,8 @@ fn all_icons() -> &'static [String] {
             // Only plain Lucide icons: no sub-folders, no window chrome.
             .filter(|name| !name.contains('/') && !name.starts_with("window-"))
             .collect();
+        names.push("shell:cmd".into());
+        names.extend(crate::icons::ICONS.iter().map(|icon| icon.id.to_string()));
         names.sort();
         names.dedup();
         names
@@ -4158,6 +4180,7 @@ fn all_icons() -> &'static [String] {
 /// Shown before anything is typed: icons for servers and the things that run on them.
 const SUGGESTED_ICONS: &[&str] = &[
     "folder", "server", "database", "globe", "shield", "hard-drive", "cpu", "network", "cloud", "box", "router",
+    "devicon:powershell", "shell:cmd", "devicon:linux", "devicon:ubuntu", "devicon:debian", "devicon:docker", "devicon:kubernetes",
     "container", "monitor", "laptop", "terminal", "code", "git-branch", "key-round", "lock", "mail", "cloud-cog",
     "server-cog", "database-backup", "rocket", "flame", "activity", "bug", "building-2", "factory", "house",
     "flask-conical", "wrench", "zap", "radio-tower", "satellite", "warehouse",
@@ -4175,15 +4198,18 @@ fn search_icons(query: &str) -> (Vec<&'static str>, usize) {
         let shown = SUGGESTED_ICONS.iter().filter_map(|s| all.iter().find(|n| n.as_str() == *s)).map(|n| n.as_str()).collect();
         return (shown, 0);
     }
-    let rank = |name: &str| {
+    let rank = |id: &str| {
+        let name = if id == "shell:cmd" { "command-prompt-cmd-windows-terminal" } else { id.strip_prefix("devicon:").unwrap_or(id) };
         if name == q {
             Some(0)
         } else if name.starts_with(&q) {
             Some(1)
         } else if name.split('-').any(|word| word.starts_with(&q)) {
             Some(2)
-        } else if name.contains(&q) {
+        } else if name.contains(&q) || (id.starts_with("devicon:") && name.replace('-', "").contains(&q.replace('-', ""))) {
             Some(3)
+        } else if crate::icons::find(id).is_some_and(|icon| icon.search.to_lowercase().replace(' ', "-").contains(&q)) || (q == "devicon" && id.starts_with("devicon:")) {
+            Some(4)
         } else {
             None
         }
@@ -4228,11 +4254,11 @@ fn icon_picker(
         let is_selected = name == selected;
         let set = set.clone();
         let owned = name.to_string();
-        let tip: SharedString = name.into();
+        let tip: SharedString = crate::icons::label(name).into();
         div()
             .id(SharedString::from(format!("icon-{name}")))
             .role(gpui::Role::RadioButton)
-            .aria_label(format!("Icon: {name}"))
+            .aria_label(format!("Icon: {}", crate::icons::label(name)))
             .aria_toggled(if is_selected { gpui::Toggled::True } else { gpui::Toggled::False })
             .tab_index(0)
             .focus_visible(move |s| s.border_2().border_color(p.brand))
@@ -4657,6 +4683,16 @@ mod welcome_tests {
 #[cfg(test)]
 mod icon_search_tests {
     use super::*;
+
+    #[test]
+    fn brand_names_and_aliases_are_searchable_alongside_lucide() {
+        for (query, expected) in [("ubuntu", "devicon:ubuntu"), ("powershell", "devicon:powershell"), ("k8s", "devicon:kubernetes"), ("arm64", "devicon:aarch64"), ("Rocky Linux", "devicon:rockylinux"), ("Linux Mint", "devicon:linuxmint")] {
+            let (hits, _) = search_icons(query);
+            assert!(hits.contains(&expected), "{query}: {hits:?}");
+        }
+        let (hits, _) = search_icons("devicon");
+        assert!(hits.iter().all(|id| id.starts_with("devicon:")));
+    }
 
     #[test]
     fn the_full_icon_set_is_searchable() {

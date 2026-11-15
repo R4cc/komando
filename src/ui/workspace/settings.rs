@@ -109,6 +109,8 @@ pub struct ShellEditor {
     name: Entity<InputState>,
     program: Entity<InputState>,
     args: Entity<InputState>,
+    icon: Option<String>,
+    icon_query: Entity<InputState>,
     editing: Option<String>,
     error: Option<String>,
 }
@@ -194,7 +196,8 @@ impl Workspace {
                 });
                 self._subscriptions.push(sub);
             }
-            self.shell_editor = Some(ShellEditor { name, program, args, editing: None, error: None });
+            let icon_query = self.new_icon_query(window, cx);
+            self.shell_editor = Some(ShellEditor { name, program, args, icon: None, icon_query, editing: None, error: None });
         }
         if self.font_input.is_none() {
             let family = self.settings.font_family.clone();
@@ -1095,6 +1098,7 @@ impl Workspace {
         let Some(shell) = self.library.standalone_shells().into_iter().find(|s| s.name == name) else { return };
         let Some(editor) = self.shell_editor.as_mut() else { return };
         editor.editing = Some(shell.name.clone());
+        editor.icon = shell.icon.clone();
         editor.error = None;
         let (n, prog, args) = (editor.name.clone(), editor.program.clone(), editor.args.clone());
         n.update(cx, |f, cx| f.set_value(shell.name.clone(), window, cx));
@@ -1107,6 +1111,8 @@ impl Workspace {
     fn clear_shell_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = self.shell_editor.as_mut() else { return };
         editor.editing = None;
+        editor.icon = None;
+        editor.icon_query.update(cx, |f, cx| f.set_value("", window, cx));
         editor.error = None;
         for input in [editor.name.clone(), editor.program.clone(), editor.args.clone()] {
             input.update(cx, |f, cx| f.set_value("", window, cx));
@@ -1121,6 +1127,7 @@ impl Workspace {
         let program = editor.program.read(cx).value().trim().to_string();
         let args = model::split_args(editor.args.read(cx).value().as_ref());
         let editing = editor.editing.clone();
+        let icon = editor.icon.clone();
         let error = if name.is_empty() {
             Some("Give the shell a name.".to_string())
         } else if program.is_empty() {
@@ -1143,8 +1150,9 @@ impl Workspace {
                 shell.name = name.clone();
                 shell.program = program;
                 shell.args = args;
+                shell.icon = icon.clone();
             }
-            None => shells.push(LocalShell { name: name.clone(), program, args, hidden: false }),
+            None => shells.push(LocalShell { name: name.clone(), program, args, icon, hidden: false }),
         }
         let saved = self.library.standalone_shells().into_iter().find(|s| s.name == name);
         // Open Sessions follow the change: they stay under the shell, and reconnect with it.
@@ -1209,7 +1217,7 @@ impl Workspace {
             let name = shell.name.clone();
             let (n_toggle, n_edit, n_remove, n_confirm) = (name.clone(), name.clone(), name.clone(), name.clone());
             let confirming = self.confirm_remove_shell.as_ref().is_some_and(|(n, _)| *n == name);
-            let icon = shell_icon(&shell.program).unwrap_or("square-terminal");
+            let icon = crate::icons::shell_icon(&shell);
             let command = format!("{} {}", shell.program, shell.args_line()).trim().to_string();
             let open = self.sessions_of(&ItemKey::Shell { project: None, name: name.clone() }).count();
             let detail = match open {
@@ -1329,6 +1337,20 @@ impl Workspace {
                     Some("Optional. Put an argument with spaces in double quotes."),
                     Input::new(&editor.args).into_any_element(),
                     p,
+                ))
+                .child(form_field(
+                    "Icon", None,
+                    div().flex().flex_col().gap(px(8.))
+                        .child(
+                            button("shell-icon-auto", "Automatic", if editor.icon.is_none() { ButtonKind::Secondary } else { ButtonKind::Ghost }, p)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    if let Some(editor) = this.shell_editor.as_mut() { editor.icon = None; }
+                                    cx.notify();
+                                })),
+                        )
+                        .child(icon_picker(&editor.icon_query, editor.icon.as_deref().unwrap_or(""), p.brand, p, cx, |this, icon| {
+                            if let Some(editor) = this.shell_editor.as_mut() { editor.icon = Some(icon); }
+                        })).into_any_element(), p,
                 ))
                 .when_some(editor.error.clone(), |el, error| {
                     el.child(div().text_size(px(12.5)).text_color(p.danger).child(error))

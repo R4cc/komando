@@ -9,6 +9,7 @@ pub mod export;
 pub mod favorites;
 pub mod highlight;
 pub mod history;
+pub mod icons;
 pub mod import;
 pub mod keys;
 pub mod logging;
@@ -26,6 +27,7 @@ mod throughput_tests;
 pub mod ui;
 pub mod update;
 pub mod vault;
+pub mod wsl;
 
 use std::borrow::Cow;
 use std::path::PathBuf;
