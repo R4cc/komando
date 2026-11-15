@@ -7,7 +7,7 @@
 
 ### SSH, SFTP and remote desktops for Windows 11. Built with Rust.
 
-Your servers, files and remote desktops in colour-coded projects.
+Your servers, files and remote desktops organized into projects.
 
 [![Latest release](https://img.shields.io/github/v/release/R4cc/komando?label=release&color=f97316)](https://github.com/R4cc/komando/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/R4cc/komando/total?color=f97316)](https://github.com/R4cc/komando/releases)
@@ -24,14 +24,12 @@ Your servers, files and remote desktops in colour-coded projects.
 
 ## Why Komando
 
-- **Fast and light.** A single native process, rendered on the GPU. The window is up in about a
-  quarter of a second, and ten open SSH sessions fit in about 29 MB.
+- **Fast and light.** A single native process, rendered on the GPU. Startup time is 187ms, and Komando uses about 29 MB of memory with 10 connected SSH sessions.
 - **Organised.** Servers live in projects with their own colour and icon, so you always know
   whether you're typing into staging or production.
-- **Everything built in.** SSH, SFTP, RDP and VNC, an encrypted password and key vault, log highlighting.
-  No WSL, no PuTTY, no OpenSSH setup.
-- **Made for people who live in SSH.** Startup commands, jump hosts, sudo without retyping,
-  reconnect in place, and every server one keystroke away.
+- **Additional features**
+  - SSH, SFTP, RDP and VNC, a key vault and log highlighting.
+  - Startup commands, jump hosts, sudo without retyping.
 
 ## Download
 
@@ -71,7 +69,7 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 
 ## Features
 
-### Every server one click away
+### Project based approach
 
 - **Projects with colours and icons.** A coloured strip above the terminal shows which
   environment you're in.
