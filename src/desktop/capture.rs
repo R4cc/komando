@@ -225,10 +225,13 @@ mod windows_hook {
         }
         let Ok(mut active) = ACTIVE.try_lock() else { return false };
         let Some(active) = active.as_mut() else { return false };
-        if !komando_in_front() {
+        let down = !info.flags.contains(LLKHF_UP);
+        // A key taken down is taken up too, even after another window came in front: its
+        // release belongs to the remote desktop, and the taker must forget it (a Windows key
+        // left marked held would turn later letters into Windows shortcuts).
+        if down && !komando_in_front() {
             return false;
         }
-        let down = !info.flags.contains(LLKHF_UP);
         let alt = info.flags.contains(LLKHF_ALTDOWN);
         // SAFETY: reads the key's state; no pointers.
         let ctrl = unsafe { GetAsyncKeyState(VK_CONTROL.0.into()) } < 0;

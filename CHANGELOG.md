@@ -15,6 +15,26 @@ All notable changes to Komando are listed here. The format follows
 
 - Enter confirms the multi-line paste question, just like its Paste button, without sending
   an extra Enter to the terminal underneath.
+- Pasted text can no longer end bracketed paste early by hiding a nested end marker, which
+  could make the shell run the rest of a paste as typed commands.
+- Taking longer than 15 seconds to check a new or changed Host Key no longer makes the
+  connection time out after you click Trust.
+- Clicking in the empty bars beside a fitted remote desktop no longer clicks the edge of the
+  remote screen, and moving over them no longer drags the remote pointer to that edge.
+- Sideways touchpad scrolling on a remote desktop is no longer lost when the gesture also
+  moves slightly up or down.
+- A Windows key released after switching away from Komando no longer turns later letters on
+  a remote desktop into Windows shortcuts.
+- Replacing a remote file or folder by upload keeps the old one until the new one is in its
+  place, so a dropped connection at the last moment can't lose both.
+- Replacing a remote file with an empty folder no longer gives the folder the file's
+  permissions, which could leave it impossible to open.
+- Copying a remote folder into one of its own subfolders is refused instead of copying
+  itself over and over on servers without `cp`.
+- In the File Browser, Shift+Up and Shift+Down now shrink the selection again when moving
+  back towards where it started.
+- Renaming a remote file without changing its name no longer removes spaces at the start or
+  end of the name.
 
 ## [0.6.6] - 2026-11-16
 

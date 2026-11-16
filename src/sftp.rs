@@ -1093,6 +1093,10 @@ impl Remote {
     /// Copy a file or folder to `to` on the server. Uses `cp` there; without a shell, the data
     /// goes through this connection instead.
     pub async fn copy(&self, from: &str, to: &str) -> Result<(), OpError> {
+        // Into itself: without `cp` (which refuses), each copied level would be copied again.
+        if is_within(to, from) {
+            return Err(OpError::new(ErrorKind::Other, format!("\"{}\" can't be copied into itself.", file_name(from))));
+        }
         if self.exists(to).await? {
             return Err(OpError::new(ErrorKind::Exists, format!("\"{}\" already exists in {}", file_name(to), parent(to).unwrap_or_default())));
         }
@@ -1403,16 +1407,29 @@ impl Remote {
                 .collect();
             all(jobs, PARALLEL).await?;
             progress.check()?;
-            // A replaced file keeps its permissions (an executable script stays executable).
-            if let Some(attrs) = &existing {
-                if !is_dir_mode(attrs.permissions) && !is_link_mode(attrs.permissions) && plan.len() == 1 {
-                    if let Some(mode) = attrs.permissions {
-                        let _ = self.set_mode(&partial, mode).await;
-                    }
+            let Some(attrs) = &existing else {
+                self.sftp.rename(partial.as_str(), target.as_str()).await.map_err(|e| OpError::from(e).at(&target))?;
+                return Ok(target.clone());
+            };
+            // A file replaced by a file keeps its permissions (an executable script stays
+            // executable); a folder, even an empty one, keeps its own.
+            let one_file = matches!(plan.as_slice(), [(_, Some(_))]);
+            if one_file && !is_dir_mode(attrs.permissions) && !is_link_mode(attrs.permissions) {
+                if let Some(mode) = attrs.permissions {
+                    let _ = self.set_mode(&partial, mode).await;
                 }
-                self.remove(&target).await?;
             }
-            self.sftp.rename(partial.as_str(), target.as_str()).await.map_err(|e| OpError::from(e).at(&target))?;
+            // The old one is moved aside, not deleted, until the upload is in its place: if
+            // that fails, it goes back and nothing is lost.
+            let aside = join(remote_dir, &format!(".{name}.{}{PARTIAL_SUFFIX}", crate::model::new_id()));
+            self.sftp.rename(target.as_str(), aside.as_str()).await.map_err(|e| OpError::from(e).at(&target))?;
+            if let Err(err) = self.sftp.rename(partial.as_str(), target.as_str()).await {
+                let _ = self.sftp.rename(aside.as_str(), target.as_str()).await;
+                return Err(OpError::from(err).at(&target));
+            }
+            if let Err(err) = self.remove(&aside).await {
+                log::warn!("removing the replaced {aside}: {err}");
+            }
             Ok(target.clone())
         }
         .await;
@@ -1421,6 +1438,12 @@ impl Remote {
         }
         result
     }
+}
+
+/// Whether remote path `path` is `dir` or inside it.
+fn is_within(path: &str, dir: &str) -> bool {
+    let dir = dir.trim_end_matches('/');
+    path == dir || dir.is_empty() || path.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// The partial file a download is written to: "name.ext.komando-part" next to `target`.
@@ -1697,6 +1720,16 @@ pub fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copy_into_its_own_folder_is_recognised() {
+        assert!(is_within("/srv/app", "/srv/app"));
+        assert!(is_within("/srv/app/sub/app", "/srv/app"));
+        assert!(is_within("/srv/app/sub", "/srv/app/"));
+        assert!(!is_within("/srv/app2", "/srv/app"));
+        assert!(!is_within("/srv", "/srv/app"));
+        assert!(is_within("/anything", "/"));
+    }
 
     #[test]
     fn id_output_is_parsed() {

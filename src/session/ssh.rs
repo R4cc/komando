@@ -163,6 +163,55 @@ fn describe(hop: &Hop) -> String {
 /// How long reaching one hop may take, Host Key questions aside.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// When reaching a hop started counting towards [`CONNECT_TIMEOUT`]: `None` while a Host Key
+/// question waits for the user, who may take longer than that to compare a fingerprint.
+#[derive(Clone)]
+struct ConnectClock(Arc<std::sync::Mutex<Option<Instant>>>);
+
+impl ConnectClock {
+    fn new() -> Self {
+        Self(Arc::new(std::sync::Mutex::new(Some(Instant::now()))))
+    }
+
+    fn set(&self, started: Option<Instant>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = started;
+    }
+
+    fn started(&self) -> Option<Instant> {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Stop counting until [`Self::resume`]: a question is on screen.
+    fn pause(&self) {
+        self.set(None);
+    }
+
+    /// Count again from now, with the whole timeout ahead.
+    fn resume(&self) {
+        self.set(Some(Instant::now()));
+    }
+
+    /// `future`'s output, or `None` once it took longer than [`CONNECT_TIMEOUT`] while not
+    /// paused.
+    async fn limit<T>(&self, timeout: Duration, future: impl Future<Output = T>) -> Option<T> {
+        self.resume();
+        let mut future = std::pin::pin!(future);
+        loop {
+            // While paused, look again after a whole timeout: answering resumes the clock,
+            // and the next wait then ends when its timeout does.
+            let wake = self.started().map_or(Instant::now() + timeout, |started| started + timeout);
+            tokio::select! {
+                out = &mut future => return Some(out),
+                _ = tokio::time::sleep_until(wake.into()) => {
+                    if self.started().is_some_and(|started| started.elapsed() >= timeout) {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// How much of the server's output the operating system may hold for Komando: as much as the
 /// SSH window of a direct connection lets the server send ahead ([`WINDOW`], and the most the
 /// shell's paced window grows to there; see `pace`).
@@ -314,6 +363,8 @@ pub(crate) struct Client {
     log: ConnectLog,
     /// Which hop this connection is, for progress events.
     hop: usize,
+    /// Paused while the Host Key question waits for an answer.
+    clock: ConnectClock,
 }
 
 impl client::Handler for Client {
@@ -362,7 +413,10 @@ impl client::Handler for Client {
                         openssh: path != &self.known_hosts,
                         reply,
                     }));
-                    if !answer.await.unwrap_or(false) {
+                    self.clock.pause();
+                    let trusted = answer.await.unwrap_or(false);
+                    self.clock.resume();
+                    if !trusted {
                         return Err(anyhow!(
                             "The host key of {} has changed. Connection blocked: this can mean someone is intercepting the connection.",
                             self.host
@@ -383,7 +437,10 @@ impl client::Handler for Client {
             algorithm: key.algorithm().to_string(),
             reply,
         }));
-        if answer.await.unwrap_or(false) {
+        self.clock.pause();
+        let trusted = answer.await.unwrap_or(false);
+        self.clock.resume();
+        if trusted {
             if let Some(dir) = self.known_hosts.parent() {
                 std::fs::create_dir_all(dir)?;
             }
@@ -460,6 +517,7 @@ async fn run(
             0 => log.line(LogKind::Step, &format!("Connecting to {}", describe(hop))),
             _ => log.line(LogKind::Step, &format!("Opening a tunnel to {} through {}", describe(hop), target.hops[index - 1].name)),
         }
+        let clock = ConnectClock::new();
         let handler = Client {
             host: hop.address.clone(),
             port: hop.port,
@@ -467,18 +525,20 @@ async fn run(
             proxy: proxy.clone(),
             log: log.clone(),
             hop: index,
+            clock: clock.clone(),
         };
         let timed_out = || anyhow!("Timed out connecting to {}:{}.", hop.address, hop.port);
         let is_jump = index + 1 < target.hops.len();
         let mut handle = match handles.last() {
-            None => tokio::time::timeout(CONNECT_TIMEOUT, async {
-                let stream = open_tcp(&hop.address, hop.port).await?;
-                let window = if is_jump { MAX_WINDOW } else { WINDOW };
-                host_window = window;
-                client::connect_stream(client_config(window), stream, handler).await
-            })
-            .await
-            .map_err(|_| timed_out())??,
+            None => clock
+                .limit(CONNECT_TIMEOUT, async {
+                    let stream = open_tcp(&hop.address, hop.port).await?;
+                    let window = if is_jump { MAX_WINDOW } else { WINDOW };
+                    host_window = window;
+                    client::connect_stream(client_config(window), stream, handler).await
+                })
+                .await
+                .ok_or_else(timed_out)??,
             Some(through) => {
                 let via = &target.hops[index - 1].name;
                 let opening = std::time::Instant::now();
@@ -495,9 +555,10 @@ async fn run(
                 let window = if is_jump { MAX_WINDOW } else { window_for(round_trip) };
                 host_window = window;
                 log::debug!("tunnel to {} opened in {round_trip:?}: window {} KiB", describe(hop), window / 1024);
-                tokio::time::timeout(CONNECT_TIMEOUT, client::connect_stream(client_config(window), tunnel.into_stream(), handler))
+                clock
+                    .limit(CONNECT_TIMEOUT, client::connect_stream(client_config(window), tunnel.into_stream(), handler))
                     .await
-                    .map_err(|_| timed_out())??
+                    .ok_or_else(timed_out)??
             }
         };
         let (user, remember_user) = match hop.user.clone() {
@@ -917,6 +978,28 @@ mod tests {
     use std::time::Duration;
     use anyhow::anyhow;
     use crate::session::{EventProxy, GridSize, new_term, scrollback_text};
+
+    #[test]
+    fn the_connect_timeout_does_not_count_a_host_key_question() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let timeout = Duration::from_millis(80);
+        let clock = super::ConnectClock::new();
+        // The user takes several timeouts to answer; the key exchange then finishes promptly.
+        let slow_answer = runtime.block_on(clock.limit(timeout, {
+            let clock = clock.clone();
+            async move {
+                clock.pause();
+                tokio::time::sleep(timeout * 4).await;
+                clock.resume();
+                tokio::time::sleep(timeout / 4).await;
+                "connected"
+            }
+        }));
+        assert_eq!(slow_answer, Some("connected"));
+        // Without a question, a server that never answers still times out.
+        let stalled = runtime.block_on(clock.limit(timeout, std::future::pending::<()>()));
+        assert_eq!(stalled, None);
+    }
 
     #[test]
     fn the_sudo_hint_sits_after_the_prompt_and_goes_away() {

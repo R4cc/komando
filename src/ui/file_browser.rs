@@ -193,6 +193,9 @@ pub struct FileBrowser {
     indicator_label: SharedString,
     selected: HashSet<String>,
     anchor: Option<String>,
+    /// The row Shift+arrows last moved to, when it isn't `anchor`: the selection runs from the
+    /// anchor to it, so moving back shrinks it.
+    cursor: Option<String>,
     sort: (SortKey, bool),
     show_hidden: bool,
     path_input: Entity<InputState>,
@@ -277,6 +280,7 @@ impl FileBrowser {
             indicator_label: SharedString::default(),
             selected: HashSet::new(),
             anchor: None,
+            cursor: None,
             sort: (SortKey::Name, true),
             show_hidden,
             path_input,
@@ -493,6 +497,7 @@ impl FileBrowser {
                 if !same_folder {
                     self.selected.clear();
                     self.anchor = None;
+                    self.cursor = None;
                     self.edit = None;
                     self.scroll.scroll_to_item(0, ScrollStrategy::Top);
                 }
@@ -508,6 +513,7 @@ impl FileBrowser {
                 {
                     self.selected = HashSet::from([path.clone()]);
                     self.anchor = Some(path);
+                    self.cursor = None;
                 }
                 self.update_rows();
                 self.scroll_to_selection();
@@ -596,7 +602,7 @@ impl FileBrowser {
     }
 
     fn scroll_to_selection(&self) {
-        if let Some(path) = &self.anchor
+        if let Some(path) = self.cursor.as_ref().or(self.anchor.as_ref())
             && let Some(ix) = self.visible_index(path)
         {
             self.scroll.scroll_to_item(ix + self.has_parent() as usize, ScrollStrategy::Center);
@@ -623,14 +629,17 @@ impl FileBrowser {
             for &i in &self.rows[lo..=hi] {
                 self.selected.insert(self.entries[i].path.clone());
             }
+            self.cursor = Some(path);
         } else if mods.control || mods.platform {
             if !self.selected.remove(&path) {
                 self.selected.insert(path.clone());
             }
             self.anchor = Some(path);
+            self.cursor = None;
         } else {
             self.selected = HashSet::from([path.clone()]);
             self.anchor = Some(path);
+            self.cursor = None;
         }
         cx.notify();
     }
@@ -641,6 +650,7 @@ impl FileBrowser {
         if !self.selected.contains(&path) {
             self.selected = HashSet::from([path.clone()]);
             self.anchor = Some(path);
+            self.cursor = None;
             cx.notify();
         }
     }
@@ -649,18 +659,23 @@ impl FileBrowser {
         if self.rows.is_empty() {
             return;
         }
-        let current = self.anchor.as_deref().and_then(|p| self.visible_index(p));
+        let current = self.cursor.as_ref().or(self.anchor.as_ref()).and_then(|p| self.visible_index(p));
         let next = match current {
             Some(i) => (i as isize + delta).clamp(0, self.rows.len() as isize - 1) as usize,
             None if delta < 0 => self.rows.len() - 1,
             None => 0,
         };
         let path = self.entries[self.rows[next]].path.clone();
-        if !extend {
-            self.selected.clear();
+        // Shift: the selection runs from the anchor to the new row, as with Shift+click.
+        if extend && let Some(anchor) = self.anchor.as_deref().and_then(|p| self.visible_index(p)) {
+            let (lo, hi) = if anchor <= next { (anchor, next) } else { (next, anchor) };
+            self.selected = self.rows[lo..=hi].iter().map(|&i| self.entries[i].path.clone()).collect();
+            self.cursor = Some(path);
+        } else {
+            self.selected = HashSet::from([path.clone()]);
+            self.anchor = Some(path);
+            self.cursor = None;
         }
-        self.selected.insert(path.clone());
-        self.anchor = Some(path);
         self.scroll_to_selection();
         cx.notify();
     }
@@ -892,6 +907,7 @@ impl FileBrowser {
         let name = entry.name.clone();
         self.selected = HashSet::from([path.clone()]);
         self.anchor = Some(path.clone());
+        self.cursor = None;
         self.begin_edit(EditKind::Rename { path }, &name, window, cx);
     }
 
@@ -922,8 +938,15 @@ impl FileBrowser {
     fn commit_edit(&mut self, cx: &mut Context<Self>) {
         let Some(edit) = self.edit.take() else { return };
         let Some(cwd) = self.cwd.clone() else { return };
-        let name = edit.input.read(cx).value().trim().to_string();
+        let typed = edit.input.read(cx).value().to_string();
+        let name = typed.trim().to_string();
         cx.notify();
+        // Left as it was: a name with spaces at its ends must not lose them.
+        if let EditKind::Rename { path } = &edit.kind
+            && sftp::file_name(path) == typed
+        {
+            return;
+        }
         if name.is_empty() {
             return;
         }
