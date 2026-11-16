@@ -133,7 +133,7 @@ _Avoid_: Color scheme (ambiguous), terminal theme
 **Terminal Theme**:
 Whether the terminal follows the App Theme or always stays dark or light, which decides
 whether the dark or light Terminal Colors apply. (Setting name `terminal_theme`; the UI
-calls it **Terminal mode**.)
+calls it **Terminal**, with the choices Match app, Always dark and Always light.)
 
 ## Highlighting
 

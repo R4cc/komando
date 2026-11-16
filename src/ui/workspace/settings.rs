@@ -62,7 +62,7 @@ impl SettingsSection {
 
     fn description(self) -> &'static str {
         match self {
-            Self::Appearance => "Dark and light mode, a theme for each, and the background blur.",
+            Self::Appearance => "Pick a theme and terminal colors for dark and light mode, and how the window looks.",
             Self::Terminal => "Font, scrollback and clipboard behaviour for every session.",
             Self::FileBrowser => "The SFTP file browser beside SSH sessions.",
             Self::RemoteDesktop => "RDP and VNC desktops of your hosts. Each host sets up its own in its form, under Remote desktop.",
@@ -407,33 +407,32 @@ impl Workspace {
         let app = self.settings.app_theme;
         let term = self.settings.terminal_theme;
         let blur = self.settings.background_blur;
-        let icon_choice = segmented(
-            "app-icon",
-            &[("Dark", self.settings.app_icon == AppIcon::Dark), ("Light", self.settings.app_icon == AppIcon::Light)],
-            p,
-            cx,
-            |this, i, window, cx| {
-                this.settings.app_icon = [AppIcon::Dark, AppIcon::Light][i];
-                this.save_settings(cx);
-                this.apply_appearance(window, cx);
-            },
-        );
-        let mode_choice = segmented(
-            "app-theme",
-            &[("Dark", app == AppThemeSetting::Dark), ("Light", app == AppThemeSetting::Light), ("System", app == AppThemeSetting::System)],
-            p,
-            cx,
-            |this, i, window, cx| {
+        // The mode the windows show right now, which System resolves from Windows.
+        let showing_dark = cx.global::<Appearance>().app.dark;
+        let mode_choice = {
+            let (dark, light) = (self.mode_look(true), self.mode_look(false));
+            let tile = |i: usize, label: &'static str, thumb: AnyElement| {
                 let theme = [AppThemeSetting::Dark, AppThemeSetting::Light, AppThemeSetting::System][i];
-                this.set_app_theme(theme, window, cx);
-            },
-        );
+                choice_tile("app-theme", i, label, app == theme, thumb, p)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_app_theme(theme, window, cx)))
+            };
+            div()
+                .id("app-theme")
+                .role(gpui::Role::RadioGroup)
+                .aria_label("Mode")
+                .flex()
+                .gap(px(12.))
+                .child(tile(0, "Dark", window_thumb(dark.0, &dark.1, MODE_THUMB)))
+                .child(tile(1, "Light", window_thumb(light.0, &light.1, MODE_THUMB)))
+                .child(tile(2, "System", system_thumb(&dark, &light)))
+                .into_any_element()
+        };
         let term_choice = segmented(
             "term-theme",
             &[
-                ("Follow app", term == TerminalThemeSetting::Follow),
-                ("Dark", term == TerminalThemeSetting::Dark),
-                ("Light", term == TerminalThemeSetting::Light),
+                ("Match app", term == TerminalThemeSetting::Follow),
+                ("Always dark", term == TerminalThemeSetting::Dark),
+                ("Always light", term == TerminalThemeSetting::Light),
             ],
             p,
             cx,
@@ -442,31 +441,107 @@ impl Workspace {
                 this.set_terminal_theme(theme, window, cx);
             },
         );
+        let mode_hint = match app {
+            AppThemeSetting::System => "Follows Windows, switching between the two modes below.",
+            AppThemeSetting::Dark => "Komando stays dark. Light mode keeps its colors for when you switch.",
+            AppThemeSetting::Light => "Komando stays light. Dark mode keeps its colors for when you switch.",
+        };
+        let term_hint = match term {
+            TerminalThemeSetting::Follow => "The terminal turns dark or light with the app.",
+            TerminalThemeSetting::Dark => "The terminal stays dark in both modes, with Dark mode's terminal colors.",
+            TerminalThemeSetting::Light => "The terminal stays light in both modes, with Light mode's terminal colors.",
+        };
+        let modes = div()
+            .flex()
+            .flex_wrap()
+            .gap(px(12.))
+            .child(self.mode_card(true, showing_dark, p, cx))
+            .child(self.mode_card(false, !showing_dark, p, cx))
+            .into_any_element();
+
+        let icon_choice = {
+            let tile = |i: usize, icon: AppIcon, label: &'static str| {
+                let thumb = div()
+                    .size(px(56.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(p.corner(6.))
+                    .bg(p.muted)
+                    .child(logo(icon).element(36.))
+                    .into_any_element();
+                choice_tile("app-icon", i, label, self.settings.app_icon == icon, thumb, p)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.settings.app_icon = icon;
+                        this.save_settings(cx);
+                        this.apply_appearance(window, cx);
+                    }))
+            };
+            div()
+                .id("app-icon")
+                .role(gpui::Role::RadioGroup)
+                .aria_label("App icon")
+                .flex()
+                .gap(px(10.))
+                .child(tile(0, AppIcon::Dark, "Dark"))
+                .child(tile(1, AppIcon::Light, "Light"))
+                .into_any_element()
+        };
         let blur_hint = if crate::platform::SUPPORTS_BACKDROP {
             "Windows 11 Mica: your desktop, blurred, shows through the window, even with other windows behind it."
         } else {
             "Windows 11 only. This build runs elsewhere, so the setting is saved but has no effect."
         };
-        let slider = self.blur_slider.clone().map(|s| Slider::new(&s).disabled(!blur).into_any_element());
-        let mode_hint = match app {
-            AppThemeSetting::System => "Follows Windows: dark or light, each with its own theme below.",
-            _ => "Each mode has its own theme below, so switching keeps the colours you picked for it.",
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(20.))
-            .child(group(p, vec![setting_row(p, "Mode", mode_hint, mode_choice)]))
-            .child(group(p, vec![setting_row(
+        let slider = self.blur_slider.clone().map(|s| Slider::new(&s).into_any_element());
+        let mut window_rows = vec![
+            setting_row(
                 p,
                 "App icon",
-                "Choose the icon for the app, taskbar and notification area, independently of the theme.",
-                div().flex().items_center().gap(px(16.))
-                    .child(logo(self.settings.app_icon).element(40.))
-                    .child(icon_choice)
+                "The icon in the taskbar and notification area. It stays the same whichever mode or theme you pick.",
+                icon_choice,
+            ),
+            setting_row(
+                p,
+                "Background blur",
+                blur_hint,
+                switch("blur-toggle".into(), "Background blur", blur, p)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_background_blur(!blur, window, cx)))
                     .into_any_element(),
-            )]))
-            .when(cfg!(windows), |el| el.child(group(p, vec![setting_row(
+            ),
+        ];
+        if blur {
+            window_rows.push(setting_row(
+                p,
+                "Blur intensity",
+                "How much of the blurred desktop shows through. The terminal always keeps more of its background.",
+                div()
+                    .w(px(260.))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(div().flex_1().children(slider))
+                    .child(value_label(format!("{}%", self.settings.background_blur_intensity), p))
+                    .into_any_element(),
+            ));
+        }
+
+        let mut behaviour_rows = vec![setting_row(
+            p,
+            "Expand sidebar on hover",
+            "Keep the sidebar hidden and slide it out over the terminal while the pointer rests at the window's left edge. Ctrl+Shift+B still pins it open.",
+            switch("sidebar-auto-hide".into(), "Expand sidebar on hover", self.settings.sidebar_auto_hide, p)
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.settings.sidebar_auto_hide = !this.settings.sidebar_auto_hide;
+                    this.sidebar_visible = !this.settings.sidebar_auto_hide;
+                    this.sidebar_peek = false;
+                    this.sidebar_peek_timer = None;
+                    this.save_settings(cx);
+                    cx.notify();
+                }))
+                .into_any_element(),
+        )];
+        if cfg!(windows) {
+            behaviour_rows.push(setting_row(
                 p,
                 "Minimize to tray",
                 "Show Komando in the notification area, and keep sessions running there when minimized or closed with X. Click the tray icon to restore; right-click to restart or exit.",
@@ -481,87 +556,125 @@ impl Workspace {
                         cx.notify();
                     }))
                     .into_any_element(),
-            )])))
-            .child(group(p, vec![setting_row(
+            ));
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(28.))
+            .child(settings_block(
+                "Theme",
                 p,
-                "Expand sidebar on hover",
-                "Keep the sidebar hidden and slide it out over the terminal while the pointer rests at the window's left edge. Ctrl+Shift+B still pins it open.",
-                switch("sidebar-auto-hide".into(), "Expand sidebar on hover", self.settings.sidebar_auto_hide, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.settings.sidebar_auto_hide = !this.settings.sidebar_auto_hide;
-                        this.sidebar_visible = !this.settings.sidebar_auto_hide;
-                        this.sidebar_peek = false;
-                        this.sidebar_peek_timer = None;
-                        this.save_settings(cx);
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            )]))
-            .child(group(p, vec![self.theme_picker(true, p, cx), self.theme_picker(false, p, cx)]))
-            .child(group(
-                p,
-                vec![
-                    setting_row(
-                        p,
-                        "Terminal mode",
-                        "The terminal can follow the app's mode or always stay dark or light.",
-                        term_choice,
-                    ),
-                    self.terminal_colors_picker(true, p, cx),
-                    self.terminal_colors_picker(false, p, cx),
-                ],
+                group(p, vec![setting_row_below(p, "Mode", mode_hint, mode_choice), modes, setting_row(p, "Terminal", term_hint, term_choice)]),
             ))
-            .child(group(
-                p,
-                vec![
-                    setting_row(
-                        p,
-                        "Background blur",
-                        blur_hint,
-                        switch("blur-toggle".into(), "Background blur", blur, p)
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_background_blur(!blur, window, cx)))
-                            .into_any_element(),
-                    ),
-                    setting_row(
-                        p,
-                        "Intensity",
-                        "How much of the blurred backdrop shows through. The terminal always keeps more of its background.",
-                        div()
-                            .w(px(260.))
-                            .flex()
-                            .items_center()
-                            .gap(px(12.))
-                            .when(!blur, |el| el.opacity(0.4))
-                            .child(div().flex_1().children(slider))
-                            .child(value_label(format!("{}%", self.settings.background_blur_intensity), p))
-                            .into_any_element(),
-                    ),
-                ],
-            ))
+            .child(settings_block("Window", p, group(p, window_rows)))
+            .child(settings_block("Behaviour", p, group(p, behaviour_rows)))
             .into_any_element()
     }
 
-    /// A native dropdown with names and actual palette colors, also usable by keyboard.
-    fn theme_picker(&self, dark: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let current = self.theme_for(dark);
-        let ws = cx.entity().downgrade();
-        let dropdown = crate::ui::theme_picker::dropdown(dark, current, p, move |id, window, cx| {
-            let _ = ws.update(cx, |this, cx| this.set_theme(dark, id, window, cx));
-        });
-        setting_row_below(p, if dark { "Dark theme" } else { "Light theme" },
-            if dark { "App colors, fonts and corners in dark mode." } else { "App colors, fonts and corners in light mode." },
-            div().w_full().max_w(px(340.)).child(dropdown).into_any_element())
+    /// The app and terminal colors one mode shows, opaque, as the previews draw them.
+    fn mode_look(&self, dark: bool) -> (AppPalette, crate::theme::TerminalPalette) {
+        let term_dark = self.terminal_dark(dark);
+        (
+            AppPalette::from_theme(self.theme_for(dark)),
+            crate::theme::TerminalPalette::for_mode(term_dark, self.terminal_colors_for(term_dark), self.theme_for(term_dark)),
+        )
     }
 
-    /// The terminal's own colors for one mode, picked separately from the Theme.
-    fn terminal_colors_picker(&self, dark: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    /// One mode's look in a single card: a preview of the app and its terminal, then the
+    /// Theme and Terminal Colors that make it. `in_use` marks the mode the windows show now.
+    fn mode_card(&self, dark: bool, in_use: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let theme = self.theme_for(dark);
+        // With the terminal kept dark or light, this mode's terminal is the other mode's.
+        let term_dark = self.terminal_dark(dark);
+        let (app, term) = self.mode_look(dark);
+        let font: SharedString = if self.settings.font_family.trim().is_empty() {
+            self.theme_for(term_dark).font_mono.into()
+        } else {
+            self.settings.font_family.clone().into()
+        };
         let ws = cx.entity().downgrade();
-        let dropdown = crate::ui::theme_picker::terminal_dropdown(dark, self.terminal_colors_for(dark), self.theme_for(dark), p, move |id, window, cx| {
-            let _ = ws.update(cx, |this, cx| this.set_terminal_colors(dark, id, window, cx));
+        let theme_dropdown = crate::ui::theme_picker::dropdown(dark, theme, p, move |id, window, cx| {
+            let _ = ws.update(cx, |this, cx| this.set_theme(dark, id, window, cx));
         });
-        setting_row_below(p, if dark { "Dark terminal colors" } else { "Light terminal colors" },
-            if dark { "Text, background and ANSI colors of a dark terminal." } else { "Text, background and ANSI colors of a light terminal." },
-            div().w_full().max_w(px(340.)).child(dropdown).into_any_element())
+        let colors_control = if term_dark == dark {
+            let ws = cx.entity().downgrade();
+            crate::ui::theme_picker::terminal_dropdown(dark, self.terminal_colors_for(dark), theme, p, move |id, window, cx| {
+                let _ = ws.update(cx, |this, cx| this.set_terminal_colors(dark, id, window, cx));
+            })
+            .into_any_element()
+        } else {
+            div()
+                .min_h(px(32.))
+                .flex()
+                .items_center()
+                .text_size(px(12.))
+                .line_height(px(17.))
+                .text_color(p.text_muted)
+                .child(if term_dark {
+                    "The terminal stays dark, with the colors picked under Dark mode."
+                } else {
+                    "The terminal stays light, with the colors picked under Light mode."
+                })
+                .into_any_element()
+        };
+        let field = |label: &'static str, control: AnyElement| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(p.text_muted).child(label))
+                .child(control)
+        };
+        let header = div()
+            .h(px(22.))
+            .px(px(2.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(icon_el(if dark { "moon" } else { "sun" }, 15., if in_use { p.brand } else { p.text_muted }))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(13.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(p.text)
+                    .child(if dark { "Dark mode" } else { "Light mode" }),
+            )
+            .when(in_use, |el| {
+                el.child(
+                    div()
+                        .px(px(7.))
+                        .h(px(20.))
+                        .flex()
+                        .items_center()
+                        .rounded(p.corner(6.))
+                        .bg(p.brand_soft)
+                        .text_color(p.active_text)
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("In use"),
+                )
+            });
+        div()
+            .flex_1()
+            .flex_basis(px(280.))
+            .min_w(px(280.))
+            .p(px(10.))
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            // 4px preview corners + 10px padding.
+            .rounded(p.corner(14.))
+            .border_1()
+            .border_color(if in_use { p.brand } else { p.border })
+            .child(header)
+            .child(mode_preview(app, term, font))
+            .child(div().px(px(2.)).pb(px(2.)).flex().flex_col().gap(px(12.))
+                .child(field("Theme", theme_dropdown.into_any_element()))
+                .child(field("Terminal colors", colors_control)))
+            .into_any_element()
     }
 
     fn settings_terminal(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -1717,6 +1830,206 @@ pub(super) fn group(p: AppPalette, rows: Vec<AnyElement>) -> AnyElement {
                 .when(i + 1 < count, |el| el.border_b_1().border_color(p.border))
                 .child(row)
         }))
+        .into_any_element()
+}
+
+/// A titled part of a settings page: a small heading over its group.
+fn settings_block(title: &str, p: AppPalette, content: AnyElement) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(div().px(px(2.)).child(section_label(title, p)))
+        .child(content)
+        .into_any_element()
+}
+
+/// Width and height of the Mode choices' window miniatures.
+const MODE_THUMB: (f32, f32) = (112., 70.);
+
+/// A choice drawn as a picture with its name below, one of a radio group. The ring around
+/// the picture marks the selected one; it is always there, so selecting doesn't shift anything.
+fn choice_tile(kind: &'static str, index: usize, label: &'static str, selected: bool, thumb: AnyElement, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+    // Unique per tile, so hovering one tile rings only its own picture.
+    let group = SharedString::from(format!("{kind}-{index}"));
+    div()
+        .id((kind, index))
+        .role(gpui::Role::RadioButton)
+        .aria_label(label)
+        .aria_toggled(if selected { gpui::Toggled::True } else { gpui::Toggled::False })
+        .tab_index(0)
+        .group(group.clone())
+        .cursor_pointer()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(6.))
+        .child(
+            div()
+                .p(px(3.))
+                // The miniatures' 6px corners plus the 3px gap and 2px ring.
+                .rounded(px(11.))
+                .border_2()
+                .border_color(if selected { p.brand } else { gpui::transparent_black() })
+                .when(!selected, |el| el.group_hover(group, |s| s.border_color(p.border)))
+                .child(thumb),
+        )
+        .child(
+            div()
+                .h(px(18.))
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_size(px(12.5))
+                .font_weight(if selected { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+                .text_color(if selected { p.text } else { p.text_muted })
+                .when(selected, |el| el.child(icon_el("check", 12., p.brand)))
+                .child(label),
+        )
+        .focus_visible(move |s| s.rounded(px(11.)).bg(p.hover))
+}
+
+/// A miniature window without text: the sidebar in the Theme's colors beside terminal
+/// lines in the Terminal Colors' text and ANSI colors.
+fn window_thumb(app: AppPalette, term: &crate::theme::TerminalPalette, (w, h): (f32, f32)) -> AnyElement {
+    let nav = app.navigation();
+    let c = crate::theme::rgb_to_hsla;
+    let fg = c(term.foreground);
+    let bar = |w: f32, color: Hsla| div().h(px(3.)).w(px(w)).flex_shrink_0().rounded(px(1.5)).bg(color);
+    let row = |bars: Vec<gpui::Div>| div().flex().gap(px(3.)).children(bars);
+    let side = (w * 0.26).round();
+    div()
+        .w(px(w))
+        .h(px(h))
+        .flex_shrink_0()
+        .p(px(4.))
+        .flex()
+        .gap(px(3.))
+        .rounded(px(6.))
+        .bg(app.canvas)
+        .border_1()
+        .border_color(app.border)
+        .child(
+            div()
+                .w(px(side))
+                .flex_shrink_0()
+                .rounded(px(3.))
+                .bg(nav.background)
+                .p(px(3.))
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(div().h(px(6.)).rounded(px(1.5)).bg(nav.active))
+                .child(bar(side - 10., nav.text_muted.opacity(0.55)))
+                .child(bar(side - 14., nav.text_muted.opacity(0.55)))
+                .child(div().flex_1())
+                .child(div().size(px(5.)).rounded_full().bg(nav.brand)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .rounded(px(3.))
+                .bg(c(term.background))
+                .p(px(5.))
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(row(vec![bar(12., c(term.ansi[2])), bar(22., fg)]))
+                .child(row(vec![bar(30., fg.opacity(0.7))]))
+                .child(row(vec![bar(10., c(term.ansi[3])), bar(16., fg.opacity(0.7))]))
+                .child(row(vec![bar(10., c(term.ansi[1])), bar(20., fg.opacity(0.7))]))
+                .child(row(vec![bar(12., c(term.ansi[2])), div().w(px(4.)).h(px(6.)).bg(c(term.cursor))]).items_center()),
+        )
+        .into_any_element()
+}
+
+/// The System choice: the dark window's left half beside the light window's right half.
+fn system_thumb(
+    (dark_app, dark_term): &(AppPalette, crate::theme::TerminalPalette),
+    (light_app, light_term): &(AppPalette, crate::theme::TerminalPalette),
+) -> AnyElement {
+    let (w, h) = MODE_THUMB;
+    let half = w / 2.;
+    div()
+        .w(px(w))
+        .h(px(h))
+        .flex_shrink_0()
+        .flex()
+        .child(div().w(px(half)).h_full().overflow_hidden().child(window_thumb(*dark_app, dark_term, MODE_THUMB)))
+        .child(
+            div()
+                .relative()
+                .w(px(half))
+                .h_full()
+                .overflow_hidden()
+                .child(div().absolute().top_0().left(px(-half)).child(window_thumb(*light_app, light_term, MODE_THUMB))),
+        )
+        .into_any_element()
+}
+
+/// A small picture of a window in one mode: the sidebar in the Theme's colors beside a
+/// terminal in its Terminal Colors, showing the ANSI colors programs use most.
+fn mode_preview(app: AppPalette, term: crate::theme::TerminalPalette, font: SharedString) -> AnyElement {
+    use alacritty_terminal::vte::ansi::Rgb;
+    let nav = app.navigation();
+    let c = |rgb: Rgb| crate::theme::rgb_to_hsla(rgb);
+    let (fg, red, green, yellow, blue) = (c(term.foreground), c(term.ansi[1]), c(term.ansi[2]), c(term.ansi[3]), c(term.ansi[4]));
+    let run = |text: &'static str, color: Hsla| div().flex_shrink_0().text_color(color).child(text);
+    let line = |runs: Vec<gpui::Div>| div().flex().whitespace_nowrap().children(runs);
+    let prompt = |command: &'static str| vec![run("ops@web", green), run(":", fg), run("~", blue), run(command, fg)];
+    let bar = |w: f32, color: Hsla| div().h(px(4.)).w(px(w)).rounded(px(2.)).bg(color);
+    let sidebar = div()
+        .w(px(64.))
+        .flex_shrink_0()
+        .rounded(px(3.))
+        .bg(nav.background)
+        .border_1()
+        .border_color(nav.border)
+        .p(px(5.))
+        .flex()
+        .flex_col()
+        .gap(px(5.))
+        .child(div().h(px(10.)).px(px(3.)).flex().items_center().child(bar(26., nav.text.opacity(0.75))))
+        .child(div().h(px(12.)).px(px(3.)).flex().items_center().rounded(px(2.)).bg(nav.active).child(bar(32., nav.active_text)))
+        .child(div().h(px(10.)).px(px(3.)).flex().items_center().child(bar(36., nav.text_muted.opacity(0.6))))
+        .child(div().h(px(10.)).px(px(3.)).flex().items_center().child(bar(22., nav.text_muted.opacity(0.6))))
+        .child(div().flex_1())
+        .child(div().px(px(3.)).child(div().size(px(8.)).rounded_full().bg(nav.brand)));
+    let mut last = prompt("$ ");
+    last.push(div().flex_shrink_0().w(px(6.)).h(px(12.)).bg(c(term.cursor)));
+    let terminal = div()
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .rounded(px(3.))
+        .bg(c(term.background))
+        .border_1()
+        .border_color(app.border)
+        .px(px(8.))
+        .py(px(6.))
+        .flex()
+        .flex_col()
+        .font_family(font)
+        .text_size(px(10.))
+        .line_height(px(15.))
+        .child(line(prompt("$ systemctl status")))
+        .child(line(vec![run("● ", green), run("Active: ", fg), run("running", green)]))
+        .child(line(vec![run("warning", yellow), run(": disk 91% full", fg)]))
+        .child(line(vec![run("error", red), run(": backup failed", fg)]))
+        .child(line(last).items_center());
+    div()
+        .h(px(108.))
+        .p(px(5.))
+        .flex()
+        .gap(px(5.))
+        .rounded(app.corner(4.))
+        .bg(app.canvas)
+        .border_1()
+        .border_color(app.border)
+        .child(sidebar)
+        .child(terminal)
         .into_any_element()
 }
 

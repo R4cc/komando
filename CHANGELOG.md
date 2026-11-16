@@ -11,6 +11,14 @@ All notable changes to Komando are listed here. The format follows
 - Drag Project headings up or down in the sidebar to change their order. A drop indicator
   shows the new position, and the order is remembered after restarting Komando.
 
+### Changed
+
+- Settings → Appearance is reorganised around dark and light mode. Each mode has its own
+  card with a live preview of the window and terminal, its Theme and its Terminal Colors,
+  and a badge shows which mode is in use. Mode and App icon are picked from pictures, the
+  theme and terminal color menus show a miniature of each choice, and the window and
+  sidebar settings have their own sections.
+
 ### Fixed
 
 - Enter confirms the multi-line paste question, just like its Paste button, without sending

@@ -746,11 +746,7 @@ impl Workspace {
 
     fn apply_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let app_dark = self.app_dark(window);
-        let term_dark = match self.settings.terminal_theme {
-            TerminalThemeSetting::Follow => app_dark,
-            TerminalThemeSetting::Light => false,
-            TerminalThemeSetting::Dark => true,
-        };
+        let term_dark = self.terminal_dark(app_dark);
         let backdrop_enabled = self.style_window(window, app_dark);
         #[cfg(windows)]
         if let Some(tray) = &self.tray { tray.refresh_icon(); }
@@ -772,6 +768,15 @@ impl Workspace {
         let app = cx.global::<Appearance>().app;
         gpui_component::Theme::update(cx, |theme| app.apply_components(theme));
         cx.refresh_windows();
+    }
+
+    /// Whether the terminal is dark while the app is dark (`app_dark`) or light.
+    fn terminal_dark(&self, app_dark: bool) -> bool {
+        match self.settings.terminal_theme {
+            TerminalThemeSetting::Follow => app_dark,
+            TerminalThemeSetting::Light => false,
+            TerminalThemeSetting::Dark => true,
+        }
     }
 
     /// The Theme picked for dark or light mode.
