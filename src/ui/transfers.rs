@@ -84,6 +84,16 @@ pub enum Activity {
     Progress(f32),
 }
 
+impl Activity {
+    /// Shows the same on the Transfers entry, whose ring and label move in whole percents.
+    fn looks_like(self, other: Activity) -> bool {
+        match (self, other) {
+            (Activity::Progress(a), Activity::Progress(b)) => (a * 100.).round() == (b * 100.).round(),
+            (a, b) => a == b,
+        }
+    }
+}
+
 /// Bytes done over bytes to transfer, as (done, total) per transfer. Transfers whose size
 /// isn't known yet are left out; `None` if no size is known at all.
 fn combined_progress(parts: impl Iterator<Item = (u64, u64)>) -> Option<f32> {
@@ -104,6 +114,8 @@ pub struct Transfers {
     closed_at: Option<Instant>,
     filter: Filter,
     ticking: bool,
+    /// What the Transfers entry showed at the last repaint from a tick.
+    ticked: Activity,
     popup: Popup,
 }
 
@@ -133,7 +145,7 @@ fn mark_from_internet(_path: &std::path::Path) {}
 
 impl Transfers {
     pub fn new() -> Self {
-        Self { items: vec![], next_id: 1, open: false, closed_at: None, filter: Filter::All, ticking: false, popup: Popup::default() }
+        Self { items: vec![], next_id: 1, open: false, closed_at: None, filter: Filter::All, ticking: false, ticked: Activity::Idle, popup: Popup::default() }
     }
 
     pub fn is_open(&self) -> bool {
@@ -308,7 +320,13 @@ impl Transfers {
                 cx.background_executor().timer(Duration::from_millis(250)).await;
                 let active = this
                     .update(cx, |this, cx| {
-                        cx.notify();
+                        // Each repaint redraws the whole window, so only repaint when something
+                        // shown moved: the open panel's byte counts, or the ring by a percent.
+                        let activity = this.activity();
+                        if this.open || !activity.looks_like(this.ticked) {
+                            this.ticked = activity;
+                            cx.notify();
+                        }
                         let active = this.has_active();
                         if !active {
                             this.ticking = false;
@@ -769,6 +787,15 @@ mod tests {
         assert_eq!(combined_progress([(0, 0), (50, 200)].into_iter()), Some(0.25));
         assert_eq!(combined_progress([(0, 0)].into_iter()), None);
         assert_eq!(combined_progress(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn the_ring_repaints_only_when_its_percent_changes() {
+        assert!(Activity::Progress(0.501).looks_like(Activity::Progress(0.504)));
+        assert!(!Activity::Progress(0.50).looks_like(Activity::Progress(0.51)));
+        assert!(Activity::Unknown.looks_like(Activity::Unknown));
+        assert!(!Activity::Unknown.looks_like(Activity::Progress(0.)));
+        assert!(!Activity::Idle.looks_like(Activity::Unknown));
     }
 
     #[test]

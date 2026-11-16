@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use gpui::prelude::FluentBuilder as _;
@@ -208,11 +209,12 @@ enum SidebarRow {
     ProjectShell { project: usize, shell: usize, sessions: usize },
 }
 
-/// A row in the sidebar.
+/// A row in the sidebar. Shared, as a row's handlers each keep a copy and a Project lists
+/// all its Hosts.
 #[derive(Clone)]
 enum SidebarItem {
-    Host { project: Project, host: Host },
-    Shell { project: Option<Project>, shell: LocalShell },
+    Host { project: Arc<Project>, host: Arc<Host> },
+    Shell { project: Option<Arc<Project>>, shell: LocalShell },
 }
 
 impl SidebarItem {
@@ -245,6 +247,17 @@ impl SidebarItem {
             Self::Host { .. } => color,
         }
     }
+}
+
+/// A quick connect result and what its row shows, worked out when the query changes rather
+/// than on every frame.
+struct PickerResult {
+    item: SidebarItem,
+    icon: String,
+    /// A Host's colour; a shell's icon is coloured by the palette when drawn.
+    color: Option<Hsla>,
+    name: SharedString,
+    detail: SharedString,
 }
 
 /// What an item's sidebar row shows (see `Workspace::item_state`).
@@ -313,7 +326,7 @@ impl SessionEntry {
 
 enum Overlay {
     /// Quick connect. `selected` is the result Enter opens, moved with Up and Down.
-    Picker { query: Entity<InputState>, selected: usize, scroll: ScrollHandle },
+    Picker { query: Entity<InputState>, results: Vec<PickerResult>, selected: usize, scroll: ScrollHandle },
     /// Add a Host to a Project, or edit one.
     HostForm(forms::HostForm),
     /// Create a Project, or edit one.
@@ -832,7 +845,7 @@ impl Workspace {
     fn apply_highlights(&mut self, cx: &mut Context<Self>) {
         let compiled = Highlighter::from_sets(&self.highlights, &self.settings.disabled_highlight_sets);
         self.highlight_skipped = compiled.skipped.clone();
-        cx.set_global(ActiveHighlights(std::sync::Arc::new(compiled)));
+        cx.set_global(ActiveHighlights(Arc::new(compiled)));
         cx.refresh_windows();
     }
 
@@ -1187,8 +1200,9 @@ impl Workspace {
             .collect();
         let hosts = self.library.host_indices();
         for project in &self.library.projects {
+            let project = Arc::new(project.clone());
             items.extend(project.hosts.iter().filter_map(|id| hosts.get(id.as_str())).map(|&index| {
-                SidebarItem::Host { project: project.clone(), host: self.library.hosts[index].clone() }
+                SidebarItem::Host { project: project.clone(), host: Arc::new(self.library.hosts[index].clone()) }
             }));
             items.extend(project.shells.iter().map(|shell| SidebarItem::Shell { project: Some(project.clone()), shell: shell.clone() }));
         }
@@ -1314,7 +1328,7 @@ impl Workspace {
                 Protocol::Ssh => self.open_host(&project.id, &host.id, window, cx),
                 protocol => self.open_desktop(&project.id, &host.id, protocol, window, cx),
             },
-            SidebarItem::Shell { project, shell } => self.open_local(project.map(|p| p.id), shell, window, cx),
+            SidebarItem::Shell { project, shell } => self.open_local(project.map(|p| p.id.clone()), shell, window, cx),
         }
     }
 
@@ -2192,12 +2206,12 @@ impl Workspace {
             ItemKey::Host { project, host } => {
                 let project = self.library.project(&project)?;
                 if !project.hosts.contains(&host) { return None; }
-                Some(SidebarItem::Host { project: project.clone(), host: self.library.host(&host)?.clone() })
+                Some(SidebarItem::Host { project: Arc::new(project.clone()), host: Arc::new(self.library.host(&host)?.clone()) })
             }
             ItemKey::Shell { project: Some(id), name } => {
                 let project = self.library.project(&id)?;
                 let shell = project.shells.iter().find(|sh| sh.name == name)?.clone();
-                Some(SidebarItem::Shell { project: Some(project.clone()), shell })
+                Some(SidebarItem::Shell { project: Some(Arc::new(project.clone())), shell })
             }
             ItemKey::Shell { project: None, name } => self.library.standalone_shells().into_iter()
                 .chain(self.orphan_shells()).find(|sh| sh.name == name)
@@ -2394,10 +2408,12 @@ impl Workspace {
             return;
         }
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Search hosts and shells…"));
-        let sub = cx.subscribe_in(&query, window, |this, _, event: &InputEvent, window, cx| match event {
+        let sub = cx.subscribe_in(&query, window, |this, query, event: &InputEvent, window, cx| match event {
             // A new query starts again at its best match.
             InputEvent::Change => {
-                if let Some(Overlay::Picker { selected, scroll, .. }) = &mut this.overlay {
+                let found = this.picker_results(&query.read(cx).value());
+                if let Some(Overlay::Picker { results, selected, scroll, .. }) = &mut this.overlay {
+                    *results = found;
                     *selected = 0;
                     scroll.scroll_to_item(0);
                 }
@@ -2405,13 +2421,13 @@ impl Workspace {
             }
             // Ctrl+Enter: another Session on it, like Ctrl+click in the sidebar.
             InputEvent::PressEnter { secondary, .. } => {
-                let selected = match &this.overlay {
-                    Some(Overlay::Picker { selected, .. }) => *selected,
-                    _ => 0,
+                let item = match &this.overlay {
+                    Some(Overlay::Picker { results, selected, .. }) if !results.is_empty() => {
+                        Some(results[(*selected).min(results.len() - 1)].item.clone())
+                    }
+                    _ => None,
                 };
-                let mut items = this.picker_items(cx);
-                if !items.is_empty() {
-                    let item = items.swap_remove(selected.min(items.len() - 1));
+                if let Some(item) = item {
                     this.pick(item, *secondary, window, cx);
                 }
             }
@@ -2419,15 +2435,16 @@ impl Workspace {
         });
         self._subscriptions.push(sub);
         query.update(cx, |q, cx| q.focus(window, cx));
-        self.overlay = Some(Overlay::Picker { query, selected: 0, scroll: ScrollHandle::new() });
+        let results = self.picker_results("");
+        self.overlay = Some(Overlay::Picker { query, results, selected: 0, scroll: ScrollHandle::new() });
         cx.notify();
     }
 
     /// Move quick connect's selection one result down (or up), wrapping at the ends, and
     /// scroll it into view.
     fn step_picker(&mut self, down: bool, cx: &mut Context<Self>) {
-        let count = self.picker_items(cx).len();
-        let Some(Overlay::Picker { selected, scroll, .. }) = &mut self.overlay else { return };
+        let Some(Overlay::Picker { results, selected, scroll, .. }) = &mut self.overlay else { return };
+        let count = results.len();
         if count == 0 {
             return;
         }
@@ -2439,23 +2456,39 @@ impl Workspace {
 
     /// Quick connect: every sidebar item, filtered by name, address (with its port), user or
     /// Project.
-    fn picker_items(&self, cx: &App) -> Vec<SidebarItem> {
-        let Some(Overlay::Picker { query, .. }) = &self.overlay else { return vec![] };
-        let needle = query.read(cx).value().to_lowercase();
+    fn picker_results(&self, query: &str) -> Vec<PickerResult> {
+        let needle = query.to_lowercase();
+        let found = |hay: String| needle.is_empty() || hay.to_lowercase().contains(&needle);
         self.sidebar_items()
             .into_iter()
-            .filter(|item| {
-                let hay = match item {
+            .filter_map(|item| {
+                let (icon, color, name, detail) = match &item {
                     SidebarItem::Host { project, host } => {
                         let r = model::resolve(host, project);
+                        let dest = destination(&r);
                         // `user@address:port` as shown, so a pasted destination finds its Host.
-                        format!("{} {} {} {}", host.name, destination(&r), project.name, r.port)
+                        if !found(format!("{} {} {} {}", host.name, dest, project.name, r.port)) {
+                            return None;
+                        }
+                        let via = match r.jump_hosts.as_slice() {
+                            [] => String::new(),
+                            [one] => format!(" · via {}", one.jump.address),
+                            more => format!(" · via {} jump hosts", more.len()),
+                        };
+                        (r.icon.clone(), Some(project_color(&r.color)), host.name.clone(), format!("{dest}{via} · {}", project.name))
                     }
                     SidebarItem::Shell { project, shell } => {
-                        format!("{} {} local", shell.name, project.as_ref().map(|p| p.name.as_str()).unwrap_or(""))
+                        if !found(format!("{} {} local", shell.name, project.as_ref().map(|p| p.name.as_str()).unwrap_or(""))) {
+                            return None;
+                        }
+                        let detail = match project {
+                            Some(project) => format!("Local shell · {}", project.name),
+                            None => "Local shell".to_string(),
+                        };
+                        (crate::icons::shell_icon(shell).to_string(), None, shell.name.clone(), detail)
                     }
                 };
-                needle.is_empty() || hay.to_lowercase().contains(&needle)
+                Some(PickerResult { item, icon, color, name: name.into(), detail: detail.into() })
             })
             .collect()
     }
@@ -2995,15 +3028,21 @@ impl Workspace {
     /// The sidebar's rows, in order. Kept small (indices, counts) so working it out on every
     /// frame is cheap; only the rows in view are built into elements.
     fn sidebar_rows(&self) -> Vec<SidebarRow> {
-        let mut counts: HashMap<&ItemKey, usize> = HashMap::new();
+        // Each item's Sessions, found by borrowed ids: most items have none, and need no key.
+        let mut counts: HashMap<(bool, Option<&str>, &str), (&ItemKey, usize)> = HashMap::new();
         for s in &self.sessions {
-            *counts.entry(&s.item).or_default() += 1;
+            let id = match &s.item {
+                ItemKey::Host { project, host } => (true, Some(project.as_str()), host.as_str()),
+                ItemKey::Shell { project, name } => (false, project.as_deref(), name.as_str()),
+            };
+            counts.entry(id).or_insert((&s.item, 0)).1 += 1;
         }
+        let nested = |id| counts.get(&id).map_or(0, |&(key, count)| self.nested_rows(key, count));
         let hosts = self.library.host_indices();
         let mut rows = vec![];
-        for (index, shell) in self.sidebar_shells().iter().enumerate() {
-            let key = ItemKey::Shell { project: None, name: shell.name.clone() };
-            let sessions = self.nested_rows(&key, counts.get(&key).copied().unwrap_or(0));
+        let shells = self.sidebar_shells();
+        for (index, shell) in shells.iter().enumerate() {
+            let sessions = nested((false, None, &shell.name));
             rows.push(SidebarRow::Shell { index, sessions });
         }
         rows.push(SidebarRow::ProjectsHeader);
@@ -3018,13 +3057,11 @@ impl Workspace {
             let start = rows.len();
             for id in &project.hosts {
                 let Some(&host) = hosts.get(id.as_str()) else { continue };
-                let key = ItemKey::Host { project: project.id.clone(), host: id.clone() };
-                let sessions = self.nested_rows(&key, counts.get(&key).copied().unwrap_or(0));
+                let sessions = nested((true, Some(&project.id), id));
                 rows.push(SidebarRow::Host { project: pi, host, sessions });
             }
             for (shell, sh) in project.shells.iter().enumerate() {
-                let key = ItemKey::Shell { project: Some(project.id.clone()), name: sh.name.clone() };
-                let sessions = self.nested_rows(&key, counts.get(&key).copied().unwrap_or(0));
+                let sessions = nested((false, Some(&project.id), &sh.name));
                 rows.push(SidebarRow::ProjectShell { project: pi, shell, sessions });
             }
             if rows.len() == start {
@@ -3105,7 +3142,7 @@ impl Workspace {
                     return div().into_any_element();
                 };
                 let color = project_color(&project.color);
-                let item = SidebarItem::Host { project: project.clone(), host: host.clone() };
+                let item = SidebarItem::Host { project: Arc::new(project.clone()), host: Arc::new(host.clone()) };
                 div().flex().flex_col().gap(px(2.))
                     .children(self.render_item(&item, color, 20., p, cx)).into_any_element()
             }
@@ -3113,7 +3150,7 @@ impl Workspace {
                 let Some(project) = self.library.projects.get(project) else { return div().into_any_element() };
                 let Some(shell) = project.shells.get(shell) else { return div().into_any_element() };
                 let color = project_color(&project.color);
-                let item = SidebarItem::Shell { project: Some(project.clone()), shell: shell.clone() };
+                let item = SidebarItem::Shell { project: Some(Arc::new(project.clone())), shell: shell.clone() };
                 div().flex().flex_col().gap(px(2.))
                     .children(self.render_item(&item, color, 20., p, cx)).into_any_element()
             }
@@ -4645,9 +4682,8 @@ impl Workspace {
     fn render_overlay(&self, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let overlay = self.overlay.as_ref()?;
         let body = match overlay {
-            Overlay::Picker { query, selected, scroll } => {
-                let items = self.picker_items(cx);
-                let count = items.len();
+            Overlay::Picker { query, results, selected, scroll } => {
+                let count = results.len();
                 let selected = (*selected).min(count.saturating_sub(1));
                 let title = "Quick connect".to_string();
                 let mut list = div()
@@ -4661,7 +4697,7 @@ impl Workspace {
                     .overflow_y_scroll()
                     .track_scroll(scroll)
                     .p(px(6.));
-                if items.is_empty() {
+                if results.is_empty() {
                     // A typo, or nothing to find yet: say which, and how to go on.
                     let hint = if self.library.hosts.is_empty() {
                         "No match. Hosts you add show up here too: add one with the + next to a project."
@@ -4670,27 +4706,9 @@ impl Workspace {
                     };
                     list = list.child(div().p(px(16.)).text_size(px(13.)).text_color(p.text_faint).child(hint));
                 }
-                for (i, item) in items.into_iter().enumerate() {
-                    let (icon, color, name, detail) = match &item {
-                        SidebarItem::Host { project, host } => {
-                            let r = model::resolve(host, project);
-                            let via = match r.jump_hosts.as_slice() {
-                                [] => String::new(),
-                                [one] => format!(" · via {}", one.jump.address),
-                                more => format!(" · via {} jump hosts", more.len()),
-                            };
-                            (r.icon.clone(), project_color(&r.color), host.name.clone(), format!("{}{via} · {}", destination(&r), project.name))
-                        }
-                        SidebarItem::Shell { project, shell } => (
-                            crate::icons::shell_icon(&shell).to_string(),
-                            shell_icon_color(crate::icons::shell_icon(&shell), p),
-                            shell.name.clone(),
-                            match project {
-                                Some(project) => format!("Local shell · {}", project.name),
-                                None => "Local shell".to_string(),
-                            },
-                        ),
-                    };
+                for (i, PickerResult { item, icon, color, name, detail }) in results.iter().enumerate() {
+                    let color = color.unwrap_or_else(|| shell_icon_color(icon, p));
+                    let item = item.clone();
                     list = list.child(
                         div()
                             .id(("pick", i))
@@ -4711,14 +4729,14 @@ impl Workspace {
                             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                                 this.pick(item.clone(), event.modifiers().control, window, cx)
                             }))
-                            .child(badge(&icon, color, 26.))
+                            .child(badge(icon, color, 26.))
                             .child(
                                 div()
                                     .flex()
                                     .flex_col()
                                     .min_w_0()
-                                    .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(name))
-                                    .child(div().text_size(px(12.)).text_color(p.text_faint).truncate().child(detail)),
+                                    .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(name.clone()))
+                                    .child(div().text_size(px(12.)).text_color(p.text_faint).truncate().child(detail.clone())),
                             ),
                     );
                 }
@@ -5019,6 +5037,37 @@ const SUGGESTED_ICONS: &[&str] = &[
 /// Most results shown at once; a more specific search narrows them down.
 const ICON_RESULTS: usize = 60;
 
+/// What an icon is found by, prepared once: the search runs on every frame of the icon picker.
+struct IconTerms {
+    id: &'static str,
+    /// The id without its set's prefix.
+    name: &'static str,
+    /// A Devicon's name without dashes, so "nodejs" finds "node-js".
+    undashed: Option<String>,
+    /// Its catalog's search words, lower case and joined by dashes like the query.
+    words: Option<String>,
+}
+
+fn icon_terms() -> &'static [IconTerms] {
+    static TERMS: std::sync::OnceLock<Vec<IconTerms>> = std::sync::OnceLock::new();
+    TERMS.get_or_init(|| {
+        all_icons()
+            .iter()
+            .map(|id| {
+                let id = id.as_str();
+                let name = if id == "shell:cmd" { "command-prompt-cmd-windows-terminal" } else { id.split_once(':').map_or(id, |(_, name)| name) };
+                let search = crate::icons::find(id).map(|icon| icon.search).or_else(|| crate::icons::find_symbol(id).map(|icon| icon.search));
+                IconTerms {
+                    id,
+                    name,
+                    undashed: id.starts_with("devicon:").then(|| name.replace('-', "")),
+                    words: search.map(|search| search.to_lowercase().replace(' ', "-")),
+                }
+            })
+            .collect()
+    })
+}
+
 /// Icons matching `query`: exact name first, then names starting with it, then names with a
 /// word starting with it ("backup" finds "database-backup"), then any other match.
 fn search_icons(query: &str) -> (Vec<&'static str>, usize) {
@@ -5028,26 +5077,24 @@ fn search_icons(query: &str) -> (Vec<&'static str>, usize) {
         let shown = SUGGESTED_ICONS.iter().filter_map(|s| all.iter().find(|n| n.as_str() == *s)).map(|n| n.as_str()).collect();
         return (shown, 0);
     }
-    let rank = |id: &str| {
-        let name = if id == "shell:cmd" { "command-prompt-cmd-windows-terminal" } else { id.split_once(':').map_or(id, |(_, name)| name) };
+    let q_undashed = q.replace('-', "");
+    let rank = |icon: &IconTerms| {
+        let name = icon.name;
         if name == q {
             Some(0)
         } else if name.starts_with(&q) {
             Some(1)
         } else if name.split('-').any(|word| word.starts_with(&q)) {
             Some(2)
-        } else if name.contains(&q) || (id.starts_with("devicon:") && name.replace('-', "").contains(&q.replace('-', ""))) {
+        } else if name.contains(&q) || icon.undashed.as_ref().is_some_and(|n| n.contains(&q_undashed)) {
             Some(3)
-        } else if crate::icons::find(id).is_some_and(|icon| icon.search.to_lowercase().replace(' ', "-").contains(&q))
-            || crate::icons::find_symbol(id).is_some_and(|icon| icon.search.to_lowercase().replace(' ', "-").contains(&q))
-            || (q == "devicon" && id.starts_with("devicon:")) {
+        } else if icon.words.as_ref().is_some_and(|words| words.contains(&q)) || (q == "devicon" && icon.id.starts_with("devicon:")) {
             Some(4)
         } else {
             None
         }
     };
-    let mut hits: Vec<(u8, &'static str)> =
-        all_icons().iter().filter_map(|n| rank(n).map(|r| (r, n.as_str()))).collect();
+    let mut hits: Vec<(u8, &'static str)> = icon_terms().iter().filter_map(|icon| rank(icon).map(|r| (r, icon.id))).collect();
     hits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.len().cmp(&b.1.len())).then(a.1.cmp(b.1)));
     let total = hits.len();
     (hits.into_iter().take(ICON_RESULTS).map(|(_, n)| n).collect(), total)

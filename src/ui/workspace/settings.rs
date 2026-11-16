@@ -147,10 +147,14 @@ impl Workspace {
             let value = self.settings.background_blur_intensity as f32;
             let slider = cx.new(|_| SliderState::new().min(0.).max(100.).step(5.).default_value(value));
             let sub = cx.subscribe_in(&slider, window, |this, _, event: &SliderEvent, window, cx| match event {
-                // Live preview while dragging; written to disk on release.
+                // Live preview while dragging; written to disk on release. The slider reports
+                // every pointer move, but restyling the windows is only worth a new value.
                 SliderEvent::Change(value) => {
-                    this.settings.background_blur_intensity = value.end().round().clamp(0., 100.) as u8;
-                    this.apply_appearance(window, cx);
+                    let blur = value.end().round().clamp(0., 100.) as u8;
+                    if blur != this.settings.background_blur_intensity {
+                        this.settings.background_blur_intensity = blur;
+                        this.apply_appearance(window, cx);
+                    }
                 }
                 SliderEvent::Release(_) => {
                     this.save_settings(cx);
@@ -164,8 +168,11 @@ impl Workspace {
             let slider = cx.new(|_| SliderState::new().min(10.).max(24.).step(1.).default_value(value));
             let sub = cx.subscribe_in(&slider, window, |this, _, event: &SliderEvent, window, cx| match event {
                 SliderEvent::Change(value) => {
-                    this.settings.font_size = value.end().round().clamp(10., 24.);
-                    this.apply_appearance(window, cx);
+                    let size = value.end().round().clamp(10., 24.);
+                    if size != this.settings.font_size {
+                        this.settings.font_size = size;
+                        this.apply_appearance(window, cx);
+                    }
                 }
                 SliderEvent::Release(_) => {
                     this.save_settings(cx);
