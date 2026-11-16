@@ -6,6 +6,11 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Opening a host's remote desktop no longer moves its terminal into a row of its own. The
+  host's row stays its SSH session, and the remote desktop is the only row listed under it.
+
 ### Fixed
 
 - Restored the supplied serif “Komando.” wordmark in the app and README, without the
