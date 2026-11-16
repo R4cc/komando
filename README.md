@@ -92,9 +92,10 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 
 ### Remote desktops over RDP and VNC
 
-- **Attached to your hosts.** Edit a host → Remote desktop to enable RDP, VNC, or both, with
-  their own port, account and vault password. Hovering the host in the sidebar shows a button
-  for its desktop; the host's right-click and ⋯ menus open every configured protocol.
+- **Attached to your hosts.** The host's right-click and ⋯ menus offer RDP and VNC by default.
+  Choose an unconfigured protocol to set its port, account and vault password; once saved,
+  open it from the same menu. Edit a host → Remote desktop to change either protocol later
+  or switch it off to hide it from the menu.
 - **Inside Komando.** A desktop opens as a session under its host, with keyboard and mouse
   input, scaling to fit, and reconnect. Choose what a click on the host opens, including a
   desktop for Windows hosts without SSH.

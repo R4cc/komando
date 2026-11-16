@@ -6,6 +6,16 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-11-16
+
+### Changed
+
+- Host and local shell rows now show only + and ⋯ on hover. Disconnect and Close session
+  remain in their right-click and ⋯ menus; individual session rows keep their × button.
+- RDP and VNC are offered in every host's right-click and ⋯ menus by default, including
+  existing hosts. Choosing an unconfigured protocol opens its port and password settings.
+  Switch a protocol off in Edit host → Remote desktop to hide it from those menus.
+
 ### Fixed
 
 - Komando closed when a sidebar row's ⋯ button (or Shift+F10) opened its menu while Windows
@@ -1404,7 +1414,10 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.6.5...HEAD
+[0.6.5]: https://github.com/R4cc/komando/compare/v0.6.4...v0.6.5
+[0.6.4]: https://github.com/R4cc/komando/compare/v0.6.3...v0.6.4
+[0.6.3]: https://github.com/R4cc/komando/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/R4cc/komando/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/R4cc/komando/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/R4cc/komando/compare/v0.5.2...v0.6.0

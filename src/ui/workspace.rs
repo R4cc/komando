@@ -1271,8 +1271,8 @@ impl Workspace {
     /// Clicking a sidebar item: show its Session (reconnecting it in place if it dropped,
     /// so the earlier output stays above), or connect if it has none. `another` opens an
     /// additional Session for the same item: for a Host always another terminal, even when a
-    /// click on it opens a Remote Desktop (a Host has one desktop per protocol, which its
-    /// desktop button shows).
+    /// click on it opens a Remote Desktop (a Host has one desktop per protocol, opened from
+    /// its menu).
     fn activate_item(&mut self, item: SidebarItem, another: bool, window: &mut Window, cx: &mut Context<Self>) {
         let key = item.key();
         if !another {
@@ -3603,7 +3603,9 @@ impl Workspace {
                 let (pb, hb) = (project.id.clone(), host.id.clone());
                 let (pd, hd) = (project.id.clone(), host.id.clone());
                 let hc = host.id.clone();
-                let desktops: Vec<Protocol> = host.desktops().collect();
+                // Both desktops are offered by default. An explicit opt-out hides one;
+                // an unconfigured one opens its settings to add its port and password.
+                let desktops: Vec<Protocol> = [Protocol::Rdp, Protocol::Vnc].into_iter().filter(|protocol| host.desktop_enabled(*protocol)).collect();
                 if !desktops.is_empty() {
                     menu = menu.separator();
                     // A Host that opens its desktop on a click offers its terminal here instead.
@@ -3615,9 +3617,15 @@ impl Workspace {
                     }
                     for protocol in desktops {
                         let (pr, hr) = (project.id.clone(), host.id.clone());
-                        menu = menu.item(menu_item(&format!("Open remote desktop ({})", protocol.label()), "monitor", &ws, move |this, window, cx| {
-                            this.open_desktop(&pr, &hr, protocol, window, cx)
-                        }));
+                        menu = if host.desktop(protocol).is_some() {
+                            menu.item(menu_item(&format!("Open remote desktop ({})", protocol.label()), "monitor", &ws, move |this, window, cx| {
+                                this.open_desktop(&pr, &hr, protocol, window, cx)
+                            }))
+                        } else {
+                            menu.item(menu_item(&format!("Set up remote desktop ({})…", protocol.label()), "monitor", &ws, move |this, window, cx| {
+                                this.set_up_desktop(pr.clone(), hr.clone(), protocol, window, cx)
+                            }))
+                        };
                     }
                 }
                 menu = menu
@@ -3658,9 +3666,7 @@ impl Workspace {
     /// and each Session has its own row with its own close button.
     fn render_item(&self, item: &SidebarItem, color: Hsla, indent: f32, p: AppPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let key = item.key();
-        let ItemState { sessions, listed, grouped, expanded, main, beside, status, live, busy, active, .. } = self.item_state(&key);
-        let session_id = main.map(|s| s.id);
-        let sessions_live = main.is_some_and(|s| s.is_live());
+        let ItemState { listed, grouped, expanded, main, beside, status, live, busy, active, .. } = self.item_state(&key);
         let icon = item.icon();
         let icon_size = if matches!(item, SidebarItem::Shell { .. }) { 16. } else { 15. };
         let icon_color = item.icon_color(&icon, if active || live { color } else { p.text_faint }, p);
@@ -3674,17 +3680,6 @@ impl Workspace {
         let is_host = matches!(item, SidebarItem::Host { .. });
         let focused = self.nav_focus_on(&NavTarget::Item(key.clone()));
         let menu_open = self.row_menu_open(&NavTarget::Item(key.clone()));
-        // A Host's Remote Desktop opens from its row with one click: the one a click on the
-        // Host opens, else its first; a second protocol is in the ⋯ menu. Not on a Host whose
-        // click already opens that desktop, until it has a Session (then the click shows that).
-        let desktop = match item {
-            SidebarItem::Host { project, host } => {
-                let opens = host.opens_with();
-                let protocol = host.desktops().find(|d| *d == opens).or_else(|| host.desktops().next());
-                protocol.filter(|_| opens.is_ssh() || !sessions.is_empty()).map(|protocol| (project.id.clone(), host.id.clone(), protocol))
-            }
-            SidebarItem::Shell { .. } => None,
-        };
         let dragged = self.dragged(item, None, color);
         // Shell identities stay clear while idle; their labels and status carry activity.
         let dim = !(active || live) && is_artwork(&icon) && matches!(item, SidebarItem::Host { .. });
@@ -3699,45 +3694,7 @@ impl Workspace {
             .map(|(_, w)| w + 4.)
             .sum::<f32>();
         let pad_right = if grouped { 6. } else { 10. };
-        // The buttons shown on hover cover the end of the label. Offer only as many as leave
-        // a readable part of it: the desktop button goes first (it's in the ⋯ menu too), then
-        // ×. + and ⋯ always stay.
-        let row_width = self.sidebar_width_px - 18.;
-        let label_start = indent + icon_size + 10.;
-        let room = |buttons: &[f32]| {
-            let strip = buttons.iter().sum::<f32>() + 2. * buttons.len().saturating_sub(1) as f32;
-            row_width - pad_right - trailing - strip - label_start
-        };
-        const LABEL_MIN: f32 = 64.;
-        const PILL: f32 = 40.;
-        let mut show_close = session_id.is_some();
-        let mut show_desktop = desktop.is_some();
-        let widths = |desktop: bool, close: bool| {
-            let mut w = vec![24., 24.];
-            if desktop {
-                w.push(PILL);
-            }
-            if close {
-                w.push(24.);
-            }
-            w
-        };
-        if show_desktop && room(&widths(true, show_close)) < LABEL_MIN {
-            show_desktop = false;
-        }
-        if show_close && room(&widths(false, true)) < LABEL_MIN {
-            show_close = false;
-        }
-        let desktop_button = desktop.filter(|_| show_desktop).map(|(pid, hid, protocol)| {
-            desktop_pill(SharedString::from(format!("desktop-{key:?}")), protocol, p)
-                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                    cx.stop_propagation();
-                    this.open_desktop(&pid, &hid, protocol, window, cx);
-                }))
-                .into_any_element()
-        });
         let new_tip: SharedString = if is_host { "New terminal (Ctrl+click)".into() } else { "New session (Ctrl+click)".into() };
-        let close_tip: SharedString = if sessions_live { "Disconnect".into() } else { "Close session".into() };
         let more = self.menu_popover(
             SharedString::from(format!("more-{key:?}")),
             NavTarget::Item(key.clone()),
@@ -3778,7 +3735,7 @@ impl Workspace {
                 .cursor_pointer()
                 .when(active, |el| el.bg(p.active).text_color(p.active_text))
                 .when(!active, |el| el.hover(|s| s.bg(p.hover)))
-                .when(beside && !active && (!expanded || session_id.is_some()), |el| el.bg(p.hover))
+                .when(beside && !active && (!expanded || main.is_some()), |el| el.bg(p.hover))
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     this.nav_clicked(NavTarget::Item(click_key.clone()));
                     this.activate_item(item_for_click.clone(), event.modifiers().control, window, cx)
@@ -3863,9 +3820,11 @@ impl Workspace {
                         }),
                 )
                 .child(
-                    // Opaque sidebar colour under the row's translucent hover colour, so the
-                    // buttons' backdrop matches the row and covers the end of a long label. Also
-                    // shown on the keyboard cursor's row, and while its menu is open.
+                    // Just + and ⋯: disconnecting and remote desktops are in the menu (⋯ or a
+                    // right-click), which keeps the row calm. Opaque sidebar colour under the
+                    // row's translucent hover colour, so the buttons' backdrop matches the row
+                    // and covers the end of a long label. Also shown on the keyboard cursor's
+                    // row, and while its menu is open.
                     div()
                         .absolute()
                         .id("item-hover-actions")
@@ -3881,7 +3840,6 @@ impl Workspace {
                                 .gap(px(2.))
                                 .rounded(p.corner(7.))
                                 .bg(if active { p.active } else { p.hover })
-                                .children(desktop_button)
                                 .child(
                                     icon_button(SharedString::from(format!("another-{key:?}")), "plus", p)
                                         .aria_label(new_tip.clone())
@@ -3892,20 +3850,7 @@ impl Workspace {
                                             this.activate_item(item_for_new.clone(), true, window, cx);
                                         })),
                                 )
-                                .child(more)
-                                // A group has no close button of its own (which Session would it
-                                // close?) unless the row is the Host's terminal.
-                                .when_some(session_id.filter(|_| show_close), |el, id| {
-                                    el.child(
-                                        close_button(SharedString::from(format!("close-{id}")), 24., p)
-                                            .aria_label(close_tip.clone())
-                                            .tooltip(move |window, cx| Tooltip::new(close_tip.clone()).build(window, cx))
-                                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                                cx.stop_propagation();
-                                                this.request_close(id, window, cx);
-                                            })),
-                                    )
-                                }),
+                                .child(more),
                         ),
                 )
                 .when(focused, |el| el.child(focus_ring(p.corner(8.), p)))
@@ -4839,8 +4784,7 @@ fn status_indicator(status: Option<&Status>, busy: bool, p: AppPalette) -> AnyEl
     }
 }
 
-/// The protocol tag on a Remote Desktop's Session row ("RDP", "VNC"), and on the button that
-/// opens it.
+/// The protocol tag on a Remote Desktop's Session row ("RDP", "VNC").
 fn protocol_tag(label: &'static str, p: AppPalette) -> gpui::Div {
     div()
         .flex_shrink_0()
@@ -4860,27 +4804,6 @@ fn protocol_tag(label: &'static str, p: AppPalette) -> gpui::Div {
 /// border, so the row's content doesn't move when the cursor arrives.
 fn focus_ring(radius: gpui::Pixels, p: AppPalette) -> gpui::Div {
     div().absolute().top_0().left_0().right_0().bottom_0().rounded(radius).border_2().border_color(p.focus)
-}
-
-/// A button that opens a Host's Remote Desktop: the same tag its Session row carries, so
-/// RDP and VNC can't be mixed up, in a button as tall as the ones beside it.
-fn desktop_pill(id: SharedString, protocol: Protocol, p: AppPalette) -> gpui::Stateful<gpui::Div> {
-    let tip: SharedString = format!("Open remote desktop ({})", protocol.label()).into();
-    div()
-        .id(id)
-        .role(gpui::Role::Button)
-        .aria_label(tip.clone())
-        .tab_index(0)
-        .focus_visible(move |s| s.border_2().border_color(p.focus))
-        .h(px(24.))
-        .px(px(4.))
-        .flex()
-        .items_center()
-        .rounded(p.corner(7.))
-        .cursor_pointer()
-        .hover(move |s| s.bg(p.hover))
-        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-        .child(protocol_tag(protocol.label(), p))
 }
 
 /// What a Session's own row in the sidebar says: the name it was given, else the title its

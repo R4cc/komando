@@ -66,6 +66,8 @@ pub(super) struct HostForm {
     run_project_commands: bool,
     /// Its Remote Desktops: RDP, then VNC.
     desktops: [DesktopRow; 2],
+    /// Opened from an unconfigured desktop's menu entry: show just that protocol's settings.
+    desktop_setup: Option<Protocol>,
     /// What a click on the Host opens.
     opens: Protocol,
     icon: String,
@@ -173,6 +175,22 @@ impl Workspace {
         self.open_host_form(project_id, Some(host_id), window, cx);
     }
 
+    /// Configure a Remote Desktop without changing the Host until the form is saved.
+    pub(super) fn set_up_desktop(&mut self, project_id: String, host_id: String, protocol: Protocol, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open(cx) || !self.library.host(&host_id).is_some_and(|host| host.desktop_enabled(protocol)) {
+            return;
+        }
+        self.open_edit_host(project_id, host_id, window, cx);
+        if let Some(form) = self.host_form() {
+            form.desktop_setup = Some(protocol);
+            if let Some(row) = form.desktops.iter_mut().find(|row| row.protocol == protocol) {
+                row.on = true;
+                row.password.update(cx, |field, cx| field.focus(window, cx));
+            }
+        }
+        cx.notify();
+    }
+
     /// Copy a Host below itself in the Project it was picked from, then open the copy's form
     /// so its name and address can be changed.
     pub(super) fn duplicate_host(&mut self, project_id: String, host_id: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -210,7 +228,11 @@ impl Workspace {
             Inherited::Off => SignIn::Ask,
         };
         let icon_query = self.new_icon_query(window, cx);
-        let desktops = [Protocol::Rdp, Protocol::Vnc].map(|protocol| self.desktop_row(protocol, h.desktop(protocol), window, cx));
+        let desktops = [Protocol::Rdp, Protocol::Vnc].map(|protocol| {
+            let mut row = self.desktop_row(protocol, h.desktop(protocol), window, cx);
+            row.on = h.desktop_enabled(protocol);
+            row
+        });
         self.overlay = Some(Overlay::HostForm(HostForm {
             project_id,
             editing,
@@ -226,6 +248,7 @@ impl Workspace {
             jumps,
             run_project_commands: h.run_project_commands,
             desktops,
+            desktop_setup: None,
             opens: h.opens_with(),
             icon: h.icon.unwrap_or_else(|| "server".into()),
             icon_query,
@@ -450,6 +473,8 @@ impl Workspace {
             (form.project_id.clone(), form.editing.clone(), form.sign_in, form.run_project_commands, form.icon.clone());
         let desktop_entries = form.desktops.iter().map(|row| read_desktop_row(row, cx)).collect::<Result<Vec<_>, _>>()?;
         let opens = form.opens;
+        let desktop_setup = form.desktop_setup;
+        let desktop_enabled = form.desktops.each_ref().map(|row| row.on);
 
         let mut host = editing.as_deref().and_then(|id| self.library.host(id)).cloned().unwrap_or_else(|| Host::new("", ""));
         let mut imported = None;
@@ -476,6 +501,14 @@ impl Workspace {
         let old_desktop_credentials: Vec<CredentialId> =
             [&host.rdp, &host.vnc].into_iter().flatten().filter_map(|d| d.credential.clone()).collect();
         for (protocol, entry) in [Protocol::Rdp, Protocol::Vnc].into_iter().zip(desktop_entries) {
+            // A protocol's setup dialog must not configure or disable the other desktop.
+            if desktop_setup.is_some_and(|selected| selected != protocol) {
+                continue;
+            }
+            match protocol {
+                Protocol::Rdp => host.rdp_enabled = desktop_enabled[0],
+                _ => host.vnc_enabled = desktop_enabled[1],
+            }
             let desktop = match entry {
                 None => None,
                 Some((mut desktop, new_password)) => {
@@ -545,6 +578,22 @@ impl Workspace {
         let project_icon = project.map(|pr| pr.icon.clone()).unwrap_or_else(|| "folder".into());
         let color = project_color(project.map(|pr| pr.color.as_str()).unwrap_or(FIRST_PROJECT_COLOR));
         let host = form.editing.as_deref().and_then(|id| self.library.host(id));
+        if let Some((index, row)) = form.desktop_setup.and_then(|protocol| form.desktops.iter().enumerate().find(|(_, row)| row.protocol == protocol)) {
+            let protocol = row.protocol;
+            let host_name = host.map(|h| h.name.as_str()).unwrap_or("");
+            return form_shell(
+                "host-form-body",
+                false,
+                form_header(
+                    badge("monitor", color, 34.).into_any_element(),
+                    format!("Set up {}", protocol.label()),
+                    format!("{host_name} · {project_name}"),
+                    p,
+                ),
+                self.desktop_row_view(index, row, p, cx),
+                form_footer("hf", "Save", form.error.as_deref(), p, cx),
+            );
+        }
         let title = match host {
             Some(h) => format!("Edit {}", h.name),
             None => "Add host".to_string(),
@@ -1079,7 +1128,7 @@ impl Workspace {
             .children(rows)
             .children(opens)
             .child(hint_text(
-                "Opens as a session under the host in the sidebar, beside its terminal. Hover the host for its desktop button, or right-click it.".into(),
+                "Right-click the host or use its ⋯ menu to open RDP or VNC beside its terminal. Switch off a protocol to hide it from that menu.".into(),
                 p,
             ))
             .into_any_element()

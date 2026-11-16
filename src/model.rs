@@ -186,6 +186,12 @@ pub struct Host {
     /// The Host's Remote Desktop over VNC, if it offers one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vnc: Option<Desktop>,
+    /// Whether RDP is offered in the Host's menu, even before it is configured.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub rdp_enabled: bool,
+    /// Whether VNC is offered in the Host's menu, even before it is configured.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub vnc_enabled: bool,
     /// What clicking the Host in the sidebar opens when it has no Session yet: its terminal,
     /// or one of its Remote Desktops (a Windows machine without SSH).
     #[serde(default, skip_serializing_if = "Protocol::is_ssh")]
@@ -363,6 +369,15 @@ impl Quality {
 }
 
 impl Host {
+    /// Remote desktops are offered by default; only an explicit opt-out hides one.
+    pub fn desktop_enabled(&self, protocol: Protocol) -> bool {
+        match protocol {
+            Protocol::Ssh => false,
+            Protocol::Rdp => self.rdp_enabled,
+            Protocol::Vnc => self.vnc_enabled,
+        }
+    }
+
     /// The Host's Remote Desktop over `protocol`, if it has one (never for SSH).
     pub fn desktop(&self, protocol: Protocol) -> Option<&Desktop> {
         match protocol {
@@ -387,7 +402,7 @@ impl Host {
 
     /// What a click opens: what `opens` says, unless that Remote Desktop was removed since.
     pub fn opens_with(&self) -> Protocol {
-        if self.desktop(self.opens).is_some() { self.opens } else { Protocol::Ssh }
+        if self.desktop_enabled(self.opens) && self.desktop(self.opens).is_some() { self.opens } else { Protocol::Ssh }
     }
 
     /// A Host with a fresh id that takes everything it can from its Project.
@@ -408,6 +423,8 @@ impl Host {
             icon: None,
             rdp: None,
             vnc: None,
+            rdp_enabled: true,
+            vnc_enabled: true,
             opens: Protocol::Ssh,
         }
     }
@@ -1305,6 +1322,40 @@ mod tests {
     }
 
     #[test]
+    fn desktop_menu_defaults_to_both_for_new_and_old_hosts() {
+        let new = Host::new("web01", "web01.lan");
+        let old: Host = toml::from_str("id = 'old'\nname = 'web01'\naddress = 'web01.lan'").unwrap();
+        for host in [new, old] {
+            assert!(host.desktop_enabled(Protocol::Rdp));
+            assert!(host.desktop_enabled(Protocol::Vnc));
+            // Offered in the menu, but each still needs its settings before it can open.
+            assert!(host.desktop(Protocol::Rdp).is_none());
+            assert!(host.desktop(Protocol::Vnc).is_none());
+            assert_eq!(host.opens_with(), Protocol::Ssh);
+        }
+    }
+
+    #[test]
+    fn desktop_menu_opt_out_persists_per_protocol() {
+        for protocol in [Protocol::Rdp, Protocol::Vnc] {
+            let mut host = Host::new("web01", "web01.lan");
+            host.rdp = Some(Desktop::new(Protocol::Rdp));
+            host.vnc = Some(Desktop::new(Protocol::Vnc));
+            host.opens = protocol;
+            match protocol {
+                Protocol::Rdp => host.rdp_enabled = false,
+                _ => host.vnc_enabled = false,
+            }
+            let loaded: Host = toml::from_str(&toml::to_string(&host).unwrap()).unwrap();
+            assert!(!loaded.desktop_enabled(protocol));
+            let other = if protocol == Protocol::Rdp { Protocol::Vnc } else { Protocol::Rdp };
+            assert!(loaded.desktop_enabled(other));
+            assert_eq!(loaded.opens_with(), Protocol::Ssh);
+            assert_eq!(loaded, host);
+        }
+    }
+
+    #[test]
     fn terminal_preferences_migrate_and_round_trip() {
         use super::{Settings, TerminalCursor};
         let mut settings: Settings = toml::from_str("font_size = 16.0").unwrap();
@@ -1357,6 +1408,8 @@ mod tests {
             icon: None,
             rdp: None,
             vnc: None,
+            rdp_enabled: true,
+            vnc_enabled: true,
             opens: Protocol::Ssh,
         }
     }
