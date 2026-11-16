@@ -1059,6 +1059,8 @@ pub struct Settings {
     pub rdp_fit_desktop: bool,
     /// VNC: leave other viewers of the desktop connected. Off asks the server for it alone.
     pub vnc_shared: bool,
+    /// The welcome tour was shown (or skipped) and isn't offered again on start.
+    pub onboarded: bool,
 }
 
 /// The cursor used unless a terminal program requests its own style.
@@ -1111,6 +1113,7 @@ impl Default for Settings {
             sftp_menu_move_to: false,
             rdp_fit_desktop: true,
             vnc_shared: true,
+            onboarded: false,
         }
     }
 }

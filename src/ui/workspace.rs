@@ -41,6 +41,7 @@ mod forms;
 mod highlights;
 mod import;
 mod notifications;
+mod onboarding;
 mod settings;
 mod split;
 mod updates;
@@ -288,6 +289,8 @@ enum Overlay {
     Confirm { title: String, body: String, action: ConfirmAction },
     /// A Host's Command History.
     History(command_history::HistoryPanel),
+    /// The welcome tour, shown on the first start (see `onboarding.rs`).
+    Tour(onboarding::Tour),
 }
 
 #[derive(Clone)]
@@ -575,6 +578,14 @@ impl Workspace {
             .detach();
         }
         crate::perf::startup("workspace ready");
+        // The welcome tour, on a fresh install. Development tooling that opens Sessions or
+        // unlocks at start isn't interrupted by it.
+        let tooling = startup.master_password.is_some() || !startup.open.is_empty() || startup.open_shell.is_some();
+        match onboarding::should_offer(&this.settings, &this.library, this.vault_exists) {
+            Some(true) if !tooling => cx.defer_in(window, |this, window, cx| this.start_tour(window, cx)),
+            None => this.tour_closed(cx),
+            _ => {}
+        }
         if !startup.open.is_empty() || startup.open_shell.is_some() {
             cx.defer_in(window, move |this, window, cx| this.run_startup(&startup, window, cx));
         }
@@ -2319,7 +2330,7 @@ impl Workspace {
     /// close; a host, project, shell or highlight form stays, since a stray click would throw away what was
     /// typed into it. Escape, Cancel and the close button still close it.
     fn backdrop_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.overlay, Some(Overlay::HostForm(_) | Overlay::ProjectForm(_) | Overlay::ShellForm | Overlay::RuleForm(_) | Overlay::SetForm(_))) {
+        if !matches!(self.overlay, Some(Overlay::HostForm(_) | Overlay::ProjectForm(_) | Overlay::ShellForm | Overlay::RuleForm(_) | Overlay::SetForm(_) | Overlay::Tour(_))) {
             self.close_overlay(window, cx);
         }
     }
@@ -2327,6 +2338,9 @@ impl Workspace {
     fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.overlay, Some(Overlay::ShellForm)) {
             self.clear_shell_editor(window, cx);
+        }
+        if matches!(self.overlay, Some(Overlay::Tour(_))) {
+            self.tour_closed(cx);
         }
         self.overlay = None;
         if matches!(self.page, Page::Settings(_)) {
@@ -4255,6 +4269,7 @@ impl Workspace {
             Overlay::RuleForm(form) => self.render_rule_form(form, p, cx),
             Overlay::SetForm(form) => self.render_set_form(form, p, cx),
             Overlay::History(panel) => self.render_history(panel, p, cx),
+            Overlay::Tour(tour) => self.render_tour(tour, p, cx),
             Overlay::Confirm { title, body, .. } => form_card(
                 p,
                 title,

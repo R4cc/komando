@@ -6,6 +6,14 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A welcome tour on the first start. It sets the options worth choosing straight away (theme,
+  command history, copy on select, multi-line paste, the notification area and update checks),
+  creates your master password, and shows how to import hosts from Tabby, MobaXterm or a
+  project file, what the minimap does, how to set up RDP and VNC desktops, and a few more
+  features. Skip any step or the whole tour; replay it from Settings → About.
+
 ### Fixed
 
 - Restored the supplied serif “Komando.” wordmark in the app and README, without the

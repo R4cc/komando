@@ -209,7 +209,7 @@ impl Workspace {
     }
 
     /// Push terminal behaviour settings into every open session.
-    fn apply_terminal_settings(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn apply_terminal_settings(&mut self, cx: &mut Context<Self>) {
         let (paste, putty) = (self.settings.confirm_multiline_paste, self.settings.putty_clipboard);
         let windows_selection = self.settings.windows_selection;
         let cursor_shape = self.settings.cursor_shape;
@@ -1017,6 +1017,14 @@ impl Workspace {
                                 .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_with_system(&data_dir))),
                         )
                         .into_any_element(),
+                    setting_row(
+                        p,
+                        "Welcome tour",
+                        "The guide shown on the first start: essential settings, the vault, importing, the minimap and remote desktops.",
+                        button("replay-tour", "Show again", ButtonKind::Secondary, p)
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.start_tour(window, cx)))
+                            .into_any_element(),
+                    ),
                 ],
             ))
             .child(self.render_updates(p, cx))
