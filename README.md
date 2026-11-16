@@ -1,9 +1,7 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">
-  <img src="assets/logo.png" width="440" alt="Komando">
-</picture>
+<img src="assets/logo-dark.png#gh-dark-mode-only" width="440" alt="Komando.">
+<img src="assets/logo.png#gh-light-mode-only" width="440" alt="Komando.">
 
 ### SSH, SFTP and remote desktops for Windows 11. Built with Rust.
 
@@ -158,10 +156,8 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 Komando is built in Rust for fast startup, low memory use and responsive SSH sessions.
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-tabby-dark.svg">
-    <img src="assets/benchmark-tabby-light.svg" width="828" alt="Komando, Windows Terminal and Tabby, in that order: startup 187, 351 and 725 ms; memory with 1 SSH Session 23.5, 29 and 318.7 MB; memory with 10 Sessions 28.3, 127 and 382.8 MB; a million log lines in 0.81, 1.4 and 4.19 seconds. Windows Terminal figures are older measurements with different settings.">
-  </picture>
+  <img src="assets/benchmark-tabby-dark.svg#gh-dark-mode-only" width="860" alt="Komando, Windows Terminal and Tabby, in that order: startup 187, 351 and 725 ms; memory with 1 SSH Session 23.5, 29 and 318.7 MB; memory with 10 Sessions 28.3, 127 and 382.8 MB; a million log lines in 0.81, 1.4 and 4.19 seconds. Windows Terminal figures are older measurements with different settings.">
+  <img src="assets/benchmark-tabby-light.svg#gh-light-mode-only" width="860" alt="Komando, Windows Terminal and Tabby, in that order: startup 187, 351 and 725 ms; memory with 1 SSH Session 23.5, 29 and 318.7 MB; memory with 10 Sessions 28.3, 127 and 382.8 MB; a million log lines in 0.81, 1.4 and 4.19 seconds. Windows Terminal figures are older measurements with different settings.">
 </p>
 
 <p align="center"><sub>Komando, Windows Terminal + OpenSSH and Tabby on the same Windows 11 PC. Each metric uses its own scale. Windows Terminal figures are from 2026-11-13 with different settings; Komando and Tabby were measured on 2026-11-14. <a href="docs/benchmarks.md">Method and raw data.</a></sub></p>

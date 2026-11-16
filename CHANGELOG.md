@@ -6,6 +6,14 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Restored the supplied serif “Komando.” wordmark in the app and README, without the
+  terminal symbol on its left.
+- README performance charts follow GitHub's selected theme and keep their labels readable
+  on an opaque background, including when the system theme differs from GitHub's theme.
+- Projects remember whether they were expanded or collapsed when Komando relaunches.
+
 ## [0.6.1] - 2026-11-16
 
 ### Added

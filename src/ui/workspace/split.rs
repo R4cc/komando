@@ -423,7 +423,7 @@ impl Workspace {
             self.collapsed_items.insert(new);
         }
         // Open the Project it went to, so it can be seen there.
-        self.collapsed.remove(to);
+        self.set_project_collapsed(to, false, cx);
         let project = self.library.project(to).map(|p| p.name.clone()).unwrap_or_default();
         self.show_toast(format!("Moved {name} to {project}."), cx);
     }

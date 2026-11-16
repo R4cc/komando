@@ -57,6 +57,7 @@ def summarize(source):
 
 def chart(summary, dark):
     fg, muted = ("#f0f3f6", "#a4afbc") if dark else ("#1f2328", "#59636e")
+    background = "#0d1117" if dark else "#ffffff"
     primary, secondary = ("#fb923c", "#8da7c5") if dark else ("#c4510d", "#607b9c")
     historical_color = "#8fb9a6" if dark else "#547e69"
     historical = json.loads((HERE / "windows-terminal-historical.json").read_text())["metrics"]
@@ -70,25 +71,27 @@ def chart(summary, dark):
                     f"Windows Terminal {windows[key]:g} {unit} (historical), "
                     f"Tabby {summary['tabby'][key]['median'] / divisor:.{digits}f} {unit}"
                     for label, key, divisor, unit, digits, _ in metrics)
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 828 560" width="828" height="560" '
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="-16 -16 860 592" width="860" height="592" '
            f'font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="title desc">',
            '<title id="title">Komando, Windows Terminal and Tabby</title>',
            f'<desc id="desc">{escape(alt)}. Lower is better. Each metric has its own zero-based scale.</desc>',
-           f'<text x="0" y="19" fill="{fg}" font-size="14" font-weight="600">Komando · Windows Terminal* · Tabby</text>',
-           f'<text x="820" y="19" text-anchor="end" fill="{muted}" font-size="12">Lower is better</text>']
+           # Keep labels readable even in renderers that ignore GitHub's theme selectors.
+           f'<rect x="-16" y="-16" width="860" height="592" rx="12" fill="{background}"/>',
+           f'<text x="0" y="19" fill="{fg}" font-size="16" font-weight="600">Komando · Windows Terminal* · Tabby</text>',
+           f'<text x="820" y="19" text-anchor="end" fill="{muted}" font-size="13">Lower is better</text>']
     for index, (label, key, divisor, unit, digits, conclusion) in enumerate(metrics):
         y = 52 + index * 120
         a, b = (summary[app][key]["median"] / divisor for app in ("komando", "tabby"))
-        out += [f'<text x="0" y="{y}" fill="{fg}" font-size="13" font-weight="600">{escape(label)}</text>']
+        out += [f'<text x="0" y="{y}" fill="{fg}" font-size="14" font-weight="600">{escape(label)}</text>']
         rows = (("Komando", a, primary), ("Windows Terminal*", windows[key], historical_color), ("Tabby", b, secondary))
         for row, (app, value, color) in enumerate(rows):
             by, width = y + 10 + row * 27, 590 * value / max(a, b, windows[key])
             text = f"{value:g} {unit}*" if row == 1 else f"{value:.{digits}f} {unit}"
-            out += [f'<text x="0" y="{by+15}" fill="{fg if row == 0 else muted}" font-size="12">{app}</text>',
+            out += [f'<text x="0" y="{by+15}" fill="{fg if row == 0 else muted}" font-size="13">{app}</text>',
                     f'<rect x="144" y="{by}" width="{width:.2f}" height="20" rx="4" fill="{color}"><title>{app}: {text}</title></rect>',
-                    f'<text x="{152+width:.2f}" y="{by+15}" fill="{fg if row == 0 else muted}" font-size="13" font-weight="{700 if row == 0 else 400}">{text}</text>']
-    out += [f'<text x="0" y="531" fill="{muted}" font-size="11">Komando and Tabby: 2026-11-14. *Windows Terminal + OpenSSH: earlier measurements from 2026-11-13.</text>',
-            f'<text x="0" y="549" fill="{muted}" font-size="11">Windows Terminal used different settings and an earlier log fixture; it has not been re-measured. See method below.</text>', '</svg>']
+                    f'<text x="{152+width:.2f}" y="{by+15}" fill="{fg if row == 0 else muted}" font-size="14" font-weight="{700 if row == 0 else 400}">{text}</text>']
+    out += [f'<text x="0" y="531" fill="{muted}" font-size="12">Komando and Tabby: 2026-11-14. *Windows Terminal + OpenSSH: earlier measurements from 2026-11-13.</text>',
+            f'<text x="0" y="549" fill="{muted}" font-size="12">Windows Terminal used different settings and an earlier log fixture; it has not been re-measured. See method below.</text>', '</svg>']
     return "\n".join(out) + "\n"
 
 

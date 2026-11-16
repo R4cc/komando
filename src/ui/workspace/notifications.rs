@@ -46,7 +46,7 @@ impl Workspace {
                                             (entry.item.clone(), entry.project_id.clone());
                                         this.collapsed_items.remove(&item);
                                         if let Some(project) = project {
-                                            this.collapsed.remove(&project);
+                                            this.set_project_collapsed(&project, false, cx);
                                         }
                                         this.sidebar_visible = true;
                                         this.activate(id, window, cx);

@@ -9,8 +9,8 @@ Windows resource 1 is the default dark icon for Explorer and installer shortcuts
 resource 2 is the light alternative. Settings → Appearance selects the running app's
 window, taskbar, notification area and About icon without changing the app theme.
 
-`../logo.svg` outlines “Komando” in Cormorant Garamond SemiBold (weight 600), from
-[Google Fonts](https://github.com/google/fonts/tree/main/ofl/cormorantgaramond).
-The typeface is licensed under the [SIL Open Font License](OFL-CormorantGaramond.txt).
-The README's `../logo.png` and `../logo-dark.png` pair that wordmark with the app icon
-on transparent backgrounds, for light and dark pages respectively.
+`../logo.svg` uses the project owner's supplied serif “Komando.” wordmark, preserving
+its lettering and trailing dot. The two left-hand terminal-symbol contours were removed
+and the view box was cropped to the lettering. The app draws it in the theme's text colour.
+The README's `../logo.png` and `../logo-dark.png` export the same vector on transparent
+backgrounds for light and dark GitHub themes respectively.

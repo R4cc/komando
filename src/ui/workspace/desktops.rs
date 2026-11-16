@@ -83,7 +83,7 @@ impl Workspace {
             }
         });
         self.collapsed_items.remove(&item);
-        self.collapsed.remove(project_id);
+        self.set_project_collapsed(project_id, false, cx);
         let key = item.clone();
         self.sessions.push(SessionEntry {
             id,

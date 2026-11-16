@@ -531,7 +531,7 @@ pub fn section_label(text: &str, p: AppPalette) -> impl IntoElement {
 }
 
 /// Width of the logo per pixel of height.
-const LOGO_ASPECT: f32 = 3787.7 / 738.0;
+const LOGO_ASPECT: f32 = 988. / 167.;
 
 /// The borderless Komando wordmark, using the theme's text color for contrast.
 pub fn wordmark(height: f32, color: Hsla) -> impl IntoElement {

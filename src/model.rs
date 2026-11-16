@@ -3,7 +3,7 @@
 //! Secrets never live here: a Host or Project only names a Credential by id, and the
 //! Credential itself lives in the Vault (see `vault.rs`).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -1044,6 +1044,8 @@ pub struct Settings {
     /// Start with the sidebar hidden, and float it out over the Sessions while the pointer
     /// rests at the window's left edge, like a browser's vertical tabs.
     pub sidebar_auto_hide: bool,
+    /// Projects folded away in the sidebar, remembered across app launches.
+    pub collapsed_projects: BTreeSet<ProjectId>,
     /// The SFTP browser lists files starting with a dot.
     pub sftp_show_hidden: bool,
     /// "Rename" in the SFTP browser's context menu (F2 renames either way).
@@ -1102,6 +1104,7 @@ impl Default for Settings {
             sftp_width: 540.,
             sidebar_width: 264.,
             sidebar_auto_hide: false,
+            collapsed_projects: BTreeSet::new(),
             sftp_show_hidden: true,
             sftp_menu_rename: false,
             sftp_menu_copy_to: false,
@@ -1212,6 +1215,25 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn project_expansion_state_survives_relaunch_and_reopening() {
+        let mut settings: Settings = toml::from_str("font_size = 16.0").unwrap();
+        assert!(settings.collapsed_projects.is_empty());
+        let dir = std::env::temp_dir().join(format!("komando-project-state-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        settings.collapsed_projects.extend(["production".into(), "staging".into()]);
+        settings.save(&dir).unwrap();
+        let mut reopened = Settings::load(&dir);
+        assert_eq!(reopened.collapsed_projects, settings.collapsed_projects);
+        assert!(!reopened.collapsed_projects.contains("development"));
+        reopened.collapsed_projects.remove("production");
+        reopened.save(&dir).unwrap();
+        let relaunched = Settings::load(&dir);
+        assert!(!relaunched.collapsed_projects.contains("production"));
+        assert!(relaunched.collapsed_projects.contains("staging"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn app_icon_defaults_for_old_settings_and_persists_independently_of_theme() {
         let mut settings: Settings = toml::from_str("app_theme = 'light'").unwrap();

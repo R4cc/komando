@@ -391,7 +391,6 @@ pub struct Workspace {
     /// The terminal pane's size, as last laid out. A new Session's shell starts at this size
     /// instead of a guess, so it isn't resized (and repainted) straight after it starts.
     pane_size: Option<session::GridSize>,
-    collapsed: HashSet<String>,
     /// Sidebar items whose Sessions are folded away under the item's row.
     collapsed_items: HashSet<ItemKey>,
     overlay: Option<Overlay>,
@@ -516,7 +515,6 @@ impl Workspace {
             last_active: Default::default(),
             next_id: 1,
             pane_size: None,
-            collapsed: HashSet::new(),
             collapsed_items: HashSet::new(),
             overlay: None,
             toast: None,
@@ -1326,7 +1324,7 @@ impl Workspace {
             },
         });
         if let Some(project_id) = &project_id {
-            self.collapsed.remove(project_id);
+            self.set_project_collapsed(project_id, false, cx);
         }
         let key = item.clone();
         self.sessions.push(SessionEntry {
@@ -2101,6 +2099,19 @@ impl Workspace {
         .detach();
     }
 
+    /// Keep the sidebar and its saved expansion state in one place.
+    fn set_project_collapsed(&mut self, project: &str, collapsed: bool, cx: &mut Context<Self>) {
+        let changed = if collapsed {
+            self.settings.collapsed_projects.insert(project.to_owned())
+        } else {
+            self.settings.collapsed_projects.remove(project)
+        };
+        if changed {
+            self.save_settings(cx);
+            cx.notify();
+        }
+    }
+
     /// Save the settings, and say so when that fails instead of dropping the change silently.
     fn save_settings(&mut self, cx: &mut Context<Self>) {
         if let Err(err) = self.settings.save(&self.data_dir) {
@@ -2271,7 +2282,7 @@ impl Workspace {
             }
             ConfirmAction::DeleteProject(id) => {
                 self.discard_sessions(|s| s.project_id.as_deref() == Some(id.as_str()), cx);
-                self.collapsed.remove(&id);
+                self.set_project_collapsed(&id, false, cx);
             }
             ConfirmAction::DeleteAllHistory => {}
         }
@@ -2713,7 +2724,7 @@ impl Workspace {
         }
         for (pi, project) in self.library.projects.iter().enumerate() {
             rows.push(SidebarRow::Project { index: pi });
-            if self.collapsed.contains(&project.id) {
+            if self.settings.collapsed_projects.contains(&project.id) {
                 continue;
             }
             let start = rows.len();
@@ -2867,7 +2878,7 @@ impl Workspace {
     fn render_project_row(&self, index: usize, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let Some(project) = self.library.projects.get(index) else { return div().into_any_element() };
             let color = project_color(&project.color);
-            let collapsed = self.collapsed.contains(&project.id);
+            let collapsed = self.settings.collapsed_projects.contains(&project.id);
             let sessions: Vec<&SessionEntry> = self.sessions.iter().filter(|s| match &s.item {
                 ItemKey::Host { project: id, host } => id == &project.id && project.hosts.contains(host),
                 ItemKey::Shell { project: id, name } => id.as_ref() == Some(&project.id) && project.shells.iter().any(|sh| &sh.name == name),
@@ -2887,10 +2898,7 @@ impl Workspace {
                     .item(menu_item("Edit project…", "pencil", &ws, move |this, window, cx| this.open_edit_project(b.clone(), window, cx)))
                     .item(menu_item("Share project…", "share-2", &ws, move |this, window, cx| this.share_project(&e, window, cx)))
                     .item(menu_item(if collapsed { "Expand" } else { "Collapse" }, if collapsed { "chevron-down" } else { "chevron-right" }, &ws, move |this, _, cx| {
-                        if !this.collapsed.remove(&c) {
-                            this.collapsed.insert(c.clone());
-                        }
-                        cx.notify();
+                        this.set_project_collapsed(&c, !collapsed, cx);
                     }))
                     .separator()
                     .item(menu_item("Delete project…", "trash", &ws, move |this, _, cx| this.confirm_delete_project(d.clone(), cx)))
@@ -2910,10 +2918,7 @@ impl Workspace {
                     .cursor_pointer()
                     .hover(|s| s.bg(p.hover))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        if !this.collapsed.remove(&pid) {
-                            this.collapsed.insert(pid.clone());
-                        }
-                        cx.notify();
+                        this.set_project_collapsed(&pid, !collapsed, cx);
                     }))
                     .child(badge(&project.icon, color, 22.))
                     .child(
