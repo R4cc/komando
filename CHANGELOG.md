@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-16
+
 ### Added
 
 - A welcome tour on the first start. It sets the options worth choosing straight away (theme,
@@ -1281,7 +1283,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/R4cc/komando/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/R4cc/komando/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/R4cc/komando/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/R4cc/komando/compare/v0.5.1...v0.5.2
