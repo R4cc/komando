@@ -718,6 +718,8 @@ impl TerminalView {
             SessionEvent::Wakeup => {
                 crate::perf::count("session wakeup");
                 self.proxy.clear_dirty();
+                // Output since the last Wakeup is in the terminal by now (it wakes after writing).
+                self.minimap_state.output();
                 // New output may have moved the link's text from under the pointer: the
                 // underline goes unless the same link is still where it was drawn.
                 if let Some(link) = &self.hover_link
@@ -2242,6 +2244,69 @@ struct RowScratch {
     prims: Vec<Prim>,
 }
 
+/// Bytes `start..end` of a row's text, coloured by a highlight rule.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StyledSpan {
+    start: u32,
+    end: u32,
+    style: highlight::Style,
+}
+
+/// Row texts a generation of the highlight cache grows to before it ages (see `Generations`):
+/// a few screens.
+const HIGHLIGHT_GENERATION: usize = 512;
+
+/// What the highlight rules make of a row's text, worked out once per text. Output scrolling
+/// the screen damages every row, so each frame lays out every row again; without this, every
+/// rule ran on every row each frame although only the rows that came in were new.
+#[derive(Default)]
+struct HighlightCache {
+    /// The rules and the background (dark or not) the entries were worked out for.
+    key: Option<(ByAddress<highlight::Highlighter>, bool)>,
+    rows: Generations<Box<str>, Box<[StyledSpan]>>,
+    #[cfg(test)]
+    scans: usize,
+}
+
+impl HighlightCache {
+    /// Start a frame highlighted by `highlighter` on a dark or light background: forget
+    /// everything if either changed, and keep the cache bounded.
+    fn prepare(&mut self, highlighter: &Arc<highlight::Highlighter>, dark: bool) {
+        if !self.key.as_ref().is_some_and(|(h, d)| Arc::ptr_eq(&h.0, highlighter) && *d == dark) {
+            self.key = Some((ByAddress(highlighter.clone()), dark));
+            self.rows.clear();
+        }
+        self.rows.age(HIGHLIGHT_GENERATION);
+    }
+
+    /// The coloured spans of `text`, from `work_out` if it isn't cached.
+    fn spans(&mut self, text: &str, work_out: impl FnOnce() -> Box<[StyledSpan]>) -> &[StyledSpan] {
+        let Generations { current, previous } = &mut self.rows;
+        if !current.contains_key(text) {
+            let spans = previous.remove(text).unwrap_or_else(|| {
+                #[cfg(test)]
+                { self.scans += 1; }
+                work_out()
+            });
+            current.insert(text.into(), spans);
+        }
+        &current[text]
+    }
+}
+
+/// Per-byte styles (see `Highlighter::styles_for_background_into`) as spans.
+fn styled_spans(styles: &[Option<highlight::Style>]) -> Box<[StyledSpan]> {
+    let mut spans: Vec<StyledSpan> = Vec::new();
+    for (i, style) in styles.iter().enumerate() {
+        let Some(style) = *style else { continue };
+        match spans.last_mut() {
+            Some(span) if span.end as usize == i && span.style == style => span.end += 1,
+            _ => spans.push(StyledSpan { start: i as u32, end: i as u32 + 1, style }),
+        }
+    }
+    spans.into()
+}
+
 #[derive(Debug, PartialEq)]
 struct GlyphPaint {
     origin: gpui::Point<Pixels>,
@@ -2325,6 +2390,7 @@ fn layout_row(
     input: Option<InputRow>,
     ctx: &RowContext,
     glyphs: &mut GlyphCache,
+    highlights: &mut HighlightCache,
     frame: &mut RowPaint,
     scratch: &mut RowScratch,
 ) {
@@ -2354,10 +2420,17 @@ fn layout_row(
                 Some(InputRow::AfterPrompt) => crate::marks::prompt_end(text).unwrap_or(text.len()),
                 _ => text.len(),
             };
-            if !h.styles_for_background_into(&text[..end], ctx.dark, styles) {
+            let spans = highlights.spans(&text[..end], || {
+                if h.styles_for_background_into(&text[..end], ctx.dark, styles) { styled_spans(styles) } else { Box::default() }
+            });
+            if spans.is_empty() {
                 return false;
             }
+            styles.clear();
             styles.resize(text.len(), None);
+            for span in spans {
+                styles[span.start as usize..span.end as usize].fill(Some(span.style));
+            }
             true
         })
         .then_some(&*styles);
@@ -2786,6 +2859,7 @@ struct GridLook<'a> {
 #[derive(Default)]
 struct GridCache {
     glyphs: GlyphCache,
+    highlights: HighlightCache,
     snapshot: Snapshot,
     scratch: RowScratch,
     /// The rows of the view, laid out.
@@ -2833,7 +2907,7 @@ impl<T> PartialEq for ByAddress<T> {
 /// This is the only reader of the terminal's damage, and resets it: the rows of a `GridCache`
 /// are only right if nothing else does.
 fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &mut GridCache) {
-    let GridCache { glyphs, snapshot, scratch, rows, looked, selection, cursor_row, dirty } = cache;
+    let GridCache { glyphs, highlights, snapshot, scratch, rows, looked, selection, cursor_row, dirty } = cache;
     let font = look.font;
     snapshot.clear();
     let (cursor, highlight) = {
@@ -2926,6 +3000,9 @@ fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &
         focused: look.focused,
     };
     glyphs.prepare(&font.family, font.size);
+    if let Some(highlighter) = &highlight {
+        highlights.prepare(highlighter, look.palette.dark);
+    }
     let cells = &snapshot.cells;
     let mut start = 0;
     while start < cells.len() {
@@ -2934,7 +3011,7 @@ fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &
         let paint = &mut rows[row as usize];
         paint.clear();
         let input = snapshot.input(row);
-        layout_row(&cells[start..end], &snapshot.extras, row, input, &ctx, glyphs, paint, scratch);
+        layout_row(&cells[start..end], &snapshot.extras, row, input, &ctx, glyphs, highlights, paint, scratch);
         for d in &mut paint.decorations {
             d.y += if d.kind == DecorationKind::Strike { ctx.strike_y } else { ctx.underline_y };
         }
@@ -2973,18 +3050,18 @@ struct ClusterKey {
 /// Aging drops the older generation and starts a new one, so whatever was used in the last
 /// frame is still there in the next, however many it was: a screen with more different
 /// characters than a generation holds is never shaped again frame after frame.
-struct Generations<K> {
-    current: FxHashMap<K, Box<[CachedGlyph]>>,
-    previous: FxHashMap<K, Box<[CachedGlyph]>>,
+struct Generations<K, V = Box<[CachedGlyph]>> {
+    current: FxHashMap<K, V>,
+    previous: FxHashMap<K, V>,
 }
 
-impl<K> Default for Generations<K> {
+impl<K, V> Default for Generations<K, V> {
     fn default() -> Self {
         Self { current: FxHashMap::default(), previous: FxHashMap::default() }
     }
 }
 
-impl<K: Hash + Eq> Generations<K> {
+impl<K: Hash + Eq, V> Generations<K, V> {
     /// Start a new generation once the current one has more than `limit` entries.
     fn age(&mut self, limit: usize) {
         if self.current.len() > limit {
@@ -4246,5 +4323,99 @@ $ ");
         }
         // Many frames kept rows: the test is about those.
         assert!(partial > 3000 / 4, "{partial} of 3000 frames kept rows");
+    }
+
+    #[test]
+    fn scrolling_reuses_highlights_and_keeps_the_cache_bounded() {
+        let mut g = Grid::new(60, 10);
+        for i in 0..30 {
+            g.feed(format!("line {i} ERROR 日本 e\u{301}\r\n"));
+        }
+        g.frame("first paint");
+        let scans = g.cache.highlights.scans;
+        for i in 30..1230 {
+            let before = g.cache.highlights.scans;
+            g.feed(format!("line {i} ERROR 日本 e\u{301}\r\n"));
+            assert_eq!(g.frame("one new line, other rows moved"), 10);
+            assert!(g.cache.highlights.scans - before <= 2, "moved rows ran the rules again");
+            assert!(g.cache.highlights.rows.len() <= 2 * (super::HIGHLIGHT_GENERATION + 10));
+        }
+        assert!(g.cache.highlights.scans > scans, "new output still runs the rules");
+    }
+
+    #[test]
+    fn highlight_cache_uses_exact_text_and_invalidates_rules_and_background() {
+        let mut cache = super::HighlightCache::default();
+        let rules = Arc::new(Highlighter::default());
+        let calls = Cell::new(0);
+        let compute = || { calls.set(calls.get() + 1); Box::default() };
+        cache.prepare(&rules, true);
+        cache.spans("ERROR 日本", compute);
+        cache.spans("ERROR 日本", compute);
+        assert_eq!(calls.get(), 1);
+        cache.spans("ERROR 日木", compute);
+        assert_eq!(calls.get(), 2, "different text must not reuse a result");
+        cache.prepare(&rules, false);
+        cache.spans("ERROR 日本", compute);
+        assert_eq!(calls.get(), 3, "background-dependent colors");
+        cache.prepare(&Arc::new(Highlighter::default()), false);
+        cache.spans("ERROR 日本", compute);
+        assert_eq!(calls.get(), 4, "new rules");
+    }
+
+    /// Frames of a log scrolling a few lines at a time: the terminal damages every row when it
+    /// scrolls, so every row is laid out again each frame. Times them without highlight rules,
+    /// with them, and with them but each row's highlights worked out afresh (as before
+    /// `HighlightCache`). Reports timings without thresholds: `cargo test --lib
+    /// bench_grid_frames -- --ignored --nocapture`, in release mode for real numbers.
+    #[test]
+    #[ignore]
+    fn bench_grid_frames_while_output_scrolls() {
+        let line = |i: u64| {
+            let level = ["\x1b[31mERROR", "\x1b[33mWARN ", "\x1b[32mINFO ", "\x1b[32mINFO "][(i % 4) as usize];
+            format!(
+                "\x1b[2m2026-11-13 10:{:02}:{:02}.{:03}\x1b[0m {level}\x1b[0m api GET /api/items/{i} from 10.0.{}.{} {} in {}ms healthy\r\n",
+                i / 60 % 60,
+                i % 60,
+                i % 1000,
+                i % 256,
+                i * 7 % 256,
+                if i % 16 == 0 { 500 } else { 200 },
+                i % 997,
+            )
+        };
+        let sets = crate::highlight::load(std::path::Path::new("/nonexistent/komando-grid-bench"));
+        let rules = Arc::new(Highlighter::from_sets(&sets, &[]));
+        let cases = [
+            ("no rules", Arc::new(Highlighter::default()), true),
+            ("default rules", rules.clone(), true),
+            ("default rules, uncached", rules, false),
+        ];
+        for (name, highlighter, cached) in cases {
+            let mut g = Grid::new(160, 45);
+            g.highlighter = highlighter;
+            let mut i = 0;
+            for _ in 0..200 {
+                g.feed(line(i));
+                i += 1;
+            }
+            let frames = 1000;
+            let mut took = Duration::ZERO;
+            for _ in 0..frames {
+                for _ in 0..3 {
+                    g.feed(line(i));
+                    i += 1;
+                }
+                if !cached {
+                    g.cache.highlights = Default::default();
+                }
+                let Grid { term, font, origin, scale, palette, highlighter, focused, cursor_visible, cache, .. } = &mut g;
+                let look = GridLook { font, origin: *origin, scale: *scale, palette, highlighter, focused: *focused, cursor_visible: *cursor_visible };
+                let start = Instant::now();
+                layout_grid(term, &FakeShaper, &look, cache);
+                took += start.elapsed();
+            }
+            eprintln!("{name}: {:?} per 160x45 frame scrolled by output", took / frames);
+        }
     }
 }

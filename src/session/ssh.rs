@@ -870,9 +870,13 @@ const TERMINAL_MODES: &[(Pty, u32)] = &[
     (Pty::TTY_OP_OSPEED, 38400),
 ];
 
-/// The most output parsed in one go when several messages are already waiting: enough to
-/// take a burst at once, little enough that the UI's next frame doesn't wait long for the lock.
+/// The most output collected when several messages are already waiting. Parsing releases
+/// the terminal lock between smaller pieces (see `PARSE_CHUNK`).
 const BATCH: usize = 256 * 1024;
+
+/// Bound ordinary parsing's lock hold without giving up network batching. The parser keeps
+/// UTF-8, escape sequence and synchronized-update state across pieces.
+const PARSE_CHUNK: usize = 32 * 1024;
 
 async fn sleep_until(deadline: Option<std::time::Instant>) {
     match deadline {
@@ -891,9 +895,11 @@ pub(crate) struct Output {
 
 impl Output {
     pub(crate) fn feed(&mut self, term: &SharedTerm, proxy: &EventProxy, bytes: &[u8]) {
-        self.parser.advance(&mut *term.lock(), bytes);
-        if self.parser.sync_bytes_count() < bytes.len() {
-            proxy.send_event(Event::Wakeup);
+        for chunk in bytes.chunks(PARSE_CHUNK) {
+            self.parser.advance(&mut *term.lock(), chunk);
+            if self.parser.sync_bytes_count() < chunk.len() {
+                proxy.send_event(Event::Wakeup);
+            }
         }
         // After the grid has it, so whatever is typed next lands after this output.
         proxy.watch_output(bytes);

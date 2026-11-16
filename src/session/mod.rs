@@ -969,6 +969,31 @@ mod tests {
     }
 
     #[test]
+    fn chunked_ssh_output_preserves_utf8_escapes_sync_and_replies() {
+        // Move every part of the sequence across the actual production chunk boundary.
+        for shift in 0..40 {
+            let (term, proxy, mut replies_rx) = replying_term();
+            let (reference, _reference_proxy, mut reference_rx) = replying_term();
+            let mut bytes = vec![b'x'; 32 * 1024 - shift];
+            bytes.extend_from_slice("日本 e\u{301}\x1b[31mERROR\x1b[0m\x1b[6n\x1b[?2026h".as_bytes());
+            bytes.extend_from_slice(&b"buffered\r\n".repeat(4000));
+            let mut output = ssh::Output::default();
+            let mut parser: Processor = Processor::new();
+            output.feed(&term, &proxy, &bytes);
+            parser.advance(&mut *reference.lock(), &bytes);
+            assert!(output.sync_deadline().is_some());
+            assert_eq!(rows(&*term.lock()), rows(&*reference.lock()), "inside sync, shift {shift}");
+            let end = b"\x1b[?2026l\x1b[6n";
+            output.feed(&term, &proxy, end);
+            parser.advance(&mut *reference.lock(), end);
+            assert!(output.sync_deadline().is_none());
+            assert_eq!(rows(&*term.lock()), rows(&*reference.lock()), "after sync, shift {shift}");
+            assert_eq!(term.lock().grid().cursor.point, reference.lock().grid().cursor.point);
+            assert_eq!(replies(&mut replies_rx), replies(&mut reference_rx), "shift {shift}");
+        }
+    }
+
+    #[test]
     fn awaited_text_in_ssh_output_is_reported_once() {
         let (term, proxy, _replies) = replying_term();
         let (tx, mut rx) = mpsc::unbounded();

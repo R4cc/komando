@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-16
+
 ### Added
 
 - Drag Project headings up or down in the sidebar to change their order. A drop indicator
@@ -13,6 +15,13 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- Scrolling terminal output reuses Highlight Rule results for rows that only moved, with a
+  bounded cache that refreshes when the rules or dark/light background change.
+- The minimap reuses its picture while output is unchanged, avoiding repeated scans of its
+  terminal cells when the cursor blinks, the pointer moves or a selection changes.
+- Heavy SSH output releases the terminal lock between smaller pieces so drawing and input
+  can take their turn, while keeping UTF-8, escape sequences and synchronized updates intact.
+- VNC moves rectangles within its picture without allocating and copying a temporary image.
 - Settings → Appearance is reorganised around dark and light mode. Each mode has its own
   card with a live preview of the window and terminal, its Theme and its Terminal Colors,
   and a badge shows which mode is in use. Mode and App icon are picked from pictures, the
@@ -21,6 +30,8 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- Minimap colors refresh when switching Terminal Colors within the same mode or when a
+  program changes the terminal palette.
 - Enter confirms the multi-line paste question, just like its Paste button, without sending
   an extra Enter to the terminal underneath.
 - Pasted text can no longer end bracketed paste early by hiding a nested end marker, which
@@ -1558,7 +1569,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.6.6...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/R4cc/komando/compare/v0.6.6...v0.7.0
 [0.6.6]: https://github.com/R4cc/komando/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/R4cc/komando/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/R4cc/komando/compare/v0.6.3...v0.6.4

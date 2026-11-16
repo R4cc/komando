@@ -22,7 +22,9 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::color::{self, Colors};
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, Rgb};
 use gpui::{
@@ -277,10 +279,11 @@ struct LineCache {
     /// The generation before `lines`: kept for one more round so lines still on the minimap
     /// aren't worked out again just because `lines` filled up. Moved back to `lines` when used.
     old: HashMap<u64, Rc<[Run]>>,
-    /// What the runs depend on besides the line itself (the Highlight Rules and the theme);
-    /// when it changes, everything is worked out again.
+    /// What the runs depend on besides the line itself: the Highlight Rules, the Terminal
+    /// Colors and the colours programs set (OSC 4). When it changes, everything is worked out
+    /// again: a line's hash has its colours as the terminal stores them, not as they show.
     /// The `Arc` itself rather than its address: a freed address can be reused by new rules.
-    key: Option<(Arc<Highlighter>, bool)>,
+    key: Option<(Arc<Highlighter>, TerminalPalette, Colors)>,
 }
 
 /// Lines kept in a cache generation before it becomes the old one; a few screens' worth.
@@ -320,6 +323,37 @@ struct Collected {
     slider: Option<Bounds<Pixels>>,
 }
 
+/// What the strip shows, kept from paint to paint until something it shows changes.
+struct Strip {
+    geometry: Geometry,
+    rects: Quads,
+    slider: Option<Bounds<Pixels>>,
+}
+
+/// Everything the strip is worked out from. The cells, the cursor and the colours programs set
+/// change only with output, which `MinimapState::output` counts; the rest is read at each paint.
+struct StripKey {
+    output: u64,
+    bounds: Bounds<Pixels>,
+    palette: TerminalPalette,
+    highlighter: Arc<Highlighter>,
+    history: usize,
+    offset: usize,
+    screen: usize,
+    columns: usize,
+}
+
+impl PartialEq for StripKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.output == other.output
+            && self.bounds == other.bounds
+            && self.palette == other.palette
+            && Arc::ptr_eq(&self.highlighter, &other.highlighter)
+            && (self.history, self.offset, self.screen, self.columns)
+                == (other.history, other.offset, other.screen, other.columns)
+    }
+}
+
 #[derive(Default)]
 pub struct MinimapState {
     geometry: Cell<Geometry>,
@@ -329,10 +363,21 @@ pub struct MinimapState {
     /// The terminal's bounds at the last paint, for the overlay's hover region.
     terminal: Cell<Option<Bounds<Pixels>>>,
     cache: RefCell<LineCache>,
+    /// Batches of output the terminal has taken (see `output`).
+    output: Cell<u64>,
+    /// The strip at the last paint, and what it was worked out from. Repaints that change
+    /// nothing on it (the cursor blinking, a selection, the pointer moving) reuse it rather
+    /// than read every line on it again under the terminal lock.
+    strip: RefCell<Option<(StripKey, Rc<Strip>)>>,
     reveal: RefCell<Reveal>,
 }
 
 impl MinimapState {
+    /// Output reached the terminal (a Wakeup): any line on the strip may have changed.
+    pub fn output(&self) {
+        self.output.set(self.output.get().wrapping_add(1));
+    }
+
     pub fn dragging(&self) -> bool {
         self.drag.get().is_some()
     }
@@ -579,17 +624,19 @@ fn collect<T>(
     };
     let mut geometry = Geometry { top: f32::from(bounds.origin.y), start, history, screen, total, capacity, slider: None };
 
-    let same = cache.key.as_ref().is_some_and(|(h, dark)| Arc::ptr_eq(h, highlighter) && *dark == palette.dark);
+    let colors = term.colors();
+    let same = cache.key.as_ref().is_some_and(|(h, p, c)| {
+        Arc::ptr_eq(h, highlighter) && p == palette && (0..color::COUNT).all(|i| c[i] == colors[i])
+    });
     if !same {
         cache.lines.clear();
         cache.old.clear();
-        cache.key = Some((highlighter.clone(), palette.dark));
+        cache.key = Some((highlighter.clone(), palette.clone(), *colors));
     }
 
     // Like VS Code: a fixed width per character, and long lines are cut off at the edge.
     // The start of a line (prompt, timestamp, log level) is what you scan for.
     let shown_cols = (((f32::from(bounds.size.width) - PAD_X * 2.) / CHAR_W).floor() as usize).min(cols);
-    let colors = term.colors();
     let end = total.min(start + capacity);
     let mut lines = Vec::with_capacity(end.saturating_sub(start));
     let mut cells: Vec<(usize, char, Rgb)> = Vec::new();
@@ -647,6 +694,45 @@ fn collect<T>(
         )
     });
     Collected { geometry, lines, cells, slider }
+}
+
+/// The strip for `bounds`: the last one while nothing it shows has changed, or else worked
+/// out again (`collect` under the terminal lock, `finish` after it). `marks` gives the search
+/// marks' quads under the same lock.
+fn layout_strip<T>(
+    term: &FairMutex<Term<T>>,
+    state: &MinimapState,
+    palette: &TerminalPalette,
+    highlighter: &Arc<Highlighter>,
+    bounds: Bounds<Pixels>,
+    marks: impl FnOnce(&Term<T>, &Geometry) -> Quads,
+) -> (Rc<Strip>, Quads) {
+    let term = term.lock();
+    let grid = term.grid();
+    let key = StripKey {
+        output: state.output.get(),
+        bounds,
+        palette: palette.clone(),
+        highlighter: highlighter.clone(),
+        history: grid.history_size(),
+        offset: grid.display_offset(),
+        screen: grid.screen_lines(),
+        columns: grid.columns(),
+    };
+    let kept = state.strip.borrow().as_ref().filter(|(shown, _)| *shown == key).map(|(_, strip)| strip.clone());
+    if let Some(strip) = kept {
+        let found = marks(&term, &strip.geometry);
+        return (strip, found);
+    }
+    let mut cache = state.cache.borrow_mut();
+    let collected = crate::perf::time("minimap layout", || collect(&term, &mut cache, palette, highlighter, bounds));
+    let found = marks(&term, &collected.geometry);
+    drop(term);
+    let (geometry, rects, slider) =
+        crate::perf::time("minimap runs", || finish(collected, &mut cache, palette, highlighter, bounds));
+    let strip = Rc::new(Strip { geometry, rects, slider });
+    *state.strip.borrow_mut() = Some((key, strip.clone()));
+    (strip, found)
 }
 
 /// The rest of `layout`, with the terminal unlocked: the runs of new lines, then a rectangle
@@ -771,22 +857,14 @@ fn strip(
     let paint_state = state.clone();
     canvas(
         move |bounds, _window, _cx| {
-            let mut cache = state.cache.borrow_mut();
-            let (collected, found) = {
-                let term = term.lock();
-                let collected =
-                    crate::perf::time("minimap layout", || collect(&term, &mut cache, &palette, &highlighter, bounds));
-                let geometry = collected.geometry;
-                let found = marks.map(|marks| match_quads(&term, &geometry, bounds, &marks, &app)).unwrap_or_default();
-                (collected, found)
-            };
-            let (geometry, rects, slider) =
-                crate::perf::time("minimap runs", || finish(collected, &mut cache, &palette, &highlighter, bounds));
-            state.geometry.set(geometry);
-            (rects, slider, found)
+            let (strip, found) = layout_strip(&term, &state, &palette, &highlighter, bounds, |term, geometry| {
+                marks.map(|marks| match_quads(term, geometry, bounds, &marks, &app)).unwrap_or_default()
+            });
+            state.geometry.set(strip.geometry);
+            (strip, found)
         },
-        move |_bounds, (rects, slider, found), window, _cx| {
-            if let Some(slider) = slider {
+        move |_bounds, (strip, found), window, _cx| {
+            if let Some(slider) = strip.slider {
                 // Float inside the strip like the other scroll thumbs. Keep the original
                 // geometry for dragging, including when a long log makes the thumb tiny.
                 let thumb = slider.inset(px(2.).min(slider.size.height / 4.));
@@ -796,7 +874,7 @@ fn strip(
                         .corner_radii(radius),
                 );
             }
-            for (bounds, color) in rects.into_iter().chain(found) {
+            for &(bounds, color) in strip.rects.iter().chain(&found) {
                 window.paint_quad(fill(bounds, color));
             }
         },
@@ -1067,6 +1145,93 @@ mod tests {
 
     fn strip() -> Bounds<Pixels> {
         Bounds::new(point(px(0.), px(0.)), size(px(MAX_WIDTH), px(800.)))
+    }
+
+    /// The strip for a repaint, checked against working it out afresh. Returns it, and whether
+    /// it is the one from the last repaint.
+    fn repaint(
+        term: &FairMutex<Term<VoidListener>>,
+        state: &MinimapState,
+        palette: &TerminalPalette,
+        rules: &Arc<Highlighter>,
+        bounds: Bounds<Pixels>,
+    ) -> bool {
+        let last = state.strip.borrow().as_ref().map(|(_, strip)| strip.clone());
+        let (strip, _) = layout_strip(term, state, palette, rules, bounds, |_, _| Quads::new());
+        let (geometry, rects, slider) = layout(&term.lock(), &mut LineCache::default(), palette, rules, bounds);
+        assert_eq!(format!("{:?}", strip.geometry), format!("{geometry:?}"));
+        assert!(strip.rects == rects, "the strip is not what the terminal shows now");
+        assert_eq!(strip.slider, slider);
+        last.is_some_and(|last| Rc::ptr_eq(&last, &strip))
+    }
+
+    #[test]
+    fn the_strip_is_kept_until_something_it_shows_changes() {
+        let term = FairMutex::new(busy_log(2_000));
+        let state = MinimapState::default();
+        let mut palette = TerminalPalette::dark();
+        let mut rules = bundled_rules();
+        let mut bounds = strip();
+        let mut parser: Processor = Processor::new();
+        assert!(!repaint(&term, &state, &palette, &rules, bounds), "first paint");
+        assert!(repaint(&term, &state, &palette, &rules, bounds), "nothing changed");
+
+        let mut output = |text: &str| {
+            parser.advance(&mut *term.lock(), text.as_bytes());
+            state.output();
+        };
+        output("\x1b[31mERROR\x1b[0m new line\r\n");
+        assert!(!repaint(&term, &state, &palette, &rules, bounds), "output");
+        assert!(repaint(&term, &state, &palette, &rules, bounds), "nothing changed since");
+        output("\x1b[3;1Hredrawn on screen");
+        assert!(!repaint(&term, &state, &palette, &rules, bounds), "a change on screen");
+        // A program changes a colour lines already on the strip are drawn with.
+        output("\x1b]4;1;rgb:12/34/56\x07");
+        assert!(!repaint(&term, &state, &palette, &rules, bounds), "a colour set by a program");
+
+        term.lock().scroll_display(Scroll::Delta(300));
+        assert!(!repaint(&term, &state, &palette, &rules, bounds), "scrolled up");
+        term.lock().scroll_display(Scroll::Bottom);
+        assert!(!repaint(&term, &state, &palette, &rules, bounds), "back at the bottom");
+        crate::session::resize(&mut *term.lock(), crate::session::GridSize { cols: 120, rows: 40, cell_width: 8, cell_height: 18 });
+        assert!(!repaint(&term, &state, &palette, &rules, bounds), "resized");
+        term.lock().grid_mut().clear_history();
+        assert!(!repaint(&term, &state, &palette, &rules, bounds), "Scrollback cleared");
+
+        bounds.size.height = px(500.);
+        assert!(!repaint(&term, &state, &palette, &rules, bounds), "shorter strip");
+        // Another dark theme: the lines kept in the cache are coloured by the old one.
+        palette.ansi[1] = Rgb { r: 200, g: 10, b: 60 };
+        palette.foreground = Rgb { r: 90, g: 200, b: 90 };
+        assert!(!repaint(&term, &state, &palette, &rules, bounds), "other Terminal Colors");
+        rules = Arc::new(Highlighter::default());
+        assert!(!repaint(&term, &state, &palette, &rules, bounds), "no Highlight Rules");
+        rules = bundled_rules();
+        assert!(!repaint(&term, &state, &palette, &rules, bounds), "Highlight Rules back");
+        assert!(repaint(&term, &state, &palette, &rules, bounds), "nothing changed");
+    }
+
+    /// Compare the existing per-line cache with reuse of the whole strip on idle repaints.
+    /// `cargo test --lib bench_idle_minimap -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_idle_minimap() {
+        let term = FairMutex::new(busy_log(2_000));
+        let state = MinimapState::default();
+        let palette = TerminalPalette::dark();
+        let rules = bundled_rules();
+        let mut cache = LineCache::default();
+        for reuse in [false, true] {
+            let start = Instant::now();
+            for _ in 0..500 {
+                if reuse {
+                    std::hint::black_box(layout_strip(&term, &state, &palette, &rules, strip(), |_, _| Quads::new()));
+                } else {
+                    std::hint::black_box(layout(&term.lock(), &mut cache, &palette, &rules, strip()));
+                }
+            }
+            eprintln!("idle minimap, reuse={reuse}: {:?} per repaint", start.elapsed() / 500);
+        }
     }
 
     #[test]

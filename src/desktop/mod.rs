@@ -92,18 +92,23 @@ impl Picture {
 
     /// VNC's CopyRect: move a rectangle already on screen. Source and destination may overlap.
     fn copy(&mut self, to: (u32, u32), from: (u32, u32), width: u32, height: u32) {
-        let fits = |(x, y): (u32, u32)| x + width <= self.width && y + height <= self.height;
-        if !fits(to) || !fits(from) {
+        let fits = |(x, y): (u32, u32)| {
+            x <= self.width && y <= self.height && width <= self.width - x && height <= self.height - y
+        };
+        if width == 0 || height == 0 || !fits(to) || !fits(from) {
             return;
         }
         let stride = self.width as usize * 4;
-        let rect: Vec<u8> = (0..height as usize)
-            .flat_map(|row| {
-                let start = (from.1 as usize + row) * stride + from.0 as usize * 4;
-                self.bgra[start..start + width as usize * 4].to_vec()
-            })
-            .collect();
-        self.put(to.0, to.1, width, height, &rect, width as usize * 4);
+        // Like memmove: copy bottom-up when the destination is below the source, so an
+        // overlapping row is read before it is overwritten. copy_within handles horizontal
+        // overlap. Pixels here are already opaque; no temporary rectangle or alpha pass.
+        for step in 0..height as usize {
+            let row = if to.1 > from.1 { height as usize - 1 - step } else { step };
+            let start = (from.1 as usize + row) * stride + from.0 as usize * 4;
+            let dest = (to.1 as usize + row) * stride + to.0 as usize * 4;
+            self.bgra.copy_within(start..start + width as usize * 4, dest);
+        }
+        self.version += 1;
     }
 }
 
@@ -539,6 +544,44 @@ mod tests {
         p.copy((1, 0), (0, 0), 2, 1);
         let firsts: Vec<u8> = p.bgra.chunks(4).map(|px| px[0]).collect();
         assert_eq!(firsts, [1, 1, 2]);
+    }
+
+    #[test]
+    fn rectangle_moves_match_a_snapshot_in_every_overlap_direction() {
+        let original: Vec<u8> = (0..30).flat_map(|i| [i, i + 1, i + 2, 0xff]).collect();
+        for width in 1..=5 {
+            for height in 1..=6 {
+                for sy in 0..=6 - height {
+                    for sx in 0..=5 - width {
+                        for dy in 0..=6 - height {
+                            for dx in 0..=5 - width {
+                                let mut p = picture(5, 6);
+                                p.bgra.clone_from(&original);
+                                let mut expected = original.clone();
+                                for row in 0..height as usize {
+                                    let source = ((sy as usize + row) * 5 + sx as usize) * 4;
+                                    let dest = ((dy as usize + row) * 5 + dx as usize) * 4;
+                                    expected[dest..dest + width as usize * 4]
+                                        .copy_from_slice(&original[source..source + width as usize * 4]);
+                                }
+                                let version = p.version;
+                                p.copy((dx, dy), (sx, sy), width, height);
+                                assert_eq!(p.bgra, expected, "{sx},{sy} -> {dx},{dy}, {width}x{height}");
+                                assert_eq!(p.version, version + 1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut p = picture(5, 6);
+        let original = p.bgra.clone();
+        let version = p.version;
+        p.copy((u32::MAX, 0), (0, 0), 2, 1);
+        p.copy((0, 0), (0, u32::MAX), 1, 2);
+        p.copy((0, 0), (0, 0), u32::MAX, u32::MAX);
+        assert_eq!(p.bgra, original, "invalid rectangles leave the picture alone");
+        assert_eq!(p.version, version);
     }
 
     #[test]
