@@ -105,9 +105,10 @@ pub enum Target {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Duplicate {
     No,
-    /// The same protocol, address, port and user is in the Library: its Host and Project.
+    /// A Host with the same name, protocol, address, port, user, Jump Hosts and Startup
+    /// Commands is in the Library: its Host and Project.
     InKomando { host: String, project: String },
-    /// The same protocol, address, port and user was listed earlier, under this name.
+    /// A host with all the same settings was listed earlier in the same group, under this name.
     Earlier { host: String },
 }
 
@@ -130,9 +131,42 @@ impl Login {
     fn new(protocol: Protocol, address: &str, port: u16, user: Option<&str>) -> Self {
         Self { protocol, address: address.trim().to_ascii_lowercase(), port, user: user.map(str::to_string) }
     }
+}
 
+/// Everything about a host the duplicate check compares. A host made by duplicating another
+/// one and then changing its name, address, user, Jump Hosts or anything else is not the same
+/// host. Against the Library, Jump Hosts and Startup Commands the file doesn't know (None)
+/// match any; between two hosts of the same file they must be the same.
+struct Fingerprint {
+    name: String,
+    login: Login,
+    jump_hosts: Option<Vec<JumpHost>>,
+    startup_commands: Option<Vec<StartupCommand>>,
+}
+
+impl Fingerprint {
     fn found(host: &FoundHost) -> Self {
-        Self::new(host.protocol, &host.address, host.port, host.user.as_deref())
+        let ssh = host.protocol.is_ssh();
+        Self {
+            name: host.name.trim().to_lowercase(),
+            login: Login::new(host.protocol, &host.address, host.port, host.user.as_deref()),
+            jump_hosts: host.jump_hosts.as_ref().filter(|_| ssh).map(|route| route.iter().map(without_credential).collect()),
+            startup_commands: host.startup_commands.clone().filter(|_| ssh),
+        }
+    }
+
+    fn matches(&self, other: &Fingerprint, exact: bool) -> bool {
+        fn same<T: PartialEq>(a: &Option<T>, b: &Option<T>, exact: bool) -> bool {
+            match (a, b) {
+                (Some(a), Some(b)) => a == b,
+                (None, None) => true,
+                _ => !exact,
+            }
+        }
+        self.name == other.name
+            && self.login == other.login
+            && same(&self.jump_hosts, &other.jump_hosts, exact)
+            && same(&self.startup_commands, &other.startup_commands, exact)
     }
 }
 
@@ -141,16 +175,26 @@ fn same_name(a: &str, b: &str) -> bool {
 }
 
 /// Match what was found against the Library: the Project each group goes into and which
-/// hosts are already there. A host counts as already there when any Host connects to the
-/// same protocol, address and port as the same user, in whichever Project it is.
+/// hosts are already there. A host counts as already there only when a Host, in whichever
+/// Project, has all the same settings: name, protocol, address, port, user, and the Jump
+/// Hosts and Startup Commands it connects with. A host counts as listed twice only when an
+/// earlier host of the same group has all the same settings, those left in the other client
+/// included.
 pub fn plan(found: &Found, library: &Library) -> Plan {
-    let existing: Vec<(Login, &str, &str)> = library
+    let existing: Vec<(Fingerprint, &str, &str)> = library
         .projects
         .iter()
         .flat_map(|project| {
             library.hosts_of(project).flat_map(move |host| {
-                let user = resolve(host, project).user;
-                let mut logins = vec![Login::new(Protocol::Ssh, &host.address, host.port, user.as_deref())];
+                let resolved = resolve(host, project);
+                let name = host.name.trim().to_lowercase();
+                let user = resolved.user.clone();
+                let mut prints = vec![Fingerprint {
+                    name: name.clone(),
+                    login: Login::new(Protocol::Ssh, &host.address, host.port, user.as_deref()),
+                    jump_hosts: Some(resolved.jump_hosts.iter().map(|r| without_credential(&r.jump)).collect()),
+                    startup_commands: Some(resolved.startup_commands.clone()),
+                }];
                 for protocol in host.desktops() {
                     let desktop = host.desktop(protocol).unwrap();
                     let account = match protocol {
@@ -160,13 +204,18 @@ pub fn plan(found: &Found, library: &Library) -> Plan {
                         }),
                         _ => None,
                     };
-                    logins.push(Login::new(protocol, &host.address, desktop.port, account.as_deref()));
+                    prints.push(Fingerprint {
+                        name: name.clone(),
+                        login: Login::new(protocol, &host.address, desktop.port, account.as_deref()),
+                        jump_hosts: None,
+                        startup_commands: None,
+                    });
                 }
-                logins.into_iter().map(move |login| (login, host.name.as_str(), project.name.as_str()))
+                prints.into_iter().map(move |print| (print, host.name.as_str(), project.name.as_str()))
             })
         })
         .collect();
-    let mut seen: Vec<(Login, &str)> = vec![];
+    let mut seen: Vec<(Fingerprint, &[LeftOut], &str, &str)> = vec![];
     let groups = found
         .groups
         .iter()
@@ -179,17 +228,18 @@ pub fn plan(found: &Found, library: &Library) -> Plan {
                 .hosts
                 .iter()
                 .map(|host| {
-                    let login = Login::found(host);
-                    let duplicate = if let Some((_, name, project)) = existing.iter().find(|(existing, _, _)| *existing == login)
+                    let print = Fingerprint::found(host);
+                    let duplicate = if let Some((_, name, project)) = existing.iter().find(|(existing, _, _)| existing.matches(&print, false))
                     {
                         Duplicate::InKomando { host: name.to_string(), project: project.to_string() }
-                    } else if let Some((_, name)) = seen.iter().find(|(earlier, _)| *earlier == login)
-                    {
+                    } else if let Some((_, _, _, name)) = seen.iter().find(|(earlier, left_out, in_group, _)| {
+                        same_name(in_group, &group.name) && *left_out == host.left_out.as_slice() && earlier.matches(&print, true)
+                    }) {
                         Duplicate::Earlier { host: name.to_string() }
                     } else {
                         Duplicate::No
                     };
-                    seen.push((login, &host.name));
+                    seen.push((print, &host.left_out, &group.name, &host.name));
                     duplicate
                 })
                 .collect();
@@ -359,17 +409,21 @@ mod tests {
     }
 
     #[test]
-    fn hosts_komando_has_are_duplicates_by_address_port_and_user() {
+    fn hosts_komando_has_are_duplicates_only_when_every_setting_matches() {
         let found = Found {
             groups: vec![group(
                 "Hermes",
                 None,
                 vec![
-                    found_host("web", "WEB01.lan", Some("deploy")),
-                    found_host("web as root", "web01.lan", Some("root")),
-                    FoundHost { port: 2222, ..found_host("web ssh2", "web01.lan", Some("deploy")) },
+                    found_host(" WEB01 ", "WEB01.lan", Some("deploy")),
+                    found_host("web01", "web01.lan", Some("root")),
+                    FoundHost { port: 2222, ..found_host("web01", "web01.lan", Some("deploy")) },
+                    found_host("web01", "web02.lan", Some("deploy")),
+                    found_host("web01 (copy)", "web01.lan", Some("deploy")),
+                    FoundHost { jump_hosts: Some(vec![jump("bastion")]), ..found_host("web01", "web01.lan", Some("deploy")) },
+                    FoundHost { startup_commands: Some(vec!["htop".into()]), ..found_host("web01", "web01.lan", Some("deploy")) },
                     found_host("db", "db.lan", Some("root")),
-                    found_host("db again", "db.lan", Some("root")),
+                    found_host("db", "db.lan", Some("root")),
                 ],
             )],
             notes: vec![],
@@ -382,9 +436,42 @@ mod tests {
                 Duplicate::No,
                 Duplicate::No,
                 Duplicate::No,
+                Duplicate::No,
+                Duplicate::No,
+                Duplicate::No,
+                Duplicate::No,
                 Duplicate::Earlier { host: "db".into() },
             ]
         );
+    }
+
+    #[test]
+    fn a_duplicated_profile_with_a_changed_setting_is_not_listed_twice() {
+        let original = FoundHost { left_out: vec![LeftOut::new("Port forwarding", "Local 8080 → db:5432")], ..found_host("app", "10.0.0.5", Some("ops")) };
+        let found = Found {
+            groups: vec![
+                group(
+                    "Hermes",
+                    None,
+                    vec![
+                        original.clone(),
+                        FoundHost { address: "10.0.0.6".into(), ..original.clone() },
+                        FoundHost { name: "app 2".into(), ..original.clone() },
+                        FoundHost { left_out: vec![], ..original.clone() },
+                        FoundHost { port: 2200, ..original.clone() },
+                        original.clone(),
+                    ],
+                ),
+                group("Other", None, vec![original.clone()]),
+            ],
+            notes: vec![],
+        };
+        let plan = plan(&found, &Library::default());
+        assert_eq!(
+            plan.groups[0].hosts,
+            [Duplicate::No, Duplicate::No, Duplicate::No, Duplicate::No, Duplicate::No, Duplicate::Earlier { host: "app".into() }]
+        );
+        assert_eq!(plan.groups[1].hosts, [Duplicate::No], "another group makes another project");
     }
 
     #[test]
@@ -400,23 +487,24 @@ mod tests {
         let session = |name, protocol, port, user| FoundHost { protocol, port, ..found_host(name, "WEB01.lan", user) };
         let found = Found {
             groups: vec![group("Desktops", None, vec![
-                session("existing RDP", Protocol::Rdp, 3390, Some("ACME\\alice")),
-                session("other account", Protocol::Rdp, 3390, Some("ACME\\bob")),
-                session("other port", Protocol::Rdp, 3389, Some("ACME\\alice")),
-                session("existing VNC", Protocol::Vnc, 5900, None),
-                session("SSH on desktop port", Protocol::Ssh, 3390, Some("ACME\\alice")),
-                session("new RDP", Protocol::Rdp, 2222, Some("ops")),
-                session("new VNC", Protocol::Vnc, 2222, None),
-                session("new SSH", Protocol::Ssh, 2222, Some("ops")),
-                session("RDP again", Protocol::Rdp, 2222, Some("ops")),
+                session("web01", Protocol::Rdp, 3390, Some("ACME\\alice")),
+                session("web01", Protocol::Rdp, 3390, Some("ACME\\bob")),
+                session("web01", Protocol::Rdp, 3389, Some("ACME\\alice")),
+                session("web01", Protocol::Vnc, 5900, None),
+                session("web01", Protocol::Ssh, 3390, Some("ACME\\alice")),
+                session("other name", Protocol::Vnc, 5900, None),
+                session("new", Protocol::Rdp, 2222, Some("ops")),
+                session("new", Protocol::Vnc, 2222, None),
+                session("new", Protocol::Ssh, 2222, Some("ops")),
+                session("new", Protocol::Rdp, 2222, Some("ops")),
             ])],
             notes: vec![],
         };
         let existing = Duplicate::InKomando { host: "web01".into(), project: "Atlas".into() };
         assert_eq!(plan(&found, &lib).groups[0].hosts, [
             existing.clone(), Duplicate::No, Duplicate::No, existing,
-            Duplicate::No, Duplicate::No, Duplicate::No, Duplicate::No,
-            Duplicate::Earlier { host: "new RDP".into() },
+            Duplicate::No, Duplicate::No, Duplicate::No, Duplicate::No, Duplicate::No,
+            Duplicate::Earlier { host: "new".into() },
         ]);
     }
 

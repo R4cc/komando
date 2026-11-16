@@ -330,6 +330,11 @@ impl Workspace {
             SettingsSection::About => self.settings_about(p, cx),
         }
         };
+        // Buttons that must stay in view below a long page, such as the import's.
+        let footer = match section {
+            SettingsSection::Import => self.settings_import_footer(p.panel(), cx),
+            _ => None,
+        };
         let content = island(p)
             .id("settings-content")
             .role(gpui::Role::TabPanel)
@@ -337,8 +342,16 @@ impl Workspace {
             .flex_1()
             .min_w_0()
             .h_full()
-            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
             .child(
+                div()
+                    .id("settings-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(
                 div()
                     .max_w(px(760.))
                     .px(px(40.))
@@ -363,7 +376,15 @@ impl Workspace {
                         )
                     })
                     .child(body),
-            );
+                    ),
+            )
+            .children(footer.map(|footer| {
+                div()
+                    .flex_shrink_0()
+                    .border_t_1()
+                    .border_color(p.border)
+                    .child(div().max_w(px(760.)).px(px(40.)).py(px(14.)).child(footer))
+            }));
 
         div()
             .id("settings-page")

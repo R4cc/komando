@@ -13,6 +13,15 @@ All notable changes to Komando are listed here. The format follows
 - README performance charts follow GitHub's selected theme and keep their labels readable
   on an opaque background, including when the system theme differs from GitHub's theme.
 - Projects remember whether they were expanded or collapsed when Komando relaunches.
+- Importing no longer marks a host as a duplicate just because another host has the same
+  address and user. A host is only flagged when its name, address, port, user, jump hosts and
+  startup commands all match, so profiles you duplicated and then changed are picked as new.
+- An encrypted Tabby configuration now gets a clear explanation with the steps to switch
+  encryption off in Tabby and a Try again button, instead of a generic error.
+- The Review and Import buttons stay visible below the list while you scroll through a long
+  import.
+- Long host names on the import page are cut short instead of running into the duplicate
+  labels.
 
 ## [0.6.1] - 2026-11-16
 

@@ -17,6 +17,22 @@ use serde_json::{Map, Value, json};
 use super::{Found, FoundGroup, FoundHost, LeftOut};
 use crate::model::StartupCommand;
 
+/// Why a configuration can't be read: Tabby's "Encrypt config file" is on. The import page
+/// tells it apart from other errors (`anyhow::Error::is::<Encrypted>`) to show how to fix it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Encrypted;
+
+impl std::fmt::Display for Encrypted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "This Tabby configuration is encrypted with Tabby's vault. In Tabby, open Settings → Vault, \
+             switch off \"Encrypt config file\", then import again. You can switch it back on afterwards.",
+        )
+    }
+}
+
+impl std::error::Error for Encrypted {}
+
 /// The file name Tabby keeps its configuration in.
 pub const CONFIG_FILE: &str = "config.yaml";
 
@@ -100,10 +116,7 @@ pub fn parse(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
     let config: Value = serde_saphyr::from_str(text).map_err(|err| anyhow::anyhow!("This isn't a Tabby configuration file: {err}"))?;
     let Some(config) = config.as_object() else { bail!("This isn't a Tabby configuration file.") };
     if config.get("encrypted").and_then(Value::as_bool) == Some(true) {
-        bail!(
-            "This Tabby configuration is encrypted with Tabby's vault. In Tabby, open Settings → Vault, \
-             switch off \"Encrypt config file\", then import again. You can switch it back on afterwards."
-        );
+        return Err(Encrypted.into());
     }
     if !config.contains_key("profiles") && !config.contains_key("version") {
         bail!("This isn't a Tabby configuration file: it lists no profiles.");
@@ -736,7 +749,9 @@ profileDefaults:
 
     #[test]
     fn an_encrypted_configuration_says_how_to_read_it() {
-        let err = parse("encrypted: true\nvault:\n  contents: abc\n", &any_icon).unwrap_err().to_string();
+        let err = parse("encrypted: true\nvault:\n  contents: abc\n", &any_icon).unwrap_err();
+        assert!(err.is::<Encrypted>(), "the import page recognises it");
+        let err = err.to_string();
         assert!(err.contains("Encrypt config file"), "{err}");
     }
 

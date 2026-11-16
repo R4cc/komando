@@ -20,7 +20,11 @@ Reading (`import::tabby`) is kept apart from matching and adding (`import::plan`
 
 - A group whose name matches a Project (ignoring case) adds to that Project; its defaults are
   left alone.
-- A profile counts as already imported when any Host connects to the same address and port as
-  the same user. It is shown but left unticked; the user can still tick it.
-- An encrypted Tabby configuration can't be read; the user is told to switch off "Encrypt
-  config file" in Tabby for the import.
+- A profile counts as already imported only when a Host has all the same settings: name,
+  address, port, user, and the Jump Hosts and Startup Commands it connects with. A profile
+  duplicated in Tabby and then changed in any of these is a new host. A profile counts as
+  listed twice only when an earlier profile of the same group matches it in everything,
+  including the settings that stay in Tabby. Either is shown but left unticked; the user can
+  still tick it.
+- An encrypted Tabby configuration can't be read; the import page shows the steps to switch
+  off "Encrypt config file" in Tabby and a button to try the same file again.
