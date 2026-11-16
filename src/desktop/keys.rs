@@ -42,6 +42,16 @@ pub fn from_keystroke(key: &str, key_char: Option<&str>, ctrl: bool, alt: bool) 
     {
         return Some(Key::Char(c));
     }
+    // AltGr, which Windows reports as Ctrl+Alt, typing a character of its own (`@` is AltGr+Q
+    // on a German keyboard): that character, whatever layout the remote side uses.
+    if ctrl
+        && alt
+        && let Some(c) = key_char.and_then(single_char)
+        && !c.is_control()
+        && !c.to_string().eq_ignore_ascii_case(key)
+    {
+        return Some(Key::Char(c));
+    }
     if let Some(named) = named(key) {
         return Some(Key::Code(named));
     }
@@ -143,6 +153,15 @@ mod tests {
         assert_eq!(from_keystroke("a", Some("a"), false, false), Some(Key::Char('a')));
         assert_eq!(from_keystroke("!", Some("!"), false, false), Some(Key::Char('!')));
         assert_eq!(from_keystroke("e", Some("é"), false, false), Some(Key::Char('é')));
+    }
+
+    #[test]
+    fn altgr_characters_go_as_themselves_and_ctrl_alt_shortcuts_as_keys() {
+        assert_eq!(from_keystroke("q", Some("@"), true, true), Some(Key::Char('@')));
+        assert_eq!(from_keystroke("e", Some("€"), true, true), Some(Key::Char('€')));
+        assert!(matches!(from_keystroke("a", Some("a"), true, true), Some(Key::Code(_))));
+        assert!(matches!(from_keystroke("a", Some("\u{1}"), true, true), Some(Key::Code(_))));
+        assert!(matches!(from_keystroke("t", None, true, true), Some(Key::Code(_))));
     }
 
     #[test]

@@ -62,6 +62,10 @@ pub(super) struct NavState {
     pub keyboard: bool,
     /// The row whose menu is open from its ⋯ button or Shift+F10.
     pub menu: Option<RowMenu>,
+    /// A dialog was opened from the sidebar's keys (F2, Delete): once it closes, the keyboard
+    /// goes back to the sidebar rather than to the terminal. Cleared on the first frame
+    /// without a dialog, so it never outlives that dialog.
+    pub after_dialog: std::cell::Cell<bool>,
 }
 
 pub(super) struct RowMenu {
@@ -80,6 +84,7 @@ impl NavState {
             reveal: false,
             keyboard: false,
             menu: None,
+            after_dialog: std::cell::Cell::new(false),
         }
     }
 }
@@ -440,6 +445,11 @@ impl Workspace {
     /// F2: rename the Session the row stands for; on an idle Host or a Project, edit it.
     /// `host` (Shift+F2): always edit the Host.
     pub(super) fn nav_edit(&mut self, host: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.nav_edit_inner(host, window, cx);
+        self.nav.after_dialog.set(self.modal_open(cx));
+    }
+
+    fn nav_edit_inner(&mut self, host: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some((cursor, _)) = self.nav_cursor() else { return };
         if !host && let Some(id) = self.nav_session(&cursor) {
             self.open_rename_session(id, window, cx);
@@ -464,6 +474,11 @@ impl Workspace {
     /// command is still printing output; on an idle Host or a Project, ask to delete it.
     /// `host` (Shift+Delete): always ask to delete the Host.
     pub(super) fn nav_delete(&mut self, host: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.nav_delete_inner(host, window, cx);
+        self.nav.after_dialog.set(self.modal_open(cx));
+    }
+
+    fn nav_delete_inner(&mut self, host: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some((cursor, _)) = self.nav_cursor() else { return };
         if !host && let Some(id) = self.nav_session(&cursor) {
             self.request_close(id, window, cx);

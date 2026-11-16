@@ -1822,6 +1822,11 @@ impl Workspace {
     /// Give the keyboard to the active Session. The master password popover doesn't hold on
     /// to it: switching Sessions while it's open types into the terminal, not the popover.
     fn focus_active(&self, window: &mut Window, cx: &mut Context<Self>) {
+        // A dialog the sidebar's keys opened has closed: back to the sidebar.
+        if self.nav.after_dialog.take() && !self.modal_open(cx) {
+            window.focus(&self.nav.focus, cx);
+            return;
+        }
         if let Some(entry) = self.active_entry() {
             // The open question's field if it has one, else the terminal or desktop.
             match &entry.view {
@@ -2034,6 +2039,23 @@ impl Workspace {
         self.overlay = Some(Overlay::Confirm {
             title: format!("Disconnect {name}?"),
             body: format!("{name} is still printing output, so a command may be running. Disconnecting ends it; the output so far stays until you close the session."),
+            action: ConfirmAction::Disconnect(id),
+        });
+        cx.notify();
+    }
+
+    /// Ctrl+Shift+W: as × does, except that a connected Remote Desktop asks first. Programs on
+    /// the remote side use the same keys (a browser's "close tab"), and ending a desktop can't
+    /// be undone.
+    fn request_close_by_key(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
+        if !(entry.is_live() && entry.view.desktop().is_some()) {
+            return self.request_close(id, window, cx);
+        }
+        let name = self.session_display_name(entry);
+        self.overlay = Some(Overlay::Confirm {
+            title: format!("Disconnect {name}?"),
+            body: "Ctrl+Shift+W is Komando's shortcut for closing a session, so programs on the remote desktop don't receive it. Disconnecting ends the remote desktop session.".into(),
             action: ConfirmAction::Disconnect(id),
         });
         cx.notify();
@@ -5290,6 +5312,9 @@ fn kbd(keys: &str, p: AppPalette) -> impl IntoElement {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count("workspace render (frame)");
+        if !self.modal_open(cx) {
+            self.nav.after_dialog.set(false);
+        }
         let p = cx.global::<Appearance>().app;
         let root = div()
             .id("workspace")
@@ -5335,7 +5360,7 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &CloseSession, window, cx| {
                 if let Some(id) = this.active.filter(|_| !this.modal_open(cx)) {
-                    this.request_close(id, window, cx);
+                    this.request_close_by_key(id, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &NextSession, window, cx| {

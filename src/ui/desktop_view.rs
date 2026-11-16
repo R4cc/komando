@@ -568,10 +568,28 @@ impl DesktopView {
             return;
         }
         let Some(key) = desktop::keys::from_keystroke(&ks.key, ks.key_char.as_deref(), m.control, m.alt) else { return };
+        // A modifier held down before the pane had the keyboard (Ctrl, then a click into it)
+        // was never pressed on the remote side: press it now, or Ctrl+C arrives as C.
+        self.sync_modifiers(*m);
         if let Key::Code(code) = key {
             self.held.insert(code.scancode);
         }
+        // An AltGr character: Ctrl and Alt are down on the remote side (see
+        // `modifiers_changed`), and with them it would be a shortcut. Let them go around it.
+        let lifted: Vec<desktop::keys::Code> = match key {
+            Key::Char(_) => [(desktop::keys::CONTROL, self.modifiers.control), (desktop::keys::ALT, self.modifiers.alt)]
+                .into_iter()
+                .filter_map(|(code, down)| down.then_some(code))
+                .collect(),
+            Key::Code(_) => vec![],
+        };
+        for code in &lifted {
+            self.send(DesktopInput::Key { key: Key::Code(*code), down: false });
+        }
         self.send(DesktopInput::Key { key, down: true });
+        for code in &lifted {
+            self.send(DesktopInput::Key { key: Key::Code(*code), down: true });
+        }
         cx.stop_propagation();
     }
 
@@ -591,13 +609,21 @@ impl DesktopView {
         if !self.focus.is_focused(window) || !self.accepts_input() {
             return;
         }
-        let (old, new) = (self.modifiers, event.modifiers);
+        self.sync_modifiers(event.modifiers);
+    }
+
+    /// Press or release modifiers on the remote side until they match `new`.
+    fn sync_modifiers(&mut self, new: Modifiers) {
+        let old = self.modifiers;
         use desktop::keys::{ALT, CONTROL, SHIFT, WINDOWS};
+        // With "Windows key and shortcuts" off, the Windows key is this PC's: the remote side
+        // must not open its Start menu as well.
+        let windows = self.options.send_shortcuts;
         for (code, was, is) in [
             (CONTROL, old.control, new.control),
             (SHIFT, old.shift, new.shift),
             (ALT, old.alt, new.alt),
-            (WINDOWS, old.platform, new.platform),
+            (WINDOWS, old.platform && windows, new.platform && windows),
         ] {
             if was != is {
                 self.send(DesktopInput::Key { key: Key::Code(code), down: is });

@@ -776,6 +776,10 @@ impl FileBrowser {
             [] => {}
             many => {
                 let files: Vec<Entry> = many.iter().filter(|e| !e.is_dir()).cloned().collect();
+                if files.is_empty() {
+                    self.notify_info("Enter downloads the selected files. Use Download for folders.", cx);
+                    return;
+                }
                 self.download(files, false, cx);
             }
         }
@@ -1246,9 +1250,12 @@ impl FileBrowser {
             } else if self.dialog.is_some() {
                 self.dialog = None;
                 window.focus(&self.focus, cx);
+            } else if self.favorite_rename.is_some() {
+                // Renaming a favorite: Escape ends the rename, not the whole list.
+                self.favorite_rename = None;
+                window.focus(&self.focus, cx);
             } else if self.favorites_open {
                 self.favorites_open = false;
-                self.favorite_rename = None;
             } else if self.editing_path {
                 self.editing_path = false;
                 window.focus(&self.focus, cx);
@@ -1260,7 +1267,21 @@ impl FileBrowser {
             return;
         }
         // Everything else only when the list itself has the focus (not a text field).
-        if !self.focus.is_focused(window) || self.dialog.is_some() {
+        if !self.focus.is_focused(window) {
+            return;
+        }
+        // The delete question keeps the focus on the list: Enter answers it, as its button does.
+        if key == "enter" && !mods.modified()
+            && let Some(Dialog::Delete { paths }) = &self.dialog
+        {
+            let paths = paths.clone();
+            self.dialog = None;
+            self.delete(paths, cx);
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        if self.dialog.is_some() {
             return;
         }
         let handled = match (key, mods.control || mods.platform, mods.alt, mods.shift) {

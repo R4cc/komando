@@ -55,6 +55,22 @@ All notable changes to Komando are listed here. The format follows
 - Clearer wording: singular counts ("1 line", "1 rule", "1 host goes"), a matching count in
   Disconnect all, the delete question for a Project without hosts, the project password
   hint, and a note that the RDP fit setting applies from the next connection.
+- Ctrl+Shift with Enter, Backspace, Delete, Insert, Space or an F-key reaches the program in
+  the terminal instead of being dropped; only Ctrl+Shift+ a letter or symbol is kept for
+  Komando's shortcuts.
+- Ctrl+Shift+W on a connected remote desktop asks before ending it, since programs on the
+  remote side often use the same keys.
+- AltGr characters (such as `@` on a German keyboard) type correctly on remote desktops,
+  including over VNC and with a different keyboard layout on the remote side.
+- With "Windows key and shortcuts" off for a remote desktop, the Windows key no longer opens
+  the Start menu on the remote side as well as on this PC.
+- A Ctrl, Alt or Shift held down before clicking into a remote desktop now applies to the
+  next key, so Ctrl+C no longer arrives as a plain C.
+- After F2 or Delete in the sidebar opens a dialog, closing it returns the keyboard to the
+  sidebar instead of the terminal.
+- In the File Browser, Enter confirms the delete question, Escape while renaming a favorite
+  ends only the rename, and Enter on a selection of only folders explains that Download
+  handles folders.
 
 ### Security
 
