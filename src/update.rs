@@ -190,7 +190,9 @@ fn agent_for(url: &str, windows_store: bool) -> ureq::Agent {
         }
     }
     let _ = (url, windows_store);
-    builder.build()
+    // Never fall back to plain HTTP, not even through a redirect. (Tests serve downloads from
+    // a plain local server.)
+    builder.https_only(!cfg!(test)).build()
 }
 
 #[cfg(windows)]
@@ -359,7 +361,12 @@ fn parse_release(release: ApiRelease) -> Result<Release> {
     Ok(Release {
         version,
         tag: release.tag_name.clone(),
-        url: release.html_url.clone(),
+        // Opened in the browser: only ever a GitHub page.
+        url: if release.html_url.starts_with("https://github.com/") {
+            release.html_url.clone()
+        } else {
+            format!("https://github.com/{REPO}/releases/tag/{}", release.tag_name)
+        },
         notes: release.body.clone().unwrap_or_default(),
         exe: pick("exe"),
         msi: pick("msi"),
@@ -367,8 +374,9 @@ fn parse_release(release: ApiRelease) -> Result<Release> {
 }
 
 /// Download `asset` to `dest`, counting bytes into `progress`. The file is written next to
-/// `dest` first and only moved there once its size and digest check out.
-pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<()> {
+/// `dest` first and only moved there once its size and digest check out. Returns its SHA-256,
+/// in hex, for checking it again just before it is installed.
+pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<String> {
     let response = get(&asset.browser_download_url, None).map_err(|err| anyhow!("Couldn't download {}: {err}", asset.name))?;
     let partial = dest.with_extension("part");
     if let Some(dir) = dest.parent() {
@@ -398,12 +406,12 @@ pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<
         let _ = fs::remove_file(&partial);
         return Err(err);
     }
+    let actual: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
     let check = || -> Result<()> {
         if total != asset.size {
             bail!("The download is incomplete ({total} of {} bytes).", asset.size);
         }
         if let Some(expected) = asset.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")) {
-            let actual: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
             if !actual.eq_ignore_ascii_case(expected) {
                 bail!("The download doesn't match the checksum GitHub lists for it.");
             }
@@ -418,7 +426,7 @@ pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<
         let _ = fs::remove_file(&partial);
         return Err(err).with_context(|| format!("Couldn't put the download at {}", dest.display()));
     }
-    Ok(())
+    Ok(actual)
 }
 
 /// How this copy of Komando gets updated.
@@ -553,7 +561,10 @@ pub fn download_path(kind: &InstallKind, release: &Release) -> PathBuf {
 
 /// Hand installation to an unelevated helper which waits for us to exit, runs the MSI
 /// (elevating only that process when necessary), then reopens Komando as the original user.
-pub fn run_installer(msi: &Path, all_users: bool, data_dir: &Path) -> Result<()> {
+///
+/// `sha256` is the installer's digest from [`download`]: the helper checks it again right
+/// before Windows Installer starts, as the file sits in a folder other programs can write to.
+pub fn run_installer(msi: &Path, sha256: &str, all_users: bool, data_dir: &Path) -> Result<()> {
     #[cfg(windows)]
     {
         use base64::Engine as _;
@@ -572,6 +583,7 @@ pub fn run_installer(msi: &Path, all_users: bool, data_dir: &Path) -> Result<()>
         let mut child = std::process::Command::new(powershell)
             .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", &encoded])
             .env("KOMANDO_UPDATE_MSI", msi)
+            .env("KOMANDO_UPDATE_SHA256", sha256)
             .env("KOMANDO_UPDATE_EXE", exe)
             .env("KOMANDO_UPDATE_PARENT", std::process::id().to_string())
             .env("KOMANDO_UPDATE_ALL_USERS", if all_users { "1" } else { "0" })
@@ -598,7 +610,7 @@ pub fn run_installer(msi: &Path, all_users: bool, data_dir: &Path) -> Result<()>
     }
     #[cfg(not(windows))]
     {
-        let _ = (msi, all_users, data_dir);
+        let _ = (msi, sha256, all_users, data_dir);
         bail!("Updates install on Windows only.")
     }
 }
@@ -777,6 +789,17 @@ mod tests {
         assert!(preview[0].ends_with('…'));
         let api: ApiRelease = serde_json::from_str(r#"{"tag_name":"v9.0.1","html_url":"https://example.invalid","body":null}"#).unwrap();
         assert!(parse_release(api).unwrap().highlights().is_empty());
+    }
+
+    #[test]
+    fn the_release_page_opened_is_always_on_github() {
+        for url in ["https://example.invalid", "file:///C:/Windows/System32/calc.exe", "http://github.com/x"] {
+            let api: ApiRelease = serde_json::from_str(&format!(r#"{{"tag_name":"v9.0.1","html_url":"{url}","body":null}}"#)).unwrap();
+            assert_eq!(parse_release(api).unwrap().url, format!("https://github.com/{REPO}/releases/tag/v9.0.1"));
+        }
+        let page = format!("https://github.com/{REPO}/releases/tag/v9.0.1");
+        let api: ApiRelease = serde_json::from_str(&format!(r#"{{"tag_name":"v9.0.1","html_url":"{page}","body":null}}"#)).unwrap();
+        assert_eq!(parse_release(api).unwrap().url, page);
     }
 
     #[test]

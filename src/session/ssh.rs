@@ -430,11 +430,27 @@ impl client::Handler for Client {
             }
         }
 
-        self.log.line(LogKind::Warn, "First connection to this host: waiting for you to trust its key");
+        // Keys of other types already trusted for this host: russh reports those as unknown
+        // rather than changed, but the user should not be told this is a first connection.
+        let mut other_types: Vec<String> = sources
+            .iter()
+            .filter_map(|path| russh::keys::known_hosts::known_host_keys_path(&self.host, self.port, path).ok())
+            .flatten()
+            .map(|(_, known)| known.algorithm().to_string())
+            .filter(|algorithm| *algorithm != key.algorithm().to_string())
+            .collect();
+        other_types.sort();
+        other_types.dedup();
+        if other_types.is_empty() {
+            self.log.line(LogKind::Warn, "First connection to this host: waiting for you to trust its key");
+        } else {
+            self.log.line(LogKind::Warn, "This host presented a key of a type not trusted before: waiting for you to decide");
+        }
         let (reply, answer) = oneshot::channel();
         self.proxy.send(SessionEvent::Prompt(Prompt::HostKey {
             fingerprint,
             algorithm: key.algorithm().to_string(),
+            other_types,
             reply,
         }));
         self.clock.pause();
@@ -574,7 +590,7 @@ async fn run(
         proxy.send(SessionEvent::Hop { index, step: HopStep::SigningIn });
         // Saved only once it signed in, so a mistyped user name is not remembered. Before the
         // password, so the password's vault entry is labelled with it.
-        let signed_in = authenticate(&mut handle, &user, hop.secret.as_ref(), &proxy, &log).await?;
+        let signed_in = authenticate(&mut handle, &user, &hop.address, hop.secret.as_ref(), &proxy, &log).await?;
         log.line(LogKind::Good, &format!("Signed in to {} as {user}", hop.name));
         if remember_user {
             proxy.send(SessionEvent::Remember { hop: index, what: Remembered::User(user.clone()) });
@@ -905,9 +921,12 @@ struct SignedIn {
     remember: bool,
 }
 
+/// `address` names the machine in the password question, so a Jump Host's (perhaps from a
+/// shared Project) can't pass for another's.
 async fn authenticate(
     handle: &mut Handle<Client>,
     user: &str,
+    address: &str,
     secret: Option<&Secret>,
     proxy: &EventProxy,
     log: &ConnectLog,
@@ -956,7 +975,7 @@ async fn authenticate(
     // Fall back to asking. The tick on "Remember" carries over to the next try.
     let mut remember = false;
     for _ in 0..3 {
-        let label = format!("Password for {user}");
+        let label = format!("Password for {user}@{address}");
         let Some(answer) = ask(proxy, &label, true, Some(remember), last_error.take()).await else {
             return Err(anyhow!(CANCELLED));
         };

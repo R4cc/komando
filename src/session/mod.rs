@@ -68,8 +68,9 @@ pub enum HopStep {
 }
 
 pub enum Prompt {
-    /// First connection to this Host: trust its Host Key?
-    HostKey { fingerprint: String, algorithm: String, reply: oneshot::Sender<bool> },
+    /// First connection to this Host: trust its Host Key? `other_types` are the algorithms of
+    /// keys already trusted for it: a key of a new type is not proof of the same server.
+    HostKey { fingerprint: String, algorithm: String, other_types: Vec<String>, reply: oneshot::Sender<bool> },
     /// The Host Key differs from the trusted one: replace the trusted key with this one?
     /// `previous` is the trusted key's fingerprint, when it can be read back. `openssh` says it
     /// was trusted in the user's OpenSSH known_hosts, which Komando leaves as it is.

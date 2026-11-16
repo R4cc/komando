@@ -76,10 +76,10 @@ impl Workspace {
         let progress = done.clone();
         let data_dir = self.data_dir.clone();
         let task = cx.background_spawn(async move {
-            update::download(&asset, &dest, progress)?;
+            let sha256 = update::download(&asset, &dest, progress)?;
             match &kind {
                 InstallKind::Portable { exe } => update::replace_exe(exe, &dest)?,
-                InstallKind::Installer { all_users } => update::run_installer(&dest, *all_users, &data_dir)?,
+                InstallKind::Installer { all_users } => update::run_installer(&dest, &sha256, *all_users, &data_dir)?,
                 InstallKind::Unsupported => anyhow::bail!("Updates install on Windows only."),
             }
             anyhow::Ok(kind)

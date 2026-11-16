@@ -36,6 +36,25 @@ All notable changes to Komando are listed here. The format follows
 - Renaming a remote file without changing its name no longer removes spaces at the start or
   end of the name.
 
+### Security
+
+- A host imported into one of your Projects that has a saved password or key no longer uses
+  it: Komando asks for that host's password instead. A shared or imported file could
+  otherwise point a host at its own server and receive the Project's password.
+- The import review shows a new Project's own Jump Hosts and Startup Commands, and every
+  Startup Command in full, so nothing that runs on connect can hide behind an ellipsis.
+- Password questions name the machine they are for (`user@address`), so a Jump Host can't
+  pass for another one.
+- A server presenting a key of a new type for a host that already has a trusted key is no
+  longer shown as a first connection: the question says which key type is already trusted.
+- Startup Commands that answer a sudo password prompt in any language sudo uses are kept out
+  of the library and shared Project Files, not only English and German ones.
+- Updates are downloaded over HTTPS only, even through redirects, and the installer is
+  checked again just before Windows Installer runs it. Only GitHub release pages are opened
+  from the update notice.
+- An RDP server can no longer make Komando reserve memory for an impossibly large desktop
+  and close it, and SFTP refuses to download devices such as `/dev/zero` that never end.
+
 ## [0.6.6] - 2026-11-16
 
 ### Changed

@@ -267,7 +267,9 @@ pub struct Applied {
 /// account, opening that protocol by default and leaving SSH sign-in unset. A host with known Jump Hosts and Startup Commands
 /// takes the Project's when they start its own list and gets the rest as its own; otherwise
 /// it switches the Project's off and gets the whole list, so it reaches its machine the same
-/// way in a Project with other defaults. No Credential is ever set.
+/// way in a Project with other defaults. No Credential is ever set, and none is inherited: in
+/// a Project with a saved password or key, an imported host asks instead, so a file can't
+/// point a host at its own server and receive that Project's password.
 pub fn apply(found: &Found, plan: &Plan, picked: &[Vec<bool>], library: &mut Library) -> Applied {
     let mut applied = Applied::default();
     let mut extended: Vec<ProjectId> = vec![];
@@ -309,6 +311,7 @@ pub fn apply(found: &Found, plan: &Plan, picked: &[Vec<bool>], library: &mut Lib
             }
         };
         let default_user = library.projects[index].default_user.clone();
+        let project_has_credential = library.projects[index].credential.is_some();
         let project_jumps: Vec<JumpHost> = library.projects[index].jump_hosts.iter().map(without_credential).collect();
         let project_commands = library.projects[index].startup_commands.clone();
         for found in chosen {
@@ -321,6 +324,9 @@ pub fn apply(found: &Found, plan: &Plan, picked: &[Vec<bool>], library: &mut Lib
                     None if group.default_user.is_some() => Inherited::Off,
                     _ => Inherited::Project,
                 };
+                if project_has_credential {
+                    host.credential = Inherited::Off;
+                }
             } else {
                 let desktop = Desktop {
                     port: found.port,
@@ -588,6 +594,19 @@ mod tests {
         assert_eq!((api.user.clone(), api.credential.clone()), (Inherited::Project, Inherited::Project));
         assert!(api.jump_hosts.is_empty() && api.startup_commands.is_empty() && api.color.is_none());
         assert!(!lib.projects.iter().any(|p| p.name == "Empty pick"), "no Project without hosts");
+    }
+
+    #[test]
+    fn a_host_imported_into_a_project_with_a_password_does_not_get_it() {
+        let found = Found { groups: vec![group("Atlas", None, vec![found_host("db09", "attacker.example", Some("deploy"))])], notes: vec![] };
+        let mut lib = library();
+        lib.projects[0].credential = Some("atlas-password".into());
+        let plan = plan(&found, &lib);
+        apply(&found, &plan, &[vec![true]], &mut lib);
+        let host = lib.hosts.iter().find(|h| h.name == "db09").unwrap();
+        assert_eq!(host.credential, Inherited::Off, "asks instead of sending the Project's password");
+        let resolved = crate::model::resolve(host, &lib.projects[0]);
+        assert_eq!(resolved.credential, None);
     }
 
     fn jump(address: &str) -> JumpHost {

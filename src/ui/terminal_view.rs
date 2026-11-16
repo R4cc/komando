@@ -187,7 +187,7 @@ pub enum TerminalEvent {
 }
 
 enum ActivePrompt {
-    HostKey { fingerprint: String, algorithm: String, reply: Option<oneshot::Sender<bool>> },
+    HostKey { fingerprint: String, algorithm: String, other_types: Vec<String>, reply: Option<oneshot::Sender<bool>> },
     HostKeyChanged {
         fingerprint: String,
         previous: Option<String>,
@@ -803,8 +803,8 @@ impl TerminalView {
 
     fn show_prompt(&mut self, prompt: Prompt, window: &mut Window, cx: &mut Context<Self>) {
         self.prompt = Some(match prompt {
-            Prompt::HostKey { fingerprint, algorithm, reply } => {
-                ActivePrompt::HostKey { fingerprint, algorithm, reply: Some(reply) }
+            Prompt::HostKey { fingerprint, algorithm, other_types, reply } => {
+                ActivePrompt::HostKey { fingerprint, algorithm, other_types, reply: Some(reply) }
             }
             Prompt::HostKeyChanged { fingerprint, previous, algorithm, openssh, reply } => {
                 ActivePrompt::HostKeyChanged { fingerprint, previous, algorithm, openssh, reply: Some(reply) }
@@ -1987,7 +1987,7 @@ impl TerminalView {
                 .into_any_element()
         };
         let element = match prompt {
-            ActivePrompt::HostKey { fingerprint, algorithm, .. } => card(
+            ActivePrompt::HostKey { fingerprint, algorithm, other_types, .. } => card(
                 &match &hop_name {
                     Some(name) => format!("Trust {name}?"),
                     None => "Trust this server?".to_string(),
@@ -1996,9 +1996,14 @@ impl TerminalView {
                     .flex()
                     .flex_col()
                     .gap(px(10.))
-                    .child(text(format!(
-                        "First connection to this host. Check that this {algorithm} key fingerprint matches the server before trusting it."
-                    )))
+                    .child(text(if other_types.is_empty() {
+                        format!("First connection to this host. Check that this {algorithm} key fingerprint matches the server before trusting it.")
+                    } else {
+                        format!(
+                            "This PC already trusts a {} key for this host, but the server presented a {algorithm} key. That can happen when a server has keys of several types, but it can also mean someone is intercepting the connection. Check this fingerprint with the server before trusting it.",
+                            other_types.join(" or ")
+                        )
+                    }))
                     .child(mono(fingerprint.clone()))
                     .into_any_element(),
                 vec![

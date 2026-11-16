@@ -1220,6 +1220,10 @@ impl Remote {
         if is_dir_mode(attrs.permissions) {
             return self.download_dir(remote_path, local_dir, &name, progress).await;
         }
+        // A device or pipe (such as /dev/zero) would never end: only files, as in folders.
+        if attrs.permissions.is_some_and(|m| !matches!(m & S_IFMT, 0 | S_IFREG)) {
+            return Err(OpError::new(ErrorKind::Unsupported, format!("\"{}\" is not a regular file, so it can't be downloaded.", file_name(remote_path))));
+        }
         // Wait for room among the connection's other transfers before opening anything.
         let _room = self.take_room(attrs.size.unwrap_or(0), progress).await?;
         // Open the remote file before creating anything here: no access, no file.

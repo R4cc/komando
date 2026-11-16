@@ -241,6 +241,7 @@ impl ironrdp_tokio::NetworkClient for NoKerberos {
 /// The connected desktop: frames in, input out, until either side ends it.
 async fn active(framed: Framed, result: ConnectionResult, link: &mut Link) -> Result<String> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
+    super::check_size(result.desktop_size.width.into(), result.desktop_size.height.into())?;
     let mut image = DecodedImage::new(PixelFormat::BgrA32, result.desktop_size.width, result.desktop_size.height);
     link.draw(|p| p.resize(image.width().into(), image.height().into()))?;
     let activation = result.activation_factory;
@@ -327,6 +328,7 @@ async fn active(framed: Framed, result: ConnectionResult, link: &mut Link) -> Re
                             ..
                         } = sequence.connection_activation_state()
                         {
+                            super::check_size(desktop_size.width.into(), desktop_size.height.into())?;
                             image = DecodedImage::new(PixelFormat::BgrA32, desktop_size.width, desktop_size.height);
                             link.draw(|p| p.resize(desktop_size.width.into(), desktop_size.height.into()))?;
                             let (io, user) = (sequence.io_channel_id(), sequence.user_channel_id());

@@ -46,13 +46,19 @@ pub struct Picture {
     pub version: u64,
 }
 
+/// Refuse a server's desktop size before anything that size is allocated: up to two 8K
+/// screens' worth of pixels.
+pub(crate) fn check_size(width: u32, height: u32) -> Result<()> {
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 64 * 1024 * 1024 {
+        return Err(anyhow!("The server requested an unsupported desktop size ({width} × {height})."));
+    }
+    Ok(())
+}
+
 impl Picture {
     /// A new size, black, as servers expect a fresh desktop to start.
     fn resize(&mut self, width: u32, height: u32) -> Result<()> {
-        // Bound allocations from a server's dimensions (enough for two 8K screens).
-        if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 64 * 1024 * 1024 {
-            return Err(anyhow!("The server requested an unsupported desktop size ({width} × {height})."));
-        }
+        check_size(width, height)?;
         if (width, height) != (self.width, self.height) {
             self.width = width;
             self.height = height;

@@ -13,8 +13,8 @@ use gpui::Toggled;
 
 use super::settings::group;
 use super::*;
-use crate::import::{self, Applied, Duplicate, Found, FoundHost, Plan, Target, mobaxterm, tabby};
-use crate::model::JumpHost;
+use crate::import::{self, Applied, Duplicate, Found, FoundGroup, FoundHost, Plan, Target, mobaxterm, tabby};
+use crate::model::{JumpHost, StartupCommand};
 use crate::share;
 
 /// Groups start folded when the import has more hosts than this, so the list stays short.
@@ -755,10 +755,12 @@ impl Workspace {
                 continue;
             }
             projects += 1;
+            let mut creates = false;
             let target = match &planned.target {
                 Target::Existing { name, .. } => format!("Adds to your project {name}"),
                 Target::New if seen_new.iter().any(|n| n.eq_ignore_ascii_case(found.name.trim())) => "Adds to the new project above".to_string(),
                 Target::New => {
+                    creates = true;
                     new_projects += 1;
                     seen_new.push(found.name.trim().to_string());
                     match &found.default_user {
@@ -768,6 +770,24 @@ impl Workspace {
                 }
             };
             let mut rows: Vec<AnyElement> = vec![];
+            // A new project's own Jump Hosts and Startup Commands: every host added to it later
+            // uses them, even when none of the imported hosts does.
+            let defaults = if creates { project_defaults(found) } else { vec![] };
+            if !defaults.is_empty() {
+                let mut row = div().flex().flex_col().gap(px(6.)).child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(icon_el("check", 15., p.success))
+                        .child(icon_el("folder", 15., p.text_muted))
+                        .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child("Project defaults")),
+                );
+                for (setting, detail) in defaults {
+                    row = row.child(setting_row(setting, detail, p));
+                }
+                rows.push(row.into_any_element());
+            }
             for host in hosts {
                 let mut row = div().flex().flex_col().gap(px(6.)).child(
                     div()
@@ -780,16 +800,7 @@ impl Workspace {
                         .child(div().min_w(px(48.)).flex_shrink(1.).flex_basis(px(0.)).flex_grow(1.).truncate().text_size(px(12.)).text_color(p.text_muted).child(login(host))),
                 );
                 for (setting, detail) in comes_over(host) {
-                    row = row.child(
-                        div()
-                            .pl(px(25.))
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(icon_el("check", 13., p.success))
-                            .child(div().flex_shrink_0().text_size(px(12.)).text_color(p.text).child(setting))
-                            .child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.text_faint).child(detail)),
-                    );
+                    row = row.child(setting_row(setting, detail, p));
                 }
                 for left in &host.left_out {
                     row = row.child(
@@ -959,16 +970,48 @@ impl Workspace {
 /// What a host brings over besides its address and user, for the review: its Jump Hosts and
 /// Startup Commands, when the file says.
 fn comes_over(host: &FoundHost) -> Vec<(String, String)> {
+    routes_and_commands(host.jump_hosts.as_deref(), host.startup_commands.as_deref())
+}
+
+/// A new project's Jump Hosts and Startup Commands from the file, for the review.
+fn project_defaults(group: &FoundGroup) -> Vec<(String, String)> {
+    routes_and_commands(Some(&group.jump_hosts), Some(&group.startup_commands))
+}
+
+fn routes_and_commands(jumps: Option<&[JumpHost]>, commands: Option<&[StartupCommand]>) -> Vec<(String, String)> {
     let mut over = vec![];
-    if let Some(jumps) = host.jump_hosts.as_ref().filter(|j| !j.is_empty()) {
+    if let Some(jumps) = jumps.filter(|j| !j.is_empty()) {
         let label = if jumps.len() == 1 { "Jump host" } else { "Jump hosts" };
         over.push((label.to_string(), jumps.iter().map(JumpHost::label).collect::<Vec<_>>().join(" → ")));
     }
-    if let Some(commands) = host.startup_commands.as_ref().filter(|c| !c.is_empty()) {
+    // Each command in full, one per line: they run on connect, so nothing may hide in an
+    // ellipsis.
+    if let Some(commands) = commands.filter(|c| !c.is_empty()) {
         let label = if commands.len() == 1 { "Startup command" } else { "Startup commands" };
-        over.push((label.to_string(), commands.iter().map(|c| c.label()).collect::<Vec<_>>().join(" · ")));
+        over.push((label.to_string(), commands.iter().map(|c| c.label()).collect::<Vec<_>>().join("\n")));
     }
     over
+}
+
+/// One setting a host or project brings over, in full: wrapped, never cut short.
+fn setting_row(setting: String, detail: String, p: AppPalette) -> gpui::Div {
+    div()
+        .pl(px(25.))
+        .flex()
+        .items_start()
+        .gap(px(8.))
+        .child(div().pt(px(2.)).child(icon_el("check", 13., p.success)))
+        .child(div().flex_shrink_0().text_size(px(12.)).text_color(p.text).child(setting))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .text_size(px(12.))
+                .text_color(p.text_faint)
+                .children(detail.lines().map(|line| div().child(line.to_string())).collect::<Vec<_>>()),
+        )
 }
 
 /// A tick box, 16×16: ticked, empty, or a dash when only some of what it stands for is ticked.

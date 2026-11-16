@@ -10,6 +10,12 @@ try {
         throw 'Komando did not close in time. Please try the update again.'
     }
     $canRestart = $true
+    # The installer waited in a folder other programs can write to: check it is still the
+    # file Komando downloaded and verified before Windows Installer (perhaps elevated) runs it.
+    $digest = (Get-FileHash -LiteralPath $env:KOMANDO_UPDATE_MSI -Algorithm SHA256).Hash
+    if ($digest -ne $env:KOMANDO_UPDATE_SHA256) {
+        throw 'The downloaded installer was changed before it could run. Please try the update again.'
+    }
     $arguments = @('/i', ('"{0}"' -f $env:KOMANDO_UPDATE_MSI), '/passive', '/norestart', 'KOMANDO_UPDATING=1')
     $options = @{
         FilePath = (Join-Path $env:SystemRoot 'System32\msiexec.exe')

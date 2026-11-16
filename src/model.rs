@@ -493,9 +493,16 @@ impl StartupCommand {
     /// unencrypted (and shared with a Project). Komando never saves one: forms refuse it,
     /// imports and shared files leave it out.
     pub fn answers_password(&self) -> bool {
+        // "Password" in the languages sudo's prompt comes in (see `session::sudo`), and any
+        // sudo prompt at all.
+        const WORDS: [&str; 18] = [
+            "password", "passphrase", "passwort", "mot de passe", "contraseña", "senha", "hasło",
+            "heslo", "lösenord", "adgangskode", "kata sandi", "lozinka", "parola", "пароль",
+            "密码", "密碼", "パスワード", "암호",
+        ];
         self.wait_for.as_deref().is_some_and(|text| {
             let text = text.to_lowercase();
-            text.contains("password") || text.contains("passphrase") || text.contains("passwort")
+            text.contains("[sudo") || WORDS.iter().any(|word| text.contains(word))
         })
     }
 }
@@ -1786,6 +1793,9 @@ startup_commands = [\"uptime\"]
     fn a_wait_for_a_password_question_is_a_saved_password() {
         assert!(StartupCommand::after("[sudo] Password for ana:", "hunter2").answers_password());
         assert!(StartupCommand::after("Enter passphrase", "x").answers_password());
+        assert!(StartupCommand::after("[sudo] Contraseña para ana:", "hunter2").answers_password());
+        assert!(StartupCommand::after("[sudo] пароль для ana:", "hunter2").answers_password());
+        assert!(StartupCommand::after("[sudo: authenticate] Password:", "hunter2").answers_password());
         assert!(!StartupCommand::after("# ", "cd /srv").answers_password());
         assert!(!StartupCommand::new("passwd").answers_password());
     }
