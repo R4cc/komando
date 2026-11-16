@@ -6,6 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Sidebar menus put New terminal, Browse files and Open in split view first, omit Show
+  session when it is already visible, and use shorter desktop labels (Open VNC, Set up RDP…).
+- Sidebar menus show keyboard shortcuts beside New terminal (Ctrl+Enter), Rename session
+  (F2), and Disconnect or Close session (Delete).
+
 ## [0.6.5] - 2026-11-16
 
 ### Changed

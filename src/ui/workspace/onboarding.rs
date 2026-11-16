@@ -638,7 +638,7 @@ impl Workspace {
             .child(group(
                 p,
                 vec![
-                    step(1, "Choose a remote desktop", "Right-click the host or open its ⋯ menu. RDP and VNC are offered by default; choose Set up remote desktop for the protocol you want. Switch off a protocol in Edit host… → Remote desktop to hide it from the menu."),
+                    step(1, "Choose a remote desktop", "Right-click the host or open its ⋯ menu. RDP and VNC are offered by default; choose Set up RDP… or Set up VNC… to enter its settings. Switch off a protocol in Edit host… → Remote desktop to hide it from the menu."),
                     step(
                         2,
                         "Set its port and password",
@@ -647,7 +647,7 @@ impl Workspace {
                     step(
                         3,
                         "Open it beside the terminal",
-                        "Right-click the host or open its ⋯ menu and choose Open remote desktop (RDP or VNC). The desktop gets a row under the host; click that row or the host to switch between desktop and terminal. Drag the desktop's row out of the sidebar to give it a window of its own, or choose what a click on the host opens in Edit host… → Remote desktop.",
+                        "Right-click the host or open its ⋯ menu and choose Open RDP or Open VNC. The desktop gets a row under the host; click that row or the host to switch between desktop and terminal. Drag the desktop's row out of the sidebar to give it a window of its own, or choose what a click on the host opens in Edit host… → Remote desktop.",
                     ),
                 ],
             ))

@@ -1242,6 +1242,17 @@ impl Workspace {
         self.sessions_of(key).find(|s| !listed.iter().any(|l| l.id == s.id)).map(|s| s.id)
     }
 
+    /// The Session a click on an item's row shows. Its menu uses the same target when
+    /// deciding whether Show session would do anything.
+    fn item_session(&self, key: &ItemKey) -> Option<usize> {
+        self.row_terminal(key)
+            .or_else(|| self.last_active.get(key).copied())
+            .filter(|id| self.sessions.iter().any(|s| s.id == *id))
+            // Prefer one shown here to a desktop in its own window.
+            .or_else(|| self.sessions_of(key).find(|s| s.window.is_none()).map(|s| s.id))
+            .or_else(|| self.sessions_of(key).next().map(|s| s.id))
+    }
+
     /// The number a new terminal (or Remote Desktop) of an item gets: one past the highest
     /// given to its kind since the item last had none open, so a number is never given to
     /// another Session while the item has Sessions of that kind, and a desktop never makes the
@@ -1277,14 +1288,7 @@ impl Workspace {
         let key = item.key();
         if !another {
             // The row is the Host's terminal while its desktops have rows of their own.
-            let existing = self
-                .row_terminal(&key)
-                .or_else(|| self.last_active.get(&key).copied())
-                .filter(|id| self.sessions.iter().any(|s| s.id == *id))
-                // Rather one shown here than a desktop in its own window.
-                .or_else(|| self.sessions_of(&key).find(|s| s.window.is_none()).map(|s| s.id))
-                .or_else(|| self.sessions_of(&key).next().map(|s| s.id));
-            if let Some(id) = existing {
+            if let Some(id) = self.item_session(&key) {
                 self.activate(id, window, cx);
                 let dropped = self.sessions.iter().find(|s| s.id == id).is_some_and(|s| !s.is_live());
                 if dropped {
@@ -3533,10 +3537,16 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + Clone + 'static {
         let key = item.key();
-        let ItemState { sessions, grouped, expanded, shown, main, live, .. } = self.item_state(&key);
+        let ItemState { sessions, grouped, expanded, shown, main, .. } = self.item_state(&key);
         let any_live = sessions.iter().any(|s| s.is_live());
         let session_id = main.map(|s| s.id);
         let sessions_live = main.is_some_and(|s| s.is_live());
+        let open_session = self.item_session(&key).and_then(|id| sessions.iter().find(|s| s.id == id));
+        let open_live = open_session.is_some_and(|s| s.is_live());
+        let visible = self.page == Page::Sessions && open_session.is_some_and(|s| {
+            s.window.is_none() && (Some(s.id) == self.active || self.shown_split().is_some_and(|split| split.contains(s.id)))
+        });
+        let sidebar_focus = self.nav.focus.clone();
         let ws = cx.entity().downgrade();
         let menu_item_src = item.clone();
         let menu_key = key.clone();
@@ -3556,11 +3566,13 @@ impl Workspace {
             let item = menu_item_src.clone();
             let (open, another) = (item.clone(), item.clone());
             let new_label = if matches!(item, SidebarItem::Host { .. }) { "New terminal" } else { "New session" };
-            let mut menu = menu
-                .item(menu_item(if live { "Show session" } else { "Connect" }, "plug", &ws, move |this, window, cx| {
-                    this.activate_item(open.clone(), false, window, cx)
-                }))
-                .item(menu_item(new_label, "plus", &ws, move |this, window, cx| this.activate_item(another.clone(), true, window, cx)));
+            // Hint the sidebar's row actions, rather than global New/Close, which act on
+            // the active Session and may belong to a different Host. Keep click handlers
+            // bound to this menu's item regardless of the keyboard cursor's position.
+            let mut menu = menu.action_context(sidebar_focus.clone()).item(
+                menu_item(new_label, "plus", &ws, move |this, window, cx| this.activate_item(another.clone(), true, window, cx))
+                    .action(Box::new(nav::NavOpenAnother)),
+            );
             if let Some(id) = files_session {
                 menu = menu.item(menu_item("Browse files", "folder-tree", &ws, move |this, window, cx| this.show_files(id, window, cx)));
             }
@@ -3568,6 +3580,12 @@ impl Workspace {
                 let split_key = menu_key.clone();
                 menu = menu.item(menu_item("Open in split view", "columns-2", &ws, move |this, window, cx| {
                     this.open_in_split(&split_key, None, Side::Right, window, cx)
+                }));
+            }
+            // A dropped Session still needs Connect, even with its retained output visible.
+            if !open_live || !visible {
+                menu = menu.item(menu_item(if open_live { "Show session" } else { "Connect" }, "plug", &ws, move |this, window, cx| {
+                    this.activate_item(open.clone(), false, window, cx)
                 }));
             }
             if grouped {
@@ -3588,13 +3606,20 @@ impl Workspace {
             }
             if let Some(id) = session_id {
                 let live = sessions_live;
-                menu = menu.item(menu_item("Rename session…", "text-cursor-input", &ws, move |this, window, cx| {
-                    this.open_rename_session(id, window, cx)
-                }));
+                menu = menu.item(
+                    menu_item("Rename session…", "text-cursor-input", &ws, move |this, window, cx| this.open_rename_session(id, window, cx))
+                        .action(Box::new(nav::NavEdit)),
+                );
                 if live {
-                    menu = menu.item(menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.request_close(id, window, cx)));
+                    menu = menu.item(
+                        menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.request_close(id, window, cx))
+                            .action(Box::new(nav::NavDelete)),
+                    );
                 } else {
-                    menu = menu.item(menu_item("Close session", "x", &ws, move |this, window, cx| this.close_session(id, window, cx)));
+                    menu = menu.item(
+                        menu_item("Close session", "x", &ws, move |this, window, cx| this.close_session(id, window, cx))
+                            .action(Box::new(nav::NavDelete)),
+                    );
                 }
             }
             menu = notifications::completion_menu(menu, &ws, &completion_ids, cx);
@@ -3618,11 +3643,11 @@ impl Workspace {
                     for protocol in desktops {
                         let (pr, hr) = (project.id.clone(), host.id.clone());
                         menu = if host.desktop(protocol).is_some() {
-                            menu.item(menu_item(&format!("Open remote desktop ({})", protocol.label()), "monitor", &ws, move |this, window, cx| {
+                            menu.item(menu_item(&format!("Open {}", protocol.label()), "monitor", &ws, move |this, window, cx| {
                                 this.open_desktop(&pr, &hr, protocol, window, cx)
                             }))
                         } else {
-                            menu.item(menu_item(&format!("Set up remote desktop ({})…", protocol.label()), "monitor", &ws, move |this, window, cx| {
+                            menu.item(menu_item(&format!("Set up {}…", protocol.label()), "monitor", &ws, move |this, window, cx| {
                                 this.set_up_desktop(pr.clone(), hr.clone(), protocol, window, cx)
                             }))
                         };
@@ -4009,22 +4034,25 @@ impl Workspace {
         let desktop = session.and_then(desktop_protocol);
         let own_window = session.is_some_and(|s| s.window.is_some());
         let files = session.is_some_and(|s| matches!(s.kind, SessionKind::Ssh { .. }) && matches!(s.status, Status::Connected));
+        let sidebar_focus = self.nav.focus.clone();
         move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
-            let mut menu = menu.item(menu_item("Rename session…", "text-cursor-input", &ws, move |this, window, cx| {
-                this.open_rename_session(id, window, cx)
-            }));
+            let mut menu = menu.action_context(sidebar_focus.clone());
             if files {
                 menu = menu.item(menu_item("Browse files", "folder-tree", &ws, move |this, window, cx| this.show_files(id, window, cx)));
             }
+            menu = menu.item(
+                menu_item("Rename session…", "text-cursor-input", &ws, move |this, window, cx| this.open_rename_session(id, window, cx))
+                    .action(Box::new(nav::NavEdit)),
+            );
             menu = menu.separator();
             let mut menu = if dropped {
                 menu.item(menu_item("Reconnect", "refresh-cw", &ws, move |this, window, cx| {
                     this.activate(id, window, cx);
                     this.reconnect(id, window, cx);
                 }))
-                .item(menu_item("Close", "x", &ws, move |this, window, cx| this.close_session(id, window, cx)))
+                .item(menu_item("Close", "x", &ws, move |this, window, cx| this.close_session(id, window, cx)).action(Box::new(nav::NavDelete)))
             } else {
-                menu.item(menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.request_close(id, window, cx)))
+                menu.item(menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.request_close(id, window, cx)).action(Box::new(nav::NavDelete)))
             };
             if desktop.is_some() {
                 menu = menu.separator().item(if own_window {
