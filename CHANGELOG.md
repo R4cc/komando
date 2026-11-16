@@ -22,6 +22,11 @@ All notable changes to Komando are listed here. The format follows
 - Opening a host's remote desktop no longer moves its terminal into a row of its own. The
   host's row stays its SSH session, and the remote desktop is the only row listed under it.
 
+### Fixed
+
+- The remote desktop toolbar's keyboard button is now labelled "Keys" and its menu arrow no
+  longer spills out of the button.
+
 ### Removed
 
 - The Close session button in the title bar. Close a session from its tab or sidebar row,
@@ -53,8 +58,6 @@ All notable changes to Komando are listed here. The format follows
   import.
 - Long host names on the import page are cut short instead of running into the duplicate
   labels.
-- The remote desktop toolbar's keyboard button is now labelled "Keys" and its menu arrow no
-  longer spills out of the button.
 
 ## [0.6.1] - 2026-11-16
 
