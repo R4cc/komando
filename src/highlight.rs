@@ -496,7 +496,8 @@ pub fn readable_on(color: Rgb8, dark_background: bool) -> Rgb8 {
     let mut c = color;
     for _ in 0..16 {
         if dark_background {
-            // Cover the brightest supplied dark terminal as well as the neutral default.
+            // 4.5:1 on dark Themes and Default. Brighter Terminal Colors (Nord, One Half
+            // Dark, Dracula) get at least 3.75:1: more lift would wash out red and amber.
             if luminance(c) >= 0.27 {
                 break;
             }
@@ -704,12 +705,18 @@ mod tests {
     #[test]
     fn default_colours_read_on_every_terminal_theme() {
         let sets = parse(DEFAULT_SET).unwrap();
-        for theme in crate::theme::DARK_THEMES.iter().chain(crate::theme::LIGHT_THEMES.iter()) {
+        let themes = crate::theme::DARK_THEMES.iter().chain(crate::theme::LIGHT_THEMES.iter())
+            .map(|t| (t.name, crate::theme::TerminalPalette::from_theme(t), 4.5));
+        let colors = crate::theme::DARK_TERMINAL_COLORS.iter().chain(crate::theme::LIGHT_TERMINAL_COLORS)
+            .map(|c| (c.name, crate::theme::TerminalPalette::from_colors(c), if c.id == "default" { 4.5 } else { 3.75 }));
+        for (name, palette, minimum) in themes.chain(colors) {
+            let bg = palette.background;
+            let bg = (bg.r as u32) << 16 | (bg.g as u32) << 8 | bg.b as u32;
             for rule in &sets[0].keywords {
-                let c = readable_on(rule.fg().unwrap(), crate::theme::TerminalPalette::from_theme(theme).dark);
+                let c = readable_on(rule.fg().unwrap(), palette.dark);
                 let fg = (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
-                let contrast = crate::theme::contrast(fg, theme.colors.background);
-                assert!(contrast >= 4.5, "{}: {fg:06x} has {contrast:.2}:1 contrast", theme.name);
+                let contrast = crate::theme::contrast(fg, bg);
+                assert!(contrast >= minimum, "{name}: {fg:06x} has {contrast:.2}:1 contrast");
             }
         }
     }

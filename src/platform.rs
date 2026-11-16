@@ -30,6 +30,7 @@ pub fn set_window_dark_mode(_window: &gpui::Window, _dark: bool) {}
 
 /// The window's Win32 handle, as a number so it can go to another thread (see
 /// `crate::elevate::open_shell_elevated`).
+#[cfg(windows)]
 pub fn window_handle(window: &gpui::Window) -> Option<isize> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -38,6 +39,10 @@ pub fn window_handle(window: &gpui::Window) -> Option<isize> {
         _ => None,
     }
 }
+
+/// Linux dev builds have no Win32 window.
+#[cfg(not(windows))]
+pub fn window_handle(_window: &gpui::Window) -> Option<isize> { None }
 
 /// Configure DWM directly: gpui 0.3.12's Mica path has a version probe with an
 /// uninitialised structure size, and its Opaque path never clears SYSTEMBACKDROP_TYPE.

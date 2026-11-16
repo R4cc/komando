@@ -442,10 +442,17 @@ impl Workspace {
                 vec![
                     setting_row(
                         p,
-                        "Terminal",
-                        "The terminal can follow the app or keep the dark or light theme's colours on its own.",
+                        "Terminal mode",
+                        "The terminal can follow the app's mode or always stay dark or light.",
                         term_choice,
                     ),
+                    self.terminal_colors_picker(true, p, cx),
+                    self.terminal_colors_picker(false, p, cx),
+                ],
+            ))
+            .child(group(
+                p,
+                vec![
                     setting_row(
                         p,
                         "Background blur",
@@ -481,7 +488,18 @@ impl Workspace {
             let _ = ws.update(cx, |this, cx| this.set_theme(dark, id, window, cx));
         });
         setting_row_below(p, if dark { "Dark theme" } else { "Light theme" },
-            if dark { "App and terminal colors in dark mode." } else { "App and terminal colors in light mode." },
+            if dark { "App colors, fonts and corners in dark mode." } else { "App colors, fonts and corners in light mode." },
+            div().w_full().max_w(px(340.)).child(dropdown).into_any_element())
+    }
+
+    /// The terminal's own colors for one mode, picked separately from the Theme.
+    fn terminal_colors_picker(&self, dark: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let ws = cx.entity().downgrade();
+        let dropdown = crate::ui::theme_picker::terminal_dropdown(dark, self.terminal_colors_for(dark), self.theme_for(dark), p, move |id, window, cx| {
+            let _ = ws.update(cx, |this, cx| this.set_terminal_colors(dark, id, window, cx));
+        });
+        setting_row_below(p, if dark { "Dark terminal colors" } else { "Light terminal colors" },
+            if dark { "Text, background and ANSI colors of a dark terminal." } else { "Text, background and ANSI colors of a light terminal." },
             div().w_full().max_w(px(340.)).child(dropdown).into_any_element())
     }
 

@@ -875,6 +875,11 @@ pub struct Settings {
     pub dark_theme: String,
     /// The Theme (by id, see `theme::LIGHT_THEMES`) used in light mode.
     pub light_theme: String,
+    /// The Terminal Colors (by id, see `theme::DARK_TERMINAL_COLORS`) of a dark terminal.
+    /// `theme::MATCH_THEME` derives them from the dark Theme instead.
+    pub dark_terminal_colors: String,
+    /// The Terminal Colors (by id, see `theme::LIGHT_TERMINAL_COLORS`) of a light terminal.
+    pub light_terminal_colors: String,
     /// Empty follows the selected Terminal Theme's bundled font; a name overrides it.
     pub font_family: String,
     pub font_size: f32,
@@ -950,6 +955,8 @@ impl Default for Settings {
             terminal_theme: TerminalThemeSetting::Follow,
             dark_theme: crate::theme::DEFAULT_THEME.into(),
             light_theme: crate::theme::DEFAULT_THEME.into(),
+            dark_terminal_colors: crate::theme::DEFAULT_TERMINAL_COLORS.into(),
+            light_terminal_colors: crate::theme::DEFAULT_TERMINAL_COLORS.into(),
             font_family: String::new(),
             font_size: 14.0,
             scrollback_lines: 100_000,

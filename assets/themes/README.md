@@ -7,9 +7,10 @@ tweakcn pages. Source links are stored beside each theme. Claude + is displayed 
 The native adapter converts hex and OKLCH colors once, preserves separate semantic
 foreground/background pairs, and maps UI fonts, base corner radii and shadow dimensions.
 Foregrounds below 4.5:1 contrast are minimally adjusted for native labels and controls;
-the original tokens are unchanged. The terminal derives its foreground, background,
-cursor and selection from the same variant, retaining semantic ANSI colors and the
-standard xterm 256-color cube. Selection text uses its own readable foreground.
+the original tokens are unchanged. Terminal colors are chosen separately (see
+`src/theme/terminal_colors.rs`); with **Match theme**, the terminal derives its foreground,
+background, cursor and selection from the same variant, retaining semantic ANSI colors and
+the standard xterm 256-color cube. Selection text uses its own readable foreground.
 
 Fonts are bundled under `assets/fonts/themes` with the upstream SIL Open Font License
 for each family. Their upstream files come from

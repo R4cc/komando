@@ -11,6 +11,10 @@ All notable changes to Komando are listed here. The format follows
 - Nine themes with light and dark variants: Komando Default, Sage Green, Noctua,
   AstroVista, QraftHive 1.0, Gold?, Mint Theme, FL-Theme and Salesforce. Each includes
   matching app and terminal colors, UI and terminal fonts, corner rounding and shadows.
+- Terminal colors are chosen separately from the app theme, with their own dropdowns for
+  dark and light terminals: Default (VS Code's standard terminal palette), Campbell,
+  One Half, Solarized, Tango, Gruvbox, Dracula and Nord, or Match theme to use the app
+  theme's terminal colors.
 
 ### Changed
 
@@ -27,6 +31,8 @@ All notable changes to Komando are listed here. The format follows
   and keyboard navigation.
 - The terminal follows the theme's font unless a custom font is set. New settings use
   solid backgrounds, and removed theme selections fall back to Komando Default.
+- The terminal uses the Default terminal colors unless you choose others, including after
+  updating. Choose Match theme to keep the colors derived from the app theme.
 
 ### Removed
 

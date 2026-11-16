@@ -635,7 +635,7 @@ impl Workspace {
         let t = if backdrop_enabled { self.settings.background_blur_intensity as f32 / 100. } else { 0. };
         cx.set_global(Appearance {
             app: AppPalette::from_theme(self.theme_for(app_dark)).translucent(t),
-            term: TerminalPalette::from_theme(self.theme_for(term_dark)).translucent(t),
+            term: TerminalPalette::for_mode(term_dark, self.terminal_colors_for(term_dark), self.theme_for(term_dark)).translucent(t),
             font_family: if self.settings.font_family.trim().is_empty() { self.theme_for(term_dark).font_mono.into() } else { self.settings.font_family.clone().into() },
             font_size: self.settings.font_size,
         });
@@ -652,6 +652,21 @@ impl Workspace {
     /// The Theme picked for dark or light mode.
     fn theme_for(&self, dark: bool) -> &'static crate::theme::ThemeSpec {
         crate::theme::theme(dark, if dark { &self.settings.dark_theme } else { &self.settings.light_theme })
+    }
+
+    /// The Terminal Colors id picked for a dark or light terminal.
+    fn terminal_colors_for(&self, dark: bool) -> &str {
+        if dark { &self.settings.dark_terminal_colors } else { &self.settings.light_terminal_colors }
+    }
+
+    fn set_terminal_colors(&mut self, dark: bool, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        if dark {
+            self.settings.dark_terminal_colors = id.into();
+        } else {
+            self.settings.light_terminal_colors = id.into();
+        }
+        self.save_settings(cx);
+        self.apply_appearance(window, cx);
     }
 
     fn set_theme(&mut self, dark: bool, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {

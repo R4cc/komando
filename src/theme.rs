@@ -7,6 +7,11 @@ use gpui::{Hsla, Rgba, rgb, rgba};
 
 mod catalog;
 mod components;
+mod terminal_colors;
+pub use terminal_colors::{
+    DARK_TERMINAL_COLORS, DEFAULT_TERMINAL_COLORS, LIGHT_TERMINAL_COLORS, MATCH_THEME, TerminalColors, terminal_colors,
+    terminal_colors_list,
+};
 use std::sync::LazyLock;
 
 pub const DEFAULT_THEME: &str = "komando-default";
@@ -276,12 +281,35 @@ pub struct TerminalPalette {
 }
 
 impl TerminalPalette {
+    /// The default dark Terminal Colors.
     pub fn dark() -> Self {
-        Self::from_theme(&DARK_THEMES[0])
+        Self::from_colors(&DARK_TERMINAL_COLORS[0])
     }
 
+    /// The default light Terminal Colors.
     pub fn light() -> Self {
-        Self::from_theme(&LIGHT_THEMES[0])
+        Self::from_colors(&LIGHT_TERMINAL_COLORS[0])
+    }
+
+    /// The terminal for one mode: the picked Terminal Colors, or with `MATCH_THEME` the
+    /// colors derived from that mode's Theme.
+    pub fn for_mode(dark: bool, colors_id: &str, theme: &ThemeSpec) -> Self {
+        if colors_id == MATCH_THEME { Self::from_theme(theme) } else { Self::from_colors(terminal_colors(dark, colors_id)) }
+    }
+
+    /// Named Terminal Colors keep every ANSI color as published. Only the default text,
+    /// cursor and selected text are adjusted where they would be hard to read.
+    pub fn from_colors(c: &TerminalColors) -> Self {
+        Self {
+            dark: luminance(c.background) < 0.2,
+            background: rgb8(c.background),
+            background_alpha: 1.,
+            foreground: rgb8(readable(c.foreground, c.background, 4.5)),
+            cursor: rgb8(readable(c.cursor, c.background, 3.)),
+            selection: hex(c.selection),
+            selection_foreground: rgb8(readable(c.foreground, c.selection, 4.5)),
+            ansi: c.ansi.map(rgb8),
+        }
     }
 
     /// Theme-specific terminal neutrals and optional ANSI colours. Reds, greens, etc.
@@ -492,6 +520,8 @@ mod tests {
         assert_eq!(settings.dark_theme, DEFAULT_THEME);
         assert_eq!(settings.light_theme, DEFAULT_THEME);
         assert!(settings.font_family.is_empty());
+        assert_eq!(settings.dark_terminal_colors, DEFAULT_TERMINAL_COLORS);
+        assert_eq!(settings.light_terminal_colors, DEFAULT_TERMINAL_COLORS);
         for dark in [false, true] {
             for old in ["graphite", "ember", "ivory", "nope"] {
                 assert_eq!(theme(dark, old).id, DEFAULT_THEME);
