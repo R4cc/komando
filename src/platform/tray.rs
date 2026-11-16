@@ -1,4 +1,6 @@
-//! The subclass and notification icon live exactly as long as the Workspace.
+//! The subclass and notification icon live exactly as long as the Workspace. While
+//! minimize-to-tray is on, the icon shows the whole time Komando is open, not only while
+//! its window is hidden.
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::{cell::Cell, rc::Rc};
 use windows::{
@@ -50,14 +52,23 @@ impl Tray {
             log::warn!("Could not install minimize-to-tray handler");
             return None;
         }
+        if state.enabled.get() {
+            state.show_icon();
+        }
         Some(Self { state, allowed })
     }
 
     pub fn set_enabled(&self, enabled: bool) {
         let enabled = enabled && self.allowed;
         self.state.enabled.set(enabled);
-        if !enabled && self.state.visible.get() {
-            self.state.restore();
+        if enabled {
+            self.state.show_icon();
+        } else {
+            // Never leave a hidden window without its way back.
+            if self.state.visible.get() && !unsafe { IsWindowVisible(self.state.hwnd) }.as_bool() {
+                self.state.restore();
+            }
+            self.state.remove_icon();
         }
     }
 
@@ -121,6 +132,13 @@ impl State {
         true
     }
 
+    /// Put the icon in the notification area, if it isn't there already.
+    fn show_icon(&self) {
+        if !self.visible.get() && self.add_icon() {
+            self.visible.set(true);
+        }
+    }
+
     fn remove_icon(&self) {
         if self.visible.replace(false) {
             unsafe {
@@ -131,10 +149,21 @@ impl State {
 
     fn restore(&self) {
         unsafe {
-            let _ = ShowWindow(self.hwnd, SW_RESTORE);
+            // The icon also shows while the window is open: SW_SHOW keeps it maximized then.
+            // A window in the tray was minimized before it was hidden, so SW_RESTORE brings
+            // it back as it was.
+            let show = if IsIconic(self.hwnd).as_bool() { SW_RESTORE } else { SW_SHOW };
+            let _ = ShowWindow(self.hwnd, show);
             let _ = SetForegroundWindow(self.hwnd);
         }
-        self.remove_icon();
+    }
+
+    /// Close the window for good, bypassing minimize-to-tray.
+    fn exit(&self) {
+        self.exiting.set(true);
+        if unsafe { PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) }.is_err() {
+            self.exiting.set(false);
+        }
     }
 
     fn menu(&self) {
@@ -142,6 +171,8 @@ impl State {
             let Ok(menu) = CreatePopupMenu() else { return };
             let mut point = POINT::default();
             let setup = AppendMenuW(menu, MF_STRING, 1, w!("Show Komando"))
+                .and_then(|_| AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()))
+                .and_then(|_| AppendMenuW(menu, MF_STRING, 3, w!("Restart")))
                 .and_then(|_| AppendMenuW(menu, MF_STRING, 2, w!("Exit")))
                 .and_then(|_| GetCursorPos(&mut point));
             if setup.is_ok() {
@@ -151,12 +182,12 @@ impl State {
                 let _ = PostMessageW(Some(self.hwnd), WM_NULL, WPARAM(0), LPARAM(0));
                 match command {
                     1 => self.restore(),
-                    2 => {
-                        self.exiting.set(true);
-                        if PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)).is_err() {
-                            self.exiting.set(false);
-                        }
-                    }
+                    2 => self.exit(),
+                    // The new Komando waits for this one to exit, then opens in its place.
+                    3 => match super::instance::relaunch() {
+                        Ok(()) => self.exit(),
+                        Err(error) => log::error!("restart from tray: {error:#}"),
+                    },
                     _ => {}
                 }
             }
@@ -199,8 +230,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 let _ = ShowWindow(hwnd, SW_HIDE);
             }
         }
-    } else if message == WM_SIZE && wparam.0 != SIZE_MINIMIZED as usize {
-        state.remove_icon();
     } else if message == TRAY_MESSAGE && ((lparam.0 as u32 >> 16) == ICON_ID) {
         match lparam.0 as u32 & 0xffff {
             NIN_SELECT | NIN_KEYSELECT => state.restore(),
@@ -211,6 +240,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
     } else if state.taskbar_created != 0 && message == state.taskbar_created && state.visible.get() {
         // Explorer restarted: put the icon back, or restore the window if that fails.
         if !state.add_icon() {
+            state.visible.set(false);
             state.restore();
         }
     }

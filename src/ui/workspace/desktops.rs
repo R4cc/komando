@@ -51,8 +51,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> usize {
         let name = self.library.host(host_id).map(|h| h.name.clone()).unwrap_or_default();
-        let taken: std::collections::HashSet<usize> = self.sessions_of(&item).map(|s| s.number).collect();
-        let number = (1..).find(|n| !taken.contains(n)).unwrap_or(1);
+        let number = self.next_number(&item, false);
         let label: SharedString = format!("{name} · {}", protocol.label()).into();
         let target = self.desktop_target(project_id, host_id, protocol);
         let view = cx.new(|cx| DesktopView::new(protocol, name.into(), target.into(), window, cx));
@@ -92,6 +91,7 @@ impl Workspace {
             kind: SessionKind::Desktop { host_id: host_id.to_string(), protocol },
             label: label.clone(),
             number,
+            name: None,
             title: label,
             busy: false,
             view: SessionView::Desktop(view),

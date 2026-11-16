@@ -647,7 +647,7 @@ impl Workspace {
                     step(
                         3,
                         "Open it beside the terminal",
-                        "The RDP and VNC buttons in the title bar switch between the terminal and the desktop. Drag the desktop's row out of the sidebar to give it a window of its own, or let a click on the host open the desktop straight away.",
+                        "Hover the host in the sidebar and click its RDP or VNC button. The desktop gets a row under the host; click that row or the host to switch between desktop and terminal. Drag the desktop's row out of the sidebar to give it a window of its own, or let a click on the host open the desktop straight away.",
                     ),
                 ],
             ))
@@ -692,7 +692,9 @@ impl Workspace {
             .flex()
             .flex_wrap()
             .gap(px(12.))
-            .child(tip("search", "Quick connect", Some("Ctrl+Shift+K"), "Find any host or local shell by name, address, user or project."))
+            .child(tip("search", "Quick connect", Some("Ctrl+Shift+K"), "Find any host or local shell by name, address, user or project. Ctrl+Enter opens another session."))
+            .child(tip("plus", "Several sessions", Some("Ctrl+Shift+T"), "Ctrl+click a host, or hover it and click +, for another terminal on it. Each gets a row under the host; right-click one to rename it."))
+            .child(tip("list-tree", "Sidebar by keyboard", Some("Ctrl+Shift+H"), "Arrows move and fold, Enter connects, Ctrl+Enter opens another session, F2 edits, Escape goes back."))
             .child(tip("folder-tree", "File browser", Some("Ctrl+Shift+E"), "Browse, upload and download files over SFTP beside an SSH session."))
             .child(tip("columns-2", "Split view", None, "Drag a host onto the terminal to open it beside the session you're in."))
             .child(tip("highlighter", "Highlights", None, "Errors, warnings, addresses and more are coloured in the output. Edit the rules in Settings → Highlights."))

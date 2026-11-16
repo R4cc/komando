@@ -133,7 +133,7 @@ impl Workspace {
     /// A compact update action beside Settings. The footprint stays fixed while downloading.
     pub(super) fn render_update_button(&self, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (icon, label, downloading) = match &self.update {
-            // Not "download": the Downloads entry sits right above, and the two must not look
+            // Not "download": the Transfers entry sits right above, and the two must not look
             // alike. Lucide's update icon, an arrow up out of a fading circle.
             UpdateState::Available(release) => {
                 (UPDATE_ICON, format!("Update to Komando {} and restart", release.version_text()), false)
@@ -162,7 +162,7 @@ impl Workspace {
                 .bg(if matches!(self.update, UpdateState::Failed(_)) { p.danger.opacity(0.10) } else { p.brand_soft })
                 .when(!downloading, |el| el.cursor_pointer().hover(|s| s.bg(p.active)))
                 .child(icon_el(icon, 16., color))
-                // The same ring as the Downloads entry: around the icon, filling clockwise, or
+                // The same ring as the Transfers entry: around the icon, filling clockwise, or
                 // turning until the size is known.
                 .when(downloading, |el| {
                     el.child(div().absolute().top(px(3.)).left(px(3.)).child(progress_ring(

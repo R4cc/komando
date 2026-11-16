@@ -469,7 +469,7 @@ impl Workspace {
             .when(cfg!(windows), |el| el.child(group(p, vec![setting_row(
                 p,
                 "Minimize to tray",
-                "Keep sessions running in the notification area when minimized or closed with X. Click the tray icon to restore; right-click for Exit.",
+                "Show Komando in the notification area, and keep sessions running there when minimized or closed with X. Click the tray icon to restore; right-click to restart or exit.",
                 switch("minimize-to-tray".into(), "Minimize to tray", self.settings.minimize_to_tray, p)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.settings.minimize_to_tray = !this.settings.minimize_to_tray;

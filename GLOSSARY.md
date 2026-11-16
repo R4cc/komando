@@ -93,7 +93,7 @@ A saved remote folder in the File Browser, either for every Host or for one Host
 _Avoid_: Bookmark (that is a Command Mark's old name), shortcut
 
 **Transfer**:
-A download or upload started from a File Browser, listed under Downloads in the sidebar with its outcome.
+A download or upload started from a File Browser, listed under Transfers in the sidebar with its outcome.
 _Avoid_: Job, task
 
 ## Secrets

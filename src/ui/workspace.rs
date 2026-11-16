@@ -11,8 +11,9 @@ use gpui::{
     ScrollHandle, SharedString, Subscription, Window, WindowAppearance, actions, div, prelude::*, px, WindowControlArea, MouseButton, ListState, ListAlignment, list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
-use gpui_component::Icon;
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::menu::{ContextMenuExt, DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_component::{Icon, Sizable as _};
 use gpui_component::slider::{Slider, SliderEvent, SliderState};
 use gpui_component::tooltip::Tooltip;
 
@@ -40,6 +41,7 @@ mod desktops;
 mod forms;
 mod highlights;
 mod import;
+pub mod nav;
 mod notifications;
 mod onboarding;
 mod settings;
@@ -47,6 +49,7 @@ mod split;
 mod updates;
 pub use settings::SettingsSection;
 use desktops::desktop_protocol;
+use nav::NavTarget;
 use split::{DraggedItem, DropTarget, PendingSplit, Side, Split};
 use updates::UpdateState;
 
@@ -93,6 +96,23 @@ fn sidebar_width(preferred: f32, window_width: f32) -> f32 {
     let max = (window_width - ISLAND_GAP * 3. - 360.).clamp(200., 520.);
     let preferred = if preferred.is_finite() { preferred } else { SIDEBAR_WIDTH };
     preferred.clamp(200., max)
+}
+
+/// The gap between the two panes of a split. On a dark canvas the bare gap is a black groove
+/// between two near-black terminals and barely shows, so a hairline runs down its middle. It
+/// is pure white (black in light themes) at low alpha, so it takes no tint from the canvas,
+/// and it stops where the islands' corners start to curve, so it spans only their straight edges.
+fn split_seam(p: AppPalette) -> AnyElement {
+    let ink = if p.dark { gpui::white().opacity(0.25) } else { gpui::black().opacity(0.12) };
+    div()
+        .w(px(ISLAND_GAP))
+        .h_full()
+        .flex_shrink_0()
+        .flex()
+        .justify_center()
+        .py(px(ISLAND_RADIUS))
+        .child(div().w(px(1.)).h_full().bg(ink))
+        .into_any_element()
 }
 
 /// A divider drag has no image following the pointer.
@@ -234,10 +254,12 @@ struct SessionEntry {
     /// `None` for a standalone Local Shell.
     project_id: Option<String>,
     kind: SessionKind,
-    /// "web01" or "web01 (2)" when the same Host is open twice.
+    /// "web01", or "web01 #2" when the same Host is open twice.
     label: SharedString,
-    /// Its number among the item's Sessions: the lowest one free when it was opened.
+    /// Its number among the item's Sessions: one past the highest open when it was opened.
     number: usize,
+    /// A name given with Rename session…, shown instead of the shell's title.
+    name: Option<SharedString>,
     /// The terminal's title (set by the shell), copied here like `status`.
     title: SharedString,
     /// Output is streaming in (a command at work), copied here like `status`.
@@ -287,6 +309,8 @@ enum Overlay {
     SetForm(highlights::SetForm),
     /// Ask before something that can't be undone.
     Confirm { title: String, body: String, action: ConfirmAction },
+    /// Give a Session a name of its own (or clear it).
+    RenameSession { id: usize, name: Entity<InputState>, _subscription: Subscription },
     /// A Host's Command History.
     History(command_history::HistoryPanel),
     /// The welcome tour, shown on the first start (see `onboarding.rs`).
@@ -297,6 +321,8 @@ enum Overlay {
 enum ConfirmAction {
     DeleteHost(String),
     DeleteProject(String),
+    /// Disconnect a Session whose command is still printing output.
+    Disconnect(usize),
     /// Every Host's Command History (Settings → Security).
     DeleteAllHistory,
 }
@@ -352,6 +378,12 @@ pub struct Workspace {
     /// The sidebar list (virtual: only rows in view are built) and the rows it was built for.
     sidebar_list: ListState,
     sidebar_rows: Vec<SidebarRow>,
+    /// The sidebar is near its narrowest: rows offer fewer buttons on hover.
+    sidebar_compact: bool,
+    /// The item whose ⋯ menu is open: its row keeps its buttons while the pointer is in it.
+    sidebar_menu_open: Option<ItemKey>,
+    /// Keyboard use of the sidebar (see `nav.rs`).
+    nav: nav::NavState,
     /// Per-window navigation visibility; the title-bar toggle stays available when hidden.
     sidebar_visible: bool,
     sidebar_resizing: bool,
@@ -402,7 +434,7 @@ pub struct Workspace {
     /// Last activity and policy written to the Windows-protected unlock file.
     remembered_unlock: Option<(SystemTime, u32)>,
     focus: FocusHandle,
-    /// Downloads and uploads from every file browser (the sidebar's Downloads entry).
+    /// Downloads and uploads from every file browser (the sidebar's Transfers entry).
     transfers: Entity<Transfers>,
     favorites: Entity<FavoriteStore>,
     /// The divider between terminal and file browser is being dragged.
@@ -466,7 +498,7 @@ impl Workspace {
         let transfers = cx.new(|_| Transfers::new());
         let favorites = cx.new(|_| FavoriteStore::new(data_dir.clone()));
         let transfers_sub = cx.subscribe(&transfers, |_, _, _: &TransfersChanged, cx| cx.notify());
-        // The ring on the Downloads entry follows the panel's progress ticks.
+        // The ring on the Transfers entry follows the panel's progress ticks.
         let transfers_ticks = cx.observe(&transfers, |_, _, cx| cx.notify());
         let update = crate::update::take_install_error(&data_dir).map(UpdateState::Failed).unwrap_or(UpdateState::Idle);
         #[cfg(windows)]
@@ -494,6 +526,9 @@ impl Workspace {
             highlights_expanded: None,
             confirm_delete_set: None,
             sidebar_list: ListState::new(0, ListAlignment::Top, px(240.)),
+            sidebar_compact: false,
+            sidebar_menu_open: None,
+            nav: nav::NavState::new(cx),
             sidebar_rows: vec![],
             sidebar_visible,
             sidebar_resizing: false,
@@ -1184,6 +1219,17 @@ impl Workspace {
         self.sessions_of(key).find(|s| !listed.iter().any(|l| l.id == s.id)).map(|s| s.id)
     }
 
+    /// The number a new terminal (or Remote Desktop) of an item gets: one past the highest of
+    /// its kind, so "#2" keeps meaning the same Session while it is open, and a desktop never
+    /// makes the second terminal "#3". Back to 1 once all of them are closed.
+    fn next_number(&self, key: &ItemKey, terminal: bool) -> usize {
+        self.sessions_of(key)
+            .filter(|s| s.view.terminal().is_some() == terminal)
+            .map(|s| s.number)
+            .max()
+            .map_or(1, |n| n + 1)
+    }
+
     fn sessions_of(&self, key: &ItemKey) -> impl Iterator<Item = &SessionEntry> {
         let key = key.clone();
         self.sessions.iter().filter(move |s| s.item == key)
@@ -1197,7 +1243,9 @@ impl Workspace {
 
     /// Clicking a sidebar item: show its Session (reconnecting it in place if it dropped,
     /// so the earlier output stays above), or connect if it has none. `another` opens an
-    /// additional Session for the same item.
+    /// additional Session for the same item: for a Host always another terminal, even when a
+    /// click on it opens a Remote Desktop (a Host has one desktop per protocol, which its
+    /// desktop button shows).
     fn activate_item(&mut self, item: SidebarItem, another: bool, window: &mut Window, cx: &mut Context<Self>) {
         let key = item.key();
         if !another {
@@ -1220,6 +1268,7 @@ impl Workspace {
         }
         match item {
             SidebarItem::Host { project, host } => match host.opens_with() {
+                _ if another => self.open_host(&project.id, &host.id, window, cx),
                 Protocol::Ssh => self.open_host(&project.id, &host.id, window, cx),
                 protocol => self.open_desktop(&project.id, &host.id, protocol, window, cx),
             },
@@ -1236,9 +1285,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<TerminalView> {
-        let taken: HashSet<usize> = self.sessions_of(&item).map(|s| s.number).collect();
-        let number = (1..).find(|n| !taken.contains(n)).unwrap_or(1);
-        let label: SharedString = if number == 1 { base_label.to_string().into() } else { format!("{base_label} ({number})").into() };
+        let number = self.next_number(&item, true);
+        let label: SharedString = if number == 1 { base_label.to_string().into() } else { format!("{base_label} #{number}").into() };
         // A new Session shows under its item even if the item's Sessions were folded away.
         self.collapsed_items.remove(&item);
         let scrollback = self.settings.scrollback_lines;
@@ -1362,6 +1410,7 @@ impl Workspace {
             kind,
             label: label.clone(),
             number,
+            name: None,
             title: label,
             busy: false,
             view: SessionView::Terminal(view.clone()),
@@ -1580,6 +1629,14 @@ impl Workspace {
         }
         self.focus_active(window, cx);
         cx.notify();
+    }
+
+    /// Browse files from the sidebar: show the Session with its file browser open.
+    fn show_files(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate(id, window, cx);
+        if self.sessions.iter().any(|s| s.id == id && !s.sftp_open) {
+            self.toggle_sftp(id, window, cx);
+        }
     }
 
     /// Show or hide the SFTP file browser beside an SSH Session's terminal.
@@ -1927,6 +1984,90 @@ impl Workspace {
         cx.notify();
     }
 
+    /// × and Ctrl+Shift+W: like `close_session`, but a live Session still printing output (a
+    /// command at work) asks first, so a stray click doesn't end a long job.
+    fn request_close(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
+        if !(entry.is_live() && entry.busy) || self.modal_open(cx) {
+            self.close_session(id, window, cx);
+            return;
+        }
+        let name = self.session_display_name(entry);
+        self.overlay = Some(Overlay::Confirm {
+            title: format!("Disconnect {name}?"),
+            body: format!("{name} is still printing output, so a command may be running. Disconnecting ends it; the output so far stays until you close the session."),
+            action: ConfirmAction::Disconnect(id),
+        });
+        cx.notify();
+    }
+
+    /// How the title bar names a Session: "web01", "web01 #2", "web01 #1" once the Host has
+    /// another terminal, and the name it was given after a dot.
+    fn session_display_name(&self, entry: &SessionEntry) -> SharedString {
+        let others = entry.view.terminal().is_some()
+            && self.sessions_of(&entry.item).any(|s| s.id != entry.id && s.view.terminal().is_some());
+        let base = if entry.number == 1 && others { format!("{} #1", entry.label) } else { entry.label.to_string() };
+        match &entry.name {
+            Some(name) => format!("{base} · {name}").into(),
+            None => base.into(),
+        }
+    }
+
+    /// Rename session…: a name of its own for a Session, shown in the sidebar and title bar.
+    fn open_rename_session(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open(cx) {
+            return;
+        }
+        let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
+        let current = entry.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
+        let name = cx.new(|cx| InputState::new(window, cx).placeholder("logs, deploy, root…").default_value(current));
+        let subscription = cx.subscribe_in(&name, window, move |this, _, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.save_session_name(window, cx);
+            }
+        });
+        name.update(cx, |f, cx| f.focus(window, cx));
+        self.overlay = Some(Overlay::RenameSession { id, name, _subscription: subscription });
+        cx.notify();
+    }
+
+    fn save_session_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Overlay::RenameSession { id, name, .. }) = &self.overlay else { return };
+        let (id, value) = (*id, name.read(cx).value().trim().to_string());
+        if let Some(entry) = self.sessions.iter_mut().find(|s| s.id == id) {
+            entry.name = (!value.is_empty()).then(|| value.into());
+        }
+        self.close_overlay(window, cx);
+    }
+
+    fn render_rename_session(&self, name: &Entity<InputState>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        form_card(
+            p,
+            "Rename session",
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(Input::new(name))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(17.))
+                        .text_color(p.text_muted)
+                        .child("Shown in the sidebar and the title bar until the session is closed. Leave it empty to show the shell's title again."),
+                )
+                .into_any_element(),
+            vec![
+                button("rename-cancel", "Cancel", ButtonKind::Ghost, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx)))
+                    .into_any_element(),
+                button("rename-ok", "Rename", ButtonKind::Primary, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.save_session_name(window, cx)))
+                    .into_any_element(),
+            ],
+        )
+    }
+
     fn cycle(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         // Sessions in sidebar order.
         let order: Vec<usize> = self
@@ -2164,7 +2305,8 @@ impl Workspace {
                 }
                 cx.notify()
             }
-            InputEvent::PressEnter { .. } => {
+            // Ctrl+Enter: another Session on it, like Ctrl+click in the sidebar.
+            InputEvent::PressEnter { secondary, .. } => {
                 let selected = match &this.overlay {
                     Some(Overlay::Picker { selected, .. }) => *selected,
                     _ => 0,
@@ -2172,7 +2314,7 @@ impl Workspace {
                 let mut items = this.picker_items(cx);
                 if !items.is_empty() {
                     let item = items.swap_remove(selected.min(items.len() - 1));
-                    this.pick(item, window, cx);
+                    this.pick(item, *secondary, window, cx);
                 }
             }
             _ => {}
@@ -2220,9 +2362,17 @@ impl Workspace {
             .collect()
     }
 
-    fn pick(&mut self, item: SidebarItem, window: &mut Window, cx: &mut Context<Self>) {
+    /// Open what quick connect found, and show where it is in the sidebar: its Project
+    /// unfolds and its row scrolls into view.
+    fn pick(&mut self, item: SidebarItem, another: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.overlay = None;
-        self.activate_item(item, false, window, cx);
+        let key = item.key();
+        if let ItemKey::Host { project, .. } | ItemKey::Shell { project: Some(project), .. } = &key {
+            self.set_project_collapsed(project, false, cx);
+        }
+        self.activate_item(item, another, window, cx);
+        self.nav.cursor = Some(NavTarget::Item(key));
+        self.nav.reveal = true;
     }
 
     /// The search box of a form's icon picker.
@@ -2281,6 +2431,10 @@ impl Workspace {
         match &action {
             ConfirmAction::DeleteHost(id) => library.remove_host(id),
             ConfirmAction::DeleteProject(id) => library.remove_project(id),
+            ConfirmAction::Disconnect(id) => {
+                self.close_session(*id, window, cx);
+                return;
+            }
             ConfirmAction::DeleteAllHistory => {
                 self.delete_all_history(cx);
                 self.focus_active(window, cx);
@@ -2312,7 +2466,7 @@ impl Workspace {
                 self.discard_sessions(|s| s.project_id.as_deref() == Some(id.as_str()), cx);
                 self.set_project_collapsed(&id, false, cx);
             }
-            ConfirmAction::DeleteAllHistory => {}
+            ConfirmAction::DeleteAllHistory | ConfirmAction::Disconnect(_) => {}
         }
         self.focus_active(window, cx);
         cx.notify();
@@ -2428,7 +2582,7 @@ fn sanitize(s: &str) -> String {
 // ---- rendering -------------------------------------------------------------------------
 
 impl Workspace {
-    /// The sidebar's vault row, above Downloads: there while the Vault is locked, gone once
+    /// The sidebar's vault row, above Transfers: there while the Vault is locked, gone once
     /// it is unlocked. A click opens the master password popover out of it (a second click
     /// closes it), and anything else that needs the Vault opens the popover here too. Before a
     /// Vault exists the row shows only while the popover asks for a new master password.
@@ -2804,6 +2958,7 @@ impl Workspace {
                     icon_button("new-project", "folder-plus", p)
                         .aria_label("New project")
                         .size(px(24.))
+                        .tooltip(|window, cx| Tooltip::new("New project").build(window, cx))
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_new_project(window, cx))),
                 )
             .into_any_element()
@@ -2822,8 +2977,10 @@ impl Workspace {
             SidebarRow::FirstHost { project } => {
                 let Some(project) = self.library.projects.get(project) else { return div().into_any_element() };
                 let pid_add = project.id.clone();
+                let focused = self.nav_focus_on(&NavTarget::AddHost(project.id.clone()));
                 div()
                         .id(SharedString::from(format!("first-host-{}", project.id)))
+                        .when(focused, |el| el.border_2().border_color(p.focus))
                         .h(px(32.))
                         .pl(px(20.))
                         .flex()
@@ -2916,6 +3073,9 @@ impl Workspace {
             }).collect();
             let live = sessions.iter().filter(|s| s.is_live()).count();
             let busy = sessions.iter().any(|s| self.background_busy(s));
+            // Folded away with the Session in use inside: the row says so.
+            let holds_active = collapsed && sessions.iter().any(|s| Some(s.id) == self.active);
+            let focused = self.nav_focus_on(&NavTarget::Project(project.id.clone()));
             let pid = project.id.clone();
             let pid_host = project.id.clone();
             // A Host from another Project is held over this one's group.
@@ -2947,7 +3107,9 @@ impl Workspace {
                     .gap(px(10.))
                     .rounded(p.corner(8.))
                     .cursor_pointer()
+                    .when(holds_active, |el| el.bg(p.hover))
                     .hover(|s| s.bg(p.hover))
+                    .when(focused, |el| el.border_2().border_color(p.focus))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.set_project_collapsed(&pid, !collapsed, cx);
                     }))
@@ -2988,7 +3150,10 @@ impl Workspace {
                             .invisible()
                             .group_hover("project-row", |s| s.visible())
                             .child(
-                                icon_button(SharedString::from(format!("add-host-{}", project.id)), "plus", p).on_click(
+                                icon_button(SharedString::from(format!("add-host-{}", project.id)), "plus", p)
+                                    .aria_label("Add host")
+                                    .tooltip(|window, cx| Tooltip::new("Add host").build(window, cx))
+                                    .on_click(
                                     cx.listener(move |this, _: &ClickEvent, window, cx| {
                                         cx.stop_propagation();
                                         this.open_new_host(pid_host.clone(), window, cx);
@@ -3020,6 +3185,7 @@ impl Workspace {
         // once there is room for them. Use the clamped width, including in small windows.
         let width = self.sidebar_width(window);
         let compact = width < 240.;
+        self.sidebar_compact = compact;
         // Only the rows in view are built (hundreds of hosts would otherwise cost milliseconds
         // on every frame). Row heights are measured once and kept until the rows change.
         let rows = crate::perf::time("sidebar rows", || self.sidebar_rows());
@@ -3027,9 +3193,40 @@ impl Workspace {
             self.sidebar_list.reset(rows.len());
             self.sidebar_rows = rows;
         }
-        let list = list(self.sidebar_list.clone(), cx.processor(|this, ix, _window, cx| this.render_sidebar_row(ix, cx)))
+        // Keyboard use (see `nav.rs`): the cursor shows while the keyboard is in the list.
+        self.nav.focused = self.nav.focus.is_focused(window);
+        if self.nav.focused && self.nav.cursor.is_none() {
+            self.nav.cursor = self.nav_targets(&self.sidebar_rows).first().map(|(t, _)| t.clone());
+        }
+        if let Some(ix) = self.take_nav_reveal() {
+            self.sidebar_list.scroll_to_reveal_item(ix);
+        }
+        let list = div()
+            .id("sidebar-list")
+            .key_context(nav::CONTEXT)
+            .track_focus(&self.nav.focus)
+            .role(gpui::Role::Tree)
+            .aria_label("Hosts and sessions")
             .flex_1()
-            .min_h_0();
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .on_action(cx.listener(|this, _: &nav::NavUp, window, cx| if this.nav_owns(window, cx) { this.nav_step(-1, cx) }))
+            .on_action(cx.listener(|this, _: &nav::NavDown, window, cx| if this.nav_owns(window, cx) { this.nav_step(1, cx) }))
+            .on_action(cx.listener(|this, _: &nav::NavFirst, window, cx| if this.nav_owns(window, cx) { this.nav_step(isize::MIN, cx) }))
+            .on_action(cx.listener(|this, _: &nav::NavLast, window, cx| if this.nav_owns(window, cx) { this.nav_step(isize::MAX, cx) }))
+            .on_action(cx.listener(|this, _: &nav::NavExpand, window, cx| if this.nav_owns(window, cx) { this.nav_expand(cx) }))
+            .on_action(cx.listener(|this, _: &nav::NavCollapse, window, cx| if this.nav_owns(window, cx) { this.nav_collapse(cx) }))
+            .on_action(cx.listener(|this, _: &nav::NavOpen, window, cx| if this.nav_owns(window, cx) { this.nav_open(false, window, cx) }))
+            .on_action(cx.listener(|this, _: &nav::NavOpenAnother, window, cx| if this.nav_owns(window, cx) { this.nav_open(true, window, cx) }))
+            .on_action(cx.listener(|this, _: &nav::NavEdit, window, cx| if this.nav_owns(window, cx) { this.nav_edit(window, cx) }))
+            .on_action(cx.listener(|this, _: &nav::NavDelete, window, cx| if this.nav_owns(window, cx) { this.nav_delete(window, cx) }))
+            .on_action(cx.listener(|this, _: &nav::NavLeave, window, cx| if this.nav_owns(window, cx) { this.nav_leave(window, cx) }))
+            .child(
+                list(self.sidebar_list.clone(), cx.processor(|this, ix, _window, cx| this.render_sidebar_row(ix, cx)))
+                    .flex_1()
+                    .min_h_0(),
+            );
 
         let (attention, downloads_open, new_download, activity) = {
             let t = self.transfers.read(cx);
@@ -3117,13 +3314,13 @@ impl Workspace {
                     .children(self.render_vault_row(compact, p, cx).map(|row| div().pb(px(6.)).child(row)))
                     // Always available; the number is what needs a look.
                     .child(
-                        footer_row("downloads", "download", "Downloads".into())
+                        footer_row("downloads", "arrow-down-up", "Transfers".into())
                             .when_some(ring_fraction, |el, fraction| {
                                 // Around the 15px icon (8px in, centred in the 32px row):
                                 // the combined progress of everything running.
                                 let label = match fraction {
-                                    Some(f) => format!("Downloads, {}% done", (f * 100.).round()),
-                                    None => "Downloads, in progress".to_string(),
+                                    Some(f) => format!("Transfers, {}% done", (f * 100.).round()),
+                                    None => "Transfers, in progress".to_string(),
                                 };
                                 el.aria_label(label).child(
                                     div().absolute().left(px(8. + 7.5 - 12.)).top(px(16. - 12.)).child(progress_ring(
@@ -3138,7 +3335,7 @@ impl Workspace {
                             })
                             // The new-download dot waits until nothing is running.
                             .when(new_download && ring_fraction.is_none(), |el| {
-                                el.aria_label("Downloads, new download").child(
+                                el.aria_label("Transfers, new download").child(
                                     // A dot on the icon's top-right corner (the 15px icon
                                     // sits 8px in, 8.5px down), ringed in the sidebar's
                                     // colour so it reads as cut out of the icon.
@@ -3252,14 +3449,25 @@ impl Workspace {
         let can_split = self.active.is_some() && self.placement_possible(&key);
         let history = self.settings.command_history;
         let completion_ids: Vec<usize> = sessions.iter().map(|s| s.id).collect();
+        // Its connected terminal, for Browse files: the row's own, else the last shown.
+        let files_session = main
+            .into_iter()
+            .chain(shown.and_then(|id| sessions.iter().find(|s| s.id == id).copied()))
+            .chain(sessions.iter().copied())
+            .find(|s| matches!(s.kind, SessionKind::Ssh { .. }) && matches!(s.status, Status::Connected))
+            .map(|s| s.id);
         let item_menu = move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
             let item = menu_item_src.clone();
             let (open, another) = (item.clone(), item.clone());
+            let new_label = if matches!(item, SidebarItem::Host { .. }) { "New terminal" } else { "New session" };
             let mut menu = menu
                 .item(menu_item(if live { "Show session" } else { "Connect" }, "plug", &ws, move |this, window, cx| {
                     this.activate_item(open.clone(), false, window, cx)
                 }))
-                .item(menu_item("New session", "plus", &ws, move |this, window, cx| this.activate_item(another.clone(), true, window, cx)));
+                .item(menu_item(new_label, "plus", &ws, move |this, window, cx| this.activate_item(another.clone(), true, window, cx)));
+            if let Some(id) = files_session {
+                menu = menu.item(menu_item("Browse files", "folder-tree", &ws, move |this, window, cx| this.show_files(id, window, cx)));
+            }
             if can_split {
                 let split_key = menu_key.clone();
                 menu = menu.item(menu_item("Open in split view", "columns-2", &ws, move |this, window, cx| {
@@ -3284,6 +3492,9 @@ impl Workspace {
             }
             if let Some(id) = session_id {
                 let live = sessions_live;
+                menu = menu.item(menu_item("Rename session…", "text-cursor-input", &ws, move |this, window, cx| {
+                    this.open_rename_session(id, window, cx)
+                }));
                 if live {
                     menu = menu.item(menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.close_session(id, window, cx)));
                 } else {
@@ -3345,29 +3556,45 @@ impl Workspace {
         let item_for_click = item.clone();
         let item_for_new = item.clone();
         let toggle_key = key.clone();
-        // A Host's Remote Desktops open from its row: each gets a Session row under it.
-        let desktop_buttons: Vec<AnyElement> = match item {
-            SidebarItem::Host { project, host } => host
-                .desktops()
-                .map(|protocol| {
+        let is_host = matches!(item, SidebarItem::Host { .. });
+        // A Host's Remote Desktop opens from its row with one click: the one a click on the
+        // Host opens, else its first. A second protocol is in the ⋯ menu. Labelled like the
+        // Session rows' tags, so RDP and VNC can't be mixed up.
+        let desktop_button: Option<AnyElement> = match item {
+            SidebarItem::Host { project, host } if !self.sidebar_compact => {
+                let opens = host.opens_with();
+                host.desktops().find(|d| *d == opens).or_else(|| host.desktops().next()).map(|protocol| {
                     let (pid, hid) = (project.id.clone(), host.id.clone());
-                    let tip: SharedString = format!("Open remote desktop ({})", protocol.label()).into();
-                    icon_button(SharedString::from(format!("desktop-{}-{key:?}", protocol.label())), "monitor", p)
-                        .aria_label(tip.clone())
-                        .size(px(24.))
-                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                    desktop_pill(SharedString::from(format!("desktop-{key:?}")), protocol, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                             cx.stop_propagation();
                             this.open_desktop(&pid, &hid, protocol, window, cx);
                         }))
                         .into_any_element()
                 })
-                .collect(),
-            SidebarItem::Shell { .. } => vec![],
+            }
+            _ => None,
         };
         let dragged = self.dragged(item, None, color);
         // Shell identities stay clear while idle; their labels and status carry activity.
         let dim = !(active || live) && is_artwork(&icon) && matches!(item, SidebarItem::Host { .. });
+        // The row's end: its state, and for a group how many Sessions and the fold chevron.
+        // Folded out, a group's Sessions show their own state, so the row only keeps its
+        // terminal's (when it is one) and the chevron.
+        let show_status = status.is_some() && (!grouped || main.is_some() || !expanded);
+        let show_count = grouped && !expanded;
+        let trailing: f32 = [(show_status, 16.), (show_count, 14.), (grouped, 22.)]
+            .iter()
+            .filter(|(shown, _)| *shown)
+            .map(|(_, w)| w + 4.)
+            .sum::<f32>();
+        let pad_right = if grouped { 6. } else { 10. };
+        let menu_open = self.sidebar_menu_open.as_ref() == Some(&key);
+        let ws_open = cx.entity().downgrade();
+        let open_key = key.clone();
+        let new_tip: SharedString = if is_host { "New terminal (Ctrl+click)".into() } else { "New session (Ctrl+click)".into() };
+        let close_tip: SharedString = if sessions_live { "Disconnect".into() } else { "Close session".into() };
+        let focused = self.nav_focus_on(&NavTarget::Item(key.clone()));
         let mut rows = vec![];
         rows.push(
             div()
@@ -3378,7 +3605,7 @@ impl Workspace {
                 .relative()
                 .h(px(34.))
                 .pl(px(indent))
-                .pr(px(if grouped { 6. } else { 10. }))
+                .pr(px(pad_right))
                 .flex()
                 .items_center()
                 .gap(px(10.))
@@ -3387,6 +3614,7 @@ impl Workspace {
                 .when(active, |el| el.bg(p.active).text_color(p.active_text))
                 .when(!active, |el| el.hover(|s| s.bg(p.hover)))
                 .when(beside && !active && !expanded, |el| el.bg(p.hover))
+                .when(focused, |el| el.border_2().border_color(p.focus))
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     this.activate_item(item_for_click.clone(), event.modifiers().control, window, cx)
                 }))
@@ -3407,87 +3635,104 @@ impl Workspace {
                         .when(!active, |el| el.group_hover("item-row", |s| s.text_color(p.hover_text)))
                         .child(item.label().to_string()),
                 )
-                // On hover the status is repeated just before the close button, keeping
-                // connection state visible while making room for the row's actions.
+                // The state stays put while the row's actions show beside it.
                 .child(
                     div()
                         .flex_shrink_0()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(px(4.))
                         .id("item-status")
-                        .group_hover("item-row", |s| s.invisible())
-                        .child(status_indicator(status.as_ref(), busy, p))
+                        .when(show_status, |el| {
+                            el.child(div().w(px(16.)).flex().justify_center().child(status_indicator(status.as_ref(), busy, p)))
+                        })
+                        .when(show_count, |el| {
+                            el.child(
+                                div().w(px(14.)).text_size(px(11.5)).text_color(p.text_faint).child(listed_count.to_string()),
+                            )
+                        })
+                        // A group folds its Sessions away with the chevron, which is always there.
                         .when(grouped, |el| {
-                            el.child(div().text_size(px(11.5)).text_color(p.text_faint).child(listed_count.to_string()))
+                            el.child(
+                                div()
+                                    .id(SharedString::from(format!("fold-{key:?}")))
+                                    .role(gpui::Role::Button)
+                                    .aria_label(if expanded { "Collapse sessions" } else { "Expand sessions" })
+                                    .aria_expanded(expanded)
+                                    .flex_shrink_0()
+                                    .size(px(22.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(p.corner(6.))
+                                    .hover(|s| s.bg(p.hover))
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(if expanded { "Hide sessions" } else { "Show sessions" }).build(window, cx)
+                                    })
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        this.toggle_item_sessions(&toggle_key, cx);
+                                    }))
+                                    .child(icon_el(if expanded { "chevron-down" } else { "chevron-right" }, 14., p.text_faint)),
+                            )
                         }),
                 )
-                // A group folds its Sessions away with the chevron, which is always there.
-                .when(grouped, |el| {
-                    el.child(
-                        div()
-                            .id(SharedString::from(format!("fold-{key:?}")))
-                            .role(gpui::Role::Button)
-                            .aria_label(if expanded { "Collapse sessions" } else { "Expand sessions" })
-                            .aria_expanded(expanded)
-                            .flex_shrink_0()
-                            .size(px(22.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(p.corner(6.))
-                            .hover(|s| s.bg(p.hover))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                                this.toggle_item_sessions(&toggle_key, cx);
-                            }))
-                            .child(icon_el(if expanded { "chevron-down" } else { "chevron-right" }, 14., p.text_faint)),
-                    )
-                })
                 .child(
                     // Opaque sidebar colour under the row's translucent hover colour, so the
                     // buttons' backdrop matches the row and covers the end of a long label.
                     div()
                         .absolute()
                         .id("item-hover-actions")
-                        .right(px(if grouped { 30. } else { 4. }))
+                        .right(px(pad_right + trailing))
                         .top(px(5.))
                         .rounded(p.corner(7.))
                         .bg(p.sidebar)
-                        .invisible()
-                        .group_hover("item-row", |s| s.visible())
+                        .when(!menu_open, |el| el.invisible().group_hover("item-row", |s| s.visible()))
                         .child(
                             div()
                                 .flex()
+                                .items_center()
                                 .gap(px(2.))
                                 .rounded(p.corner(7.))
                                 .bg(if active { p.active } else { p.hover })
-                                .children(desktop_buttons)
+                                .children(desktop_button)
                                 .child(
                                     icon_button(SharedString::from(format!("another-{key:?}")), "plus", p)
-                                        .aria_label("New session")
+                                        .aria_label(new_tip.clone())
                                         .size(px(24.))
+                                        .tooltip(move |window, cx| Tooltip::new(new_tip.clone()).build(window, cx))
                                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                             cx.stop_propagation();
                                             this.activate_item(item_for_new.clone(), true, window, cx);
                                         })),
                                 )
-                                .when_some(status.as_ref(), |el, status| {
-                                    el.child(
-                                        div().w(px(16.)).h(px(24.)).flex().items_center().justify_center()
-                                            .child(status_indicator(Some(status), busy, p)),
-                                    )
-                                })
+                                .child(
+                                    Button::new(SharedString::from(format!("more-{key:?}")))
+                                        .ghost()
+                                        .small()
+                                        .icon(Icon::empty().path("icons/ellipsis.svg"))
+                                        .tooltip("More actions")
+                                        .dropdown_menu(item_menu.clone())
+                                        .on_open_change(move |open, _, cx| {
+                                            let (open, key) = (*open, open_key.clone());
+                                            let _ = ws_open.update(cx, |this, cx| {
+                                                this.sidebar_menu_open = if open { Some(key) } else { None };
+                                                cx.notify();
+                                            });
+                                        }),
+                                )
                                 // A group has no close button of its own (which Session would it
                                 // close?) unless the row is the Host's terminal.
-                                .when_some(session_id, |el, id| {
+                                .when_some(session_id.filter(|_| !self.sidebar_compact), |el, id| {
                                     el.child(
                                         icon_button(SharedString::from(format!("close-{id}")), "x", p)
-                                            .aria_label(if sessions_live { "Disconnect" } else { "Close session" })
+                                            .aria_label(close_tip.clone())
                                             .size(px(24.))
+                                            .hover(move |s| s.bg(p.danger.opacity(0.14)).text_color(p.danger))
+                                            .tooltip(move |window, cx| Tooltip::new(close_tip.clone()).build(window, cx))
                                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                                 cx.stop_propagation();
-                                                this.close_session(id, window, cx);
+                                                this.request_close(id, window, cx);
                                             })),
                                     )
                                 }),
@@ -3518,6 +3763,7 @@ impl Workspace {
     ) -> AnyElement {
         let id = session.id;
         let active = Some(id) == self.active;
+        let focused = self.nav_focus_on(&NavTarget::Session(id));
         let beside = !active && self.shown_split().is_some_and(|s| s.contains(id));
         let dragged = self.dragged(item, Some(id), color);
         let live = session.is_live();
@@ -3526,7 +3772,15 @@ impl Workspace {
         let own_window = session.window.is_some();
         let title: SharedString = if desktop.is_some() { "Remote desktop".into() } else { session_title(session) };
         let ws = cx.entity().downgrade();
+        let files = matches!(session.kind, SessionKind::Ssh { .. }) && matches!(session.status, Status::Connected);
         let session_menu = move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
+            let mut menu = menu.item(menu_item("Rename session…", "text-cursor-input", &ws, move |this, window, cx| {
+                this.open_rename_session(id, window, cx)
+            }));
+            if files {
+                menu = menu.item(menu_item("Browse files", "folder-tree", &ws, move |this, window, cx| this.show_files(id, window, cx)));
+            }
+            menu = menu.separator();
             let mut menu = if dropped {
                 menu.item(menu_item("Reconnect", "refresh-cw", &ws, move |this, window, cx| {
                     this.activate(id, window, cx);
@@ -3583,6 +3837,7 @@ impl Workspace {
             .when(active, |el| el.bg(p.active).text_color(p.active_text))
             .when(!active, |el| el.hover(|s| s.bg(p.hover)))
             .when(beside, |el| el.bg(p.hover))
+            .when(focused, |el| el.border_2().border_color(p.focus))
             .on_drag(dragged, self.drag_preview(cx))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.activate(id, window, cx);
@@ -3641,15 +3896,18 @@ impl Workspace {
                     .child(status_indicator(Some(&session.status), self.background_busy(session), p)),
             )
             .child(
-                div().w(px(22.)).flex_shrink_0().invisible().group_hover("session-row", |s| s.visible()).child(
+                div().w(px(22.)).flex_shrink_0().invisible().group_hover("session-row", |s| s.visible()).child({
+                    let tip: SharedString = if live { "Disconnect".into() } else { "Close session".into() };
                     icon_button(SharedString::from(format!("close-{id}")), "x", p)
-                        .aria_label(if live { "Disconnect" } else { "Close session" })
+                        .aria_label(tip.clone())
                         .size(px(22.))
+                        .hover(move |s| s.bg(p.danger.opacity(0.14)))
+                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                             cx.stop_propagation();
-                            this.close_session(id, window, cx);
-                        })),
-                ),
+                            this.request_close(id, window, cx);
+                        }))
+                }),
             )
             .context_menu(session_menu)
             .into_any_element()
@@ -3704,7 +3962,7 @@ impl Workspace {
         let entry = self.active_entry()?;
         // Where you are typing: state, the session's name, then user@address and port. The
         // name is repeated from the sidebar, which may be scrolled away from the active host.
-        let name = entry.label.clone();
+        let name = self.session_display_name(entry);
         let target = match &entry.kind {
             SessionKind::Ssh { host_id } => entry
                 .project_id
@@ -3927,14 +4185,14 @@ impl Workspace {
     fn render_main(&self, p: AppPalette, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let content = match (self.active_entry(), self.shown_split()) {
             (None, _) => self.render_empty(p, cx),
-            (Some(_), Some(split)) => div()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .flex()
-                .gap(px(ISLAND_GAP))
-                .children([split.left, split.right].into_iter().filter_map(|id| self.render_pane(id, true, p, window, cx)))
-                .into_any_element(),
+            (Some(_), Some(split)) => {
+                let mut panes: Vec<AnyElement> =
+                    [split.left, split.right].into_iter().filter_map(|id| self.render_pane(id, true, p, window, cx)).collect();
+                if panes.len() == 2 {
+                    panes.insert(1, split_seam(p));
+                }
+                div().flex_1().min_w_0().h_full().flex().children(panes).into_any_element()
+            }
             (Some(entry), None) => self.render_pane(entry.id, false, p, window, cx).unwrap_or_else(|| div().into_any_element()),
         };
         div()
@@ -4249,7 +4507,9 @@ impl Workspace {
                             .aria_size_of_set(count)
                             .when(i == selected, |el| el.bg(p.hover))
                             .hover(|s| s.bg(p.active))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.pick(item.clone(), window, cx)))
+                            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                this.pick(item.clone(), event.modifiers().control, window, cx)
+                            }))
                             .child(badge(&icon, color, 26.))
                             .child(
                                 div()
@@ -4282,6 +4542,23 @@ impl Workspace {
                             .child(Input::new(query)),
                     )
                     .child(list)
+                    // How to open another Session from here, which isn't obvious.
+                    .when(count > 0, |el| {
+                        el.child(
+                            div()
+                                .px(px(14.))
+                                .py(px(8.))
+                                .flex()
+                                .items_center()
+                                .gap(px(14.))
+                                .border_t_1()
+                                .border_color(p.border)
+                                .text_size(px(11.5))
+                                .text_color(p.text_faint)
+                                .child(div().flex().items_center().gap(px(6.)).child(kbd("Enter", p)).child("Open"))
+                                .child(div().flex().items_center().gap(px(6.)).child(kbd("Ctrl Enter", p)).child("New session")),
+                        )
+                    })
                     .into_any_element()
             }
             Overlay::HostForm(form) => self.render_host_form(form, wide, p, cx),
@@ -4291,7 +4568,8 @@ impl Workspace {
             Overlay::SetForm(form) => self.render_set_form(form, p, cx),
             Overlay::History(panel) => self.render_history(panel, p, cx),
             Overlay::Tour(tour) => self.render_tour(tour, p, cx),
-            Overlay::Confirm { title, body, .. } => form_card(
+            Overlay::RenameSession { name, .. } => self.render_rename_session(name, p, cx),
+            Overlay::Confirm { title, body, action } => form_card(
                 p,
                 title,
                 div().text_size(px(13.)).line_height(px(20.)).text_color(p.text_muted).child(body.clone()).into_any_element(),
@@ -4299,7 +4577,7 @@ impl Workspace {
                     button("confirm-cancel", "Cancel", ButtonKind::Ghost, p)
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx)))
                         .into_any_element(),
-                    button("confirm-ok", "Delete", ButtonKind::Danger, p)
+                    button("confirm-ok", if matches!(action, ConfirmAction::Disconnect(_)) { "Disconnect" } else { "Delete" }, ButtonKind::Danger, p)
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.run_confirm(window, cx)))
                         .into_any_element(),
                 ],
@@ -4380,10 +4658,39 @@ fn status_indicator(status: Option<&Status>, busy: bool, p: AppPalette) -> AnyEl
     }
 }
 
-/// What a Session's own row in the sidebar says: the title its shell set, unless that only
-/// repeats the item's name or is the program's path (as Windows shells set it); otherwise
-/// "Session 2".
+/// A button that opens a Host's Remote Desktop, labelled with its protocol like the tag on the
+/// desktop's Session row.
+fn desktop_pill(id: SharedString, protocol: Protocol, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+    let tip: SharedString = format!("Open remote desktop ({})", protocol.label()).into();
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(tip.clone())
+        .tab_index(0)
+        .focus_visible(move |s| s.border_2().border_color(p.focus))
+        .h(px(24.))
+        .px(px(6.))
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .rounded(p.corner(6.))
+        .cursor_pointer()
+        .text_size(px(10.5))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(p.brand)
+        .hover(move |s| s.bg(p.brand_soft))
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .child(icon_el("monitor", 13., p.brand))
+        .child(protocol.label())
+}
+
+/// What a Session's own row in the sidebar says: the name it was given, else the title its
+/// shell set, unless that only repeats the item's name or is the program's path (as Windows
+/// shells set it); otherwise "Session 2".
 fn session_title(session: &SessionEntry) -> SharedString {
+    if let Some(name) = &session.name {
+        return name.clone();
+    }
     let title = session.title.trim();
     let useless = title.is_empty() || title == session.label.as_ref() || title.to_ascii_lowercase().ends_with(".exe");
     if useless { format!("Session {}", session.number).into() } else { title.to_string().into() }
@@ -4860,7 +5167,7 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &CloseSession, window, cx| {
                 if let Some(id) = this.active.filter(|_| !this.modal_open(cx)) {
-                    this.close_session(id, window, cx);
+                    this.request_close(id, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &NextSession, window, cx| {
@@ -4882,6 +5189,7 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| this.toggle_sidebar(window, cx)))
+            .on_action(cx.listener(|this, _: &nav::FocusSidebar, window, cx| this.focus_sidebar(window, cx)))
             // A sidebar item let go anywhere that takes no drop: nothing happens, and the
             // drop indicators go.
             .on_drop(cx.listener(|this, _: &DraggedItem, _, cx| {
@@ -4970,7 +5278,7 @@ impl Render for Workspace {
                 .children(self.render_sidebar_peek(p, window, cx))
                 .into_any_element()),
         };
-        // Downloads: floats above the sidebar's footer, from any page.
+        // Transfers: floats above the sidebar's footer, from any page.
         let downloads = self.transfers.read(cx).is_open().then(|| {
             div()
                 .absolute()

@@ -1,5 +1,5 @@
 //! Downloads and uploads across all Hosts, and the panel that lists them (opened from the
-//! sidebar's Downloads entry).
+//! sidebar's Transfers entry).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,10 +45,10 @@ pub struct Transfer {
     source: WeakEntity<FileBrowser>,
     progress: Arc<Progress>,
     pub state: State,
-    /// The panel has shown how it ended. Until then a failure stays counted on the Downloads
+    /// The panel has shown how it ended. Until then a failure stays counted on the Transfers
     /// entry, and a finished download marks it as new.
     seen: bool,
-    /// Part of the current burst of transfers, whose combined progress the Downloads entry
+    /// Part of the current burst of transfers, whose combined progress the Transfers entry
     /// shows. A burst starts when a transfer starts while none is running.
     in_burst: bool,
 }
@@ -73,7 +73,7 @@ enum Filter {
     Failed,
 }
 
-/// What the Downloads entry shows around its icon.
+/// What the Transfers entry shows around its icon.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Activity {
     /// Nothing running.
@@ -92,7 +92,7 @@ fn combined_progress(parts: impl Iterator<Item = (u64, u64)>) -> Option<f32> {
     (total > 0).then(|| done as f32 / total as f32)
 }
 
-/// Tells the workspace that the counts on the Downloads entry changed.
+/// Tells the workspace that the counts on the Transfers entry changed.
 pub struct TransfersChanged;
 
 pub struct Transfers {
@@ -100,7 +100,7 @@ pub struct Transfers {
     next_id: usize,
     open: bool,
     /// When the panel last closed from a click outside it, so the click that closed it doesn't
-    /// reopen it when it lands on the Downloads entry.
+    /// reopen it when it lands on the Transfers entry.
     closed_at: Option<Instant>,
     filter: Filter,
     ticking: bool,
@@ -157,7 +157,7 @@ impl Transfers {
         self.items.iter().any(|t| !t.seen && !t.is_upload() && matches!(t.state, State::Done { .. }))
     }
 
-    /// How far the current burst of transfers is, for the ring on the Downloads entry.
+    /// How far the current burst of transfers is, for the ring on the Transfers entry.
     pub fn activity(&self) -> Activity {
         if !self.has_active() {
             return Activity::Idle;
@@ -683,7 +683,7 @@ impl Render for Transfers {
                     .items_center()
                     .gap(px(8.))
                     .child(icon_el("download", 15., p.text_muted))
-                    .child(div().flex_1().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Downloads"))
+                    .child(div().flex_1().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Transfers"))
                     .child(
                         row_button("transfers-close", "x", "Close", p)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx))),

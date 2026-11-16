@@ -2,7 +2,7 @@
 //! the Session's own connection.
 //!
 //! Each Session has its own browser, which keeps its folder, history and selection while it is
-//! closed. Transfers go to the shared [`Transfers`] list (the sidebar's Downloads entry).
+//! closed. Transfers go to the shared [`Transfers`] list (the sidebar's Transfers entry).
 
 use std::collections::HashSet;
 use std::ops::Range;

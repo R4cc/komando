@@ -41,6 +41,10 @@ use crate::ui::terminal_view::{
 use crate::ui::workspace::{
     CloseSession, CopyOutputFile, CopyOutputText, LockVault, NewSession, NextSession, OpenSettings, PickerDown, PickerUp,
     PrevSession, QuickConnect, ToggleSftp, ToggleSidebar, Workspace,
+    nav::{
+        self, FocusSidebar, NavCollapse, NavDelete, NavDown, NavEdit, NavExpand, NavFirst, NavLast, NavLeave, NavOpen,
+        NavOpenAnother, NavUp,
+    },
 };
 
 pub const FONTS: &[&[u8]] = &[
@@ -110,6 +114,18 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-,", OpenSettings, None),
         KeyBinding::new("ctrl-shift-e", ToggleSftp, None),
         KeyBinding::new("ctrl-shift-b", ToggleSidebar, Some("Workspace")),
+        KeyBinding::new("ctrl-shift-h", FocusSidebar, Some("Workspace")),
+        KeyBinding::new("up", NavUp, Some(nav::CONTEXT)),
+        KeyBinding::new("down", NavDown, Some(nav::CONTEXT)),
+        KeyBinding::new("home", NavFirst, Some(nav::CONTEXT)),
+        KeyBinding::new("end", NavLast, Some(nav::CONTEXT)),
+        KeyBinding::new("right", NavExpand, Some(nav::CONTEXT)),
+        KeyBinding::new("left", NavCollapse, Some(nav::CONTEXT)),
+        KeyBinding::new("enter", NavOpen, Some(nav::CONTEXT)),
+        KeyBinding::new("ctrl-enter", NavOpenAnother, Some(nav::CONTEXT)),
+        KeyBinding::new("f2", NavEdit, Some(nav::CONTEXT)),
+        KeyBinding::new("delete", NavDelete, Some(nav::CONTEXT)),
+        KeyBinding::new("escape", NavLeave, Some(nav::CONTEXT)),
     ]
 }
 
@@ -271,10 +287,43 @@ mod tests {
     }
 
     #[test]
+    fn the_sidebar_keys_work_only_in_the_sidebar() {
+        use gpui::{KeyContext, Keymap, Keystroke};
+        use super::{FocusSidebar, NavDelete, NavEdit, NavLeave, NavOpen, NavOpenAnother, NavUp};
+
+        let keymap = Keymap::new(super::key_bindings());
+        let sidebar = [KeyContext::parse("Workspace").unwrap(), KeyContext::parse(super::nav::CONTEXT).unwrap()];
+        fn first(keymap: &Keymap, key: &'static str, context: &[KeyContext]) -> Option<Box<dyn gpui::Action>> {
+            let (bindings, _) = keymap.bindings_for_input(&[Keystroke::parse(key).unwrap()], context);
+            bindings.first().map(|b| b.action().boxed_clone())
+        }
+        let action = |key: &'static str, context: &[KeyContext]| first(&keymap, key, context);
+        let is = |key: &'static str, context: &[KeyContext], check: fn(&dyn gpui::Action) -> bool| {
+            action(key, context).is_some_and(|a| check(a.as_ref()))
+        };
+        assert!(is("up", &sidebar, |a| a.as_any().is::<NavUp>()));
+        assert!(is("enter", &sidebar, |a| a.as_any().is::<NavOpen>()));
+        assert!(is("ctrl-enter", &sidebar, |a| a.as_any().is::<NavOpenAnother>()));
+        assert!(is("f2", &sidebar, |a| a.as_any().is::<NavEdit>()));
+        assert!(is("delete", &sidebar, |a| a.as_any().is::<NavDelete>()));
+        assert!(is("escape", &sidebar, |a| a.as_any().is::<NavLeave>()));
+
+        // In a terminal, the same keys stay the shell's, and Ctrl+Shift+H reaches the sidebar.
+        let terminal = [KeyContext::parse("Workspace").unwrap(), KeyContext::parse("Terminal").unwrap()];
+        for key in ["up", "enter", "f2", "delete", "escape", "ctrl-enter"] {
+            assert!(action(key, &terminal).is_none(), "{key} is bound in the terminal");
+        }
+        assert!(is("ctrl-shift-h", &terminal, |a| a.as_any().is::<FocusSidebar>()));
+    }
+
+    #[test]
     fn the_logo_is_served_alongside_the_icons() {
         let logo = super::Assets.load(super::LOGO_SVG).unwrap().expect("logo");
         assert!(std::str::from_utf8(&logo).unwrap().starts_with("<svg"));
         assert!(super::Assets.load("icons/server.svg").unwrap().is_some());
         assert!(super::Assets.load("icons/eraser.svg").unwrap().is_some(), "the Unhighlight menu entry");
+        for icon in ["ellipsis", "text-cursor-input", "arrow-down-up", "list-tree", "folder-tree"] {
+            assert!(super::Assets.load(&format!("icons/{icon}.svg")).unwrap().is_some(), "{icon}, used by the sidebar");
+        }
     }
 }

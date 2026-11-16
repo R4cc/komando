@@ -613,7 +613,7 @@ impl Workspace {
         form_shell(
             "host-form-body",
             wide,
-            form_header(badge(&project_icon, color, 34.).into_any_element(), title, format!("SSH host in {project_name}"), p),
+            form_header(badge(&project_icon, color, 34.).into_any_element(), title, format!("Host in {project_name}"), p),
             body,
             form_footer("hf", ok_label, form.error.as_deref(), p, cx),
         )
@@ -1079,7 +1079,7 @@ impl Workspace {
             .children(rows)
             .children(opens)
             .child(hint_text(
-                "Opens beside the host's terminal: the RDP and VNC buttons in the title bar switch between them.".into(),
+                "Opens as a session under the host in the sidebar, beside its terminal. Hover the host for its desktop button, or right-click it.".into(),
                 p,
             ))
             .into_any_element()

@@ -72,7 +72,7 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 - **Projects with colours and icons.** A coloured strip above the terminal shows which
   environment you're in.
 - **Quick connect.** <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>K</kbd>, type a few letters, pick with
-  <kbd>↑</kbd>/<kbd>↓</kbd>, Enter.
+  <kbd>↑</kbd>/<kbd>↓</kbd>, Enter (or Ctrl+Enter for another session).
 - **Shared settings per project.** Default user, key or password, jump hosts and startup commands
   set once and inherited by every host.
 - **Jump hosts.** Reach servers that sit behind others. Komando shows each hop while connecting.
@@ -80,7 +80,11 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
   never its passwords or keys.
 - **Startup commands.** `cd /srv/app`, `sudo -i` or `tmux attach` typed for you once the shell is ready.
   A command can wait for text first, such as the root prompt after `sudo -i`.
-- **Several sessions per host**, and **reconnect in place** with your output kept.
+- **Several sessions per host**, and **reconnect in place** with your output kept. Ctrl+click a
+  host (or hover it and click +) for another terminal; each gets a row under the host that you
+  can rename.
+- **Sidebar by keyboard.** <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd>, then arrows to move and
+  fold, Enter to connect, Ctrl+Enter for another session, F2 to edit, Delete to remove.
 - **Resizable navigation.** Drag the gap beside the sidebar to set its width; Komando remembers it.
 - **Local shells too.** PowerShell 7, Windows PowerShell and Command Prompt are detected; add WSL
   or Git Bash yourself.
@@ -88,8 +92,8 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 ### Remote desktops over RDP and VNC
 
 - **Attached to your hosts.** Edit a host → Remote desktop to enable RDP, VNC, or both, with
-  their own port, account and vault password. Their toolbar buttons appear only when configured,
-  beside SFTP; the host's right-click menu opens them too.
+  their own port, account and vault password. Hovering the host in the sidebar shows a button
+  for its desktop; the host's right-click and ⋯ menus open every configured protocol.
 - **Inside Komando.** A desktop opens as a session under its host, with keyboard and mouse
   input, scaling to fit, and reconnect. Choose what a click on the host opens, including a
   desktop for Windows hosts without SSH.
@@ -213,6 +217,10 @@ there, with a blinking line as the default.
 | Quick connect | Ctrl+Shift+K |
 | Another session on the current host | Ctrl+Shift+T |
 | Disconnect (keeps the output); again to discard it | Ctrl+Shift+W |
+| Move into the sidebar / back to the session | Ctrl+Shift+H / Esc |
+| Sidebar: move; fold or unfold | ↑ / ↓; ← / → |
+| Sidebar: connect; another session | Enter; Ctrl+Enter |
+| Sidebar: edit host or project, rename session; delete | F2; Delete |
 | Next / previous session | Ctrl+Tab / Ctrl+Shift+Tab |
 | Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
 | Copy whole output as text / as .txt file | Ctrl+Shift+A / Ctrl+Shift+S |

@@ -8,7 +8,9 @@ use sha2::{Digest as _, Sha256};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GetLastError, HANDLE, HWND, LPARAM, LRESULT, SetLastError, WPARAM,
 };
-use windows::Win32::System::Threading::{CreateMutexExW, SYNCHRONIZATION_SYNCHRONIZE};
+use windows::Win32::System::Threading::{
+    CreateMutexExW, OpenProcess, PROCESS_SYNCHRONIZE, SYNCHRONIZATION_SYNCHRONIZE, WaitForSingleObject,
+};
 use windows::Win32::UI::{
     Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
     WindowsAndMessaging::*,
@@ -16,6 +18,33 @@ use windows::Win32::UI::{
 use windows::core::{BOOL, PCWSTR};
 
 const SUBCLASS_ID: usize = 0x4b4f49;
+/// Followed by the process ID of the Komando being restarted.
+const RESTART_FLAG: &str = "--restart-after";
+
+/// Start a new Komando to replace this one; the caller then exits. The new one waits for
+/// this process to end before it claims the startup gate. Otherwise it would find this
+/// window still closing, hand over to it, and quit, leaving no Komando open.
+pub fn relaunch() -> anyhow::Result<()> {
+    let exe = std::env::current_exe()?;
+    std::process::Command::new(exe).arg(RESTART_FLAG).arg(std::process::id().to_string()).spawn()?;
+    Ok(())
+}
+
+/// The Komando this launch replaces, when started by [`relaunch`].
+fn restart_parent(args: impl IntoIterator<Item = String>) -> Option<u32> {
+    args.into_iter().skip_while(|arg| arg != RESTART_FLAG).nth(1)?.parse().ok()
+}
+
+/// When this launch is a restart, wait for the old Komando to exit (for at most 10 s).
+pub fn wait_for_restart(args: impl IntoIterator<Item = String>) {
+    let Some(pid) = restart_parent(args) else { return };
+    unsafe {
+        // Already gone: nothing to wait for.
+        let Ok(process) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) else { return };
+        let _ = WaitForSingleObject(process, 10_000);
+        let _ = CloseHandle(process);
+    }
+}
 
 fn identity(dir: &Path) -> String {
     let absolute = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
@@ -149,7 +178,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
     if message == restore_message() {
         unsafe {
             // SW_SHOW preserves a visible maximized window. SW_RESTORE restores a hidden,
-            // minimized window and lets the tray handler remove its notification icon.
+            // minimized one.
             let show = if IsIconic(hwnd).as_bool() { SW_RESTORE } else { SW_SHOW };
             let _ = ShowWindow(hwnd, show);
             let _ = SetForegroundWindow(hwnd);
@@ -185,6 +214,16 @@ mod tests {
             )
             .unwrap()
         }
+    }
+
+    #[test]
+    fn a_restart_names_the_komando_it_replaces() {
+        let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        assert_eq!(restart_parent(args(&["--restart-after", "4242"])), Some(4242));
+        assert_eq!(restart_parent(args(&["--shell", "cmd", "--restart-after", "7"])), Some(7));
+        assert_eq!(restart_parent(args(&["--shell", "cmd"])), None);
+        assert_eq!(restart_parent(args(&["--restart-after"])), None);
+        assert_eq!(restart_parent(args(&["--restart-after", "x"])), None);
     }
 
     fn pump() {

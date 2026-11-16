@@ -13,6 +13,7 @@ fn main() {
     let _instance = if startup.open_shell.is_some() && komando::elevate::is_elevated() {
         None // Deliberately separate administrator shell window, with no tray icon.
     } else {
+        komando::platform::instance::wait_for_restart(std::env::args().skip(1));
         match komando::platform::instance::Instance::claim(&data_dir) {
             Ok(Some(instance)) => Some(instance),
             Ok(None) => return,

@@ -12,25 +12,59 @@ All notable changes to Komando are listed here. The format follows
   `https://` or `ftp://` underlines it; Ctrl+click opens it in your browser, and the
   right-click menu can open or copy it. Links programs mark themselves work too. Plain IP
   addresses and host names in logs stay plain text.
+- The sidebar works from the keyboard. Ctrl+Shift+H moves into it (and back out). Use the
+  arrows to move, fold and unfold, Enter to connect, Ctrl+Enter to open another session, F2 to
+  edit a host or project or rename a session, Delete to delete or close, and Esc to return.
+- A ⋯ button on each host and shell row opens the same menu as a right-click, including
+  **Edit host…**.
+- **Rename session…** in a session's menu gives it a name of its own, shown in the sidebar and
+  the title bar.
+- **Browse files** in a connected host's or session's menu opens its file browser.
+- Ctrl+Enter in quick connect opens another session on the chosen host or shell.
+- Disconnecting a session with × or Ctrl+Shift+W asks first while a command is still printing
+  output.
+- **Restart** in the tray icon's right-click menu closes Komando and opens it again.
 
 ### Changed
 
+- With **Minimize to tray** on, the tray icon now shows the whole time Komando is open, not
+  only while its window is hidden.
+- In split view, a thin line now runs down the gap between the two sessions, so they stay
+  clearly apart on dark themes.
 - When a server's host key no longer matches the one you trusted, the warning now shows the
   trusted and the new fingerprint and offers **Replace key and connect**, instead of only
   blocking the connection. Replacing trusts the new key from then on; a key trusted in your
   OpenSSH known_hosts is replaced in Komando only, and that file is left unchanged.
 - Opening a host's remote desktop no longer moves its terminal into a row of its own. The
   host's row stays its SSH session, and the remote desktop is the only row listed under it.
+- A host row shows fewer buttons on hover: a labelled RDP or VNC button for the desktop the
+  host opens first, + for a new terminal, ⋯ for the menu, and ×. The connection dot stays where
+  it is, and every button has a tooltip. A narrow sidebar shows only + and ⋯.
+- Session numbers count up and are no longer reused while a host has sessions open. The title
+  bar names a second session "web01 #2", as the sidebar does, instead of "web01 (2)".
+- With a host's sessions unfolded, the host's row no longer repeats their state and count.
+- Quick connect unfolds the project of the host you open and scrolls the sidebar to it. A
+  folded project holding the session you're in is highlighted.
+- The sidebar's Downloads entry is now called Transfers, since it lists uploads too.
+- The host form's hints now point to the sidebar for opening remote desktops.
 
 ### Fixed
 
+- With Mica on, a maximized Komando could stay behind the Windows taskbar, for example after
+  switching the taskbar from auto-hide to always shown. It now fits above the taskbar, and
+  refits when the taskbar is shown, hidden or moved.
 - The remote desktop toolbar's keyboard button is now labelled "Keys" and its menu arrow no
   longer spills out of the button.
+- On a host whose click opens a remote desktop, +, Ctrl+click, New session and Ctrl+Shift+T
+  only showed the desktop again. They now open another terminal.
+- Dragging a session's row onto another project moved its whole host, with all its sessions,
+  into that project. Session rows now only open in split view.
+- The welcome tour pointed to RDP and VNC buttons in the title bar, which no longer exist.
 
 ### Removed
 
-- The Close session button in the title bar. Close a session from its tab or sidebar row,
-  its right-click menu, or with Ctrl+Shift+W.
+- The Close session button in the title bar. Close a session from its sidebar row, its
+  right-click menu, or with Ctrl+Shift+W.
 
 ## [0.6.2] - 2026-11-16
 

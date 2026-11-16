@@ -3,8 +3,8 @@
 A Host may offer RDP and VNC alongside SSH, each with its own port and Credential, on the
 Host's existing address. A Remote Desktop is a Session under that Host rather than an SFTP-like
 panel: it needs the pane's space and its own keyboard focus, lifecycle and reconnect behavior.
-Configured protocols open from the Host's sidebar row (a button on hover) and its menu; the
-Host chooses which opens first. A Remote Desktop Session always has a row of its own under
+Configured protocols open from the Host's sidebar row (a button on hover for the one the Host
+opens first) and its menus; the Host chooses which opens first. A Remote Desktop Session always has a row of its own under
 the Host, marked with its protocol, and switching between a Host's terminal and desktops
 happens there rather than in the title bar, which keeps its layout.
 Global viewing defaults live in Settings → Remote desktop.

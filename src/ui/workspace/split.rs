@@ -317,6 +317,14 @@ impl Workspace {
             }
             return;
         }
+        // A Session's row only opens beside another; moving it would take its whole Host,
+        // with every other Session of it, into the other Project.
+        if session.is_some() {
+            if matches!(&self.drop_target, Some(DropTarget::Project { .. })) {
+                self.set_drop_target(None, cx);
+            }
+            return;
+        }
         let target = DropTarget::Project { id: project.to_string(), row };
         if over {
             self.set_drop_target(Some(target), cx);
@@ -362,7 +370,9 @@ impl Workspace {
         cx.notify();
         let ItemKey::Host { project: from, host } = &dragged.key else { return };
         match target {
-            Some(DropTarget::Project { id, .. }) if id == project => self.move_host_to(host, from, project, cx),
+            Some(DropTarget::Project { id, .. }) if id == project && dragged.session.is_none() => {
+                self.move_host_to(host, from, project, cx)
+            }
             Some(DropTarget::Reorder { project: id, index, .. }) if id == project && from == project => {
                 self.reorder_host(project, host, index, cx)
             }
@@ -404,16 +414,24 @@ impl Workspace {
         }
         let old = ItemKey::Host { project: from.to_string(), host: host_id.to_string() };
         let new = ItemKey::Host { project: to.to_string(), host: host_id.to_string() };
-        // Already open in the new Project too (a Host in both): the moved Sessions take
-        // numbers that are still free there.
-        let mut taken: HashSet<usize> = self.sessions_of(&new).map(|s| s.number).collect();
+        // Already open in the new Project too (a Host in both): the moved Sessions take the
+        // next numbers there, terminals and desktops each counted on their own.
+        let taken_of = |terminal: bool| -> HashSet<usize> {
+            self.sessions_of(&new).filter(|s| s.view.terminal().is_some() == terminal).map(|s| s.number).collect()
+        };
+        let mut taken = [taken_of(false), taken_of(true)];
         for s in self.sessions.iter_mut().filter(|s| s.item == old) {
             s.item = new.clone();
             s.project_id = Some(to.to_string());
+            let terminal = s.view.terminal().is_some();
+            let taken = &mut taken[usize::from(terminal)];
             if !taken.insert(s.number) {
-                s.number = (1..).find(|n| !taken.contains(n)).unwrap_or(1);
+                s.number = taken.iter().max().map_or(1, |n| n + 1);
                 taken.insert(s.number);
-                s.label = if s.number == 1 { name.clone().into() } else { format!("{name} ({})", s.number).into() };
+                // A desktop's label names its protocol, not a number.
+                if terminal {
+                    s.label = if s.number == 1 { name.clone().into() } else { format!("{name} #{}", s.number).into() };
+                }
             }
         }
         if let Some(id) = self.last_active.remove(&old) {
