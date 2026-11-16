@@ -42,8 +42,8 @@ use crate::ui::workspace::{
     CloseSession, CopyOutputFile, CopyOutputText, LockVault, NewSession, NextSession, OpenSettings, PickerDown, PickerUp,
     PrevSession, QuickConnect, ToggleSftp, ToggleSidebar, Workspace,
     nav::{
-        self, FocusSidebar, NavCollapse, NavDelete, NavDown, NavEdit, NavExpand, NavFirst, NavLast, NavLeave, NavOpen,
-        NavOpenAnother, NavUp,
+        self, FocusSidebar, NavCollapse, NavDelete, NavDeleteHost, NavDown, NavEdit, NavEditHost, NavExpand, NavFirst, NavLast,
+        NavLeave, NavMenu, NavOpen, NavOpenAnother, NavUp,
     },
 };
 
@@ -124,7 +124,11 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("enter", NavOpen, Some(nav::CONTEXT)),
         KeyBinding::new("ctrl-enter", NavOpenAnother, Some(nav::CONTEXT)),
         KeyBinding::new("f2", NavEdit, Some(nav::CONTEXT)),
+        KeyBinding::new("shift-f2", NavEditHost, Some(nav::CONTEXT)),
         KeyBinding::new("delete", NavDelete, Some(nav::CONTEXT)),
+        KeyBinding::new("shift-delete", NavDeleteHost, Some(nav::CONTEXT)),
+        KeyBinding::new("shift-f10", NavMenu, Some(nav::CONTEXT)),
+        KeyBinding::new("menu", NavMenu, Some(nav::CONTEXT)),
         KeyBinding::new("escape", NavLeave, Some(nav::CONTEXT)),
     ]
 }
@@ -307,6 +311,9 @@ mod tests {
         assert!(is("f2", &sidebar, |a| a.as_any().is::<NavEdit>()));
         assert!(is("delete", &sidebar, |a| a.as_any().is::<NavDelete>()));
         assert!(is("escape", &sidebar, |a| a.as_any().is::<NavLeave>()));
+        assert!(is("shift-f2", &sidebar, |a| a.as_any().is::<super::NavEditHost>()));
+        assert!(is("shift-delete", &sidebar, |a| a.as_any().is::<super::NavDeleteHost>()));
+        assert!(is("shift-f10", &sidebar, |a| a.as_any().is::<super::NavMenu>()));
 
         // In a terminal, the same keys stay the shell's, and Ctrl+Shift+H reaches the sidebar.
         let terminal = [KeyContext::parse("Workspace").unwrap(), KeyContext::parse("Terminal").unwrap()];

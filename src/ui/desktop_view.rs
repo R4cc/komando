@@ -90,6 +90,8 @@ pub struct DesktopView {
     pub protocol: Protocol,
     /// The Host's name, for the cards.
     pub host: SharedString,
+    /// A name given with Rename session…, for the title of its own window.
+    pub session_name: Option<SharedString>,
     /// "10.0.4.21:3389", with " through SSH" when tunnelled.
     pub target: SharedString,
     pub status: Status,
@@ -145,6 +147,7 @@ impl DesktopView {
         let mut this = Self {
             protocol,
             host,
+            session_name: None,
             target,
             status: Status::Connecting,
             fit_desktop: true,

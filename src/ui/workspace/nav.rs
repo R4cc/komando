@@ -1,14 +1,41 @@
 //! Keyboard use of the sidebar. Ctrl+Shift+H moves the keyboard into it (and back out); a
 //! cursor then walks its rows: Up and Down move, Right unfolds (or steps into) a Project or a
 //! Host's Sessions, Left folds them (or steps out), Enter connects or shows, Ctrl+Enter opens
-//! another Session, F2 edits a Host or Project or renames a Session, Delete asks to delete a
-//! Host or Project or closes a Session, and Escape goes back to the Session.
+//! another Session, Shift+F10 opens the row's menu, and Escape goes back to the Session.
+//!
+//! F2 and Delete act on the Session a row stands for (rename, disconnect), so they mean the
+//! same on a Host's row as on its Sessions' rows; on an idle Host or a Project they edit or
+//! delete it. Shift+F2 and Shift+Delete always edit or delete the Host.
+//!
+//! Also the rows' menus, shared by the ⋯ buttons and Shift+F10 (see `open_row_menu`).
 
-use gpui::{Context, FocusHandle, Window, actions};
+use gpui::{AnyElement, Context, DismissEvent, Entity, FocusHandle, Focusable as _, SharedString, Subscription, Window, actions, div, prelude::*, px};
+use gpui_component::menu::PopupMenu;
+use gpui_component::popover::Popover;
 
 use super::{ItemKey, SidebarRow, Workspace};
+use crate::ui::widgets::MenuTrigger;
 
-actions!(sidebar, [FocusSidebar, NavUp, NavDown, NavFirst, NavLast, NavExpand, NavCollapse, NavOpen, NavOpenAnother, NavEdit, NavDelete, NavLeave]);
+actions!(
+    sidebar,
+    [
+        FocusSidebar,
+        NavUp,
+        NavDown,
+        NavFirst,
+        NavLast,
+        NavExpand,
+        NavCollapse,
+        NavOpen,
+        NavOpenAnother,
+        NavEdit,
+        NavEditHost,
+        NavDelete,
+        NavDeleteHost,
+        NavMenu,
+        NavLeave
+    ]
+);
 
 /// The key context of the sidebar's list, for its arrow, Enter, F2 and Delete bindings.
 pub const CONTEXT: &str = "Sidebar";
@@ -30,21 +57,45 @@ pub(super) struct NavState {
     pub focused: bool,
     /// Scroll the cursor's row into view on the next frame, once its row exists.
     pub reveal: bool,
+    /// The keyboard moved the cursor since the last click in the list. A click focuses the
+    /// list too, but shouldn't light up a cursor the mouse never used.
+    pub keyboard: bool,
+    /// The row whose menu is open from its ⋯ button or Shift+F10.
+    pub menu: Option<RowMenu>,
+}
+
+pub(super) struct RowMenu {
+    pub target: NavTarget,
+    pub menu: Entity<PopupMenu>,
+    _dismissed: Subscription,
 }
 
 impl NavState {
     pub fn new(cx: &mut Context<Workspace>) -> Self {
         // A tab stop too, so Tab from Quick connect reaches the list.
-        Self { focus: cx.focus_handle().tab_index(0).tab_stop(true), cursor: None, focused: false, reveal: false }
+        Self {
+            focus: cx.focus_handle().tab_index(0).tab_stop(true),
+            cursor: None,
+            focused: false,
+            reveal: false,
+            keyboard: false,
+            menu: None,
+        }
     }
 }
 
 impl Workspace {
     /// The sidebar's keys are for the list itself. With a button inside it focused (Tab), the
-    /// key goes on to that button instead.
-    pub(super) fn nav_owns(&self, window: &Window, cx: &mut Context<Self>) -> bool {
+    /// key goes on to that button instead. With a dialog up they do nothing: a second Delete
+    /// must not act behind the question the first one asked.
+    pub(super) fn nav_owns(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        if self.modal_open(cx) {
+            return false;
+        }
         let owns = self.nav.focus.is_focused(window);
-        if !owns {
+        if owns {
+            self.nav.keyboard = true;
+        } else {
             cx.propagate();
         }
         owns
@@ -52,7 +103,117 @@ impl Workspace {
 
     /// Whether the keyboard cursor is on this row and should be drawn.
     pub(super) fn nav_focus_on(&self, target: &NavTarget) -> bool {
-        self.nav.focused && self.nav.cursor.as_ref() == Some(target)
+        self.nav.focused && self.nav.keyboard && self.nav.cursor.as_ref() == Some(target)
+    }
+
+    /// A click on a row: the cursor follows it, without showing until a key is used.
+    pub(super) fn nav_clicked(&mut self, target: NavTarget) {
+        self.nav.cursor = Some(target);
+        self.nav.keyboard = false;
+    }
+
+    /// The Session a row stands for: an item's own (its only one, or its terminal beside
+    /// listed desktops), or a Session's row.
+    pub(super) fn nav_session(&self, target: &NavTarget) -> Option<usize> {
+        match target {
+            NavTarget::Session(id) => Some(*id),
+            NavTarget::Item(key) => self.item_state(key).main.map(|s| s.id),
+            NavTarget::Project(_) | NavTarget::AddHost(_) => None,
+        }
+    }
+
+    // ---- row menus ---------------------------------------------------------------------
+
+    /// Open a row's menu: from its ⋯ button, or Shift+F10 on the keyboard cursor's row. It
+    /// is the row's right-click menu.
+    pub(super) fn open_row_menu(&mut self, target: NavTarget, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open(cx) {
+            return;
+        }
+        let menu = match &target {
+            NavTarget::Item(key) => {
+                let Some(item) = self.item_for_key(key) else { return };
+                let build = self.item_menu(&item, cx);
+                PopupMenu::build(window, cx, move |menu, window, cx| build(menu, window, cx))
+            }
+            NavTarget::Session(id) => {
+                if !self.sessions.iter().any(|s| s.id == *id) {
+                    return;
+                }
+                let build = self.session_menu(*id, cx);
+                PopupMenu::build(window, cx, move |menu, window, cx| build(menu, window, cx))
+            }
+            NavTarget::Project(id) => {
+                let Some(index) = self.library.projects.iter().position(|p| p.id == *id) else { return };
+                let build = self.project_menu(index, cx);
+                PopupMenu::build(window, cx, move |menu, window, cx| build(menu, window, cx))
+            }
+            NavTarget::AddHost(_) => return,
+        };
+        // Opened from the keyboard: Escape returns there. A chosen action keeps the focus it
+        // gave (a terminal it showed, a dialog it opened).
+        let from_sidebar = self.nav.focus.is_focused(window);
+        let menu_focus = menu.focus_handle(cx);
+        let dismissed = cx.subscribe_in(&menu, window, move |this, _, _: &DismissEvent, window, cx| {
+            this.nav.menu = None;
+            if menu_focus.is_focused(window) {
+                if from_sidebar {
+                    window.focus(&this.nav.focus, cx);
+                } else {
+                    this.focus_active(window, cx);
+                }
+            }
+            cx.notify();
+        });
+        menu.focus_handle(cx).focus(window, cx);
+        self.nav.menu = Some(RowMenu { target, menu, _dismissed: dismissed });
+        self.nav.reveal = true;
+        cx.notify();
+    }
+
+    pub(super) fn close_row_menu(&mut self, cx: &mut Context<Self>) {
+        if self.nav.menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    pub(super) fn row_menu_open(&self, target: &NavTarget) -> bool {
+        self.nav.menu.as_ref().is_some_and(|m| m.target == *target)
+    }
+
+    /// The row's menu hung from `trigger` (a ⋯ button), open while `open_row_menu` says so.
+    pub(super) fn menu_popover(&self, id: SharedString, target: NavTarget, trigger: MenuTrigger, cx: &mut Context<Self>) -> AnyElement {
+        let menu = self.nav.menu.as_ref().filter(|m| m.target == target).map(|m| m.menu.clone());
+        let ws = cx.entity().downgrade();
+        Popover::new(id)
+            .appearance(false)
+            .anchor(gpui::Anchor::TopRight)
+            .trigger(trigger)
+            .open(menu.is_some())
+            .when_some(menu.as_ref(), |el, menu| el.track_focus(&menu.focus_handle(cx)))
+            .on_open_change(move |open, window, cx| {
+                let (open, target) = (*open, target.clone());
+                let _ = ws.update(cx, |this, cx| {
+                    if open {
+                        this.open_row_menu(target, window, cx);
+                    } else {
+                        this.close_row_menu(cx);
+                    }
+                });
+            })
+            .content(move |_, _, _| menu.clone().map(|m| m.into_any_element()).unwrap_or_else(|| div().into_any_element()))
+            .into_any_element()
+    }
+
+    /// For a row without a ⋯ button (a Session's, a Project's): an invisible point at its end
+    /// for Shift+F10's menu to hang from, there only while that menu is open.
+    pub(super) fn row_menu_anchor(&self, target: NavTarget, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.row_menu_open(&target) {
+            return None;
+        }
+        let trigger = MenuTrigger::new(div().id("row-menu-anchor").size(px(1.)));
+        let popover = self.menu_popover(SharedString::from(format!("row-menu-{target:?}")), target, trigger, cx);
+        Some(div().absolute().right(px(8.)).bottom(px(4.)).child(popover).into_any_element())
     }
 
     /// The rows the cursor can be on, in order, each with the sidebar list row it is drawn in.
@@ -108,10 +269,18 @@ impl Workspace {
             _ => false,
         };
         let on_item = |t: &NavTarget| matches!((t, &active), (NavTarget::Item(key), Some((_, item))) if key == item);
+        // In a folded Project: its row.
+        let on_project = |t: &NavTarget| match (t, &active) {
+            (NavTarget::Project(id), Some((_, ItemKey::Host { project, .. } | ItemKey::Shell { project: Some(project), .. }))) => {
+                id == project
+            }
+            _ => false,
+        };
         targets
             .iter()
             .find(|(t, _)| on(t))
             .or_else(|| targets.iter().find(|(t, _)| on_item(t)))
+            .or_else(|| targets.iter().find(|(t, _)| on_project(t)))
             .or_else(|| targets.first())
             .map(|(t, _)| t.clone())
     }
@@ -143,6 +312,7 @@ impl Workspace {
             self.nav.cursor = Some(home);
         }
         self.nav.reveal = true;
+        self.nav.keyboard = true;
         window.focus(&self.nav.focus, cx);
         cx.notify();
     }
@@ -254,33 +424,62 @@ impl Workspace {
         }
     }
 
-    /// F2: edit the Host or Project, or rename the Session.
-    pub(super) fn nav_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// F2: rename the Session the row stands for; on an idle Host or a Project, edit it.
+    /// `host` (Shift+F2): always edit the Host.
+    pub(super) fn nav_edit(&mut self, host: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some((cursor, _)) = self.nav_cursor() else { return };
+        if !host && let Some(id) = self.nav_session(&cursor) {
+            self.open_rename_session(id, window, cx);
+            return;
+        }
         match cursor {
             NavTarget::Project(id) | NavTarget::AddHost(id) => self.open_edit_project(id, window, cx),
             NavTarget::Item(ItemKey::Host { project, host }) => self.open_edit_host(project, host, window, cx),
-            NavTarget::Session(id) => self.open_rename_session(id, window, cx),
+            NavTarget::Session(id) => {
+                if let Some(super::SessionKind::Ssh { host_id } | super::SessionKind::Desktop { host_id, .. }) =
+                    self.sessions.iter().find(|s| s.id == id).map(|s| s.kind.clone())
+                    && let Some(project) = self.sessions.iter().find(|s| s.id == id).and_then(|s| s.project_id.clone())
+                {
+                    self.open_edit_host(project, host_id, window, cx);
+                }
+            }
             NavTarget::Item(ItemKey::Shell { .. }) => {}
         }
     }
 
-    /// Delete: ask to delete the Host or Project, or close the Session (asking first if a
-    /// command is still printing output).
-    pub(super) fn nav_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Delete: disconnect (or close) the Session the row stands for, asking first if a
+    /// command is still printing output; on an idle Host or a Project, ask to delete it.
+    /// `host` (Shift+Delete): always ask to delete the Host.
+    pub(super) fn nav_delete(&mut self, host: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some((cursor, _)) = self.nav_cursor() else { return };
+        if !host && let Some(id) = self.nav_session(&cursor) {
+            self.request_close(id, window, cx);
+            // Stay in the sidebar, which closing would have left.
+            if !self.modal_open(cx) {
+                window.focus(&self.nav.focus, cx);
+            }
+            return;
+        }
         match cursor {
-            NavTarget::Project(id) => self.confirm_delete_project(id, cx),
+            NavTarget::Project(id) if !host => self.confirm_delete_project(id, cx),
             NavTarget::Item(ItemKey::Host { host, .. }) => self.confirm_delete_host(host, cx),
             NavTarget::Session(id) => {
-                self.request_close(id, window, cx);
-                // Stay in the sidebar, which closing would have left.
-                if !self.modal_open(cx) {
-                    window.focus(&self.nav.focus, cx);
+                let host = self.sessions.iter().find(|s| s.id == id).and_then(|s| match &s.kind {
+                    super::SessionKind::Ssh { host_id } | super::SessionKind::Desktop { host_id, .. } => Some(host_id.clone()),
+                    super::SessionKind::Local { .. } => None,
+                });
+                if let Some(host) = host {
+                    self.confirm_delete_host(host, cx);
                 }
             }
-            NavTarget::Item(ItemKey::Shell { .. }) | NavTarget::AddHost(_) => {}
+            NavTarget::Project(_) | NavTarget::Item(ItemKey::Shell { .. }) | NavTarget::AddHost(_) => {}
         }
+    }
+
+    /// Shift+F10 (or the Menu key): the cursor's row's menu.
+    pub(super) fn nav_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((cursor, _)) = self.nav_cursor() else { return };
+        self.open_row_menu(cursor, window, cx);
     }
 
     /// Escape: back to the Session.

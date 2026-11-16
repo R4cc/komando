@@ -6,6 +6,12 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Shift+F10 (or the Menu key) opens the menu of the sidebar row you're on, so everything in
+  it, such as opening a remote desktop or duplicating a host, works from the keyboard.
+- Shift+F2 and Shift+Delete in the sidebar edit or delete the host.
+
 ### Changed
 
 - Dragging the window around no longer redraws everything in it at every step, so the drag
@@ -13,6 +19,37 @@ All notable changes to Komando are listed here. The format follows
 - Resizing the window by an edge redraws at the new size right away. The content no longer
   stretches and then catches up with the edge.
 - Komando no longer uses CPU redrawing its window while it is minimized or in the tray.
+- In the sidebar, F2 and Delete act on the session a row stands for: they rename and
+  disconnect it on a host's row as on its sessions' rows. On a host without sessions, or a
+  project, they still edit or delete it.
+- A host row offers only the buttons that leave its name readable: in a narrow sidebar the
+  remote desktop button goes first (it is also in the ⋯ menu), then ×. A host whose click
+  opens its desktop no longer repeats that in a button until it has a session.
+- The ⋯, +, × and remote desktop buttons now share one size and style. The remote desktop
+  button shows the same RDP or VNC tag as the desktop's session row, and × turns red under
+  the pointer.
+- Session rows always show the session's number, which no longer gets cut off in a narrow
+  sidebar, and drop the SSH tag: the terminal icon already says it. In a narrow sidebar ×
+  floats over the row's end instead of taking room from the title.
+- A disconnected session's title is dimmer than a connected one's.
+- The keyboard cursor in the sidebar shows only once you use the keyboard, no longer moves
+  the row's content, and shows the row's buttons. A folded project holding the session
+  you're in has a bar in its colour, instead of a highlight that looked like hovering it.
+
+### Fixed
+
+- In the sidebar, a second Delete while "Disconnect …?" was asking disconnected the session
+  without waiting for the answer. Sidebar keys now do nothing while a question is open.
+- Disconnect and Disconnect all in the menus now also ask first while a command is still
+  printing output, like × and Ctrl+Shift+W.
+- A renamed session now shows its name in the sidebar wherever it is listed: after the host's
+  name on the host's row, and on a remote desktop's row. A remote desktop in its own window
+  shows it in that window's title.
+- Session numbers are no longer given out again after closing the highest one; they start
+  at 1 again only once all of a host's sessions are closed.
+- A host's row is lit for its terminal shown beside another session in split view, also
+  while its remote desktops are listed under it.
+- The project row's + button sat on a patch of a different colour.
 
 ## [0.6.3] - 2026-11-16
 

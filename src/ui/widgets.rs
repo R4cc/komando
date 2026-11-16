@@ -191,6 +191,65 @@ pub fn icon_button(id: impl Into<ElementId>, icon: &str, p: AppPalette) -> State
         .child(icon_el(icon, 16., p.text_muted))
 }
 
+/// A sidebar row's × button: like `icon_button`, but it turns red under the pointer, icon
+/// and all, since it disconnects or discards.
+pub fn close_button(id: impl Into<ElementId>, size: f32, p: AppPalette) -> Stateful<gpui::Div> {
+    let id: ElementId = id.into();
+    let group = SharedString::from(format!("close-button-{id}"));
+    div()
+        .id(id)
+        .group(group.clone())
+        .role(gpui::Role::Button)
+        .tab_index(0)
+        .focus_visible(move |s| s.border_2().border_color(p.focus))
+        .size(px(size))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(p.corner(7.))
+        .cursor_pointer()
+        .hover(move |s| s.bg(p.danger.opacity(0.14)))
+        .child(
+            svg()
+                .path("icons/x.svg")
+                .size(px(16.))
+                .flex_shrink_0()
+                .text_color(p.text_muted)
+                .group_hover(group, move |s| s.text_color(p.danger)),
+        )
+}
+
+/// A button that opens a menu (an `icon_button` a gpui-component Popover can hang a menu
+/// from), so a ⋯ button looks and behaves like the buttons beside it.
+#[derive(IntoElement)]
+pub struct MenuTrigger {
+    base: Stateful<gpui::Div>,
+    open: bool,
+}
+
+impl MenuTrigger {
+    pub fn new(base: Stateful<gpui::Div>) -> Self {
+        Self { base, open: false }
+    }
+}
+
+impl gpui_component::Selectable for MenuTrigger {
+    fn selected(mut self, selected: bool) -> Self {
+        self.open = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.open
+    }
+}
+
+impl gpui::RenderOnce for MenuTrigger {
+    fn render(self, _: &mut gpui::Window, _: &mut gpui::App) -> impl IntoElement {
+        self.base
+    }
+}
+
 /// The icon for a Local Shell's program: PowerShell 7, Windows PowerShell, Command Prompt, or
 /// Tux for WSL and Unix shells. `None` for anything else, which gets the generic terminal icon.
 pub fn shell_icon(program: &str) -> Option<&'static str> {

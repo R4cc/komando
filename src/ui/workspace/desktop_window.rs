@@ -73,7 +73,10 @@ impl Render for DesktopWindow {
             Status::Connected => ("Connected", p.success),
             Status::Disconnected(_) => ("Disconnected", p.text_faint),
         };
-        let name: SharedString = format!("{} · {}", view.host, view.protocol.label()).into();
+        let name: SharedString = match &view.session_name {
+            Some(given) => format!("{} · {} · {given}", view.host, view.protocol.label()).into(),
+            None => format!("{} · {}", view.host, view.protocol.label()).into(),
+        };
         let target = view.target.clone();
         let live = !matches!(view.status, Status::Disconnected(_));
         let id = self.session;

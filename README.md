@@ -84,7 +84,8 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
   host (or hover it and click +) for another terminal; each gets a row under the host that you
   can rename.
 - **Sidebar by keyboard.** <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd>, then arrows to move and
-  fold, Enter to connect, Ctrl+Enter for another session, F2 to edit, Delete to remove.
+  fold, Enter to connect, Ctrl+Enter for another session, F2 to rename, Delete to disconnect,
+  Shift+F10 for the row's menu.
 - **Resizable navigation.** Drag the gap beside the sidebar to set its width; Komando remembers it.
 - **Local shells too.** PowerShell 7, Windows PowerShell and Command Prompt are detected; add WSL
   or Git Bash yourself.
@@ -220,7 +221,10 @@ there, with a blinking line as the default.
 | Move into the sidebar / back to the session | Ctrl+Shift+H / Esc |
 | Sidebar: move; fold or unfold | ↑ / ↓; ← / → |
 | Sidebar: connect; another session | Enter; Ctrl+Enter |
-| Sidebar: edit host or project, rename session; delete | F2; Delete |
+| Sidebar: rename the session (edit an idle host or a project) | F2 |
+| Sidebar: disconnect the session (delete an idle host or a project) | Delete |
+| Sidebar: edit / delete the host | Shift+F2 / Shift+Delete |
+| Sidebar: the row's menu | Shift+F10 or the Menu key |
 | Next / previous session | Ctrl+Tab / Ctrl+Shift+Tab |
 | Copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
 | Copy whole output as text / as .txt file | Ctrl+Shift+A / Ctrl+Shift+S |
