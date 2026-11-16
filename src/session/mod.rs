@@ -70,8 +70,16 @@ pub enum HopStep {
 pub enum Prompt {
     /// First connection to this Host: trust its Host Key?
     HostKey { fingerprint: String, algorithm: String, reply: oneshot::Sender<bool> },
-    /// The Host Key differs from the trusted one. Shown as a blocking warning.
-    HostKeyChanged { fingerprint: String },
+    /// The Host Key differs from the trusted one: replace the trusted key with this one?
+    /// `previous` is the trusted key's fingerprint, when it can be read back. `openssh` says it
+    /// was trusted in the user's OpenSSH known_hosts, which Komando leaves as it is.
+    HostKeyChanged {
+        fingerprint: String,
+        previous: Option<String>,
+        algorithm: String,
+        openssh: bool,
+        reply: oneshot::Sender<bool>,
+    },
     /// Ask for text (user name) or a secret (password, key passphrase). `None` cancels.
     /// `remember` shows a "Remember for this host" checkbox, ticked or not; `None` hides it.
     Input {

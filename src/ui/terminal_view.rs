@@ -186,7 +186,13 @@ pub enum TerminalEvent {
 
 enum ActivePrompt {
     HostKey { fingerprint: String, algorithm: String, reply: Option<oneshot::Sender<bool>> },
-    HostKeyChanged { fingerprint: String },
+    HostKeyChanged {
+        fingerprint: String,
+        previous: Option<String>,
+        algorithm: String,
+        openssh: bool,
+        reply: Option<oneshot::Sender<bool>>,
+    },
     Input {
         label: String,
         secret: bool,
@@ -654,7 +660,7 @@ impl TerminalView {
                     match &self.status {
                         Status::Disconnected(reason) => {
                             // A pending question can no longer be answered.
-                            if matches!(self.prompt, Some(ActivePrompt::Input { .. } | ActivePrompt::HostKey { .. })) {
+                            if matches!(self.prompt, Some(ActivePrompt::Input { .. } | ActivePrompt::HostKey { .. } | ActivePrompt::HostKeyChanged { .. })) {
                                 self.prompt = None;
                             }
                             self.startup = StartupCommands::default();
@@ -713,7 +719,9 @@ impl TerminalView {
             Prompt::HostKey { fingerprint, algorithm, reply } => {
                 ActivePrompt::HostKey { fingerprint, algorithm, reply: Some(reply) }
             }
-            Prompt::HostKeyChanged { fingerprint } => ActivePrompt::HostKeyChanged { fingerprint },
+            Prompt::HostKeyChanged { fingerprint, previous, algorithm, openssh, reply } => {
+                ActivePrompt::HostKeyChanged { fingerprint, previous, algorithm, openssh, reply: Some(reply) }
+            }
             Prompt::Input { label, secret, remember, error, reply } => {
                 let input = cx.new(|cx| InputState::new(window, cx).masked(secret).placeholder(label.clone()));
                 let sub = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
@@ -769,11 +777,12 @@ impl TerminalView {
         }
     }
 
+    /// Answer a host key question: trust a new host's key, or replace a changed one.
     fn answer_host_key(&mut self, trust: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ActivePrompt::HostKey { reply, .. }) = self.prompt.as_mut() {
-            if let Some(reply) = reply.take() {
-                let _ = reply.send(trust);
-            }
+        if let Some(ActivePrompt::HostKey { reply, .. } | ActivePrompt::HostKeyChanged { reply, .. }) = self.prompt.as_mut()
+            && let Some(reply) = reply.take()
+        {
+            let _ = reply.send(trust);
         }
         self.prompt = None;
         window.focus(&self.focus, cx);
@@ -1780,7 +1789,7 @@ impl TerminalView {
     pub fn cancel_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.prompt {
             Some(ActivePrompt::Input { .. }) => self.answer_input(false, window, cx),
-            Some(ActivePrompt::HostKey { .. }) => self.answer_host_key(false, window, cx),
+            Some(ActivePrompt::HostKey { .. } | ActivePrompt::HostKeyChanged { .. }) => self.answer_host_key(false, window, cx),
             Some(_) => self.dismiss(window, cx),
             None => {}
         }
@@ -1862,18 +1871,36 @@ impl TerminalView {
                         .into_any_element(),
                 ],
             ),
-            ActivePrompt::HostKeyChanged { fingerprint } => card(
-                "Host key changed: connection blocked",
+            ActivePrompt::HostKeyChanged { fingerprint, previous, algorithm, openssh, .. } => card(
+                &match &hop_name {
+                    Some(name) => format!("Host key of {name} changed"),
+                    None => "Host key changed".to_string(),
+                },
                 div()
                     .flex()
                     .flex_col()
                     .gap(px(10.))
-                    .child(text("The server presented a different key than the one you trusted. Someone may be intercepting the connection, or the server was reinstalled. Confirm with the server's administrator before removing the old key from Komando's known_hosts.".into()))
+                    .child(text(format!(
+                        "The server presented a different {algorithm} key than the one you trusted{}. Someone may be intercepting the connection, or the server was reinstalled. Only replace the key if you know why it changed, or after checking the new fingerprint with the server's administrator.",
+                        if *openssh { " in your OpenSSH known_hosts" } else { "" }
+                    )))
+                    .when_some(previous.clone(), |el, previous| {
+                        el.child(text("Trusted key:".into())).child(mono(previous))
+                    })
+                    .child(text("Key presented now:".into()))
                     .child(mono(fingerprint.clone()))
+                    .when(*openssh, |el| {
+                        el.child(text("Replacing trusts the new key in Komando only; your OpenSSH known_hosts is left as it is.".into()))
+                    })
                     .into_any_element(),
-                vec![button("hkc-ok", "Close", ButtonKind::Secondary, p)
-                    .on_click(cx.listener(|this, _, window, cx| this.dismiss(window, cx)))
-                    .into_any_element()],
+                vec![
+                    button("hkc-cancel", "Cancel", ButtonKind::Ghost, p)
+                        .on_click(cx.listener(|this, _, window, cx| this.answer_host_key(false, window, cx)))
+                        .into_any_element(),
+                    button("hkc-replace", "Replace key and connect", ButtonKind::Danger, p)
+                        .on_click(cx.listener(|this, _, window, cx| this.answer_host_key(true, window, cx)))
+                        .into_any_element(),
+                ],
             ),
             ActivePrompt::Input { label, secret, error, input, remember, .. } => card(
                 label,

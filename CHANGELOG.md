@@ -6,6 +6,18 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- When a server's host key no longer matches the one you trusted, the warning now shows the
+  trusted and the new fingerprint and offers **Replace key and connect**, instead of only
+  blocking the connection. Replacing trusts the new key from then on; a key trusted in your
+  OpenSSH known_hosts is replaced in Komando only, and that file is left unchanged.
+
+### Removed
+
+- The Close session button in the title bar. Close a session from its tab or sidebar row,
+  its right-click menu, or with Ctrl+Shift+W.
+
 ## [0.6.2] - 2026-11-16
 
 ### Added

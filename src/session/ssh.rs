@@ -349,12 +349,28 @@ impl client::Handler for Client {
                 }
                 Ok(false) => {}
                 Err(russh::keys::Error::KeyChanged { .. }) => {
-                    self.log.line(LogKind::Fail, "Host key changed since you trusted it");
-                    self.proxy.send(SessionEvent::Prompt(Prompt::HostKeyChanged { fingerprint }));
-                    return Err(anyhow!(
-                        "The host key of {} has changed. Connection blocked: this can mean someone is intercepting the connection.",
-                        self.host
-                    ));
+                    self.log.line(LogKind::Fail, "Host key changed since you trusted it: waiting for you to decide");
+                    let previous = russh::keys::known_hosts::known_host_keys_path(&self.host, self.port, path)
+                        .ok()
+                        .and_then(|keys| keys.into_iter().find(|(_, old)| old.algorithm() == key.algorithm()))
+                        .map(|(_, old)| old.fingerprint(HashAlg::Sha256).to_string());
+                    let (reply, answer) = oneshot::channel();
+                    self.proxy.send(SessionEvent::Prompt(Prompt::HostKeyChanged {
+                        fingerprint,
+                        previous,
+                        algorithm: key.algorithm().to_string(),
+                        openssh: path != &self.known_hosts,
+                        reply,
+                    }));
+                    if !answer.await.unwrap_or(false) {
+                        return Err(anyhow!(
+                            "The host key of {} has changed. Connection blocked: this can mean someone is intercepting the connection.",
+                            self.host
+                        ));
+                    }
+                    replace_known_host(&self.host, self.port, key, &self.known_hosts)?;
+                    self.log.line(LogKind::Warn, "Old host key replaced: the new one is trusted from now on");
+                    return Ok(true);
                 }
                 Err(err) => log::warn!("reading {}: {err}", path.display()),
             }
@@ -377,6 +393,44 @@ impl client::Handler for Client {
         } else {
             Err(anyhow!("Host key not trusted."))
         }
+    }
+}
+
+/// Trust `key` as the only key of `host:port` in Komando's known_hosts at `path`: every entry
+/// for that host is removed (as `ssh-keygen -R` does) and the new key added. Komando's list is
+/// checked before the user's OpenSSH known_hosts, so a key that changed there is replaced too,
+/// without touching that file.
+fn replace_known_host(host: &str, port: u16, key: &PublicKey, path: &std::path::Path) -> Result<()> {
+    let host_port = if port == 22 { host.to_string() } else { format!("[{host}]:{port}") };
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err).with_context(|| format!("Reading {}", path.display())),
+    };
+    let mut kept = String::with_capacity(existing.len());
+    for line in existing.lines() {
+        let hosts = line.split_whitespace().next().unwrap_or("");
+        if !hosts.starts_with('#') && hosts.split(',').any(|entry| entry == host_port) {
+            continue;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    // Written beside the file and moved over it, so a crash never leaves it half written.
+    let temporary = path.with_extension("komando-new");
+    std::fs::write(&temporary, kept).with_context(|| format!("Writing {}", temporary.display()))?;
+    std::fs::rename(&temporary, path).with_context(|| format!("Replacing {}", path.display()))?;
+    russh::keys::known_hosts::learn_known_hosts_path(host, port, key, path)?;
+    // An entry this could not recognise (a hashed host name) would still hold the old key.
+    match russh::keys::check_known_hosts_path(host, port, key, path) {
+        Ok(true) => Ok(()),
+        _ => Err(anyhow!(
+            "Could not replace the old host key of {host}: remove its line from {} and connect again.",
+            path.display()
+        )),
     }
 }
 
@@ -962,6 +1016,35 @@ mod tests {
         assert!(is_cancelled(&anyhow!(CANCELLED)));
         assert!(is_cancelled(&anyhow!(CANCELLED).context("Signing in to web01")));
         assert!(!is_cancelled(&anyhow!("Connection refused")));
+    }
+
+    #[test]
+    fn replacing_a_changed_host_key_keeps_other_hosts() {
+        use russh::keys::{PrivateKey, ssh_key::private::Ed25519Keypair};
+        let key = |seed| PrivateKey::from(Ed25519Keypair::from_seed(&[seed; 32])).public_key().clone();
+        let (old, new, other) = (key(1), key(2), key(3));
+        let dir = std::env::temp_dir().join(format!("komando-known-hosts-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("known_hosts");
+        std::fs::create_dir_all(&dir).unwrap();
+        let line = |host: &str, key: &russh::keys::PublicKey| format!("{host} {}\n", key.to_openssh().unwrap());
+        std::fs::write(
+            &path,
+            format!("# kept\n{}{}{}", line("web01", &old), line("[web01]:2222", &other), line("db01,web01", &old)),
+        )
+        .unwrap();
+        assert!(matches!(
+            russh::keys::check_known_hosts_path("web01", 22, &new, &path),
+            Err(russh::keys::Error::KeyChanged { .. })
+        ));
+
+        super::replace_known_host("web01", 22, &new, &path).unwrap();
+
+        assert!(russh::keys::check_known_hosts_path("web01", 22, &new, &path).unwrap(), "the new key is trusted");
+        assert!(russh::keys::check_known_hosts_path("web01", 2222, &other, &path).unwrap(), "another port is left alone");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# kept\n"), "comments are kept: {text}");
+        assert!(!text.contains("db01"), "a line also naming the host goes, as with ssh-keygen -R: {text}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

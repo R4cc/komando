@@ -3831,13 +3831,6 @@ impl Workspace {
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_file(cx))),
                     )
                 })
-                // Set apart from the harmless copy actions: this one disconnects.
-                .child(div().w(px(1.)).h(px(14.)).mx(px(4.)).bg(p.border))
-                // An unplug, not an ✕: the window's own ✕ is in the same bar.
-                .child(
-                    strip_action("close-active", "unplug", "Close session", true, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.close_session(id, window, cx))),
-                )
                 // Room between the session's actions and the window buttons.
                 .child(div().w(px(12.)).h(px(16.)).mr(px(6.)).border_r_1().border_color(p.border))
                 .into_any_element(),
