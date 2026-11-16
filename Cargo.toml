@@ -88,7 +88,10 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.12", features = ["font-
 # vte and alacritty_terminal with one change: printable ASCII is parsed and written to the
 # grid in runs rather than one character at a time. See vendor/vte/KOMANDO.md and
 # vendor/alacritty_terminal/KOMANDO.md.
+# gpui's Windows backend with three changes to how a window moves, resizes and sits in the
+# tray. See vendor/gpui-pre-windows/KOMANDO.md.
 [patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 russh = { path = "vendor/russh" }
 vte = { path = "vendor/vte" }
 alacritty_terminal = { path = "vendor/alacritty_terminal" }

@@ -1,0 +1,138 @@
+diff -ruN a/src/events.rs b/src/events.rs
+--- a/src/events.rs
++++ b/src/events.rs
+@@ -96,10 +96,21 @@
+             WM_ACTIVATE => self.handle_activate_msg(wparam),
+             WM_CREATE => self.handle_create_msg(handle),
+             WM_MOVE => self.handle_move_msg(handle, lparam),
+-            WM_SIZE => self.handle_size_msg(wparam, lparam),
++            WM_SIZE => self.handle_size_msg(handle, wparam, lparam),
+             WM_GETMINMAXINFO => self.handle_get_min_max_info_msg(lparam),
+-            WM_ENTERSIZEMOVE | WM_ENTERMENULOOP => self.handle_size_move_loop(handle),
+-            WM_EXITSIZEMOVE | WM_EXITMENULOOP => self.handle_size_move_loop_exit(handle),
++            WM_ENTERSIZEMOVE => {
++                self.state.in_size_move.set(true);
++                self.handle_size_move_loop(handle)
++            }
++            WM_EXITSIZEMOVE => {
++                self.state.in_size_move.set(false);
++                if self.state.move_pending.get() {
++                    self.report_moved();
++                }
++                self.handle_size_move_loop_exit(handle)
++            }
++            WM_ENTERMENULOOP => self.handle_size_move_loop(handle),
++            WM_EXITMENULOOP => self.handle_size_move_loop_exit(handle),
+             WM_TIMER => self.handle_timer_msg(handle, wparam),
+             WM_NCCALCSIZE => self.handle_calc_client_size(handle, wparam, lparam),
+             WM_DPICHANGED => self.handle_dpi_changed_msg(handle, wparam, lparam),
+@@ -196,11 +207,26 @@
+                 )?);
+             }
+         }
++        // Komando: GPUI answers every move with `Window::bounds_changed`, which refreshes
++        // the whole window: a full layout and paint of every view for each pixel the window
++        // is dragged, though nothing in it changed (Cyenoch/solid-gpui#2 measured ~4 ms of
++        // CPU per WM_MOVE for an application tree). While the user drags, report the move
++        // once, when the loop ends. Crossing to another monitor is still reported at once,
++        // by `set_display` above.
++        if self.state.in_size_move.get() {
++            self.state.move_pending.set(true);
++        } else {
++            self.report_moved();
++        }
++        Some(0)
++    }
++
++    fn report_moved(&self) {
++        self.state.move_pending.set(false);
+         if let Some(mut callback) = self.state.callbacks.moved.take() {
+             callback();
+             self.state.callbacks.moved.set(Some(callback));
+         }
+-        Some(0)
+     }
+ 
+     fn handle_get_min_max_info_msg(&self, lparam: LPARAM) -> Option<isize> {
+@@ -218,7 +244,7 @@
+         Some(0)
+     }
+ 
+-    fn handle_size_msg(self: &Rc<Self>, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
++    fn handle_size_msg(self: &Rc<Self>, handle: HWND, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
+         // Minimizing and restoring both arrive as `WM_SIZE`; the deferred report
+         // reads `IsIconic` at delivery, so one call covers both directions.
+         self.report_visibility();
+@@ -248,6 +274,15 @@
+         }
+ 
+         self.handle_size_change(new_size, scale_factor, should_resize_renderer);
++        if self.state.in_size_move.get() {
++            // Komando: while the user drags an edge, present the new size now. Otherwise
++            // the frame waits for WM_PAINT or the loop's timer, both of which Windows only
++            // delivers when no mouse input is waiting, so with a fast mouse DWM keeps showing
++            // the old, stretched frame and the content trails the edge. The modal loop runs
++            // from DefWindowProc, outside any GPUI update, so drawing here is safe; the draw
++            // guard still defers a draw that would nest.
++            self.draw_window(handle, false);
++        }
+         Some(0)
+     }
+ 
+diff -ruN a/src/platform.rs b/src/platform.rs
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -465,15 +465,20 @@
+                     };
+                     for hwnd in all_windows.read().iter() {
+                         unsafe {
++                            // Komando: a hidden or minimized window draws nothing, so don't
++                            // invalidate it either. Each WM_PAINT it got still went through
++                            // DefWindowProc, at display rate, for as long as it stayed in the
++                            // tray (zed-industries/zed#66221). Showing or restoring the window
++                            // invalidates it anyway (WM_SHOWWINDOW, and WM_SIZE with
++                            // CS_HREDRAW | CS_VREDRAW).
++                            if !IsWindowVisible(hwnd.as_raw()).as_bool()
++                                || IsIconic(hwnd.as_raw()).as_bool()
++                            {
++                                hwnd.frame_signal.take();
++                                continue;
++                            }
+                             if let Some(signal_at) = signal_at {
+-                                if IsWindowVisible(hwnd.as_raw()).as_bool()
+-                                    && !IsIconic(hwnd.as_raw()).as_bool()
+-                                {
+-                                    hwnd.frame_signal.record(signal_at, signal_source);
+-                                } else {
+-                                    // Hidden windows may not consume WM_PAINT until shown again.
+-                                    hwnd.frame_signal.take();
+-                                }
++                                hwnd.frame_signal.record(signal_at, signal_source);
+                             }
+                             RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE)
+                                 .ok()
+diff -ruN a/src/window.rs b/src/window.rs
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -52,6 +52,12 @@
+     pub background_appearance: Cell<WindowBackgroundAppearance>,
+     pub scale_factor: Cell<f32>,
+     pub restore_from_minimized: Cell<Option<Box<dyn FnMut(RequestFrameOptions)>>>,
++    /// Komando: inside the modal move/size loop (between `WM_ENTERSIZEMOVE` and
++    /// `WM_EXITSIZEMOVE`), where moves are reported once at the end and every resize is
++    /// drawn as it happens.
++    pub in_size_move: Cell<bool>,
++    /// Komando: the window moved during the current move/size loop and hasn't said so yet.
++    pub move_pending: Cell<bool>,
+ 
+     pub callbacks: Callbacks,
+     pub frame_signal: Arc<PlatformFrameSignal>,
+@@ -168,6 +174,8 @@
+             background_appearance: Cell::new(WindowBackgroundAppearance::Opaque),
+             scale_factor: Cell::new(scale_factor),
+             restore_from_minimized: Cell::new(restore_from_minimized),
++            in_size_move: Cell::new(false),
++            move_pending: Cell::new(false),
+             min_size,
+             callbacks,
+             frame_signal: Arc::new(PlatformFrameSignal::new()),

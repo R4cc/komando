@@ -147,6 +147,12 @@ than one character at a time, and read simple CSI sequences such as colour chang
 their `KOMANDO.md` files say what changed, how to run their tests and how to carry the changes
 over to new releases.
 
+gpui's Windows backend is patched in `vendor/gpui-pre-windows`. While the window is dragged it
+isn't redrawn at every step. Each new size is presented as soon as an edge is resized, and a
+hidden or minimized window isn't invalidated at every vblank. Its `KOMANDO.md` lists what to
+check on Windows after changing it. Keep its version in step with `gpui-pre`, which
+`Cargo.toml` pins with `=`.
+
 `src/ui/terminal_view/render_bench.rs` times the terminal's per-frame work without a window: copying
 the screen out of the terminal and laying out its rows with GPUI's real text system, for a
 static screen, typing, a log flood, a TUI redrawing a few rows, Unicode-heavy screens and a

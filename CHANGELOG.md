@@ -6,6 +6,14 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Dragging the window around no longer redraws everything in it at every step, so the drag
+  stays smooth even with busy terminals open.
+- Resizing the window by an edge redraws at the new size right away. The content no longer
+  stretches and then catches up with the edge.
+- Komando no longer uses CPU redrawing its window while it is minimized or in the tray.
+
 ## [0.6.3] - 2026-11-16
 
 ### Added
