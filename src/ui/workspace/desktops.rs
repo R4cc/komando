@@ -73,6 +73,14 @@ impl Workspace {
             DesktopViewEvent::Reconnect => this.connect_desktop(id, window, cx),
             DesktopViewEvent::EditHost => this.open_edit_host(project.clone(), host.clone(), window, cx),
             DesktopViewEvent::OpenSsh => this.show_terminal_of(&project, &host, window, cx),
+            DesktopViewEvent::Options { reconnect } => {
+                let options = view.read(cx).options;
+                this.save_viewer_options(&host, protocol, options, cx);
+                let live = this.sessions.iter().find(|s| s.id == id).is_some_and(|s| s.is_live());
+                if *reconnect && live {
+                    this.connect_desktop(id, window, cx);
+                }
+            }
         });
         self.collapsed_items.remove(&item);
         self.collapsed.remove(project_id);
@@ -190,12 +198,15 @@ impl Workspace {
             size: (width, height),
             scale_percent,
             shared: self.settings.vnc_shared,
+            quality: remote.viewer.quality,
             certificates: self.data_dir.join(desktop::trust::FILE),
         };
-        let fit = self.settings.rdp_fit_desktop;
+        let fit = remote.viewer.match_window.unwrap_or(self.settings.rdp_fit_desktop);
+        let options = remote.viewer;
         let label = self.desktop_target(&project_id, &host_id, protocol);
         view.update(cx, |v, cx| {
             v.fit_desktop = fit;
+            v.set_options(options, cx);
             v.target = label.into();
             v.connect(target, cx);
         });
@@ -239,6 +250,23 @@ impl Workspace {
                 }
             }
             None => self.open_host(project_id, host_id, window, cx),
+        }
+    }
+
+    /// Keep a desktop's toolbar options for its Host.
+    fn save_viewer_options(&mut self, host_id: &str, protocol: Protocol, options: crate::model::ViewerOptions, cx: &mut Context<Self>) {
+        let Some(index) = self.library.hosts.iter().position(|h| h.id == host_id) else { return };
+        let Some(remote) = self.library.hosts[index].desktop_mut(protocol) else { return };
+        if remote.viewer == options {
+            return;
+        }
+        let before = remote.viewer;
+        remote.viewer = options;
+        if let Err(err) = self.library.save(&self.data_dir) {
+            if let Some(remote) = self.library.hosts[index].desktop_mut(protocol) {
+                remote.viewer = before;
+            }
+            self.show_toast(format!("Could not save the desktop's options: {err:#}"), cx);
         }
     }
 
@@ -309,23 +337,14 @@ impl Workspace {
         }
     }
 
-    /// The title bar's actions on a Remote Desktop: Ctrl+Alt+Del (RDP), Reconnect once it has
-    /// dropped, and its own window. Moving between a Host's terminal and its desktops is done
+    /// The title bar's actions on a Remote Desktop: Reconnect once it has dropped, and its own
+    /// window. Keys, scaling and quality are in the desktop's own toolbar. Moving between a Host's terminal and its desktops is done
     /// from the sidebar, so the bar keeps its layout.
     pub(super) fn desktop_strip_buttons(&self, entry: &SessionEntry, p: AppPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let Some(protocol) = desktop_protocol(entry) else { return vec![] };
         let id = entry.id;
+        let _ = protocol;
         let mut buttons = vec![];
-        if let (Protocol::Rdp, Some(view)) = (protocol, entry.view.desktop())
-            && entry.is_live()
-        {
-            let view = view.clone();
-            buttons.push(
-                strip_action("ctrl-alt-del", "keyboard", "Send Ctrl+Alt+Del", false, p)
-                    .on_click(move |_: &ClickEvent, _, cx| view.read(cx).send_ctrl_alt_del())
-                    .into_any_element(),
-            );
-        }
         if !entry.is_live() {
             buttons.push(
                 strip_action("desktop-reconnect", "refresh-cw", "Reconnect", false, p)

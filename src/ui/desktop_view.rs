@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt as _;
+use futures::channel::mpsc::UnboundedSender;
 use futures::channel::oneshot;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -19,7 +20,10 @@ use gpui::{
 use gpui_component::input::{Input, InputEvent, InputState};
 use zeroize::Zeroizing;
 
+use crate::desktop::capture::{self, Capture, HookedKey};
+use crate::desktop::keys::Code;
 use crate::desktop::{self, Button, Connection, DesktopEvent, DesktopPrompt, Input as DesktopInput, Key, Protocol, SignIn, Status, Target};
+use crate::model::{Scaling, ViewerOptions};
 use crate::theme::{Appearance};
 use crate::ui::widgets::{ButtonKind, button, elevation, password_input, spinner};
 
@@ -27,6 +31,13 @@ use crate::ui::widgets::{ButtonKind, button, elevation, password_input, spinner}
 pub const CONTEXT: &str = "RemoteDesktop";
 
 actions!(remote_desktop, [SendTab, SendBackTab]);
+
+mod toolbar;
+
+/// In full screen, how near the top edge the pointer brings the toolbar out, and how far below
+/// it the toolbar goes away again (far enough for its menus).
+const REVEAL_EDGE: f32 = 6.;
+const HIDE_BELOW: f32 = 280.;
 
 /// How long the pane must keep a new size before an RDP server is asked to follow it, so
 /// dragging the window's edge doesn't resize the remote desktop at every step.
@@ -44,6 +55,8 @@ pub enum DesktopViewEvent {
     EditHost,
     /// The desktop goes through the Host's SSH Session, which isn't connected: open it.
     OpenSsh,
+    /// Its toolbar changed `options`: keep them for the Host. A new quality takes a reconnect.
+    Options { reconnect: bool },
 }
 
 impl EventEmitter<DesktopViewEvent> for DesktopView {}
@@ -67,8 +80,10 @@ enum ActivePrompt {
 #[derive(Clone, Copy)]
 struct Placement {
     bounds: Bounds<Pixels>,
-    /// Remote pixels per logical pixel.
-    remote_per_px: f32,
+    /// Remote pixels per logical pixel, across and down (they differ when stretched).
+    remote_per_px: (f32, f32),
+    /// Remote pixels shown per screen pixel, as a percentage, across.
+    zoom: f32,
 }
 
 pub struct DesktopView {
@@ -82,6 +97,8 @@ pub struct DesktopView {
     pub fit_desktop: bool,
     /// Waiting for the Host's SSH Session before connecting through it.
     pub waiting_for_ssh: bool,
+    /// Scaling, quality and input options, from the Host and changed in the toolbar.
+    pub options: ViewerOptions,
     focus: FocusHandle,
     connection: Option<Connection>,
     _events: Option<Task<()>>,
@@ -105,6 +122,13 @@ pub struct DesktopView {
     window: Option<AnyWindowHandle>,
     /// A question that came while the pane was between windows, asked once it has one.
     pending_prompt: Option<DesktopPrompt>,
+    /// The pointer over the pane, for panning a desktop shown at actual size.
+    pointer: Rc<Cell<Option<Point<Pixels>>>>,
+    /// Keys taken from Windows for this desktop (see `desktop::capture`), and what it takes.
+    capture: Option<(UnboundedSender<HookedKey>, Capture)>,
+    _captured: Option<Task<()>>,
+    /// In full screen: the toolbar is out.
+    toolbar_out: bool,
     _window_subscriptions: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
@@ -125,6 +149,7 @@ impl DesktopView {
             status: Status::Connecting,
             fit_desktop: true,
             waiting_for_ssh: false,
+            options: ViewerOptions::default(),
             focus,
             connection: None,
             _events: None,
@@ -141,6 +166,10 @@ impl DesktopView {
             modifiers: Modifiers::default(),
             window: None,
             pending_prompt: None,
+            pointer: Rc::default(),
+            capture: None,
+            _captured: None,
+            toolbar_out: false,
             _window_subscriptions: vec![],
             _subscriptions: vec![],
         };
@@ -154,10 +183,16 @@ impl DesktopView {
     pub fn bind(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.window = Some(window.window_handle());
         // Keys held when the keyboard leaves would stay down on the remote side.
-        let blur = cx.on_blur(&self.focus, window, |this, _, _| this.release_all());
+        let blur = cx.on_blur(&self.focus, window, |this, window, cx| {
+            this.release_all();
+            this.refresh_capture(window, cx);
+        });
         let release = cx.on_release_in(window, |this, window, _| {
             for image in this.image.take().into_iter().chain(this.stale.drain(..)) {
                 let _ = window.drop_image(image);
+            }
+            if let Some((sender, _)) = this.capture.take() {
+                capture::stop(&sender);
             }
         });
         self._window_subscriptions = vec![blur, release];
@@ -277,6 +312,98 @@ impl DesktopView {
 
     pub fn send_ctrl_alt_del(&self) {
         self.send(DesktopInput::CtrlAltDel);
+    }
+
+    /// Press `keys` in order and let them go in reverse: a shortcut the keyboard here can't send.
+    fn send_combo(&self, keys: &[Code]) {
+        for key in keys {
+            self.send(DesktopInput::Key { key: Key::Code(*key), down: true });
+        }
+        for key in keys.iter().rev() {
+            self.send(DesktopInput::Key { key: Key::Code(*key), down: false });
+        }
+    }
+
+    /// The Host's options, as the desktop connects. Not kept again: they came from there.
+    pub fn set_options(&mut self, options: ViewerOptions, cx: &mut Context<Self>) {
+        self.options = options;
+        cx.notify();
+    }
+
+    /// The toolbar changed an option: apply it and have it kept for the Host.
+    fn change_options(&mut self, change: impl FnOnce(&mut ViewerOptions), cx: &mut Context<Self>) {
+        let before = self.options;
+        change(&mut self.options);
+        if self.options == before {
+            return;
+        }
+        if self.options.view_only && !before.view_only {
+            self.release_all();
+        }
+        if let Some(fit) = self.options.match_window.filter(|_| self.options.match_window != before.match_window) {
+            self.fit_desktop = fit;
+            // Following the pane again asks for its size, even the one asked before.
+            self.requested = None;
+        }
+        let reconnect = self.options.quality != before.quality;
+        cx.emit(DesktopViewEvent::Options { reconnect });
+        cx.notify();
+    }
+
+    /// Keyboard and mouse go to the desktop: it is connected, nothing is being asked, and it
+    /// isn't view-only.
+    fn accepts_input(&self) -> bool {
+        self.is_connected() && self.prompt.is_none() && !self.options.view_only
+    }
+
+    /// Take the keys Windows keeps for itself while the desktop has the keyboard in the
+    /// window in front, and give them back otherwise.
+    fn refresh_capture(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let wanted = Capture {
+            shortcuts: self.options.send_shortcuts,
+            media: self.options.send_media_keys,
+            volume: self.options.send_volume_keys,
+        };
+        let on = wanted.any() && self.accepts_input() && self.focus.is_focused(window) && window.is_window_active();
+        match (&self.capture, on) {
+            (Some((_, current)), true) if *current == wanted => {}
+            (Some((sender, _)), true) => {
+                capture::start(wanted, sender.clone());
+                self.capture = Some((sender.clone(), wanted));
+            }
+            (None, true) => {
+                let (sender, mut keys) = futures::channel::mpsc::unbounded();
+                capture::start(wanted, sender.clone());
+                self.capture = Some((sender, wanted));
+                self._captured = Some(cx.spawn(async move |this, cx| {
+                    while let Some(key) = keys.next().await {
+                        if this.update(cx, |this, _| this.hooked(key)).is_err() {
+                            break;
+                        }
+                    }
+                }));
+            }
+            (Some(_), false) => {
+                if let Some((sender, _)) = self.capture.take() {
+                    capture::stop(&sender);
+                }
+                self._captured = None;
+            }
+            (None, false) => {}
+        }
+    }
+
+    /// A key taken from Windows for this desktop.
+    fn hooked(&mut self, key: HookedKey) {
+        if !self.accepts_input() {
+            return;
+        }
+        if key.down {
+            self.held.insert(key.code.scancode);
+        } else {
+            self.held.remove(&key.code.scancode);
+        }
+        self.send(DesktopInput::Key { key: Key::Code(key.code), down: key.down });
     }
 
     pub fn has_prompt(&self) -> bool {
@@ -416,7 +543,7 @@ impl DesktopView {
     // Input
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.focus.is_focused(window) || !self.is_connected() {
+        if !self.focus.is_focused(window) || !self.accepts_input() {
             return;
         }
         let ks = &event.keystroke;
@@ -446,7 +573,7 @@ impl DesktopView {
     }
 
     fn modifiers_changed(&mut self, event: &ModifiersChangedEvent, window: &mut Window, _: &mut Context<Self>) {
-        if !self.focus.is_focused(window) || !self.is_connected() {
+        if !self.focus.is_focused(window) || !self.accepts_input() {
             return;
         }
         let (old, new) = (self.modifiers, event.modifiers);
@@ -465,7 +592,7 @@ impl DesktopView {
     }
 
     fn send_tab(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.focus.is_focused(window) {
+        if !self.focus.is_focused(window) || !self.accepts_input() {
             cx.propagate();
             return;
         }
@@ -480,7 +607,7 @@ impl DesktopView {
     fn remote_point(&self, position: Point<Pixels>) -> Option<(u16, u16)> {
         let placement = self.placement.get()?;
         let local = position - placement.bounds.origin;
-        let (x, y) = (f32::from(local.x) * placement.remote_per_px, f32::from(local.y) * placement.remote_per_px);
+        let (x, y) = (f32::from(local.x) * placement.remote_per_px.0, f32::from(local.y) * placement.remote_per_px.1);
         let (w, h) = self.remote_size;
         let clamp = |v: f32, max: u32| v.clamp(0., max.saturating_sub(1) as f32) as u16;
         Some((clamp(x, w), clamp(y, h)))
@@ -574,11 +701,15 @@ impl DesktopView {
         }));
     }
 
-    fn render_picture(&self) -> AnyElement {
+    /// The picture, placed by the scaling option, with a thin outline where it starts and
+    /// ends. The pane around it is darker, so the desktop's edge reads at a glance.
+    fn render_picture(&self, outline: gpui::Hsla) -> AnyElement {
         let image = self.image.clone();
         let (w, h) = self.remote_size;
         let pane = self.pane.clone();
         let placement = self.placement.clone();
+        let pointer = self.pointer.clone();
+        let scaling = self.options.scaling;
         canvas(
             move |bounds, window, _| {
                 pane.set(Some((bounds, window.scale_factor())));
@@ -588,24 +719,79 @@ impl DesktopView {
                 if w == 0 || h == 0 {
                     return;
                 }
-                // One remote pixel per device pixel, scaled down (never up) to fit.
                 let scale = window.scale_factor();
+                // One remote pixel per device pixel.
                 let natural = size(px(w as f32 / scale), px(h as f32 / scale));
-                let fit = (f32::from(bounds.size.width) / f32::from(natural.width))
-                    .min(f32::from(bounds.size.height) / f32::from(natural.height))
-                    .min(1.);
-                let shown = size(natural.width * fit, natural.height * fit);
-                let origin = point(
-                    bounds.origin.x + (bounds.size.width - shown.width) / 2.,
-                    bounds.origin.y + (bounds.size.height - shown.height) / 2.,
-                );
+                let shown = match scaling {
+                    Scaling::Fit => {
+                        let fit = (f32::from(bounds.size.width) / f32::from(natural.width))
+                            .min(f32::from(bounds.size.height) / f32::from(natural.height));
+                        size(natural.width * fit, natural.height * fit)
+                    }
+                    Scaling::Stretch => bounds.size,
+                    Scaling::Actual => natural,
+                };
+                let origin = match scaling {
+                    // Larger than the pane: it pans with the pointer, so moving to an edge
+                    // shows that edge. Smaller: centered.
+                    Scaling::Actual => {
+                        let at = pointer.get().unwrap_or(bounds.center());
+                        let axis = |shown: Pixels, room: Pixels, start: Pixels, at: Pixels| {
+                            if shown <= room {
+                                start + (room - shown) / 2.
+                            } else {
+                                let t = (f32::from(at - start) / f32::from(room)).clamp(0., 1.);
+                                start - (shown - room) * t
+                            }
+                        };
+                        point(
+                            axis(shown.width, bounds.size.width, bounds.origin.x, at.x),
+                            axis(shown.height, bounds.size.height, bounds.origin.y, at.y),
+                        )
+                    }
+                    _ => point(
+                        bounds.origin.x + (bounds.size.width - shown.width) / 2.,
+                        bounds.origin.y + (bounds.size.height - shown.height) / 2.,
+                    ),
+                };
                 let rect = Bounds { origin: point(origin.x.round(), origin.y.round()), size: shown };
-                placement.set(Some(Placement { bounds: rect, remote_per_px: w as f32 / f32::from(shown.width) }));
+                placement.set(Some(Placement {
+                    bounds: rect,
+                    remote_per_px: (w as f32 / f32::from(shown.width), h as f32 / f32::from(shown.height)),
+                    zoom: f32::from(shown.width) * scale / w as f32 * 100.,
+                }));
                 let _ = window.paint_image(rect, rect, Corners::default(), image, 0, false);
+                // Just outside the picture, so it covers none of the desktop.
+                window.paint_quad(gpui::outline(rect.dilate(px(1.)), outline, gpui::BorderStyle::Solid));
             },
         )
         .size_full()
         .into_any_element()
+    }
+
+    /// The pointer moved over the pane: pan a desktop larger than it, and in full screen bring
+    /// the toolbar out at the top edge or put it away well below.
+    fn track_pointer(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.pointer.set(Some(event.position));
+        if self.options.scaling == Scaling::Actual && self.overflows() {
+            cx.notify();
+        }
+        if window.is_fullscreen() {
+            let top = self.pane.get().map_or(px(0.), |(bounds, _)| bounds.origin.y);
+            let y = f32::from(event.position.y - top);
+            let out = if y <= REVEAL_EDGE { true } else if y > HIDE_BELOW { false } else { self.toolbar_out };
+            if out != self.toolbar_out {
+                self.toolbar_out = out;
+                cx.notify();
+            }
+        }
+    }
+
+    /// The desktop at actual size is larger than the pane.
+    fn overflows(&self) -> bool {
+        let Some((bounds, scale)) = self.pane.get() else { return false };
+        let (w, h) = self.remote_size;
+        w as f32 / scale > f32::from(bounds.size.width) || h as f32 / scale > f32::from(bounds.size.height)
     }
 
     fn render_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -774,20 +960,29 @@ impl Render for DesktopView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_image(window);
         self.follow_pane(window, cx);
+        self.refresh_capture(window, cx);
         let card = self.render_card(cx);
         let app = cx.global::<Appearance>().app;
-        let connected = self.is_connected() && self.prompt.is_none();
+        let input = self.accepts_input();
         let dimmed = card.is_some() && self.image.is_some();
-        div()
-            .id("remote-desktop")
-            .key_context(CONTEXT)
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::key_down))
-            .on_key_up(cx.listener(Self::key_up))
-            .on_modifiers_changed(cx.listener(Self::modifiers_changed))
-            .on_action(cx.listener(|this, _: &SendTab, window, cx| this.send_tab(false, window, cx)))
-            .on_action(cx.listener(|this, _: &SendBackTab, window, cx| this.send_tab(true, window, cx)))
-            .when(connected, |el| {
+        let fullscreen = window.is_fullscreen();
+        if !fullscreen {
+            self.toolbar_out = false;
+        }
+        // Pure white or black at low strength: a tinted edge would pick up the pane's color.
+        let outline = if app.dark { gpui::white().opacity(0.22) } else { gpui::black().opacity(0.18) };
+        let toolbar = self.render_toolbar(fullscreen, window, cx);
+        let picture = div()
+            .id("remote-desktop-picture")
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .overflow_hidden()
+            // Darker than the pane, so the desktop's edge stands out.
+            .bg(if app.dark { gpui::black().opacity(0.35) } else { gpui::black().opacity(0.06) })
+            .on_mouse_move(cx.listener(Self::track_pointer))
+            .when(input, |el| {
                 el.on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
                     .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
                     .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))
@@ -800,12 +995,34 @@ impl Render for DesktopView {
                     .on_mouse_move(cx.listener(Self::mouse_move))
                     .on_scroll(cx.listener(Self::scroll))
             })
+            // View only: a click still gives the pane the keyboard (for the toolbar's keys).
+            .when(!input, |el| {
+                el.on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                    if this.prompt.is_none() {
+                        window.focus(&this.focus, cx);
+                    }
+                }))
+            })
+            .child(div().absolute().inset_0().when(dimmed, |el| el.opacity(0.35)).child(self.render_picture(outline)))
+            .when_some(card, |el, card| el.child(div().absolute().inset_0().p(px(16.)).flex().items_center().justify_center().child(card)));
+        div()
+            .id("remote-desktop")
+            .key_context(CONTEXT)
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::key_down))
+            .on_key_up(cx.listener(Self::key_up))
+            .on_modifiers_changed(cx.listener(Self::modifiers_changed))
+            .on_action(cx.listener(|this, _: &SendTab, window, cx| this.send_tab(false, window, cx)))
+            .on_action(cx.listener(|this, _: &SendBackTab, window, cx| this.send_tab(true, window, cx)))
             .relative()
             .size_full()
-            .rounded(app.corner(crate::ui::widgets::ISLAND_RADIUS - 1.))
+            .flex()
+            .flex_col()
+            .when(!fullscreen, |el| el.rounded(app.corner(crate::ui::widgets::ISLAND_RADIUS - 1.)))
             .overflow_hidden()
             .bg(app.background)
-            .child(div().absolute().inset_0().when(dimmed, |el| el.opacity(0.35)).child(self.render_picture()))
-            .when_some(card, |el, card| el.child(div().absolute().inset_0().p(px(16.)).flex().items_center().justify_center().child(card)))
+            .font_family(app.font_family)
+            // In full screen the toolbar floats over the desktop, drawn after it.
+            .map(|el| if fullscreen { el.child(picture).child(toolbar) } else { el.child(toolbar).child(picture) })
     }
 }

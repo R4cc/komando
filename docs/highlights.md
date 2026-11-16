@@ -55,10 +55,31 @@ Rules use word boundaries to avoid matches inside unrelated words such as `ERRAT
 - **Where they apply.** Highlights are skipped in full-screen programs (vim, less, htop), and
   each screen row is matched on its own. On a light terminal, very bright colours are darkened
   so they stay readable.
-- **Storage.** Sets are kept in `%APPDATA%\Komando\highlights.json`. Adding and editing
-  individual rules inside the app is not available yet: edit the JSON and re-import.
+- **Storage.** Sets are kept in `%APPDATA%\Komando\highlights.json`. Editing a rule keeps
+  the fields Komando doesn't show, so an edited set still exports for Tabby.
 - **Default updates.** Saved, untouched copies of the old `ADJUSTED` set and the earlier,
   muted `Linux & RHEL` set automatically use the new bundle. Renamed, reordered, recoloured
   or individually toggled sets stay as saved;
   deleted sets stay deleted. The set keeps its id, so a disabled default stays disabled.
   To replace a customized copy, import [the current bundled set](../assets/highlights/default.json).
+
+## Editing rules
+
+Open a set in **Settings → Highlights** and click a rule to edit it, or **Add rule** below
+the set's rules. **New set** creates an empty set; the pencil on a set renames it.
+
+The rule editor shows a line of output coloured as the terminal will colour it, and updates
+as you type. Paste a line from your own output into the field below it to try the rule on
+that line. The editor sets:
+
+- **Match:** plain text, or a regular expression, and whether case matters. For a regular
+  expression, **Colour only a group** colours just one capture group, by number or name.
+- **Text colour** and **Background:** the bundled set's colours (failure, warning, success,
+  information, component, quiet), or any hex colour. Without a background, the text colour
+  is adjusted to read on light and dark terminals.
+- **Bold.**
+
+A rule that can't work is not saved: the editor says why, for example a regular expression
+Komando can't use or a group the pattern doesn't have. The arrows beside a rule move it up or
+down its set, since the first rule to match wins. **Delete rule** in the editor removes it
+after a second click.

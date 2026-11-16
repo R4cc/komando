@@ -38,6 +38,7 @@ mod command_history;
 mod desktop_window;
 mod desktops;
 mod forms;
+mod highlights;
 mod import;
 mod notifications;
 mod settings;
@@ -279,6 +280,10 @@ enum Overlay {
     ProjectForm(forms::ProjectForm),
     /// Add or edit a standalone Local Shell from Settings.
     ShellForm,
+    /// Add or edit a Highlight Rule from Settings → Highlights.
+    RuleForm(Box<highlights::RuleForm>),
+    /// Create or rename a Highlight Set.
+    SetForm(highlights::SetForm),
     /// Ask before something that can't be undone.
     Confirm { title: String, body: String, action: ConfirmAction },
     /// A Host's Command History.
@@ -2297,10 +2302,10 @@ impl Workspace {
     }
 
     /// A press on the backdrop beside a dialog. Quick connect, a question and the history
-    /// close; a host, project or shell form stays, since a stray click would throw away what was
+    /// close; a host, project, shell or highlight form stays, since a stray click would throw away what was
     /// typed into it. Escape, Cancel and the close button still close it.
     fn backdrop_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.overlay, Some(Overlay::HostForm(_) | Overlay::ProjectForm(_) | Overlay::ShellForm)) {
+        if !matches!(self.overlay, Some(Overlay::HostForm(_) | Overlay::ProjectForm(_) | Overlay::ShellForm | Overlay::RuleForm(_) | Overlay::SetForm(_))) {
             self.close_overlay(window, cx);
         }
     }
@@ -3519,7 +3524,7 @@ impl Workspace {
             .h(px(28.))
             .ml(px(guide + 7.))
             .pl(px(8.))
-            .pr(px(10.))
+            .pr(px(4.))
             .flex()
             .items_center()
             .gap(px(8.))
@@ -3548,26 +3553,20 @@ impl Workspace {
                     .when(!active, |el| el.group_hover("session-row", |s| s.text_color(p.hover_text)))
                     .child(title.clone()),
             )
+            // Nothing here hides on hover: the close button has a place of its own at the end,
+            // so the row's tags and state stay where they are.
             .when(own_window, |el| {
                 el.child(
                     div()
                         .id("session-own-window")
                         .flex_shrink_0()
-                        .group_hover("session-row", |s| s.invisible())
                         .tooltip(|window, cx| Tooltip::new("In its own window").build(window, cx))
                         .child(icon_el("app-window", 12., p.text_faint)),
                 )
             })
             // Titles can repeat (two shells in the same folder); the number tells them apart.
             .when(desktop.is_none() && title.as_ref() != format!("Session {}", session.number), |el| {
-                el.child(
-                    div()
-                        .flex_shrink_0()
-                        .text_size(px(11.))
-                        .text_color(p.text_faint)
-                        .group_hover("session-row", |s| s.invisible())
-                        .child(format!("#{}", session.number)),
-                )
+                el.child(div().flex_shrink_0().text_size(px(11.)).text_color(p.text_faint).child(format!("#{}", session.number)))
             })
             .when_some(kind, |el, kind| {
                 el.child(
@@ -3582,7 +3581,6 @@ impl Workspace {
                         .line_height(px(14.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(if desktop.is_some() { p.brand } else { p.text_faint })
-                        .group_hover("session-row", |s| s.invisible())
                         .child(kind),
                 )
             })
@@ -3590,37 +3588,18 @@ impl Workspace {
                 div()
                     .flex_shrink_0()
                     .id("session-status")
-                    .group_hover("session-row", |s| s.invisible())
                     .child(status_indicator(Some(&session.status), self.background_busy(session), p)),
             )
             .child(
-                div()
-                    .absolute()
-                    .id("session-hover-actions")
-                    .right(px(4.))
-                    .top(px(2.))
-                    .rounded(p.corner(7.))
-                    .bg(p.sidebar)
-                    .invisible()
-                    .group_hover("session-row", |s| s.visible())
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .rounded(p.corner(7.))
-                            .bg(if active { p.active } else { p.hover })
-                            .child(status_indicator(Some(&session.status), self.background_busy(session), p))
-                            .child(
-                            icon_button(SharedString::from(format!("close-{id}")), "x", p)
-                                .aria_label(if live { "Disconnect" } else { "Close session" })
-                                .size(px(24.))
-                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    this.close_session(id, window, cx);
-                                })),
-                        ),
-                    ),
+                div().w(px(22.)).flex_shrink_0().invisible().group_hover("session-row", |s| s.visible()).child(
+                    icon_button(SharedString::from(format!("close-{id}")), "x", p)
+                        .aria_label(if live { "Disconnect" } else { "Close session" })
+                        .size(px(22.))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.close_session(id, window, cx);
+                        })),
+                ),
             )
             .context_menu(session_menu)
             .into_any_element()
@@ -4265,6 +4244,8 @@ impl Workspace {
             Overlay::HostForm(form) => self.render_host_form(form, wide, p, cx),
             Overlay::ProjectForm(form) => self.render_project_form(form, wide, p, cx),
             Overlay::ShellForm => self.render_shell_form(p, cx),
+            Overlay::RuleForm(form) => self.render_rule_form(form, p, cx),
+            Overlay::SetForm(form) => self.render_set_form(form, p, cx),
             Overlay::History(panel) => self.render_history(panel, p, cx),
             Overlay::Confirm { title, body, .. } => form_card(
                 p,
@@ -4919,6 +4900,13 @@ impl Render for Workspace {
                 .text_color(p.text)
                 .child(msg.clone())
         });
+        // Full screen, from a desktop's toolbar: the desktop alone, edge to edge.
+        if window.is_fullscreen()
+            && let Some(SessionView::Desktop(view)) =
+                self.active_entry().filter(|e| e.window.is_none() && matches!(self.page, Page::Sessions)).map(|e| e.view.clone())
+        {
+            return root.bg(p.background).child(view).children(self.render_prompt_modal(p, cx)).children(toast).into_any_element();
+        }
         let title_bar = self.render_title_bar(false, p, window, cx);
         let page = match self.page {
             Page::Settings(section) => self.render_settings(section, p, cx),

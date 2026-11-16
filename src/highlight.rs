@@ -102,6 +102,135 @@ impl Keyword {
     }
 }
 
+/// The colours of the bundled set, by what they mean there, offered first in the rule editor.
+pub const SWATCHES: [(&str, &str); 6] = [
+    ("#FF4D4F", "Failure"),
+    ("#FFAA00", "Warning"),
+    ("#87C999", "Success"),
+    ("#87BFEA", "Information"),
+    ("#B6A0D9", "Component"),
+    ("#A6ADB9", "Quiet"),
+];
+
+/// A Highlight Rule as the rule editor in Settings → Highlights holds it: what the form shows,
+/// before it is checked. `build` turns it into a rule or says what's wrong with it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuleDraft {
+    pub text: String,
+    pub regex: bool,
+    pub case_sensitive: bool,
+    /// Regex only: colour just this capture group, by number or name. Empty colours the whole match.
+    pub group: String,
+    /// `#rgb` or `#rrggbb`; `None` (or empty) leaves the text colour alone.
+    pub foreground: Option<String>,
+    pub background: Option<String>,
+    pub bold: bool,
+}
+
+impl RuleDraft {
+    pub fn from_keyword(kw: &Keyword) -> Self {
+        let group = match (kw.is_regex() && kw.is_match_group.unwrap_or(false), kw.match_group.as_deref()) {
+            (true, Some(g)) => g.trim().to_string(),
+            _ => String::new(),
+        };
+        Self {
+            text: kw.text.clone(),
+            regex: kw.is_regex(),
+            case_sensitive: kw.case_sensitive(),
+            group,
+            foreground: kw.fg().map(long_hex),
+            background: kw.bg().map(long_hex),
+            bold: kw.bold.unwrap_or(false),
+        }
+    }
+
+    /// The rule, or why it can't be one, in words for the form. `base` is the rule being
+    /// edited: whether it is on, and the fields Komando doesn't show, carry over, and fields
+    /// the edit didn't change are left exactly as they were.
+    pub fn build(&self, base: Option<&Keyword>) -> std::result::Result<Keyword, String> {
+        if self.text.trim().is_empty() {
+            return Err("Enter the text or regular expression to match.".into());
+        }
+        let group = self.group.trim();
+        let use_group = self.regex && !group.is_empty();
+        if self.regex {
+            let regex = RegexBuilder::new(&self.text)
+                .case_insensitive(!self.case_sensitive)
+                .build()
+                .map_err(|err| format!("This isn't a regular expression Komando can use: {}", first_line(&err.to_string())))?;
+            let exists = match group.parse::<usize>() {
+                _ if !use_group => true,
+                Ok(index) => index < regex.captures_len(),
+                Err(_) => regex.capture_names().flatten().any(|name| name == group),
+            };
+            if !exists {
+                return Err(format!("The pattern has no group {group}. Number groups from 1, or name one with (?P<name>…)."));
+            }
+        }
+        let colour = |value: Option<&str>, what: &str| match value.map(str::trim).filter(|v| !v.is_empty()) {
+            None => Ok(None),
+            Some(v) => parse_hex(v).map(Some).ok_or_else(|| format!("{what} must be a hex colour such as #FF4D4F.")),
+        };
+        let fg = colour(self.foreground.as_deref(), "Text colour")?;
+        let bg = colour(self.background.as_deref(), "Background")?;
+        if fg.is_none() && bg.is_none() && !self.bold {
+            return Err("Choose a text colour, a background or bold: without one the rule colours nothing.".into());
+        }
+
+        let mut kw = base.cloned().unwrap_or_else(|| Keyword {
+            text: String::new(),
+            enabled: true,
+            is_reg_exp: Some(false),
+            is_case_sensitive: Some(false),
+            foreground: None,
+            foreground_color: None,
+            background: None,
+            background_color: None,
+            bold: None,
+            is_match_group: None,
+            match_group: None,
+            extra: Map::new(),
+        });
+        // An unchanged flag keeps how it was written, including not at all.
+        let keep = |old: Option<bool>, new: bool| if old.unwrap_or(false) == new { old } else { Some(new) };
+        kw.text = self.text.clone();
+        kw.is_reg_exp = keep(kw.is_reg_exp, self.regex);
+        kw.is_case_sensitive = keep(kw.is_case_sensitive, self.case_sensitive);
+        kw.bold = keep(kw.bold, self.bold);
+        kw.is_match_group = keep(kw.is_match_group, use_group);
+        if use_group && kw.match_group.as_deref().map(str::trim) != Some(group) {
+            kw.match_group = Some(group.to_string());
+        }
+        if kw.fg() != fg {
+            kw.foreground = Some(fg.is_some());
+            if let Some(c) = fg {
+                kw.foreground_color = Some(long_hex(c));
+            }
+        }
+        if kw.bg() != bg {
+            kw.background = Some(bg.is_some());
+            if let Some(c) = bg {
+                kw.background_color = Some(long_hex(c));
+            }
+        }
+        // A JavaScript rule rewritten here is a plain or regex rule now.
+        if kw.extra.get("isJS").and_then(Value::as_bool) == Some(true) {
+            kw.extra.insert("isJS".into(), Value::Bool(false));
+        }
+        Ok(kw)
+    }
+}
+
+/// An empty Highlight Set with a new id.
+pub fn new_set(name: &str) -> HighlightSet {
+    HighlightSet { id: uuid::Uuid::new_v4().to_string(), name: name.to_string(), keywords: vec![], extra: Map::new() }
+}
+
+/// `#RRGGBB`.
+pub fn long_hex(c: Rgb8) -> String {
+    format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb8 {
     pub r: u8,
@@ -846,6 +975,87 @@ mod tests {
         assert_eq!(h.rule_at(line, line.find("ok").unwrap()).unwrap().source, RuleSource { set: "b".into(), index: 1 });
         assert_eq!(h.rule_at(line, 0), None, "nothing colours it");
         assert_eq!(Highlighter::new(&[kw("ok", "#fff")]).rule_at("ok", 0), None, "no set to point to");
+    }
+
+    fn draft(text: &str) -> RuleDraft {
+        RuleDraft { text: text.into(), foreground: Some("#FF4D4F".into()), ..RuleDraft::default() }
+    }
+
+    #[test]
+    fn a_draft_becomes_a_rule_that_colours_what_it_describes() {
+        let mut d = draft(r"status=(?P<code>\d+)");
+        d.regex = true;
+        d.group = "code".into();
+        d.bold = true;
+        let rule = d.build(None).unwrap();
+        assert!(rule.enabled);
+        let h = Highlighter::new(&[rule]);
+        let line = "exit status=137 now";
+        let styles = h.styles(line).unwrap();
+        assert!(styles[line.find("status").unwrap()].is_none(), "only the group is coloured");
+        let s = styles[line.find("137").unwrap()].unwrap();
+        assert_eq!(s.fg, parse_hex("#FF4D4F"));
+        assert!(s.bold);
+    }
+
+    #[test]
+    fn drafts_that_cannot_work_say_why() {
+        let cases = [
+            (RuleDraft { text: "  ".into(), ..draft("") }, "Enter"),
+            (RuleDraft { regex: true, ..draft("(unclosed") }, "regular expression"),
+            (RuleDraft { regex: true, ..draft(r"(?<=x)y") }, "regular expression"),
+            (RuleDraft { regex: true, group: "2".into(), ..draft("(a)") }, "no group 2"),
+            (RuleDraft { regex: true, group: "name".into(), ..draft("(a)") }, "no group name"),
+            (RuleDraft { foreground: Some("red".into()), ..draft("x") }, "Text colour"),
+            (RuleDraft { background: Some("#12".into()), ..draft("x") }, "Background"),
+            (RuleDraft { foreground: None, ..draft("x") }, "colours nothing"),
+        ];
+        for (d, expected) in cases {
+            let err = d.build(None).unwrap_err();
+            assert!(err.contains(expected), "{d:?}: {err}");
+        }
+        // A group on a plain-text rule is ignored rather than refused: plain text has no groups.
+        assert!(RuleDraft { group: "1".into(), ..draft("x") }.build(None).is_ok());
+    }
+
+    /// Opening a rule in the editor and saving it unchanged must not rewrite it, so exported
+    /// sets stay what was imported.
+    #[test]
+    fn saving_an_unchanged_rule_gives_back_the_same_rule() {
+        for text in [DEFAULT_SET, LEGACY_DEFAULT_SET] {
+            for rule in &parse(text).unwrap()[0].keywords {
+                if rule.extra.get("isJS").and_then(Value::as_bool) == Some(true) {
+                    continue;
+                }
+                assert_eq!(&RuleDraft::from_keyword(rule).build(Some(rule)).unwrap(), rule, "{}", rule.text);
+            }
+        }
+    }
+
+    #[test]
+    fn editing_keeps_what_the_editor_does_not_show() {
+        let mut rule = kw("old", "#123456");
+        rule.enabled = false;
+        rule.extra.insert("custom".into(), Value::Bool(true));
+        let mut d = RuleDraft::from_keyword(&rule);
+        d.text = "new".into();
+        d.foreground = None;
+        d.background = Some("#abc".into());
+        let edited = d.build(Some(&rule)).unwrap();
+        assert_eq!(edited.text, "new");
+        assert!(!edited.enabled, "a switched-off rule stays off");
+        assert_eq!(edited.extra.get("custom"), Some(&Value::Bool(true)));
+        assert_eq!(edited.fg(), None, "the removed text colour is off");
+        assert_eq!(edited.bg(), parse_hex("#AABBCC"));
+        assert_eq!(edited.background_color.as_deref(), Some("#AABBCC"), "stored in the long form");
+    }
+
+    #[test]
+    fn a_new_set_has_its_own_id() {
+        let (a, b) = (new_set("Ops"), new_set("Ops"));
+        assert_eq!(a.name, "Ops");
+        assert!(a.keywords.is_empty());
+        assert_ne!(a.id, b.id);
     }
 
     #[test]

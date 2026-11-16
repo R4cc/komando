@@ -6,6 +6,7 @@
 //! most once until it has drawn, so a busy desktop costs one repaint per frame, not one per
 //! rectangle the server sends.
 
+pub mod capture;
 pub mod keys;
 mod rdp;
 pub mod trust;
@@ -22,7 +23,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
-pub use crate::model::Protocol;
+pub use crate::model::{Protocol, Quality};
 use crate::session::InputSink;
 pub use crate::session::Status;
 pub use keys::Key;
@@ -154,6 +155,8 @@ pub struct Target {
     pub scale_percent: u32,
     /// VNC: leave other viewers connected.
     pub shared: bool,
+    /// Picture detail traded for speed: colors (VNC), visual effects (RDP).
+    pub quality: Quality,
     /// Where trusted RDP certificates are kept.
     pub certificates: PathBuf,
 }
@@ -384,6 +387,7 @@ mod tests {
             size: (800, 600),
             scale_percent: 100,
             shared: true,
+            quality: Quality::High,
             certificates: std::env::temp_dir().join(format!("komando-test-{}", crate::model::new_id())),
         }
     }

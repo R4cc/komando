@@ -246,11 +246,119 @@ pub struct Desktop {
     /// and nothing crosses it unencrypted. Off: connect straight to the Host's address.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub through_ssh: bool,
+    /// How the desktop is shown and what input reaches it, set from its toolbar.
+    #[serde(default, skip_serializing_if = "ViewerOptions::is_default")]
+    pub viewer: ViewerOptions,
 }
 
 impl Desktop {
     pub fn new(protocol: Protocol) -> Self {
-        Self { port: protocol.default_port(), user: None, domain: None, credential: None, through_ssh: false }
+        Self {
+            port: protocol.default_port(),
+            user: None,
+            domain: None,
+            credential: None,
+            through_ssh: false,
+            viewer: ViewerOptions::default(),
+        }
+    }
+}
+
+/// A Remote Desktop's viewing options: chosen in its toolbar, kept for the Host.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ViewerOptions {
+    pub scaling: Scaling,
+    pub quality: Quality,
+    /// Show the desktop without sending it keyboard or mouse input.
+    pub view_only: bool,
+    /// Send the Windows key and system shortcuts (Alt+Tab, Ctrl+Esc, Print Screen) to the
+    /// desktop while it has the keyboard, instead of to this PC.
+    pub send_shortcuts: bool,
+    /// Send media keys (play/pause, next, previous, stop) to the desktop.
+    pub send_media_keys: bool,
+    /// Send volume up, down and mute to the desktop.
+    pub send_volume_keys: bool,
+    /// RDP: ask the server for a desktop the size of the pane, and again when it changes.
+    /// `None` follows Settings → Remote desktop.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub match_window: Option<bool>,
+}
+
+impl Default for ViewerOptions {
+    fn default() -> Self {
+        Self {
+            scaling: Scaling::Fit,
+            quality: Quality::High,
+            view_only: false,
+            send_shortcuts: true,
+            send_media_keys: true,
+            send_volume_keys: false,
+            match_window: None,
+        }
+    }
+}
+
+impl ViewerOptions {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// How a Remote Desktop's picture fills its pane.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Scaling {
+    /// As large as fits, keeping its shape.
+    #[default]
+    Fit,
+    /// One remote pixel per screen pixel; the view pans with the pointer when it is larger.
+    Actual,
+    /// The whole pane, its shape changed to fill it.
+    Stretch,
+}
+
+impl Scaling {
+    pub fn label(self) -> &'static str {
+        match self {
+            Scaling::Fit => "Fit",
+            Scaling::Actual => "100%",
+            Scaling::Stretch => "Stretch",
+        }
+    }
+}
+
+/// How much picture detail a Remote Desktop trades for speed. Applied when it connects.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Quality {
+    #[default]
+    High,
+    Medium,
+    Low,
+}
+
+impl Quality {
+    pub const ALL: [Quality; 3] = [Quality::High, Quality::Medium, Quality::Low];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Quality::High => "High",
+            Quality::Medium => "Medium",
+            Quality::Low => "Low",
+        }
+    }
+
+    /// What it means for `protocol`, in a few words.
+    pub fn describe(self, protocol: Protocol) -> &'static str {
+        match (self, protocol) {
+            (Quality::High, Protocol::Rdp) => "All visual effects",
+            (Quality::Medium, Protocol::Rdp) => "No wallpaper or animations",
+            (Quality::Low, Protocol::Rdp) => "Plain windows, fastest",
+            (Quality::High, _) => "Full color",
+            (Quality::Medium, _) => "65,536 colors",
+            (Quality::Low, _) => "256 colors, fastest",
+        }
     }
 }
 
@@ -1093,6 +1201,22 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn viewer_options_default_away_and_keep_what_is_set() {
+        let plain = Desktop::new(Protocol::Vnc);
+        assert!(!toml::to_string(&plain).unwrap().contains("viewer"));
+        let old: Desktop = toml::from_str("port = 5900").unwrap();
+        assert_eq!(old.viewer, ViewerOptions::default());
+        let mut set = Desktop::new(Protocol::Rdp);
+        set.viewer.quality = Quality::Low;
+        set.viewer.scaling = Scaling::Actual;
+        let back: Desktop = toml::from_str(&toml::to_string(&set).unwrap()).unwrap();
+        assert_eq!(back.viewer, set.viewer);
+        // A partial set of options fills in the rest.
+        let partial: ViewerOptions = toml::from_str("view_only = true").unwrap();
+        assert!(partial.view_only && partial.send_shortcuts && partial.scaling == Scaling::Fit);
+    }
+
     #[test]
     fn sidebar_width_defaults_for_old_settings_and_round_trips() {
         let mut settings: Settings = toml::from_str("font_size = 16.0").unwrap();

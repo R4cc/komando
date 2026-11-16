@@ -28,7 +28,7 @@ use zeroize::Zeroizing;
 
 use super::keys::{self, Key};
 use super::trust::{self, Known};
-use super::{Button, Input, Link, Picture, Status, Stream, Target, split_domain};
+use super::{Button, Input, Link, Picture, Quality, Status, Stream, Target, split_domain};
 
 type Framed = TokioFramed<Stream>;
 
@@ -188,7 +188,7 @@ fn config(target: &Target, username: String, password: String, domain: Option<St
         autologon: true,
         enable_audio_playback: false,
         enable_audio_capture: false,
-        performance_flags: PerformanceFlags::default(),
+        performance_flags: performance_flags(target.quality),
         license_cache: None,
         timezone_info: TimezoneInfo::default(),
         compression_type: None,
@@ -199,6 +199,28 @@ fn config(target: &Target, username: String, password: String, domain: Option<St
         multitransport_flags: None,
         // The graphics pipeline (H.264 and friends) needs codecs Komando doesn't ship.
         support_dyn_vc_gfx_protocol: false,
+    }
+}
+
+/// What the server may leave out to send less: nothing at High, decoration at Medium, all
+/// visual effects at Low.
+fn performance_flags(quality: Quality) -> PerformanceFlags {
+    match quality {
+        Quality::High => PerformanceFlags::ENABLE_FONT_SMOOTHING | PerformanceFlags::ENABLE_DESKTOP_COMPOSITION,
+        Quality::Medium => {
+            PerformanceFlags::DISABLE_WALLPAPER
+                | PerformanceFlags::DISABLE_MENUANIMATIONS
+                | PerformanceFlags::DISABLE_CURSOR_SHADOW
+                | PerformanceFlags::ENABLE_FONT_SMOOTHING
+        }
+        Quality::Low => {
+            PerformanceFlags::DISABLE_WALLPAPER
+                | PerformanceFlags::DISABLE_FULLWINDOWDRAG
+                | PerformanceFlags::DISABLE_MENUANIMATIONS
+                | PerformanceFlags::DISABLE_THEMING
+                | PerformanceFlags::DISABLE_CURSOR_SHADOW
+                | PerformanceFlags::DISABLE_CURSORSETTINGS
+        }
     }
 }
 

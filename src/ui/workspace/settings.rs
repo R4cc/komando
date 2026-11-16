@@ -1359,7 +1359,7 @@ impl Workspace {
                     .p(px(16.))
                     .text_size(px(13.))
                     .text_color(p.text_faint)
-                    .child("No highlight sets. Import a highlight set from a .json file."),
+                    .child("No highlight sets. Create a set and add rules to it, or import a set from a .json file."),
             );
         }
         for set in &self.highlights {
@@ -1367,7 +1367,8 @@ impl Workspace {
             let open = expanded.as_deref() == Some(set.id.as_str());
             let enabled_rules = set.keywords.iter().filter(|k| k.enabled).count();
             let confirming = self.confirm_delete_set.as_ref().is_some_and(|(id, _)| *id == set.id);
-            let (id_toggle, id_export, id_delete, id_open) = (set.id.clone(), set.id.clone(), set.id.clone(), set.id.clone());
+            let (id_toggle, id_export, id_delete, id_open, id_rename) =
+                (set.id.clone(), set.id.clone(), set.id.clone(), set.id.clone(), set.id.clone());
             list = list.child(
                 div()
                     .id(SharedString::from(format!("hl-set-{}", set.id)))
@@ -1406,8 +1407,19 @@ impl Workspace {
                             ),
                     )
                     .child(
+                        icon_button(SharedString::from(format!("hl-rename-{}", set.id)), "pencil", p)
+                            .aria_label(format!("Rename highlight set: {}", set.name))
+                            .tooltip(|window, cx| Tooltip::new("Rename").build(window, cx))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.open_set_form(Some(id_rename.clone()), window, cx);
+                            })),
+                    )
+                    .child(
                         icon_button(SharedString::from(format!("hl-export-{}", set.id)), "download", p)
-                            .aria_label(format!("Export highlight set: {}", set.name)).on_click(cx.listener(
+                            .aria_label(format!("Export highlight set: {}", set.name))
+                            .tooltip(|window, cx| Tooltip::new("Export").build(window, cx))
+                            .on_click(cx.listener(
                             move |this, _: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
                                 this.confirm_delete_set = None;
@@ -1454,8 +1466,10 @@ impl Workspace {
             if !open {
                 continue;
             }
+            let count = set.keywords.len();
             for (index, rule) in set.keywords.iter().enumerate() {
                 let set_id = set.id.clone();
+                let (id_edit, id_up, id_down) = (set.id.clone(), set.id.clone(), set.id.clone());
                 let to_hsla = |c: highlight::Rgb8| crate::theme::hex(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32);
                 // A rule with its own background keeps its colours; others are made readable on the terminal.
                 let fg = rule.fg().map(|c| if rule.bg().is_some() { c } else { highlight::readable_on(c, term.dark) }).map(to_hsla).unwrap_or(p.text);
@@ -1467,62 +1481,120 @@ impl Workspace {
                 if rule.case_sensitive() {
                     flags.push(("Aa", "Case-sensitive"));
                 }
+                // Moving a rule changes which one wins, so the arrows sit with the row; the end
+                // ones keep their place, hidden, so every row's controls line up.
+                let mover = |id: String, icon: &'static str, label: &'static str, up: bool, possible: bool| {
+                    icon_button(SharedString::from(format!("hl-{icon}-{id}-{index}")), icon, p)
+                        .size(px(26.))
+                        .aria_label(label)
+                        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+                        .when(!possible, |el| el.invisible())
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.move_highlight_rule(&id, index, up, cx);
+                        }))
+                };
                 list = list.child(
                     div()
                         .id(SharedString::from(format!("hl-rule-{}-{index}", set.id)))
-                        .h(px(34.))
+                        .role(gpui::Role::Button)
+                        .aria_label(format!("Edit highlight rule: {}", rule.text))
+                        .tab_index(0)
+                        .focus_visible(move |s| s.border_2().border_color(p.focus))
+                        .h(px(36.))
                         .pl(px(34.))
                         .pr(px(10.))
                         .flex()
                         .items_center()
-                        .gap(px(10.))
+                        .gap(px(8.))
                         .rounded(p.corner(6.))
-                        .when(!rule.enabled, |el| el.opacity(0.45))
-                        // The pattern as a chip around its text, shown on the terminal's background.
+                        .cursor_pointer()
+                        .hover(|s| s.bg(p.hover))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_rule_form(&id_edit, Some(index), window, cx)))
+                        // Faded, not the whole row: its switch must stay as clear as the others.
                         .child(
-                            div().flex_1().min_w_0().flex().child(
-                                div()
-                                    .id(SharedString::from(format!("hl-pattern-{}-{index}", set.id)))
-                                    // A long pattern is cut short in the chip; the tooltip has all of it.
-                                    .tooltip({
-                                        let full = rule.text.clone();
-                                        move |window, cx| Tooltip::new(full.clone()).build(window, cx)
-                                    })
-                                    .min_w_0()
-                                    .px(px(8.))
-                                    .py(px(3.))
-                                    .rounded(p.corner(5.))
-                                    .bg(bg)
-                                    .font_family(p.mono_family)
-                                    .text_size(px(12.))
-                                    .text_color(fg)
-                                    .when(rule.bold.unwrap_or(false), |el| el.font_weight(FontWeight::BOLD))
-                                    .truncate()
-                                    .child(rule.text.clone()),
-                            ),
-                        )
-                        .child(div().w(px(84.)).flex().justify_end().gap(px(6.)).children(flags.into_iter().map(|(f, tip)| {
                             div()
-                                .id(SharedString::from(format!("hl-flag-{}-{index}-{f}", set.id)))
-                                .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
-                                .px(px(6.))
-                                .h(px(18.))
+                                .flex_1()
+                                .min_w_0()
                                 .flex()
                                 .items_center()
-                                .rounded(p.corner(4.))
-                                .border_1()
-                                .border_color(p.border)
-                                .text_size(px(10.5))
-                                .text_color(p.text_faint)
-                                .child(f)
-                        })))
+                                .gap(px(10.))
+                                .when(!rule.enabled, |el| el.opacity(0.45))
+                                // The pattern as a chip around its text, shown on the terminal's background.
+                                .child(
+                                    div().flex_1().min_w_0().flex().child(
+                                        div()
+                                            .id(SharedString::from(format!("hl-pattern-{}-{index}", set.id)))
+                                            // A long pattern is cut short in the chip; the tooltip has all of it.
+                                            .tooltip({
+                                                let full = rule.text.clone();
+                                                move |window, cx| Tooltip::new(full.clone()).build(window, cx)
+                                            })
+                                            .min_w_0()
+                                            .px(px(8.))
+                                            .py(px(3.))
+                                            .rounded(p.corner(5.))
+                                            .bg(bg)
+                                            .font_family(p.mono_family)
+                                            .text_size(px(12.))
+                                            .text_color(fg)
+                                            .when(rule.bold.unwrap_or(false), |el| el.font_weight(FontWeight::BOLD))
+                                            .truncate()
+                                            .child(rule.text.clone()),
+                                    ),
+                                )
+                                .child(div().w(px(84.)).flex().justify_end().gap(px(6.)).children(flags.into_iter().map(|(f, tip)| {
+                                    div()
+                                        .id(SharedString::from(format!("hl-flag-{}-{index}-{f}", set.id)))
+                                        .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+                                        .px(px(6.))
+                                        .h(px(18.))
+                                        .flex()
+                                        .items_center()
+                                        .rounded(p.corner(4.))
+                                        .border_1()
+                                        .border_color(p.border)
+                                        .text_size(px(10.5))
+                                        .text_color(p.text_faint)
+                                        .child(f)
+                                }))),
+                        )
+                        .child(div().flex().child(mover(id_up, "arrow-up", "Move up", true, index > 0)).child(mover(
+                            id_down,
+                            "arrow-down",
+                            "Move down",
+                            false,
+                            index + 1 < count,
+                        )))
                         .child(
-                            small_switch(SharedString::from(format!("hl-rule-toggle-{}-{index}", set.id)), format!("Enable highlight rule: {}", rule.text), rule.enabled, p).on_click(
-                                cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_highlight_rule(&set_id, index, cx)),
+                            div().ml(px(2.)).child(
+                                small_switch(
+                                    SharedString::from(format!("hl-rule-toggle-{}-{index}", set.id)),
+                                    format!("Enable highlight rule: {}", rule.text),
+                                    rule.enabled,
+                                    p,
+                                )
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    this.toggle_highlight_rule(&set_id, index, cx);
+                                })),
                             ),
                         ),
                 );
             }
+            if set.keywords.is_empty() {
+                list = list.child(
+                    div().pl(px(34.)).py(px(6.)).text_size(px(12.5)).text_color(p.text_faint).child("No rules in this set yet."),
+                );
+            }
+            let id_add = set.id.clone();
+            list = list.child(
+                div().pl(px(28.)).pt(px(2.)).pb(px(6.)).flex().child(
+                    icon_text_button(SharedString::from(format!("hl-add-rule-{}", set.id)), "plus", "Add rule", ButtonKind::Ghost, p)
+                        .aria_label(format!("Add a rule to {}", set.name))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_rule_form(&id_add, None, window, cx))),
+                ),
+            );
         }
         let skipped = (!self.highlight_skipped.is_empty()).then(|| {
             div()
@@ -1554,6 +1626,11 @@ impl Workspace {
                             .text_size(px(12.))
                             .text_color(p.text_faint)
                             .child(format!("{} rules active.", self.active_rule_count())),
+                    )
+                    .child(
+                        button("hl-new-set", "New set", ButtonKind::Primary, p)
+                            .flex_shrink_0()
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_set_form(None, window, cx))),
                     )
                     .child(
                         button("hl-import", "Import…", ButtonKind::Secondary, p)

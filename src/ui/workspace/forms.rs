@@ -87,6 +87,8 @@ pub(super) struct DesktopRow {
     saved: Option<CredentialId>,
     forget_saved: bool,
     through_ssh: bool,
+    /// Its toolbar's options, kept as they are through an edit.
+    viewer: crate::model::ViewerOptions,
 }
 
 /// Create a Project, or edit one.
@@ -1033,6 +1035,7 @@ impl Workspace {
             // A new desktop connects straight to the Host, like other viewers do: many SSH
             // servers refuse tunnels. The hint suggests the SSH session for VNC.
             through_ssh: desktop.is_some_and(|d| d.through_ssh),
+            viewer: desktop.map(|d| d.viewer).unwrap_or_default(),
         }
     }
 
@@ -1559,6 +1562,7 @@ fn read_desktop_row(row: &DesktopRow, cx: &App) -> Result<Option<(Desktop, Optio
         domain,
         credential: row.saved.clone().filter(|_| !row.forget_saved),
         through_ssh: row.through_ssh,
+        viewer: row.viewer,
     };
     Ok(Some((desktop, (!password.is_empty()).then_some(password))))
 }

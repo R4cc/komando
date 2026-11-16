@@ -13,7 +13,7 @@ use vnc::{ClientKeyEvent, ClientMouseEvent, PixelFormat, VncClient, VncConnector
 use zeroize::Zeroizing;
 
 use super::keys::{self, Key};
-use super::{Button, DesktopEvent, Input, Link, Status, Target};
+use super::{Button, DesktopEvent, Input, Link, Quality, Status, Target};
 
 /// How often Komando asks for what changed on screen. Servers answer when something has.
 const REFRESH: Duration = Duration::from_millis(33);
@@ -34,7 +34,7 @@ pub(super) async fn run(target: Target, link: &mut Link) -> Result<String> {
                     link.send(DesktopEvent::Remember { user: None, password });
                 }
                 link.status(Status::Connected);
-                return active(client, link).await;
+                return active(client, link, pixel_format(target.quality)).await;
             }
             Err(VncError::WrongPassword) => error = Some("The password is incorrect.".to_string()),
             Err(VncError::General(reason)) if reason == CANCELLED => return Ok("Sign-in cancelled.".into()),
@@ -90,14 +90,62 @@ async fn connect(
         .add_encoding(VncEncoding::Raw)
         .add_encoding(VncEncoding::DesktopSizePseudo)
         .allow_shared(target.shared)
-        .set_pixel_format(PixelFormat::bgra())
+        .set_pixel_format(pixel_format(target.quality))
         .build()?
         .try_start()
         .await?
         .finish()
 }
 
-async fn active(client: VncClient, link: &mut Link) -> Result<String> {
+/// The pixels asked of the server: full color, or fewer bits per pixel to send less.
+fn pixel_format(quality: Quality) -> PixelFormat {
+    let mut format = PixelFormat::bgra();
+    match quality {
+        Quality::High => {}
+        // RGB565.
+        Quality::Medium => {
+            format.bits_per_pixel = 16;
+            format.depth = 16;
+            (format.red_max, format.green_max, format.blue_max) = (31, 63, 31);
+            (format.red_shift, format.green_shift, format.blue_shift) = (11, 5, 0);
+        }
+        // BGR233.
+        Quality::Low => {
+            format.bits_per_pixel = 8;
+            format.depth = 8;
+            (format.red_max, format.green_max, format.blue_max) = (7, 7, 3);
+            (format.red_shift, format.green_shift, format.blue_shift) = (0, 3, 6);
+        }
+    }
+    format
+}
+
+/// Pixels in `format` (little endian, true color) as the picture's BGRA.
+fn to_bgra<'a>(data: &'a [u8], format: &PixelFormat) -> std::borrow::Cow<'a, [u8]> {
+    let bytes = usize::from(format.bits_per_pixel / 8);
+    if bytes == 4 {
+        return std::borrow::Cow::Borrowed(data);
+    }
+    // A channel of `max` scaled to 0..=255.
+    let scale = |value: u32, max: u16| (value * 255 / u32::from(max.max(1))) as u8;
+    let mut out = Vec::with_capacity(data.len() / bytes * 4);
+    for pixel in data.chunks_exact(bytes) {
+        let value = match bytes {
+            2 => u32::from(u16::from_le_bytes([pixel[0], pixel[1]])),
+            _ => u32::from(pixel[0]),
+        };
+        let channel = |shift: u8, max: u16| scale((value >> shift) & u32::from(max), max);
+        out.extend_from_slice(&[
+            channel(format.blue_shift, format.blue_max),
+            channel(format.green_shift, format.green_max),
+            channel(format.red_shift, format.red_max),
+            0xff,
+        ]);
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+async fn active(client: VncClient, link: &mut Link, format: PixelFormat) -> Result<String> {
     let mut refresh = tokio::time::interval(REFRESH);
     let mut pointer = Pointer::default();
     let _ = client.input(X11Event::FullRefresh).await;
@@ -105,7 +153,7 @@ async fn active(client: VncClient, link: &mut Link) -> Result<String> {
         tokio::select! {
             event = client.recv_event() => match event {
                 Ok(event) => {
-                    if let Some(reason) = show(event, link)? {
+                    if let Some(reason) = show(event, link, &format)? {
                         break reason;
                     }
                 }
@@ -139,10 +187,11 @@ async fn active(client: VncClient, link: &mut Link) -> Result<String> {
 }
 
 /// Draw what the server sent. `Some` ends the session, with why.
-fn show(event: VncEvent, link: &Link) -> Result<Option<String>> {
+fn show(event: VncEvent, link: &Link, format: &PixelFormat) -> Result<Option<String>> {
     match event {
         VncEvent::SetResolution(screen) => link.draw(|p| p.resize(screen.width.into(), screen.height.into()))?,
         VncEvent::RawImage(rect, data) => {
+            let data = to_bgra(&data, format);
             link.draw(|p| p.put(rect.x.into(), rect.y.into(), rect.width.into(), rect.height.into(), &data, usize::from(rect.width) * 4))
         }
         VncEvent::Copy(to, from) => {
@@ -229,6 +278,20 @@ impl Pointer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fewer_colors_become_full_bgra() {
+        // RGB565 white, pure red, and black.
+        let medium = pixel_format(Quality::Medium);
+        let pixels = [0xffff_u16, 0xf800, 0x0000].iter().flat_map(|p| p.to_le_bytes()).collect::<Vec<u8>>();
+        assert_eq!(&*to_bgra(&pixels, &medium), &[255, 255, 255, 255, 0, 0, 255, 255, 0, 0, 0, 255]);
+        // BGR233: blue in the top two bits, green in the middle three, red in the low three.
+        let low = pixel_format(Quality::Low);
+        assert_eq!(&*to_bgra(&[0b1100_0000, 0b0000_0111], &low), &[255, 0, 0, 255, 0, 0, 255, 255]);
+        // Full color is passed through untouched.
+        let high = pixel_format(Quality::High);
+        assert!(matches!(to_bgra(&[1, 2, 3, 4], &high), std::borrow::Cow::Borrowed(_)));
+    }
 
     #[test]
     fn focus_loss_releases_shortcut_keys_and_mouse_buttons() {

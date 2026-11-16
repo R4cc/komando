@@ -6,6 +6,32 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Remote desktops have a toolbar above the picture. It shows the protocol, the remote
+  screen's size and the zoom, and has:
+  - **Scaling**: fit to window, actual size (100%, panning as the pointer nears an edge) or
+    stretch to fill. RDP can also resize the remote desktop to the window.
+  - **Picture quality**: High, Medium or Low. VNC sends fewer colors; RDP leaves out wallpaper,
+    animations and other visual effects. Changing it reconnects the desktop.
+  - **Keyboard**: send Ctrl+Alt+Del, the Windows key, Ctrl+Shift+Esc or Print Screen, and
+    choose whether the Windows key and system shortcuts (Alt+Tab, Ctrl+Esc), media keys
+    and volume keys go to the remote desktop instead of this PC.
+  - **View only**: watch without sending keyboard or mouse input.
+  - **Full screen**: the desktop fills the screen; the toolbar slides in from the top edge.
+  Each host remembers its choices.
+- A thin outline marks where the remote picture starts and ends.
+- Highlight rules can be edited in Settings → Highlights. Click a rule to change what it
+  matches (text or a regular expression, case, a capture group), its text colour, background
+  and bold, with a live preview on a line of your own output. Add rules, move them up or down
+  (the first match wins), delete them, and create or rename sets, without editing JSON.
+
+### Changed
+
+- Ctrl+Alt+Del moved from the title bar into the desktop's toolbar, under Keyboard.
+- Session rows under a host keep their SSH, VNC or RDP tag and state visible on hover; the
+  close button has its own place at the end of the row.
+
 ### Fixed
 
 - Pressing Space on a password prompt's "Remember" checkbox ticks it and keeps the focus

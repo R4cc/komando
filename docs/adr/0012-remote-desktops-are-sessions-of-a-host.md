@@ -41,3 +41,8 @@ testing the protocol adapters and maintaining their dependencies.
 - Protocol work runs outside the UI thread. Picture notifications coalesce while rectangles
   are applied in order; replaced images are released from GPUI's atlas. Dropping a connection
   cancels handshakes and prompts as well as active sessions.
+- Each Remote Desktop keeps viewer options for its Host (scaling, quality, view only, which
+  system keys it takes), changed from the desktop's own toolbar rather than the host form:
+  they are about watching the desktop, not about reaching it. Quality applies when
+  connecting (VNC's pixel format, RDP's performance flags), so changing it reconnects.
+  Windows' own shortcuts reach the desktop through a keyboard hook (ADR 0013).

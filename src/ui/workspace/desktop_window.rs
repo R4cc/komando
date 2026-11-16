@@ -10,7 +10,6 @@ use gpui::{
 };
 
 use super::{SessionView, TITLE_BAR_HEIGHT, Workspace, strip_action, window_controls};
-use crate::model::Protocol;
 use crate::session::Status;
 use crate::theme::Appearance;
 use crate::ui::desktop_view::DesktopView;
@@ -77,9 +76,7 @@ impl Render for DesktopWindow {
         let name: SharedString = format!("{} · {}", view.host, view.protocol.label()).into();
         let target = view.target.clone();
         let live = !matches!(view.status, Status::Disconnected(_));
-        let ctrl_alt_del = view.protocol == Protocol::Rdp && view.is_connected();
         let id = self.session;
-        let desktop = self.view.clone();
         let title_bar = div()
             .id("desktop-title-bar")
             .h(px(TITLE_BAR_HEIGHT))
@@ -106,12 +103,6 @@ impl Render for DesktopWindow {
                     .child(div().min_w_0().truncate().text_color(p.text_muted).child(target)),
             )
             .child(div().flex_1())
-            .when(ctrl_alt_del, |el| {
-                el.child(
-                    strip_action("ctrl-alt-del", "keyboard", "Send Ctrl+Alt+Del", false, p)
-                        .on_click(move |_: &ClickEvent, _, cx| desktop.read(cx).send_ctrl_alt_del()),
-                )
-            })
             .when(!live, |el| {
                 el.child(strip_action("desktop-reconnect", "refresh-cw", "Reconnect", false, p).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| this.on_workspace(cx, move |ws, window, cx| ws.connect_desktop(id, window, cx)),
@@ -129,6 +120,7 @@ impl Render for DesktopWindow {
             )
             .child(div().w(px(12.)).h(px(16.)).mr(px(6.)).border_r_1().border_color(p.border))
             .child(window_controls(p, window));
+        let fullscreen = window.is_fullscreen();
         div()
             .id("desktop-window")
             .size_full()
@@ -137,12 +129,15 @@ impl Render for DesktopWindow {
             .font_family(p.font_family)
             .text_color(p.text)
             .bg(p.canvas)
-            .child(title_bar)
-            .child(
-                div().flex_1().min_h_0().w_full().px(px(ISLAND_GAP)).pb(px(ISLAND_GAP)).child(
-                    island(p).size_full().overflow_hidden().child(self.view.clone()),
-                ),
-            )
+            // Full screen, from the desktop's toolbar: the desktop alone, edge to edge.
+            .when(fullscreen, |el| el.child(self.view.clone()))
+            .when(!fullscreen, |el| {
+                el.child(title_bar).child(
+                    div().flex_1().min_h_0().w_full().px(px(ISLAND_GAP)).pb(px(ISLAND_GAP)).child(
+                        island(p).size_full().overflow_hidden().child(self.view.clone()),
+                    ),
+                )
+            })
     }
 }
 
