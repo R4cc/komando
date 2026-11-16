@@ -19,14 +19,15 @@ Segoe UI uses the Windows system font. Its platform-specific mono stack falls ba
 bundled JetBrains Mono. FL-Theme specifies Inter for mono text; the native terminal uses
 JetBrains Mono so its grid remains fixed width. Explicit terminal font settings take precedence.
 
-FL-Theme supplies a light-colored background in both variants. This is preserved;
-terminal highlight contrast follows the actual background brightness.
+FL-Theme's source supplies a light-colored background in both variants; its dark variant
+is replaced by a true dark palette in `refinements.json`. Terminal highlight contrast
+follows the actual background brightness.
 
 No font sizes, spacing or pane layout are imported. Existing native proportions are
 retained while their corner radii follow the theme's base radius. Surfaces are solid by
 default. Optional Mica remains a separate appearance setting,
 independent of a theme’s shadows.
 
-The dropdown swatches show the source background, sidebar, card, primary, secondary,
-accent and text colors, in that order. Selecting a theme persists it separately for
+The dropdown swatches show the refined background, sidebar, primary and accent colors,
+in that order. Selecting a theme persists it separately for
 light and dark mode; removed or unknown IDs resolve to Komando Default.

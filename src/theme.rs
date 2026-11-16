@@ -298,10 +298,19 @@ impl TerminalPalette {
             let packed = ((tinted.r as u32) << 16) | ((tinted.g as u32) << 8) | tinted.b as u32;
             *color = rgb8(readable(packed, c.background, 4.5));
         }
-        ansi[0] = rgb8(if dark_surface { readable(0x454850, c.background, 1.5) } else { c.foreground });
-        ansi[7] = rgb8(c.foreground);
         ansi[8] = rgb8(readable(c.muted_foreground, c.background, 4.5));
-        ansi[15] = rgb8(c.foreground);
+        if dark_surface {
+            ansi[0] = rgb8(readable(0x454850, c.background, 1.5));
+            ansi[7] = rgb8(c.foreground);
+            ansi[15] = rgb8(c.foreground);
+        } else {
+            // Black is the text color on light surfaces, so white must stay a distinct
+            // gray: programs pair them (`30;47`, `37;40`) for bars and badges.
+            let white = rgb8(readable(c.background, c.background, 3.));
+            ansi[0] = rgb8(c.foreground);
+            ansi[7] = white;
+            ansi[15] = white;
+        }
         Self {
             dark: dark_surface,
             background: rgb8(c.background), background_alpha: 1.,
@@ -633,6 +642,18 @@ mod tests {
             assert_eq!(p.color_at(NamedColor::Foreground as usize), p.foreground);
             assert_eq!(p.color_at(NamedColor::Background as usize), p.background);
             assert_eq!(p.color_at(NamedColor::Cursor as usize), p.cursor);
+        }
+    }
+
+    #[test]
+    fn ansi_black_and_white_stay_distinct_in_every_theme() {
+        for t in themes(false).iter().chain(themes(true)) {
+            let term = TerminalPalette::from_theme(t);
+            let packed = |c: Rgb| value(rgb_to_hsla(c));
+            for white in [7, 15] {
+                let c = contrast(packed(term.ansi[0]), packed(term.ansi[white]));
+                assert!(c >= 3., "{} {}: ANSI 0 and {white} are {c:.2}:1", t.name, t.dark);
+            }
         }
     }
 

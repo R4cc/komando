@@ -17,18 +17,22 @@ All notable changes to Komando are listed here. The format follows
 - Komando Default now uses flat black and white surfaces in dark mode and neutral
   light surfaces with a mint-green primary color in light mode. It uses Inter,
   JetBrains Mono, an 8 px base radius and no shadows.
-- Theme previews show four adjacent color blocks in a narrower selector. Removed the
-  tagline from the welcome screen.
+- Theme previews show four adjacent color blocks in a narrower selector.
 - Refined each theme's light and dark palettes with clearer surface hierarchy, readable
   secondary text and consistent accents. FL-Theme now has a true dark variant; Mint and
   Gold retain their signature colors in both modes.
 - Buttons and controls use restrained rounding, with a 6–8 px base radius, and clearer
   hover, pressed and selected states.
 - Theme selectors are dropdowns with names and palette swatches, hover highlighting
-  and keyboard navigation. Komando Default replaces the previous theme collection.
+  and keyboard navigation.
 - The terminal follows the theme's font unless a custom font is set. New settings use
   solid backgrounds, and removed theme selections fall back to Komando Default.
-- Removed the tagline from Settings → About.
+
+### Removed
+
+- The previous theme collection (Ember, Midnight, Ivory and the others). Saved selections
+  switch to Komando Default.
+- The tagline on the welcome screen and in Settings → About.
 
 ### Fixed
 
