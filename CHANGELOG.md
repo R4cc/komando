@@ -18,6 +18,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- New VNC desktops connect directly to the host by default, like other VNC viewers.
+  Turn on "Through the host's SSH session" to tunnel VNC over SSH when the server
+  allows port forwarding.
 - Komando Default now uses flat black and white surfaces in dark mode and neutral
   light surfaces with a mint-green primary color in light mode. It uses Inter,
   JetBrains Mono, an 8 px base radius and no shadows.
@@ -42,6 +45,8 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- The window border and top edge use the theme's colors instead of the Windows accent
+  color when "Show accent color on title bars and window borders" is turned on.
 - Maximized windows can be dragged from the very top edge when background blur is enabled.
 - The About icon has smoother rounded edges at different display
   scales. Its outer rim is trimmed and transparent edges use higher-quality resizing

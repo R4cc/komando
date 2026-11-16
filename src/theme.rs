@@ -225,7 +225,8 @@ fn active_colors(c: ThemeColors) -> (Hsla, Hsla) {
     (hex(background), hex(readable(foreground, background, 4.5)))
 }
 
-fn packed(color: Hsla) -> u32 {
+/// `0xrrggbb` of a color, ignoring its alpha.
+pub fn packed(color: Hsla) -> u32 {
     let c: Rgba = color.into();
     let ch = |c: f32| (c * 255.).round() as u32;
     (ch(c.r) << 16) | (ch(c.g) << 8) | ch(c.b)

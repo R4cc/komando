@@ -1030,8 +1030,9 @@ impl Workspace {
             },
             saved: desktop.and_then(|d| d.credential.clone()),
             forget_saved: false,
-            // A new VNC desktop goes through SSH: VNC encrypts nothing on its own.
-            through_ssh: desktop.map_or(protocol == Protocol::Vnc, |d| d.through_ssh),
+            // A new desktop connects straight to the Host, like other viewers do: many SSH
+            // servers refuse tunnels. The hint suggests the SSH session for VNC.
+            through_ssh: desktop.is_some_and(|d| d.through_ssh),
         }
     }
 

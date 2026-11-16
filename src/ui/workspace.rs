@@ -645,6 +645,12 @@ impl Workspace {
             cx,
         );
         let app = cx.global::<Appearance>().app;
+        let opaque = AppPalette::from_theme(self.theme_for(app_dark));
+        crate::platform::set_window_frame_colors(
+            window,
+            crate::theme::packed(opaque.border),
+            (!backdrop_enabled).then(|| crate::theme::packed(opaque.canvas)),
+        );
         gpui_component::Theme::update(cx, |theme| app.apply_components(theme));
         cx.refresh_windows();
     }
