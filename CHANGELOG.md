@@ -34,6 +34,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- Hovering a menu item highlights it clearly in every theme. In Komando Default's dark mode
+  the highlight was darker than the menu itself, so it was hard to see which item was under
+  the pointer.
 - Pressing Space on a password prompt's "Remember" checkbox ticks it and keeps the focus
   there. Before, it ticked and immediately unticked the box and jumped back to the
   password field.

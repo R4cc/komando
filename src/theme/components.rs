@@ -18,8 +18,10 @@ impl AppPalette {
         colors.input = self.input;
         colors.popover = self.popover;
         colors.popover_foreground = self.popover_text;
-        colors.accent = self.hover;
-        colors.accent_foreground = self.hover_text;
+        // Menus and lists sit on the popover: their hover is measured against it.
+        let (menu_hover, menu_hover_text) = super::menu_hover(c);
+        colors.accent = menu_hover;
+        colors.accent_foreground = menu_hover_text;
         colors.muted = hex(c.muted);
         colors.muted_foreground = self.text_muted;
         colors.primary = self.brand;
@@ -57,7 +59,7 @@ impl AppPalette {
         colors.link_hover = colors.link;
         colors.link_active = colors.link;
         colors.list = self.popover;
-        colors.list_hover = self.hover;
+        colors.list_hover = menu_hover;
         colors.list_active = self.active;
         colors.list_active_border = self.focus;
         colors.slider_bar = self.brand;

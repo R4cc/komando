@@ -225,6 +225,29 @@ fn active_colors(c: ThemeColors) -> (Hsla, Hsla) {
     (hex(background), hex(readable(foreground, background, 4.5)))
 }
 
+/// A hovered row in a menu or list, which sit on the popover color: the theme's accent, as
+/// in the themes these come from. When the accent is too close to the popover to tell apart,
+/// the popover moved toward the text color instead. Never derived from the window background:
+/// on a dark theme whose background is darker than its popover, that made the hovered row
+/// darker than the menu and nearly invisible.
+pub(crate) fn menu_hover(c: ThemeColors) -> (Hsla, Hsla) {
+    const VISIBLE: f32 = 1.3;
+    let background = if contrast(c.accent, c.popover) >= VISIBLE {
+        c.accent
+    } else {
+        let popover = hex(c.popover);
+        let mut step = 0.08;
+        let mut mixed = packed(popover.blend(hex(c.popover_foreground).opacity(step)));
+        while contrast(mixed, c.popover) < VISIBLE && step < 0.5 {
+            step += 0.04;
+            mixed = packed(popover.blend(hex(c.popover_foreground).opacity(step)));
+        }
+        mixed
+    };
+    let foreground = if background == c.accent { c.accent_foreground } else { c.popover_foreground };
+    (hex(background), hex(readable(foreground, background, 4.5)))
+}
+
 /// `0xrrggbb` of a color, ignoring its alpha.
 pub fn packed(color: Hsla) -> u32 {
     let c: Rgba = color.into();
@@ -511,6 +534,18 @@ mod tests {
                 assert!(t.source.starts_with("https://tweakcn.com/themes/"));
                 assert!(!t.font_sans.is_empty() && !t.font_mono.is_empty());
                 assert!(t.radius.is_finite() && t.radius >= 0.);
+            }
+        }
+    }
+
+    #[test]
+    fn hovered_menu_rows_stand_out_from_the_menu_in_every_theme() {
+        for dark in [true, false] {
+            for t in themes(dark) {
+                let (hover, text) = menu_hover(t.colors);
+                let name = format!("{} ({})", t.name, if dark { "dark" } else { "light" });
+                assert!(contrast(packed(hover), t.colors.popover) >= 1.3, "{name}: hover too close to the menu");
+                assert!(contrast(packed(text), packed(hover)) >= 4.5, "{name}: hovered text unreadable");
             }
         }
     }
