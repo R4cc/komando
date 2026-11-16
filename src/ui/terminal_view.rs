@@ -261,6 +261,8 @@ pub struct TerminalView {
     marks: Marks,
     /// Where the last right-click landed, for the menu it opens.
     menu_point: Option<GridPoint>,
+    /// The link under the pointer, underlined; Ctrl+click opens it.
+    hover_link: Option<TermLink>,
     hovered_mark: Option<u64>,
     /// The mark jumped to last, lit until the timer with the same number runs out.
     flash: Option<(u64, u64)>,
@@ -474,6 +476,7 @@ impl TerminalView {
             grid_cache: Rc::new(RefCell::new(GridCache::default())),
             marks: Marks::default(),
             menu_point: None,
+            hover_link: None,
             hovered_mark: None,
             flash: None,
             compaction: None,
@@ -1148,6 +1151,14 @@ impl TerminalView {
             return;
         }
         window.focus(&self.focus, cx);
+        // Ctrl+click (Cmd+click on macOS) opens a link, even in a program that took the mouse.
+        if event.button == MouseButton::Left
+            && (event.modifiers.control || event.modifiers.platform)
+            && let Some(link) = link_at(&*self.term.lock(), self.grid_point(event.position).0)
+        {
+            cx.open_url(&link.url);
+            return;
+        }
         if let Some(mode) = self.mouse_mode(event.modifiers.shift) {
             // The program asked for the mouse, right button included; shift+right-click is
             // still the menu.
@@ -1189,11 +1200,12 @@ impl TerminalView {
     fn context_menu(view: gpui::WeakEntity<Self>, focus: FocusHandle, menu: PopupMenu, cx: &mut App) -> PopupMenu {
         let Some(this) = view.upgrade() else { return menu };
         let highlighter = cx.try_global::<ActiveHighlights>().map(|h| h.0.clone());
-        let (selected, can_type, hit) = {
+        let (selected, can_type, hit, link) = {
             let this = this.read(cx);
             let selected = this.term.lock().selection_to_string().is_some_and(|t| !t.is_empty());
             let hit = highlighter.zip(this.menu_point).and_then(|(h, at)| highlighted_at(&*this.term.lock(), &h, at));
-            (selected, this.sink.is_some() && !this.is_disconnected(), hit)
+            let link = this.menu_point.and_then(|at| link_at(&*this.term.lock(), at)).map(|l| l.url);
+            (selected, this.sink.is_some() && !this.is_disconnected(), hit, link)
         };
         let icon = |name: &str| Icon::empty().path(format!("icons/{name}.svg"));
         let run = |label: &str, icon_name: &str, f: fn(&mut Self, &mut Window, &mut Context<Self>)| {
@@ -1207,6 +1219,18 @@ impl TerminalView {
                     cx.emit(TerminalEvent::Unhighlight { rule: hit.clone() })
                 });
                 menu.item(item).separator()
+            }
+            None => menu,
+        };
+        // A link was right-clicked: open or copy it.
+        let menu = match link {
+            Some(url) => {
+                let copy = url.clone();
+                menu.item(crate::ui::popup::item("Open link", "external-link", &view, move |_, _, cx| cx.open_url(&url)))
+                    .item(crate::ui::popup::item("Copy link", "link", &view, move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                    }))
+                    .separator()
             }
             None => menu,
         };
@@ -1294,7 +1318,16 @@ impl TerminalView {
 
     /// Pointer motion over the terminal, for programs that asked for it. A selection follows
     /// the pointer through `drag_selection` instead, which hears it anywhere.
-    fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, _: &mut Context<Self>) {
+    fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let link = if self.selecting || event.pressed_button.is_some() || self.prompt.is_some() {
+            None
+        } else {
+            link_at(&*self.term.lock(), self.grid_point(event.position).0)
+        };
+        if link != self.hover_link {
+            self.hover_link = link;
+            cx.notify();
+        }
         if self.selecting {
             return;
         }
@@ -2116,6 +2149,9 @@ struct Frame {
     outlines: Vec<(Bounds<Pixels>, Hsla)>,
     /// What the IME is composing, over the cursor: its area, text and background.
     preedit: Option<(Bounds<Pixels>, ShapedLine, Hsla)>,
+    /// The hovered link's underline: where each row of it starts, and how wide it is.
+    links: Vec<(gpui::Point<Pixels>, Pixels)>,
+    link_color: Hsla,
     font_size: Pixels,
 }
 
@@ -2388,6 +2424,83 @@ fn input_row<T>(term: &Term<T>, line: Line, typing: Option<Line>) -> Option<Inpu
     let start = crate::marks::logical_start(term, line);
     (Some(start) == typing || crate::marks::is_marked(&term.grid()[start][Column(0)]))
         .then_some(if start == line { InputRow::AfterPrompt } else { InputRow::All })
+}
+
+/// A link in the output: the address it opens and the cells it covers, row by row (a long
+/// one wraps onto several).
+#[derive(Clone, Debug, PartialEq)]
+struct TermLink {
+    url: String,
+    spans: Vec<(Line, Range<usize>)>,
+}
+
+/// Rows of a wrapped line read to find a link in it, either way from the pointer.
+const LINK_ROWS: i32 = 16;
+
+/// The link at `at`: one a program marked (OSC 8) with a web address, or an address with its
+/// scheme written in the text (see `crate::links`), read across rows a long line wrapped onto.
+fn link_at<T>(term: &Term<T>, at: GridPoint) -> Option<TermLink> {
+    let grid = term.grid();
+    let cols = grid.columns();
+    if cols == 0 || at.line < grid.topmost_line() || at.line > grid.bottommost_line() || at.column.0 >= cols {
+        return None;
+    }
+    let row = &grid[at.line];
+    if let Some(link) = row[at.column].hyperlink() {
+        if !crate::links::is_openable(link.uri()) {
+            return None;
+        }
+        let same = |col: usize| row[Column(col)].hyperlink().as_ref() == Some(&link);
+        let (mut start, mut end) = (at.column.0, at.column.0 + 1);
+        while start > 0 && same(start - 1) {
+            start -= 1;
+        }
+        while end < cols && same(end) {
+            end += 1;
+        }
+        return Some(TermLink { url: link.uri().trim().to_string(), spans: vec![(at.line, start..end)] });
+    }
+    let wraps = |line: Line| grid[line][Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+    let mut first = at.line;
+    while first > grid.topmost_line() && at.line.0 - first.0 < LINK_ROWS && wraps(Line(first.0 - 1)) {
+        first = Line(first.0 - 1);
+    }
+    let mut last = at.line;
+    while last < grid.bottommost_line() && last.0 - at.line.0 < LINK_ROWS && wraps(last) {
+        last = Line(last.0 + 1);
+    }
+    // The line's text, and where each cell's character starts in it.
+    let mut text = String::new();
+    let mut cells: Vec<(usize, Line, usize, usize)> = vec![];
+    let mut byte = None;
+    for line in first.0..=last.0 {
+        let line = Line(line);
+        for col in 0..cols {
+            let cell = &grid[line][Column(col)];
+            if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                continue;
+            }
+            if line == at.line && col <= at.column.0 {
+                byte = Some(text.len());
+            }
+            let width = if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
+            cells.push((text.len(), line, col, width));
+            let hidden = cell.flags.contains(Flags::HIDDEN);
+            text.push(if hidden || cell.c == '\t' { ' ' } else { cell.c });
+            if let Some(extra) = cell.zerowidth().filter(|_| !hidden) {
+                text.extend(extra.iter());
+            }
+        }
+    }
+    let range = crate::links::link_at(&text, byte?)?;
+    let mut spans: Vec<(Line, Range<usize>)> = vec![];
+    for &(_, line, col, width) in cells.iter().filter(|(b, ..)| range.contains(b)) {
+        match spans.last_mut() {
+            Some((l, cols)) if *l == line => cols.end = col + width,
+            _ => spans.push((line, col..col + width)),
+        }
+    }
+    Some(TermLink { url: text[range].to_string(), spans })
 }
 
 /// The highlight rule colouring the cell at `at`, read the way rows are drawn (`layout_row`).
@@ -2951,6 +3064,16 @@ impl Render for TerminalView {
         // Colour queries (OSC 10/11/4) are answered with the colours on screen.
         self.proxy.set_palette(&palette);
         let mouse_reporting = self.mouse_mode(false).is_some();
+        // The hovered link's cells, as rows of the view.
+        let link_marks: Vec<(i32, Range<usize>)> = match &self.hover_link {
+            Some(link) => {
+                let offset = self.term.lock().grid().display_offset() as i32;
+                link.spans.iter().map(|(line, cols)| (line.0 + offset, cols.clone())).collect()
+            }
+            None => vec![],
+        };
+        let link_pointer = self.hover_link.is_some() && (window.modifiers().control || window.modifiers().platform);
+        let watch_ctrl = self.hover_link.is_some();
 
         let term = self.term.clone();
         let sink = self.sink.clone();
@@ -3123,6 +3246,12 @@ impl Render for TerminalView {
                     let area = Bounds::new(origin, size(line.width, line_h));
                     frame.preedit = Some((area, line, rgb_to_hsla(palette.background)));
                 }
+                for (row, cols) in &link_marks {
+                    let x = bounds.origin.x + cell_w * cols.start as f32;
+                    let y = bounds.origin.y + line_h * *row as f32 + font.metrics.underline_y;
+                    frame.links.push((point(x, y), cell_w * cols.len() as f32));
+                }
+                frame.link_color = rgb_to_hsla(palette.foreground);
                 frame
             }),
             move |bounds, frame, window, cx| crate::perf::time("terminal grid paint", || {
@@ -3213,6 +3342,10 @@ impl Render for TerminalView {
                     for (bounds, color) in &frame.outlines {
                         window.paint_quad(outline(*bounds, *color, gpui::BorderStyle::Solid));
                     }
+                    let link_line = UnderlineStyle { thickness: px(1.), color: Some(frame.link_color), wavy: false };
+                    for (origin, width) in &frame.links {
+                        window.paint_underline(*origin, *width, &link_line);
+                    }
                     if let Some((bounds, line, background)) = &frame.preedit {
                         window.paint_quad(fill(*bounds, *background));
                         let _ = line.paint(bounds.origin, bounds.size.height, TextAlign::Left, None, window, cx);
@@ -3225,7 +3358,8 @@ impl Render for TerminalView {
         div()
             .id("terminal")
             .on_modifiers_changed(move |event, window, _| {
-                if password_prompt && event.capslock.on != caps_lock {
+                // Ctrl turns the pointer into a hand over a link.
+                if (password_prompt && event.capslock.on != caps_lock) || watch_ctrl {
                     window.refresh();
                 }
             })
@@ -3263,7 +3397,7 @@ impl Render for TerminalView {
             .rounded(app.corner(crate::ui::widgets::ISLAND_RADIUS - 1.))
             .bg(term_bg)
             // A program that takes the mouse gets an arrow, as in xterm; shift still selects.
-            .map(|el| if mouse_reporting { el.cursor_default() } else { el.cursor_text() })
+            .map(|el| if link_pointer { el.cursor_pointer() } else if mouse_reporting { el.cursor_default() } else { el.cursor_text() })
             .child(
                 div()
                     .relative()
@@ -3609,6 +3743,27 @@ mod tests {
         assert_eq!(at(0, 1), None, "plain text");
         assert_eq!(at(1, 7), None, "the command being typed isn't highlighted");
         assert_eq!(at(0, 50), None, "past the end of the line");
+    }
+
+    #[test]
+    fn links_are_found_across_wrapped_rows_and_from_programs() {
+        let mut g = Grid::new(20, 6);
+        // 33 characters: wraps after 20.
+        g.feed("see https://example.com/a/long/path. ok\r\n");
+        g.feed("\x1b]8;;https://docs.lan/x\x07docs\x1b]8;;\x07 and \x1b]8;;file:///etc\x07file\x1b]8;;\x07\r\n");
+        g.feed("from 10.0.0.5 port 22");
+        let term = g.term.lock();
+        let at = |line: i32, col: usize| super::link_at(&*term, GridPoint::new(Line(line), Column(col)));
+        let wrapped = at(1, 3).expect("the second row of the link");
+        assert_eq!(wrapped.url, "https://example.com/a/long/path");
+        assert_eq!(wrapped.spans, [(Line(0), 4..20), (Line(1), 0..15)]);
+        assert_eq!(at(0, 5), Some(wrapped));
+        assert_eq!(at(0, 1), None, "plain text");
+        assert_eq!(at(1, 17), None, "after the link");
+        let program = at(2, 1).expect("an OSC 8 link");
+        assert_eq!((program.url.as_str(), program.spans.clone()), ("https://docs.lan/x", vec![(Line(2), 0..4)]));
+        assert_eq!(at(2, 11), None, "only web addresses open");
+        assert_eq!(at(3, 7), None, "an IP address alone isn't a link");
     }
 
     #[test]

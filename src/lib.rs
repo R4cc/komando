@@ -12,6 +12,7 @@ pub mod history;
 pub mod icons;
 pub mod import;
 pub mod keys;
+pub mod links;
 pub mod logging;
 pub mod marks;
 pub mod model;

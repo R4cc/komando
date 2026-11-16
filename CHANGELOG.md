@@ -6,6 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Web links in terminal output are clickable. Hovering one that starts with `http://`,
+  `https://` or `ftp://` underlines it; Ctrl+click opens it in your browser, and the
+  right-click menu can open or copy it. Links programs mark themselves work too. Plain IP
+  addresses and host names in logs stay plain text.
+
 ### Changed
 
 - Opening a host's remote desktop no longer moves its terminal into a row of its own. The
