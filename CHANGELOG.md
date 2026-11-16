@@ -6,6 +6,11 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Komando closed when a sidebar row's ⋯ button (or Shift+F10) opened its menu while Windows
+  notifications were available.
+
 ## [0.6.4] - 2026-11-16
 
 ### Added

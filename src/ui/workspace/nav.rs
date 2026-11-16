@@ -130,29 +130,42 @@ impl Workspace {
         if self.modal_open(cx) {
             return;
         }
-        let menu = match &target {
+        type Build = Box<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
+        let build: Build = match &target {
             NavTarget::Item(key) => {
                 let Some(item) = self.item_for_key(key) else { return };
-                let build = self.item_menu(&item, cx);
-                PopupMenu::build(window, cx, move |menu, window, cx| build(menu, window, cx))
+                Box::new(self.item_menu(&item, cx))
             }
             NavTarget::Session(id) => {
                 if !self.sessions.iter().any(|s| s.id == *id) {
                     return;
                 }
-                let build = self.session_menu(*id, cx);
-                PopupMenu::build(window, cx, move |menu, window, cx| build(menu, window, cx))
+                Box::new(self.session_menu(*id, cx))
             }
             NavTarget::Project(id) => {
                 let Some(index) = self.library.projects.iter().position(|p| p.id == *id) else { return };
-                let build = self.project_menu(index, cx);
-                PopupMenu::build(window, cx, move |menu, window, cx| build(menu, window, cx))
+                Box::new(self.project_menu(index, cx))
             }
             NavTarget::AddHost(_) => return,
         };
         // Opened from the keyboard: Escape returns there. A chosen action keeps the focus it
         // gave (a terminal it showed, a dialog it opened).
         let from_sidebar = self.nav.focus.is_focused(window);
+        // Build the menu once this update is over. A builder reads the Workspace (the
+        // "Notify when done" entry does, on Windows), and reading it while it is being updated,
+        // as it is here, panics; inside a click from the window procedure that aborts Komando.
+        let ws = cx.entity().downgrade();
+        window.defer(cx, move |window, cx| {
+            let menu = PopupMenu::build(window, cx, move |menu, window, cx| build(menu, window, cx));
+            let _ = ws.update(cx, |this, cx| this.show_row_menu(target, menu, from_sidebar, window, cx));
+        });
+    }
+
+    fn show_row_menu(&mut self, target: NavTarget, menu: Entity<PopupMenu>, from_sidebar: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // Something else may have opened in the meantime.
+        if self.modal_open(cx) {
+            return;
+        }
         let menu_focus = menu.focus_handle(cx);
         let dismissed = cx.subscribe_in(&menu, window, move |this, _, _: &DismissEvent, window, cx| {
             this.nav.menu = None;
