@@ -199,6 +199,9 @@ impl DesktopView {
                     .ghost()
                     .small()
                     .icon(icon("keyboard"))
+                    // A label keeps it a normal button: an icon-only one is a fixed square the
+                    // caret spills out of.
+                    .label("Keys")
                     .dropdown_caret(true)
                     .tooltip("Keyboard")
                     .dropdown_menu(keys_menu),
