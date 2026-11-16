@@ -89,6 +89,7 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-tab", ui::desktop_view::SendBackTab, Some(ui::desktop_view::CONTEXT)),
         KeyBinding::new("ctrl-shift-c", Copy, t),
         KeyBinding::new("ctrl-shift-v", Paste, t),
+        KeyBinding::new("enter", terminal_view::ConfirmPaste, Some(terminal_view::PASTE_CONFIRM_CONTEXT)),
         KeyBinding::new("shift-pageup", ScrollPageUp, t),
         KeyBinding::new("shift-pagedown", ScrollPageDown, t),
         // Ctrl+F stays the shell's (forward a character in bash, page down in vim and less).
@@ -216,6 +217,22 @@ pub fn run(options: Options) {
 #[cfg(test)]
 mod tests {
     use gpui::AssetSource as _;
+
+    #[test]
+    fn enter_confirms_paste_only_in_the_paste_confirmation() {
+        use gpui::{KeyContext, Keymap, Keystroke};
+        use crate::ui::terminal_view::{ConfirmPaste, PASTE_CONFIRM_CONTEXT};
+        let keymap = Keymap::new(super::key_bindings());
+        let confirmation = [KeyContext::parse("Workspace").unwrap(), KeyContext::parse(&format!("Terminal {PASTE_CONFIRM_CONTEXT}")).unwrap()];
+        let enter = Keystroke::parse("enter").unwrap();
+        let (bindings, _) = keymap.bindings_for_input(&[enter.clone()], &confirmation);
+        assert!(bindings.first().is_some_and(|b| b.action().as_any().is::<ConfirmPaste>()));
+        for context in ["Terminal", "Input", "TerminalSearch Input", "Sidebar"] {
+            let path = [KeyContext::parse("Workspace").unwrap(), KeyContext::parse(context).unwrap()];
+            let (bindings, _) = keymap.bindings_for_input(&[enter.clone()], &path);
+            assert!(bindings.iter().all(|b| !b.action().as_any().is::<ConfirmPaste>()), "{context}");
+        }
+    }
 
     #[test]
     fn terminal_select_all_has_the_existing_copy_output_fallback() {

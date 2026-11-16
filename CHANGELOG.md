@@ -6,6 +6,11 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Enter confirms the multi-line paste question, just like its Paste button, without sending
+  an extra Enter to the terminal underneath.
+
 ## [0.6.6] - 2026-11-16
 
 ### Changed

@@ -51,10 +51,11 @@ mod selection;
 mod render_bench;
 
 actions!(terminal, [
-    Copy, Paste, ScrollPageUp, ScrollPageDown, Find, SearchOlder, SearchNewer, SendTab, SendBackTab, SelectOutput,
+    Copy, Paste, ConfirmPaste, ScrollPageUp, ScrollPageDown, Find, SearchOlder, SearchNewer, SendTab, SendBackTab, SelectOutput,
 ]);
 
 pub const CONTEXT: &str = "Terminal";
+pub const PASTE_CONFIRM_CONTEXT: &str = "TerminalPasteConfirmation";
 /// The search bar's key context, for Up and Down in its field.
 pub const SEARCH_CONTEXT: &str = "TerminalSearch";
 const PADDING_X: f32 = 12.0;
@@ -1151,6 +1152,18 @@ impl TerminalView {
         self.write(keys::paste_bytes(text, bracketed));
     }
 
+    /// The Paste button and the dialog's Enter binding share one path. Taking the pending
+    /// text before writing prevents a second confirmation from pasting it again.
+    fn confirm_paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.prompt, Some(ActivePrompt::ConfirmPaste { .. })) {
+            return;
+        }
+        if let Some(ActivePrompt::ConfirmPaste { text, .. }) = self.prompt.take() {
+            self.paste_text(&text);
+        }
+        self.dismiss(window, cx);
+    }
+
     fn scroll_page(&mut self, up: bool, cx: &mut Context<Self>) {
         if self.windows_selection && self.prompt.is_none() {
             let key = if up { "pageup" } else { "pagedown" };
@@ -2062,12 +2075,7 @@ impl TerminalView {
                         .on_click(cx.listener(|this, _, window, cx| this.dismiss(window, cx)))
                         .into_any_element(),
                     button("pp-ok", "Paste", ButtonKind::Primary, p)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            if let Some(ActivePrompt::ConfirmPaste { text, .. }) = this.prompt.take() {
-                                this.paste_text(&text);
-                            }
-                            this.dismiss(window, cx);
-                        }))
+                        .on_click(cx.listener(|this, _, window, cx| this.confirm_paste(window, cx)))
                         .into_any_element(),
                 ],
             ),
@@ -3515,12 +3523,23 @@ impl Render for TerminalView {
                 }
             })
             .key_context(CONTEXT)
+            .when(matches!(self.prompt, Some(ActivePrompt::ConfirmPaste { .. })), |el| {
+                el.key_context(format!("{CONTEXT} {PASTE_CONFIRM_CONTEXT}").as_str())
+            })
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .on_action(cx.listener(|this, _: &SendTab, window, cx| this.send_tab(false, window, cx)))
             .on_action(cx.listener(|this, _: &SendBackTab, window, cx| this.send_tab(true, window, cx)))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(|this, _: &ConfirmPaste, window, cx| {
+                if this.focus.is_focused(window) && matches!(this.prompt, Some(ActivePrompt::ConfirmPaste { .. })) {
+                    this.confirm_paste(window, cx);
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_action(cx.listener(Self::select_output))
             .on_action(cx.listener(|this, _: &ScrollPageUp, window, cx| {
                 if this.focus.is_focused(window) { this.scroll_page(true, cx); } else { cx.propagate(); }
