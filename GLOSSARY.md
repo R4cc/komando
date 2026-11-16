@@ -51,7 +51,7 @@ A Session connected to a Host. The shell runs on the remote machine; no local sh
 A Session of a Local Shell, running on the Windows machine itself.
 
 **Remote Desktop**:
-A Host's graphical desktop reached over RDP or VNC, directly or through that Host's SSH Session. Each Remote Desktop runs in its own Session alongside the Host's terminal.
+A Host's graphical desktop reached over RDP or VNC, directly or through that Host's SSH Session. Each Remote Desktop runs in its own Session alongside the Host's terminal, listed under the Host in the sidebar. It can be shown in the main window or in a window of its own.
 _Avoid_: External viewer, remote screen, desktop tab
 
 **Startup Commands**:

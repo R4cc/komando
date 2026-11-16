@@ -35,6 +35,7 @@ use crate::ui::widgets::{
 use crate::vault::{Credential, Secret, Vault};
 
 mod command_history;
+mod desktop_window;
 mod desktops;
 mod forms;
 mod import;
@@ -43,6 +44,7 @@ mod settings;
 mod split;
 mod updates;
 pub use settings::SettingsSection;
+use desktops::desktop_protocol;
 use split::{DraggedItem, DropTarget, PendingSplit, Side, Split};
 use updates::UpdateState;
 
@@ -248,6 +250,8 @@ struct SessionEntry {
     /// SSH: the Host's address as it connected (see `history::address_label`). Commands go
     /// into the history with it, even if the Host is edited while the Session is open.
     history_on: Option<String>,
+    /// A Remote Desktop dragged out into a window of its own: that window.
+    window: Option<gpui::AnyWindowHandle>,
     _subscription: Subscription,
     _browser_subscription: Option<Subscription>,
     _browser_observer: Option<Subscription>,
@@ -363,6 +367,8 @@ pub struct Workspace {
     pending_split: Option<PendingSplit>,
     /// Where a sidebar item being dragged would land.
     drop_target: Option<DropTarget>,
+    /// A Remote Desktop's sidebar row held outside the window, to open in its own.
+    tear_off: Option<desktop_window::TearOff>,
     /// The Session last shown for each item, so a click returns to it.
     last_active: std::collections::HashMap<ItemKey, usize>,
     next_id: usize,
@@ -487,6 +493,7 @@ impl Workspace {
             split: None,
             pending_split: None,
             drop_target: None,
+            tear_off: None,
             last_active: Default::default(),
             next_id: 1,
             pane_size: None,
@@ -533,6 +540,12 @@ impl Workspace {
         this.vault_exists = Vault::exists(&this.data_dir);
         this.start_auto_lock(window, cx);
         this.start_notifications(window, cx);
+        // Desktops in windows of their own close with Komando's.
+        let workspace = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |_, cx| {
+            let _ = workspace.update(cx, |this, cx| this.close_own_windows(cx));
+            true
+        });
         if let Some(message) = library_error {
             this.show_toast_for(message, Duration::from_secs(20), cx);
         }
@@ -607,18 +620,19 @@ impl Workspace {
 
     // ---- appearance -------------------------------------------------------------------
 
-    fn apply_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Whether the app is dark in `window`'s appearance.
+    fn app_dark(&self, window: &Window) -> bool {
         let system_dark = matches!(window.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
-        let app_dark = match self.settings.app_theme {
+        match self.settings.app_theme {
             AppThemeSetting::System => system_dark,
             AppThemeSetting::Light => false,
             AppThemeSetting::Dark => true,
-        };
-        let term_dark = match self.settings.terminal_theme {
-            TerminalThemeSetting::Follow => app_dark,
-            TerminalThemeSetting::Light => false,
-            TerminalThemeSetting::Dark => true,
-        };
+        }
+    }
+
+    /// Give a window the app's backdrop (Mica, when on), light or dark frame and frame colors.
+    /// Returns whether the backdrop shows.
+    fn style_window(&self, window: &mut Window, app_dark: bool) -> bool {
         // Mica: Windows blurs the desktop behind the window; our surfaces become partly
         // transparent so it shows through. The slider sets how much.
         let blur = crate::platform::SUPPORTS_BACKDROP && self.settings.background_blur;
@@ -631,6 +645,26 @@ impl Workspace {
         let backdrop_enabled = crate::platform::set_backdrop(window, blur);
         if blur && !backdrop_enabled {
             window.set_background_appearance(gpui::WindowBackgroundAppearance::Opaque);
+        }
+        let opaque = AppPalette::from_theme(self.theme_for(app_dark));
+        crate::platform::set_window_frame_colors(
+            window,
+            crate::theme::packed(opaque.border),
+            (!backdrop_enabled).then(|| crate::theme::packed(opaque.canvas)),
+        );
+        backdrop_enabled
+    }
+
+    fn apply_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let app_dark = self.app_dark(window);
+        let term_dark = match self.settings.terminal_theme {
+            TerminalThemeSetting::Follow => app_dark,
+            TerminalThemeSetting::Light => false,
+            TerminalThemeSetting::Dark => true,
+        };
+        let backdrop_enabled = self.style_window(window, app_dark);
+        for handle in self.own_windows() {
+            let _ = handle.update(cx, |_, window, _| self.style_window(window, app_dark));
         }
         let t = if backdrop_enabled { self.settings.background_blur_intensity as f32 / 100. } else { 0. };
         cx.set_global(Appearance {
@@ -645,12 +679,6 @@ impl Workspace {
             cx,
         );
         let app = cx.global::<Appearance>().app;
-        let opaque = AppPalette::from_theme(self.theme_for(app_dark));
-        crate::platform::set_window_frame_colors(
-            window,
-            crate::theme::packed(opaque.border),
-            (!backdrop_enabled).then(|| crate::theme::packed(opaque.canvas)),
-        );
         gpui_component::Theme::update(cx, |theme| app.apply_components(theme));
         cx.refresh_windows();
     }
@@ -1099,7 +1127,13 @@ impl Workspace {
     /// How many Session rows show under an item: one each when it has several and they are
     /// not folded away.
     fn nested_rows(&self, key: &ItemKey, sessions: usize) -> usize {
-        if sessions > 1 && !self.collapsed_items.contains(key) { sessions } else { 0 }
+        if self.lists_sessions(key, sessions) && !self.collapsed_items.contains(key) { sessions } else { 0 }
+    }
+
+    /// Whether an item lists its Sessions in rows of their own under it: when it has several,
+    /// and always for a Remote Desktop, so it never passes for the Host's terminal.
+    fn lists_sessions(&self, key: &ItemKey, sessions: usize) -> bool {
+        sessions > 1 || self.sessions_of(key).any(|s| s.view.desktop().is_some())
     }
 
     fn sessions_of(&self, key: &ItemKey) -> impl Iterator<Item = &SessionEntry> {
@@ -1124,6 +1158,8 @@ impl Workspace {
                 .get(&key)
                 .copied()
                 .filter(|id| self.sessions.iter().any(|s| s.id == *id))
+                // Rather one shown here than a desktop in its own window.
+                .or_else(|| self.sessions_of(&key).find(|s| s.window.is_none()).map(|s| s.id))
                 .or_else(|| self.sessions_of(&key).next().map(|s| s.id));
             if let Some(id) = existing {
                 self.activate(id, window, cx);
@@ -1287,6 +1323,7 @@ impl Workspace {
             sftp_busy: Busy::default(),
             waiting_for_size: false,
             history_on: None,
+            window: None,
             _subscription: sub,
             _browser_subscription: None,
             _browser_observer: None,
@@ -1480,6 +1517,12 @@ impl Workspace {
     }
 
     fn activate(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // A desktop in a window of its own: that window comes to the front.
+        if let Some(handle) = self.sessions.iter().find(|s| s.id == id).and_then(|s| s.window) {
+            let _ = handle.update(cx, |_, window, _| window.activate_window());
+            cx.notify();
+            return;
+        }
         self.active = Some(id);
         if let Some(entry) = self.sessions.iter().find(|s| s.id == id) {
             self.last_active.insert(entry.item.clone(), id);
@@ -1703,6 +1746,7 @@ impl Workspace {
                 SessionView::Desktop(view) => view.update(cx, |v, cx| v.end("Session closed.", cx)),
             }
         } else {
+            self.close_own_window(id, cx);
             let entry = self.sessions.remove(index);
             self.last_active.retain(|_, v| *v != id);
             entry.view.close(cx);
@@ -2105,6 +2149,9 @@ impl Workspace {
         self.sessions = kept;
         for entry in &gone {
             self.cancel_completion_notification(entry.id);
+            if let Some(handle) = entry.window {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            }
             entry.view.close(cx);
             self.last_active.retain(|_, v| *v != entry.id);
             let partner = self.leave_split(entry.id).filter(|p| !gone.iter().any(|g| g.id == *p));
@@ -2984,7 +3031,7 @@ impl Workspace {
     fn render_item(&self, item: &SidebarItem, color: Hsla, indent: f32, p: AppPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let key = item.key();
         let sessions: Vec<&SessionEntry> = self.sessions_of(&key).collect();
-        let grouped = sessions.len() > 1;
+        let grouped = self.lists_sessions(&key, sessions.len());
         let expanded = grouped && !self.collapsed_items.contains(&key);
         let shown = self.last_active.get(&key).copied().or_else(|| sessions.first().map(|s| s.id));
         let main = shown.and_then(|id| sessions.iter().find(|s| s.id == id).copied()).or(sessions.first().copied());
@@ -3115,6 +3162,26 @@ impl Workspace {
         let item_for_click = item.clone();
         let item_for_new = item.clone();
         let toggle_key = key.clone();
+        // A Host's Remote Desktops open from its row: each gets a Session row under it.
+        let desktop_buttons: Vec<AnyElement> = match item {
+            SidebarItem::Host { project, host } => host
+                .desktops()
+                .map(|protocol| {
+                    let (pid, hid) = (project.id.clone(), host.id.clone());
+                    let tip: SharedString = format!("Open remote desktop ({})", protocol.label()).into();
+                    icon_button(SharedString::from(format!("desktop-{}-{key:?}", protocol.label())), "monitor", p)
+                        .aria_label(tip.clone())
+                        .size(px(24.))
+                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.open_desktop(&pid, &hid, protocol, window, cx);
+                        }))
+                        .into_any_element()
+                })
+                .collect(),
+            SidebarItem::Shell { .. } => vec![],
+        };
         let dragged = self.dragged(item, None, color);
         // Shell identities stay clear while idle; their labels and status carry activity.
         let dim = !(active || live) && is_artwork(&icon) && matches!(item, SidebarItem::Host { .. });
@@ -3212,6 +3279,7 @@ impl Workspace {
                                 .gap(px(2.))
                                 .rounded(p.corner(7.))
                                 .bg(if active { p.active } else { p.hover })
+                                .children(desktop_buttons)
                                 .child(
                                     icon_button(SharedString::from(format!("another-{key:?}")), "plus", p)
                                         .aria_label("New session")
@@ -3253,8 +3321,9 @@ impl Workspace {
         rows
     }
 
-    /// One Session of an item with several: its state, its title (or "Session 2"), and a
-    /// button that disconnects it, or closes it once it has dropped.
+    /// One Session of an item listed under it: what it is (terminal or remote desktop), its
+    /// title, its state, and a button that disconnects it, or closes it once it has dropped.
+    /// Smaller than the item's row and hung off a guide line, so it never reads as a Host.
     fn render_session_row(
         &self,
         item: &SidebarItem,
@@ -3270,10 +3339,12 @@ impl Workspace {
         let dragged = self.dragged(item, Some(id), color);
         let live = session.is_live();
         let dropped = !live;
-        let title = session_title(session);
+        let desktop = desktop_protocol(session);
+        let own_window = session.window.is_some();
+        let title: SharedString = if desktop.is_some() { "Remote desktop".into() } else { session_title(session) };
         let ws = cx.entity().downgrade();
         let session_menu = move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
-            let menu = if dropped {
+            let mut menu = if dropped {
                 menu.item(menu_item("Reconnect", "refresh-cw", &ws, move |this, window, cx| {
                     this.activate(id, window, cx);
                     this.reconnect(id, window, cx);
@@ -3282,24 +3353,49 @@ impl Workspace {
             } else {
                 menu.item(menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.close_session(id, window, cx)))
             };
+            if desktop.is_some() {
+                menu = menu.separator().item(if own_window {
+                    menu_item("Show its window", "app-window", &ws, move |this, window, cx| this.activate(id, window, cx))
+                } else {
+                    menu_item("Open in its own window", "app-window", &ws, move |this, window, cx| {
+                        this.detach_desktop(id, None, window, cx)
+                    })
+                });
+            }
             notifications::completion_menu(menu, &ws, &[id], cx)
         };
-        let icon = item.icon();
-        let icon_size = if matches!(item, SidebarItem::Shell { .. }) { 16. } else { 12. };
-        let icon_color = item.icon_color(&icon, if active || live { color } else { p.text_faint }, p);
+        // What the Session is: a Host's terminal or desktop by kind, a shell by its own icon.
+        let (icon, icon_size) = match (&session.kind, item) {
+            (SessionKind::Desktop { .. }, _) => ("monitor".to_string(), 13.),
+            (_, SidebarItem::Host { .. }) => ("square-terminal".to_string(), 13.),
+            (_, SidebarItem::Shell { .. }) => (item.icon(), 14.),
+        };
+        let icon_color = match item {
+            SidebarItem::Shell { .. } => item.icon_color(&icon, color, p),
+            SidebarItem::Host { .. } if active || live => color,
+            SidebarItem::Host { .. } => p.text_faint,
+        };
+        // A Host's Sessions say what they are; a shell's are all terminals.
+        let kind = match (&session.kind, desktop) {
+            (_, Some(protocol)) => Some(protocol.label()),
+            (SessionKind::Ssh { .. }, None) => Some("SSH"),
+            _ => None,
+        };
+        // The guide hangs from the middle of the item's icon.
+        let guide = indent + 7.;
         div()
             .id(SharedString::from(format!("session-{id}")))
             .group("session-row")
             .text_size(px(12.5))
             .relative()
-            .h(px(30.))
-            // Keep the Host or shell icon visible; connection state lives on the right.
-            .pl(px(indent + 2.))
+            .h(px(28.))
+            .ml(px(guide + 7.))
+            .pl(px(8.))
             .pr(px(10.))
             .flex()
             .items_center()
-            .gap(px(11.))
-            .rounded(p.corner(8.))
+            .gap(px(8.))
+            .rounded(p.corner(7.))
             .cursor_pointer()
             .when(active, |el| el.bg(p.active).text_color(p.active_text))
             .when(!active, |el| el.hover(|s| s.bg(p.hover)))
@@ -3308,29 +3404,34 @@ impl Workspace {
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.activate(id, window, cx);
                 let dropped = this.sessions.iter().find(|s| s.id == id).is_some_and(|s| !s.is_live());
-                if dropped {
+                if dropped && !own_window {
                     this.reconnect(id, window, cx);
                 }
             }))
-            .child(
-                div()
-                    .w(px(icon_size))
-                    .flex_shrink_0()
-                    .flex()
-                    .justify_center()
-                    .child(icon_el(&icon, icon_size, icon_color)),
-            )
+            // The guide line, from the item's icon down past every Session of it.
+            .child(div().absolute().left(px(-7.)).top(px(-2.)).bottom(px(-2.)).w(px(1.)).bg(p.border))
+            .child(div().w(px(14.)).flex_shrink_0().flex().justify_center().child(icon_el(&icon, icon_size, icon_color)))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_color(if active { p.active_text } else if live { p.text } else { p.text_muted })
+                    .text_color(if active { p.active_text } else if live { p.text_muted } else { p.text_faint })
                     .when(!active, |el| el.group_hover("session-row", |s| s.text_color(p.hover_text)))
                     .child(title.clone()),
             )
+            .when(own_window, |el| {
+                el.child(
+                    div()
+                        .id("session-own-window")
+                        .flex_shrink_0()
+                        .group_hover("session-row", |s| s.invisible())
+                        .tooltip(|window, cx| Tooltip::new("In its own window").build(window, cx))
+                        .child(icon_el("app-window", 12., p.text_faint)),
+                )
+            })
             // Titles can repeat (two shells in the same folder); the number tells them apart.
-            .when(title.as_ref() != format!("Session {}", session.number), |el| {
+            .when(desktop.is_none() && title.as_ref() != format!("Session {}", session.number), |el| {
                 el.child(
                     div()
                         .flex_shrink_0()
@@ -3338,6 +3439,23 @@ impl Workspace {
                         .text_color(p.text_faint)
                         .group_hover("session-row", |s| s.invisible())
                         .child(format!("#{}", session.number)),
+                )
+            })
+            .when_some(kind, |el, kind| {
+                el.child(
+                    div()
+                        .flex_shrink_0()
+                        .px(px(5.))
+                        .rounded(p.corner(4.))
+                        .border_1()
+                        .border_color(if desktop.is_some() { p.brand.opacity(0.45) } else { p.border })
+                        .when(desktop.is_some(), |el| el.bg(p.brand_soft))
+                        .text_size(px(10.))
+                        .line_height(px(14.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(if desktop.is_some() { p.brand } else { p.text_faint })
+                        .group_hover("session-row", |s| s.invisible())
+                        .child(kind),
                 )
             })
             .child(
@@ -3352,7 +3470,7 @@ impl Workspace {
                     .absolute()
                     .id("session-hover-actions")
                     .right(px(4.))
-                    .top(px(3.))
+                    .top(px(2.))
                     .rounded(p.corner(7.))
                     .bg(p.sidebar)
                     .invisible()
@@ -3687,6 +3805,9 @@ impl Workspace {
     /// in it makes it the active one, and the other's Project colour edge fades.
     fn render_pane(&self, id: usize, in_split: bool, p: AppPalette, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = self.sessions.iter().find(|s| s.id == id)?;
+        if entry.window.is_some() {
+            return Some(self.render_in_own_window(id, p, cx));
+        }
         let focused = self.active == Some(id);
         let project = entry.project_id.as_deref().and_then(|id| self.library.project(id));
         let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.brand);
@@ -3778,6 +3899,33 @@ impl Workspace {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// In place of a desktop that is in a window of its own.
+    fn render_in_own_window(&self, id: usize, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        island(p)
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(12.))
+            .child(icon_el("app-window", 28., p.text_faint))
+            .child(div().text_size(px(13.)).text_color(p.text_muted).child("This remote desktop is in its own window."))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .child(button("own-window-show", "Show its window", ButtonKind::Ghost, p).on_click(cx.listener(
+                        move |this, _: &ClickEvent, window, cx| this.activate(id, window, cx),
+                    )))
+                    .child(button("own-window-back", "Bring it back here", ButtonKind::Primary, p).on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| this.close_own_window(id, cx),
+                    ))),
+            )
+            .into_any_element()
     }
 
     fn render_empty(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -4585,7 +4733,17 @@ impl Render for Workspace {
             // drop indicators go.
             .on_drop(cx.listener(|this, _: &DraggedItem, _, cx| {
                 this.drop_target = None;
+                this.tear_off = None;
                 cx.notify();
+            }))
+            // A Remote Desktop's row dragged out of the window opens in a window of its own
+            // where it is let go.
+            .on_drag_move(cx.listener(|this, event: &gpui::DragMoveEvent<DraggedItem>, window, cx| {
+                let session = event.drag(cx).session;
+                this.drag_outside(session, event.event.position, window, cx);
+            }))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _: &gpui::MouseUpEvent, window, cx| {
+                this.finish_tear_off(window, cx);
             }))
             .on_drop(cx.listener(|this, _: &SftpDivider, _, cx| {
                 this.sftp_resizing = false;

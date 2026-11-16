@@ -15,9 +15,19 @@ All notable changes to Komando are listed here. The format follows
   dark and light terminals: Default (VS Code's standard terminal palette), Campbell,
   One Half, Solarized, Tango, Gruvbox, Dracula and Nord, or Match theme to use the app
   theme's terminal colors.
+- Remote desktops can run in a window of their own: drag a VNC or RDP session's sidebar row
+  out of Komando's window, or use "Open in its own window" in the title bar or the row's
+  menu. Closing that window, or "Back to the Komando window", returns the desktop to the
+  main window, still connected.
+- A host's sidebar row shows a monitor button on hover for each remote desktop it offers.
 
 ### Changed
 
+- Remote desktops appear as their own row under the host, marked VNC or RDP. Session rows
+  under a host are smaller, hang from a guide line and show whether they are SSH, VNC or
+  RDP, so they no longer look like hosts.
+- The title bar no longer has SSH, VNC and RDP buttons, so it keeps its layout when you
+  switch sessions. Switch between a host's terminal and desktop in the sidebar.
 - New VNC desktops connect directly to the host by default, like other VNC viewers.
   Turn on "Through the host's SSH session" to tunnel VNC over SSH when the server
   allows port forwarding.

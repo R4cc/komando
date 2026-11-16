@@ -3,7 +3,10 @@
 A Host may offer RDP and VNC alongside SSH, each with its own port and Credential, on the
 Host's existing address. A Remote Desktop is a Session under that Host rather than an SFTP-like
 panel: it needs the pane's space and its own keyboard focus, lifecycle and reconnect behavior.
-Configured protocols appear in the toolbar and Host menu; the Host chooses which opens first.
+Configured protocols open from the Host's sidebar row (a button on hover) and its menu; the
+Host chooses which opens first. A Remote Desktop Session always has a row of its own under
+the Host, marked with its protocol, and switching between a Host's terminal and desktops
+happens there rather than in the title bar, which keeps its layout.
 Global viewing defaults live in Settings → Remote desktop.
 
 Komando embeds IronRDP and vnc-rs and draws their framebuffer in GPUI. Launching external
@@ -23,8 +26,14 @@ testing the protocol adapters and maintaining their dependencies.
   port, after explicit first-use or changed-certificate approval and before credentials are
   sent. Standard unencrypted RDP Security and server redirections are refused.
 - VNC initially supports no authentication and classic VNC passwords, with Raw, CopyRect and
-  ZRLE updates. New VNC configurations default to SSH because classic VNC has no transport
-  encryption. TLS/VeNCrypt and proprietary authentication are not silently downgraded.
+  ZRLE updates. New VNC configurations connect directly, as other viewers do: many SSH
+  servers refuse `direct-tcpip` channels (`AllowTcpForwarding no`), which made the first
+  connection fail. The form recommends SSH, since classic VNC has no transport encryption.
+  TLS/VeNCrypt and proprietary authentication are not silently downgraded.
+- A Remote Desktop Session can move into a window of its own (dragged out of the main
+  window by its row) and back. The Session stays one Session, listed in the main sidebar;
+  its connection is untouched by the move. Closing that window returns it to the main
+  window rather than disconnecting it, so a desktop is never lost by closing a window.
 - The initial scope excludes clipboard, audio, drives, printers, RD Gateway, Kerberos and
   multi-monitor sessions. Project files and the Tabby import remain SSH-only. The experimental
   MobaXterm import also supports direct RDP and VNC sessions (ADR 0011); desktop SSH gateways

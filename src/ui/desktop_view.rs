@@ -12,7 +12,7 @@ use futures::StreamExt as _;
 use futures::channel::oneshot;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, Bounds, Context, Corners, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyDownEvent, KeyUpEvent,
+    AnyElement, AnyWindowHandle, App, Bounds, Context, Corners, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyDownEvent, KeyUpEvent,
     Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage, ScrollDelta,
     ScrollEvent, SharedString, Subscription, Task, Window, actions, canvas, div, point, prelude::*, px, size,
 };
@@ -100,6 +100,12 @@ pub struct DesktopView {
     /// Keys sent down and not yet up, and the modifiers the remote side has down.
     held: HashSet<u16>,
     modifiers: Modifiers,
+    /// The window the pane is shown in: Komando's own, or one of its own after it was dragged
+    /// out. Its prompts and pictures belong to that window (see `bind`).
+    window: Option<AnyWindowHandle>,
+    /// A question that came while the pane was between windows, asked once it has one.
+    pending_prompt: Option<DesktopPrompt>,
+    _window_subscriptions: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -112,14 +118,7 @@ impl Focusable for DesktopView {
 impl DesktopView {
     pub fn new(protocol: Protocol, host: SharedString, target: SharedString, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
-        // Keys held when the keyboard leaves would stay down on the remote side.
-        let blur = cx.on_blur(&focus, window, |this, _, _| this.release_all());
-        let release = cx.on_release_in(window, |this, window, _| {
-            for image in this.image.take().into_iter().chain(this.stale.drain(..)) {
-                let _ = window.drop_image(image);
-            }
-        });
-        Self {
+        let mut this = Self {
             protocol,
             host,
             target,
@@ -140,8 +139,52 @@ impl DesktopView {
             resize: None,
             held: HashSet::new(),
             modifiers: Modifiers::default(),
-            _subscriptions: vec![blur, release],
+            window: None,
+            pending_prompt: None,
+            _window_subscriptions: vec![],
+            _subscriptions: vec![],
+        };
+        this.bind(window, cx);
+        this
+    }
+
+    /// Show the pane in `window` from now on: when it is created, and when it moves into a
+    /// window of its own or back. Call `leave` on the window it was in first, while that one
+    /// is still open.
+    pub fn bind(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.window = Some(window.window_handle());
+        // Keys held when the keyboard leaves would stay down on the remote side.
+        let blur = cx.on_blur(&self.focus, window, |this, _, _| this.release_all());
+        let release = cx.on_release_in(window, |this, window, _| {
+            for image in this.image.take().into_iter().chain(this.stale.drain(..)) {
+                let _ = window.drop_image(image);
+            }
+        });
+        self._window_subscriptions = vec![blur, release];
+        // A resize waiting to settle was measured in the other window.
+        self.resize = None;
+        if let Some(prompt) = self.pending_prompt.take() {
+            self.show_prompt(prompt, window, cx);
         }
+        cx.notify();
+    }
+
+    /// The pane is no longer shown in `window`: free the picture's copy on its GPU. The
+    /// picture itself stays, and is drawn in the next window.
+    pub fn leave(&mut self, window: &mut Window) {
+        for image in self.image.clone().into_iter().chain(self.stale.drain(..)) {
+            let _ = window.drop_image(image);
+        }
+        self.release_all();
+    }
+
+    /// The pane's size as last laid out.
+    pub fn pane_size(&self) -> Option<gpui::Size<Pixels>> {
+        self.pane.get().map(|(bounds, _)| bounds.size)
+    }
+
+    pub fn focus(&self, window: &mut Window, cx: &mut App) {
+        window.focus(&self.focus, cx);
     }
 
     /// The size to ask a server for: the pane in device pixels, and the display's scale in
@@ -160,7 +203,7 @@ impl DesktopView {
     }
 
     /// Start connecting, ending any connection this pane had.
-    pub fn connect(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn connect(&mut self, target: Target, cx: &mut Context<Self>) {
         self.close();
         self.waiting_for_ssh = false;
         self.drawn_version = 0;
@@ -169,9 +212,26 @@ impl DesktopView {
         let mut connection = desktop::spawn(target);
         let mut events = std::mem::replace(&mut connection.events, futures::channel::mpsc::unbounded().1);
         self.connection = Some(connection);
-        self._events = Some(cx.spawn_in(window, async move |this, cx| {
+        // Each event goes to the window the pane is in at the time: it may move between windows.
+        self._events = Some(cx.spawn(async move |this, cx| {
             while let Some(event) = events.next().await {
-                if this.update_in(cx, |this, window, cx| this.on_event(event, window, cx)).is_err() {
+                let Ok(window) = this.read_with(cx, |this, _| this.window) else { break };
+                let mut event = Some(event);
+                let shown = window.and_then(|window| {
+                    window
+                        .update(cx, |_, window, cx| {
+                            let event = event.take().expect("an event");
+                            this.update(cx, |this, cx| this.on_event(event, window, cx))
+                        })
+                        .ok()
+                });
+                let handled = match (shown, event) {
+                    (Some(result), _) => result.is_ok(),
+                    // Its window just closed: the pane is on its way back to Komando's.
+                    (None, Some(event)) => this.update(cx, |this, cx| this.on_event_between_windows(event, cx)).is_ok(),
+                    (None, None) => false,
+                };
+                if !handled {
                     break;
                 }
             }
@@ -204,6 +264,7 @@ impl DesktopView {
             connection.send(DesktopInput::Close);
         }
         self.prompt = None;
+        self.pending_prompt = None;
         self._events = None;
         self.resize = None;
         self.held.clear();
@@ -271,6 +332,27 @@ impl DesktopView {
             DesktopEvent::Remember { user, password } => cx.emit(DesktopViewEvent::Remember { user, password }),
         }
         cx.notify();
+    }
+
+    /// An event while the pane has no open window: a question waits for the next one.
+    fn on_event_between_windows(&mut self, event: DesktopEvent, cx: &mut Context<Self>) {
+        match event {
+            DesktopEvent::Prompt(prompt) => {
+                self.pending_prompt = Some(prompt);
+                cx.notify();
+            }
+            DesktopEvent::Status(status) => {
+                if matches!(status, Status::Disconnected(_)) {
+                    self.pending_prompt = None;
+                    self.connection = None;
+                }
+                self.status = status;
+                cx.emit(DesktopViewEvent::Changed);
+                cx.notify();
+            }
+            DesktopEvent::Picture => cx.notify(),
+            DesktopEvent::Remember { user, password } => cx.emit(DesktopViewEvent::Remember { user, password }),
+        }
     }
 
     fn show_prompt(&mut self, prompt: DesktopPrompt, window: &mut Window, cx: &mut Context<Self>) {

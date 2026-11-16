@@ -1,10 +1,7 @@
 //! Remote Desktop Sessions: opening a Host's RDP or VNC desktop, connecting it (straight or
-//! through the Host's SSH Session), and the title bar buttons that switch between a Host's
-//! terminal and its desktops.
+//! through the Host's SSH Session), and the title bar's actions on a desktop.
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, ClickEvent, Context, FontWeight, SharedString, Window, div, prelude::*, px};
-use gpui_component::tooltip::Tooltip;
+use gpui::{AnyElement, ClickEvent, Context, SharedString, Window, prelude::*};
 use zeroize::Zeroizing;
 
 use super::{ItemKey, Pending, SessionEntry, SessionKind, SessionView, Workspace, strip_action};
@@ -13,7 +10,7 @@ use crate::model::Protocol;
 use crate::session::Status;
 use crate::theme::AppPalette;
 use crate::ui::desktop_view::{DesktopView, DesktopViewEvent};
-use crate::ui::widgets::{Busy, icon_el};
+use crate::ui::widgets::Busy;
 use crate::vault::{Credential, Secret};
 
 impl Workspace {
@@ -96,6 +93,7 @@ impl Workspace {
             sftp_busy: Busy::default(),
             waiting_for_size: false,
             history_on: None,
+            window: None,
             _subscription: sub,
             _browser_subscription: None,
             _browser_observer: None,
@@ -199,7 +197,7 @@ impl Workspace {
         view.update(cx, |v, cx| {
             v.fit_desktop = fit;
             v.target = label.into();
-            v.connect(target, window, cx);
+            v.connect(target, cx);
         });
         self.lock_if_used(cx);
     }
@@ -311,43 +309,14 @@ impl Workspace {
         }
     }
 
-    /// The title bar's buttons for a Host's Remote Desktops (shown only for those it has),
-    /// and on a desktop, one back to its terminal and the desktop's own actions.
+    /// The title bar's actions on a Remote Desktop: Ctrl+Alt+Del (RDP), Reconnect once it has
+    /// dropped, and its own window. Moving between a Host's terminal and its desktops is done
+    /// from the sidebar, so the bar keeps its layout.
     pub(super) fn desktop_strip_buttons(&self, entry: &SessionEntry, p: AppPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let ItemKey::Host { project, host: host_id } = &entry.item else { return vec![] };
-        let Some(host) = self.library.host(host_id) else { return vec![] };
-        let current = desktop_protocol(entry);
+        let Some(protocol) = desktop_protocol(entry) else { return vec![] };
+        let id = entry.id;
         let mut buttons = vec![];
-        if current.is_some() {
-            let (project, host) = (project.clone(), host_id.clone());
-            buttons.push(
-                strip_pill("show-terminal", "square-terminal", "SSH".into(), false, p)
-                    .tooltip(|window, cx| Tooltip::new("Show this host's terminal").build(window, cx))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.show_terminal_of(&project, &host, window, cx)))
-                    .into_any_element(),
-            );
-        }
-        for protocol in host.desktops() {
-            let on = current == Some(protocol);
-            let (project, host) = (project.clone(), host_id.clone());
-            let tip: SharedString = if on {
-                format!(
-                    "This is {}'s remote desktop ({})",
-                    self.library.host(&host).map(|h| h.name.as_str()).unwrap_or(""),
-                    protocol.label()
-                )
-                .into()
-            } else {
-                format!("Open the remote desktop over {}", protocol.label()).into()
-            };
-            buttons.push(
-                strip_pill(("desktop", protocol as usize), "monitor", protocol.label().into(), on, p)
-                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_desktop(&project, &host, protocol, window, cx)))
-                    .into_any_element(),
-            );
-        }
-        if let (Some(Protocol::Rdp), Some(view)) = (current, entry.view.desktop())
+        if let (Protocol::Rdp, Some(view)) = (protocol, entry.view.desktop())
             && entry.is_live()
         {
             let view = view.clone();
@@ -357,14 +326,18 @@ impl Workspace {
                     .into_any_element(),
             );
         }
-        if current.is_some() && !entry.is_live() {
-            let id = entry.id;
+        if !entry.is_live() {
             buttons.push(
                 strip_action("desktop-reconnect", "refresh-cw", "Reconnect", false, p)
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.connect_desktop(id, window, cx)))
                     .into_any_element(),
             );
         }
+        buttons.push(
+            strip_action("desktop-own-window", "app-window", "Open in its own window", false, p)
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.detach_desktop(id, None, window, cx)))
+                .into_any_element(),
+        );
         buttons
     }
 }
@@ -375,37 +348,4 @@ pub(super) fn desktop_protocol(entry: &SessionEntry) -> Option<Protocol> {
         SessionKind::Desktop { protocol, .. } => Some(*protocol),
         _ => None,
     }
-}
-
-/// A labelled button in the title bar, in the SFTP button's style: outlined, and filled with
-/// the accent while what it shows is on screen.
-pub(super) fn strip_pill(
-    id: impl Into<gpui::ElementId>,
-    icon: &str,
-    label: SharedString,
-    on: bool,
-    p: AppPalette,
-) -> gpui::Stateful<gpui::Div> {
-    let color = if on { p.brand } else { p.text_muted };
-    div()
-        .id(id)
-        .h(px(24.))
-        .px(px(9.))
-        .mr(px(6.))
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .rounded(p.corner(7.))
-        .border_1()
-        .border_color(if on { p.brand.opacity(0.7) } else { p.border })
-        .when(on, |el| el.bg(p.brand_soft))
-        .text_size(px(12.))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(color)
-        .cursor_pointer()
-        .hover(|s| s.bg(p.hover))
-        // Its hitbox hides the title bar's drag area: see `strip_action`.
-        .occlude()
-        .child(icon_el(icon, 13., color))
-        .child(label)
 }
