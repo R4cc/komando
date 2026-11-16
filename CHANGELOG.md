@@ -12,6 +12,8 @@ All notable changes to Komando are listed here. The format follows
   trusted and the new fingerprint and offers **Replace key and connect**, instead of only
   blocking the connection. Replacing trusts the new key from then on; a key trusted in your
   OpenSSH known_hosts is replaced in Komando only, and that file is left unchanged.
+- Opening a host's remote desktop no longer moves its terminal into a row of its own. The
+  host's row stays its SSH session, and the remote desktop is the only row listed under it.
 
 ### Removed
 

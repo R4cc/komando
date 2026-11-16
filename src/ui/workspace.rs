@@ -1155,16 +1155,33 @@ impl Workspace {
             .collect()
     }
 
-    /// How many Session rows show under an item: one each when it has several and they are
-    /// not folded away.
+    /// How many Session rows show under an item: its listed Sessions, unless folded away.
     fn nested_rows(&self, key: &ItemKey, sessions: usize) -> usize {
-        if self.lists_sessions(key, sessions) && !self.collapsed_items.contains(key) { sessions } else { 0 }
+        if sessions == 0 || self.collapsed_items.contains(key) { 0 } else { self.listed_sessions(key).len() }
     }
 
-    /// Whether an item lists its Sessions in rows of their own under it: when it has several,
-    /// and always for a Remote Desktop, so it never passes for the Host's terminal.
-    fn lists_sessions(&self, key: &ItemKey, sessions: usize) -> bool {
-        sessions > 1 || self.sessions_of(key).any(|s| s.view.desktop().is_some())
+    /// The Sessions an item lists in rows of their own under it. A Remote Desktop always gets
+    /// one, so it never passes for the Host's terminal; the Host's row itself stays its
+    /// terminal while it has only one. With several terminals every Session is listed.
+    fn listed_sessions(&self, key: &ItemKey) -> Vec<&SessionEntry> {
+        let all: Vec<&SessionEntry> = self.sessions_of(key).collect();
+        let terminals = all.iter().filter(|s| s.view.desktop().is_none()).count();
+        if terminals < all.len() && terminals <= 1 {
+            all.into_iter().filter(|s| s.view.desktop().is_some()).collect()
+        } else if all.len() > 1 {
+            all
+        } else {
+            vec![]
+        }
+    }
+
+    /// The terminal an item's own row stands for while only its Remote Desktops are listed.
+    fn row_terminal(&self, key: &ItemKey) -> Option<usize> {
+        let listed = self.listed_sessions(key);
+        if listed.is_empty() {
+            return None;
+        }
+        self.sessions_of(key).find(|s| !listed.iter().any(|l| l.id == s.id)).map(|s| s.id)
     }
 
     fn sessions_of(&self, key: &ItemKey) -> impl Iterator<Item = &SessionEntry> {
@@ -1184,10 +1201,10 @@ impl Workspace {
     fn activate_item(&mut self, item: SidebarItem, another: bool, window: &mut Window, cx: &mut Context<Self>) {
         let key = item.key();
         if !another {
+            // The row is the Host's terminal while its desktops have rows of their own.
             let existing = self
-                .last_active
-                .get(&key)
-                .copied()
+                .row_terminal(&key)
+                .or_else(|| self.last_active.get(&key).copied())
                 .filter(|id| self.sessions.iter().any(|s| s.id == *id))
                 // Rather one shown here than a desktop in its own window.
                 .or_else(|| self.sessions_of(&key).find(|s| s.window.is_none()).map(|s| s.id))
@@ -3186,16 +3203,23 @@ impl Workspace {
     fn render_item(&self, item: &SidebarItem, color: Hsla, indent: f32, p: AppPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let key = item.key();
         let sessions: Vec<&SessionEntry> = self.sessions_of(&key).collect();
-        let grouped = self.lists_sessions(&key, sessions.len());
+        let listed = self.listed_sessions(&key);
+        let grouped = !listed.is_empty();
         let expanded = grouped && !self.collapsed_items.contains(&key);
         let shown = self.last_active.get(&key).copied().or_else(|| sessions.first().map(|s| s.id));
-        let main = shown.and_then(|id| sessions.iter().find(|s| s.id == id).copied()).or(sessions.first().copied());
+        // The Session the row itself is: its only one, or the terminal beside listed desktops.
+        let main = if grouped {
+            sessions.iter().find(|s| !listed.iter().any(|l| l.id == s.id)).copied()
+        } else {
+            shown.and_then(|id| sessions.iter().find(|s| s.id == id).copied()).or(sessions.first().copied())
+        };
         let holds_active = sessions.iter().any(|s| Some(s.id) == self.active);
         // Shown in the other half of the split: lit, more faintly than the active row.
         let split = self.shown_split();
         let beside = !holds_active && sessions.iter().any(|s| split.is_some_and(|split| split.contains(s.id)));
-        // A group's state: live if any Session is, connecting if any is on the way.
-        let status = if grouped {
+        // A group's state: live if any Session is, connecting if any is on the way. A row that
+        // is the Host's terminal shows that terminal's.
+        let status = if grouped && main.is_none() {
             let any = |f: fn(&Status) -> bool| sessions.iter().any(|s| f(&s.status));
             Some(if any(|s| matches!(s, Status::Connected)) {
                 Status::Connected
@@ -3211,9 +3235,10 @@ impl Workspace {
         let busy = !holds_active && !beside
             && if grouped { sessions.iter().any(|s| self.background_busy(s)) } else { main.is_some_and(|s| self.background_busy(s)) };
         // With the Sessions listed below, the active one is marked there instead.
-        let active = holds_active && !expanded;
+        let active = main.is_some_and(|s| Some(s.id) == self.active) || (holds_active && !expanded);
         let any_live = sessions.iter().any(|s| s.is_live());
         let session_id = main.map(|s| s.id);
+        let sessions_live = main.is_some_and(|s| s.is_live());
         let icon = item.icon();
         let icon_size = if matches!(item, SidebarItem::Shell { .. }) { 16. } else { 15. };
         let icon_color = item.icon_color(&icon, if active || live { color } else { p.text_faint }, p);
@@ -3222,6 +3247,7 @@ impl Workspace {
         let menu_item_src = item.clone();
         let menu_key = key.clone();
         let count = sessions.len();
+        let listed_count = listed.len();
         // Beside the Session shown, unless that is the one this would show.
         let can_split = self.active.is_some() && self.placement_possible(&key);
         let history = self.settings.command_history;
@@ -3255,7 +3281,9 @@ impl Workspace {
                         &ws,
                         move |this, window, cx| this.close_item_sessions(&all, window, cx),
                     ));
-            } else if let Some(id) = session_id {
+            }
+            if let Some(id) = session_id {
+                let live = sessions_live;
                 if live {
                     menu = menu.item(menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.close_session(id, window, cx)));
                 } else {
@@ -3391,7 +3419,7 @@ impl Workspace {
                         .group_hover("item-row", |s| s.invisible())
                         .child(status_indicator(status.as_ref(), busy, p))
                         .when(grouped, |el| {
-                            el.child(div().text_size(px(11.5)).text_color(p.text_faint).child(count.to_string()))
+                            el.child(div().text_size(px(11.5)).text_color(p.text_faint).child(listed_count.to_string()))
                         }),
                 )
                 // A group folds its Sessions away with the chevron, which is always there.
@@ -3450,12 +3478,12 @@ impl Workspace {
                                             .child(status_indicator(Some(status), busy, p)),
                                     )
                                 })
-                                // A group has no close button of its own: which Session would it
-                                // close? Each Session's row has one.
-                                .when_some(session_id.filter(|_| !grouped), |el, id| {
+                                // A group has no close button of its own (which Session would it
+                                // close?) unless the row is the Host's terminal.
+                                .when_some(session_id, |el, id| {
                                     el.child(
                                         icon_button(SharedString::from(format!("close-{id}")), "x", p)
-                                            .aria_label(if live { "Disconnect" } else { "Close session" })
+                                            .aria_label(if sessions_live { "Disconnect" } else { "Close session" })
                                             .size(px(24.))
                                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                                 cx.stop_propagation();
@@ -3469,7 +3497,7 @@ impl Workspace {
                 .into_any_element(),
         );
         if expanded {
-            for session in &sessions {
+            for session in &listed {
                 rows.push(self.render_session_row(item, session, color, indent, p, cx));
             }
         }
