@@ -4,6 +4,8 @@ name: CI
 # None of these files are compiled into the app.
 on:
   push:
+    # Tagging a release must not repeat the branch's build and tests.
+    branches: ["**"]
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -30,21 +32,28 @@ jobs:
         with:
           # Part of the cache key. Change it when the cached profile changes: an exact key hit
           # never saves a new cache, so a stale one would be rebuilt from scratch every run.
-          prefix-key: v1-dev
-      # The dev profile (see Cargo.toml) skips the release profile's thin LTO, which re-optimises
-      # all of gpui on every link and made CI builds take minutes. The Release workflow still
-      # builds the shipping profile. Build and test share the same dependencies.
+          prefix-key: v2-ci
+      # Compile Komando without optimisation for quick feedback. Dependencies retain the dev
+      # profile's optimisations, and both commands share the same profile and cache.
       - name: Build
-        run: cargo build --locked
+        run: cargo build --profile ci --locked --timings
       - name: Test
-        run: cargo test --lib --locked
+        run: cargo test --profile ci --lib --locked --timings
       - name: Test update handoff
         shell: powershell
         run: ./packaging/test-update.ps1
-      # The installer is otherwise only built for a release; building it from the debug program
+      # The installer is otherwise only built for a release; building it from the CI program
       # here catches mistakes in packaging/ before then.
       - name: Install WiX
         run: dotnet tool install --global wix --version 5.0.2
       - name: Build installer
         shell: pwsh
-        run: ./packaging/build-msi.ps1 -Version 0.0.0 -BinDir target\debug -Out Komando-ci.msi
+        run: ./packaging/build-msi.ps1 -Version 0.0.0 -BinDir target\ci -Out Komando-ci.msi
+      - name: Save build timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-build-timings
+          path: target/cargo-timings/*.html
+          if-no-files-found: ignore
+          retention-days: 7

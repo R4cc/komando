@@ -1,4 +1,5 @@
 name: Release
+run-name: Release ${{ github.event.release.tag_name || inputs.tag }}
 
 # Publishing a GitHub release (tag like v0.2.0) builds Komando for Windows and attaches
 # the MSI installer and portable .exe with the release version in both filenames.
@@ -12,32 +13,59 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # Caches saved under one release tag cannot be restored by the next tag. Dispatch on
+  # the default branch so releases can update and reuse one cache, then check out the tag
+  # in the build job. Manual runs on another ref are routed through the same path.
+  dispatch:
+    if: github.event_name == 'release' || github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+    name: Queue build on default branch
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch release build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh workflow run release.yml --ref "$DEFAULT_BRANCH" --field "tag=$TAG"
+
   msi:
+    if: github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    name: Build release
     runs-on: windows-latest
+    permissions:
+      contents: write
+    # Reruns of one tag must not race to replace its assets. Different tags may build together.
+    concurrency:
+      group: release-build-${{ inputs.tag }}
+      cancel-in-progress: false
     env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+          ref: refs/tags/${{ env.TAG }}
 
       - name: Read version from tag
         id: version
         shell: pwsh
         run: |
-          $version = $env:TAG.TrimStart('v')
-          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Tag '$env:TAG' is not vMAJOR.MINOR.PATCH" }
+          if ($env:TAG -notmatch '^v(\d+\.\d+\.\d+)$') { throw "Tag '$env:TAG' is not vMAJOR.MINOR.PATCH" }
+          $version = $Matches[1]
           $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
           if ($cargo -ne $version) { throw "Tag '$env:TAG' does not match the version in Cargo.toml ($cargo). Bump Cargo.toml or fix the tag." }
           "version=$version" >> $env:GITHUB_OUTPUT
 
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --release --locked --timings
 
       - name: Install WiX
         run: dotnet tool install --global wix --version 5.0.2
@@ -56,3 +84,12 @@ jobs:
         run: |
           $v = "${{ steps.version.outputs.version }}"
           gh release upload $env:TAG "Komando-$v-x64.msi" "Komando-$v-x64.exe" --clobber
+
+      - name: Save build timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-timings-${{ inputs.tag }}
+          path: target/cargo-timings/*.html
+          if-no-files-found: ignore
+          retention-days: 7

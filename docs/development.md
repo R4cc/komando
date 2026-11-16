@@ -49,9 +49,28 @@ Publish a GitHub release with a tag that matches `Cargo.toml`, like `v0.2.0`. Th
 the release version; the README links to the latest release's assets. To rebuild an existing release, run the workflow
 manually with its tag.
 
+Publishing a release queues a second Release workflow run on the default branch (`main`).
+That run checks out `refs/tags/<tag>` and verifies its Cargo version before building. Running
+the workflow on `main` lets successive releases update and reuse the same Rust dependency
+cache: GitHub prevents one tag from restoring another tag's cache. Manual runs on other refs
+also queue the build on the default branch. Look for the **Build release** job in the queued
+run; the initial **Queue build on default branch** job only dispatches it.
+
+The first release with a new compiler or dependency set can still be slow. Shipping builds
+keep thin LTO and the release profile's optimisation settings. CI uses `cargo build --profile ci`
+and `cargo test --profile ci --lib`: Komando is unoptimised, dependencies retain the dev profile's
+optimisations, and assertions and overflow checks remain enabled. Local `cargo build` and
+`cargo test --lib` keep their existing profiles. Branch pushes and pull requests run CI;
+pushing a tag does not repeat those checks.
+
+Both workflows upload Cargo's HTML timing reports as run artifacts for seven days. Download
+`ci-build-timings` or `release-build-timings-<tag>` from the run's summary to see which crates
+were rebuilt and how long compilation took. A cache hit saves dependency compilation; the
+application and its final release LTO/link still need to build.
+
 The installer is built from [packaging/komando.wxs](../packaging/komando.wxs) by
 [packaging/build-msi.ps1](../packaging/build-msi.ps1) (WiX v5). CI builds it on every push, from
-the debug program, so a mistake in the installer shows up before a release. It asks whether to
+the CI program in `target\ci`, so a mistake in the installer shows up before a release. It asks whether to
 install for the current user only (no administrator rights) or for all users; for scripted
 installs, `msiexec /i Komando-0.2.0-x64.msi /qn` installs for the current user and adding `ALLUSERS=1`
 installs for all users.
