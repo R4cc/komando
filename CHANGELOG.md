@@ -22,6 +22,8 @@ All notable changes to Komando are listed here. The format follows
   import.
 - Long host names on the import page are cut short instead of running into the duplicate
   labels.
+- The remote desktop toolbar's keyboard button is now labelled "Keys" and its menu arrow no
+  longer spills out of the button.
 
 ## [0.6.1] - 2026-11-16
 
