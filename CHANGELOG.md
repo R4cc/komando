@@ -6,14 +6,7 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
-### Fixed
-
-- Collapsing the sidebar with a large Scrollback no longer waits for every terminal row's
-  wider allocation on the UI thread. The sidebar responds while the terminal prepares its
-  new width in the background.
-- Resizing the SFTP File Browser updates a terminal with a large Scrollback more promptly:
-  nearby widths share preparation, blank line endings avoid temporary allocations, and
-  slow resizes no longer cause a long extra redraw delay.
+## [0.6.6] - 2026-11-16
 
 ### Changed
 
@@ -28,6 +21,15 @@ All notable changes to Komando are listed here. The format follows
   session when it is already visible, and use shorter desktop labels (Open VNC, Set up RDP…).
 - Sidebar menus show keyboard shortcuts beside New terminal (Ctrl+Enter), Rename session
   (F2), and Disconnect or Close session (Delete).
+
+### Fixed
+
+- Collapsing the sidebar with a large Scrollback no longer waits for every terminal row's
+  wider allocation on the UI thread. The sidebar responds while the terminal prepares its
+  new width in the background.
+- Resizing the SFTP File Browser updates a terminal with a large Scrollback more promptly:
+  nearby widths share preparation, blank line endings avoid temporary allocations, and
+  slow resizes no longer cause a long extra redraw delay.
 
 ## [0.6.5] - 2026-11-16
 
@@ -1437,7 +1439,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.6.5...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.6.6...HEAD
+[0.6.6]: https://github.com/R4cc/komando/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/R4cc/komando/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/R4cc/komando/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/R4cc/komando/compare/v0.6.2...v0.6.3
