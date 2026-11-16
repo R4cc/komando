@@ -161,6 +161,8 @@ pub fn run(options: Options) {
     // First, so the graphics driver loads while the rest of startup runs.
     platform::warm_up_gpu();
     logging::init(&options.data_dir);
+    #[cfg(windows)]
+    platform::crash::install(&options.data_dir);
     perf::startup("logging ready");
     gpui_platform::application()
         .with_assets(Assets)
@@ -197,7 +199,18 @@ pub fn run(options: Options) {
             .expect("open window");
             perf::startup("window opened");
             cx.activate(true);
+            // Every way out leaves a line, so a window that vanishes can be told apart from a
+            // crash (which `platform::crash` logs) or from being killed (which logs nothing).
+            cx.on_window_closed(|cx, id| log::info!("window {id:?} closed, {} still open", cx.windows().len())).detach();
+            cx.on_app_quit(|_| {
+                log::info!("Komando quitting");
+                log::logger().flush();
+                async {}
+            })
+            .detach();
         });
+    log::info!("Komando exited");
+    log::logger().flush();
 }
 
 #[cfg(test)]

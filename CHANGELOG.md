@@ -8,6 +8,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Added
 
+- When Komando crashes, it now says why in its log (`logs\komando.log` in its data folder) and
+  saves a crash report beside it (`komando-crash-….dmp`, the last three are kept). Send these
+  along when reporting a crash.
 - Shift+F10 (or the Menu key) opens the menu of the sidebar row you're on, so everything in
   it, such as opening a remote desktop or duplicating a host, works from the keyboard.
 - Shift+F2 and Shift+Delete in the sidebar edit or delete the host.
@@ -38,6 +41,10 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- Komando could stop responding ("Komando is not responding") as soon as the pointer moved over
+  a terminal, for example right after connecting to a host or after closing the host editor
+  with Esc. Ctrl+clicking in a terminal could do the same. This came with clickable links in
+  0.6.3.
 - In the sidebar, a second Delete while "Disconnect …?" was asking disconnected the session
   without waiting for the answer. Sidebar keys now do nothing while a question is open.
 - Disconnect and Disconnect all in the menus now also ask first while a command is still

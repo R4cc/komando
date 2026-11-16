@@ -1117,6 +1117,16 @@ impl TerminalView {
         (GridPoint::new(Line(row as i32 - offset), Column(col)), side)
     }
 
+    /// The link under the pointer, if any.
+    ///
+    /// `grid_point` locks the terminal itself, so it has to run before the lock here is taken:
+    /// `link_at(&*self.term.lock(), self.grid_point(..))` locked it twice on the UI thread, and
+    /// the terminal's mutex isn't reentrant, so the window hung for good.
+    fn link_under(&self, position: gpui::Point<Pixels>) -> Option<TermLink> {
+        let at = self.grid_point(position).0;
+        link_at(&*self.term.lock(), at)
+    }
+
     /// The mouse mode the program asked for, if clicks should go to it. Shift held down
     /// always means "select text" instead, as in xterm.
     fn mouse_mode(&self, shift: bool) -> Option<MouseMode> {
@@ -1163,7 +1173,7 @@ impl TerminalView {
         // Ctrl+click (Cmd+click on macOS) opens a link, even in a program that took the mouse.
         if event.button == MouseButton::Left
             && (event.modifiers.control || event.modifiers.platform)
-            && let Some(link) = link_at(&*self.term.lock(), self.grid_point(event.position).0)
+            && let Some(link) = self.link_under(event.position)
         {
             cx.open_url(&link.url);
             return;
@@ -1331,7 +1341,7 @@ impl TerminalView {
         let link = if self.selecting || event.pressed_button.is_some() || self.prompt.is_some() {
             None
         } else {
-            link_at(&*self.term.lock(), self.grid_point(event.position).0)
+            self.link_under(event.position)
         };
         if link != self.hover_link {
             self.hover_link = link;

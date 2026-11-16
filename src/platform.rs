@@ -193,6 +193,8 @@ pub fn set_backdrop(_window: &gpui::Window, _on: bool) -> bool { false }
 pub const SUPPORTS_BACKDROP: bool = cfg!(windows);
 
 #[cfg(windows)]
+pub mod crash;
+#[cfg(windows)]
 mod frame;
 #[cfg(windows)]
 mod tray;
