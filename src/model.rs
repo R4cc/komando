@@ -923,6 +923,18 @@ impl Library {
         true
     }
 
+    /// Move an entire Project to an insertion slot in the current sidebar order.
+    pub fn reorder_project(&mut self, id: &str, index: usize) -> bool {
+        let Some(from) = self.projects.iter().position(|p| p.id == id) else { return false };
+        let index = index.min(self.projects.len());
+        if index == from || index == from + 1 {
+            return false;
+        }
+        let project = self.projects.remove(from);
+        self.projects.insert(if index > from { index - 1 } else { index }, project);
+        true
+    }
+
     /// Delete a Host.
     pub fn remove_host(&mut self, id: &str) {
         self.hosts.retain(|h| h.id != id);
@@ -1486,6 +1498,39 @@ mod tests {
         assert!(!lib.reorder_host("p1", "gone", 0));
         assert!(!lib.reorder_host("nowhere", "a", 2));
         assert_eq!(lib, before);
+    }
+
+    #[test]
+    fn projects_reorder_as_whole_groups_and_persist() {
+        let mut lib = two_projects(vec![named("web"), named("db")]);
+        let mut third = project(None, None);
+        third.id = "p3".into();
+        lib.projects.push(third);
+        let original = lib.clone();
+        assert!(lib.reorder_project("p1", 3));
+        assert_eq!(lib.projects.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["p2", "p3", "p1"]);
+        assert_eq!(lib.projects[2], original.projects[0]);
+        assert_eq!(lib.hosts, original.hosts);
+        assert!(lib.reorder_project("p1", 0));
+        assert_eq!(lib, original);
+        assert!(lib.reorder_project("p1", usize::MAX));
+        let dir = std::env::temp_dir().join(format!("komando-project-order-{}", new_id()));
+        lib.save(&dir).unwrap();
+        assert_eq!(Library::load(&dir).unwrap(), lib);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn project_reorder_ignores_unchanged_and_missing_targets() {
+        let mut lib = two_projects(vec![named("web")]);
+        let before = lib.clone();
+        assert!(!lib.reorder_project("p1", 0));
+        assert!(!lib.reorder_project("p1", 1));
+        assert!(!lib.reorder_project("p2", 2));
+        assert!(!lib.reorder_project("missing", 0));
+        assert_eq!(lib, before);
+        lib.projects.clear();
+        assert!(!lib.reorder_project("p1", 0));
     }
 
     #[test]

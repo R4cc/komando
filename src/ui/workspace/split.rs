@@ -84,9 +84,19 @@ pub(super) struct DraggedItem {
     pub color: Hsla,
 }
 
+/// Separate from Hosts/Sessions so moving a Project cannot open or move its connections.
+#[derive(Clone)]
+pub(super) struct DraggedProject {
+    pub id: String,
+    pub label: SharedString,
+    pub icon: String,
+    pub color: Hsla,
+}
+
 /// Where the dragged item would land if it were let go now.
 #[derive(Clone, PartialEq, Debug)]
 pub(super) enum DropTarget {
+    ProjectOrder { id: String, index: usize, row: usize, hover_row: usize, after: bool },
     /// A half of the terminal area: it opens there, beside the Session that is shown.
     Pane(Side),
     /// The whole terminal area, when no Session is shown: it just opens.
@@ -123,6 +133,77 @@ pub(super) fn drop_color() -> Hsla {
 }
 
 impl Workspace {
+    pub(super) fn project_drag_preview(
+        &self,
+        cx: &Context<Self>,
+    ) -> impl Fn(&DraggedProject, Point<Pixels>, &mut Window, &mut gpui::App) -> gpui::Entity<DragPreview> + 'static {
+        let ws = cx.entity().downgrade();
+        move |dragged, offset, _, cx| {
+            let _ = ws.update(cx, |this, cx| this.set_drop_target(None, cx));
+            let ws = ws.clone();
+            cx.new(|cx| {
+                cx.on_release(move |_, cx| cx.defer(move |cx| {
+                    let _ = ws.update(cx, |this, cx| this.set_drop_target(None, cx));
+                })).detach();
+                DragPreview { native: false, label: dragged.label.clone(), icon: dragged.icon.clone(), color: dragged.color, offset }
+            })
+        }
+    }
+
+    pub(super) fn drag_project_order(&mut self, project: &str, row: usize, event: &DragMoveEvent<DraggedProject>, cx: &mut Context<Self>) {
+        let dragged = event.drag(cx).id.clone();
+        let target = if event.bounds.contains(&event.event.position) && !self.modal_open(cx) {
+            let from = self.library.projects.iter().position(|p| p.id == dragged);
+            let to = self.library.projects.iter().position(|p| p.id == project);
+            match (from, to) {
+                (Some(from), Some(to)) => {
+                    let after = !matches!(self.sidebar_rows.get(row), Some(SidebarRow::Project { .. }))
+                        || event.event.position.y > event.bounds.center().y;
+                    let index = to + usize::from(after);
+                    let boundary = if after {
+                        self.sidebar_rows.iter().rposition(|r| match r {
+                            SidebarRow::Project { index } => *index == to,
+                            SidebarRow::FirstHost { project } | SidebarRow::Host { project, .. }
+                            | SidebarRow::ProjectShell { project, .. } => *project == to,
+                            _ => false,
+                        })
+                    } else {
+                        self.sidebar_rows.iter().position(|r| matches!(r, SidebarRow::Project { index } if *index == to))
+                    };
+                    boundary.filter(|_| index != from && index != from + 1)
+                        .map(|boundary| DropTarget::ProjectOrder { id: project.to_owned(), index, row: boundary, hover_row: row, after })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        // Each row receives movement events; leaving an unrelated row must not erase the
+        // target selected by the row currently under the pointer.
+        let here = matches!(&self.drop_target, Some(DropTarget::ProjectOrder { hover_row, .. }) if *hover_row == row);
+        if target.is_some() || (here && !event.bounds.contains(&event.event.position)) {
+            self.set_drop_target(target, cx);
+        } else if event.bounds.contains(&event.event.position) {
+            self.set_drop_target(None, cx);
+        }
+    }
+
+    pub(super) fn drop_project_order(&mut self, project: &str, dragged: &DraggedProject, cx: &mut Context<Self>) {
+        let target = self.drop_target.take();
+        cx.notify();
+        if self.modal_open(cx) {
+            return;
+        }
+        if let Some(DropTarget::ProjectOrder { id, index, .. }) = target && id == project {
+            let mut library = self.library.clone();
+            if library.reorder_project(&dragged.id, index) {
+                if let Err(err) = self.commit_library(library) {
+                    self.show_toast(format!("Could not reorder projects. {err}"), cx);
+                }
+            }
+        }
+    }
+
     /// The split on screen: the remembered one, while one of its Sessions is active.
     pub(super) fn shown_split(&self) -> Option<Split> {
         let split = self.split?;
@@ -374,6 +455,7 @@ impl Workspace {
     /// along sidebar row `row`: `Some(true)` along its bottom, `Some(false)` along its top.
     pub(super) fn reorder_line(&self, row: usize, cx: &gpui::App) -> Option<bool> {
         match &self.drop_target {
+            Some(DropTarget::ProjectOrder { row: r, after, .. }) if *r == row && cx.has_active_drag() => Some(*after),
             Some(DropTarget::Reorder { row: r, after, .. }) if *r == row && cx.has_active_drag() => Some(*after),
             _ => None,
         }
@@ -468,7 +550,7 @@ impl Workspace {
         let side = match self.drop_target.as_ref()? {
             DropTarget::Pane(side) => Some(*side),
             DropTarget::Main => None,
-            DropTarget::Project { .. } | DropTarget::Reorder { .. } => return None,
+            DropTarget::Project { .. } | DropTarget::Reorder { .. } | DropTarget::ProjectOrder { .. } => return None,
         };
         let p = cx.global::<Appearance>().app;
         let blue = drop_color();

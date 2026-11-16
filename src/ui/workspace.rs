@@ -49,7 +49,7 @@ mod updates;
 pub use settings::SettingsSection;
 use desktops::desktop_protocol;
 use nav::NavTarget;
-use split::{DraggedItem, DropTarget, PendingSplit, Side, Split};
+use split::{DraggedItem, DraggedProject, DropTarget, PendingSplit, Side, Split};
 use updates::UpdateState;
 
 actions!(
@@ -3098,7 +3098,8 @@ impl Workspace {
         let project_id = project_index.and_then(|i| self.library.projects.get(i)).map(|p| p.id.clone());
         let wrapper = div().id(("sidebar-row", ix)).mx(px(4.)).px(px(4.)).pb(px(2.)).child(element);
         let Some(project_id) = project_id else { return wrapper.into_any_element() };
-        let lit = self.drop_project(cx) == Some(project_id.as_str());
+        let lit = self.drop_project(cx) == Some(project_id.as_str())
+            || matches!(&self.drop_target, Some(DropTarget::ProjectOrder { id, .. }) if id == &project_id && cx.has_active_drag());
         let first = matches!(row, SidebarRow::Project { .. });
         let last = !matches!(
             self.sidebar_rows.get(ix + 1),
@@ -3107,6 +3108,7 @@ impl Workspace {
         );
         let blue = split::drop_color();
         let (over, dropped) = (project_id.clone(), project_id);
+        let (order_over, order_drop) = (over.clone(), dropped.clone());
         // A Host dragged within its Project: a line where it would go.
         let line = self.reorder_line(ix, cx);
         wrapper
@@ -3132,6 +3134,10 @@ impl Workspace {
                 this.drag_over_project(&over, ix, event, cx)
             }))
             .on_drop(cx.listener(move |this, dragged: &DraggedItem, _, cx| this.drop_on_project(&dropped, dragged, cx)))
+            .on_drag_move(cx.listener(move |this, event: &gpui::DragMoveEvent<DraggedProject>, _, cx| {
+                this.drag_project_order(&order_over, ix, event, cx)
+            }))
+            .on_drop(cx.listener(move |this, dragged: &DraggedProject, _, cx| this.drop_project_order(&order_drop, dragged, cx)))
             .into_any_element()
     }
 
@@ -3171,6 +3177,11 @@ impl Workspace {
                     .gap(px(10.))
                     .rounded(p.corner(8.))
                     .cursor_pointer()
+                    .tooltip(|window, cx| Tooltip::new("Drag to reorder projects").build(window, cx))
+                    .on_drag(
+                        DraggedProject { id: project.id.clone(), label: project.name.clone().into(), icon: project.icon.clone(), color },
+                        self.project_drag_preview(cx),
+                    )
                     .hover(|s| s.bg(p.hover))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.nav_clicked(NavTarget::Project(click_id.clone()));
@@ -5349,6 +5360,10 @@ impl Render for Workspace {
                 this.drop_target = None;
                 this.tear_off = None;
                 this.native_drag = None;
+                cx.notify();
+            }))
+            .on_drop(cx.listener(|this, _: &DraggedProject, _, cx| {
+                this.drop_target = None;
                 cx.notify();
             }))
             // A Remote Desktop's row dragged out of the window opens in a window of its own

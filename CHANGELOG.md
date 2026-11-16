@@ -6,6 +6,11 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Drag Project headings up or down in the sidebar to change their order. A drop indicator
+  shows the new position, and the order is remembered after restarting Komando.
+
 ### Fixed
 
 - Enter confirms the multi-line paste question, just like its Paste button, without sending
