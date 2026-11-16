@@ -261,10 +261,20 @@ impl Workspace {
     fn form_input(&mut self, placeholder: &str, value: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
         let (placeholder, value) = (placeholder.to_string(), value.to_string());
         let field = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder).default_value(value));
-        let sub = cx.subscribe_in(&field, window, |this, _, event: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { .. } = event {
-                this.submit_form(window, cx);
+        let sub = cx.subscribe_in(&field, window, |this, _, event: &InputEvent, window, cx| match event {
+            InputEvent::PressEnter { .. } => this.submit_form(window, cx),
+            // Typing answers the complaint: it goes until the next Save says otherwise.
+            InputEvent::Change => {
+                let error = match &mut this.overlay {
+                    Some(Overlay::HostForm(form)) => &mut form.error,
+                    Some(Overlay::ProjectForm(form)) => &mut form.error,
+                    _ => return,
+                };
+                if error.take().is_some() {
+                    cx.notify();
+                }
             }
+            _ => {}
         });
         self._subscriptions.push(sub);
         field
@@ -478,6 +488,8 @@ impl Workspace {
 
         let mut host = editing.as_deref().and_then(|id| self.library.host(id)).cloned().unwrap_or_else(|| Host::new("", ""));
         let mut imported = None;
+        // A sign-in key or password replaced here leaves the Vault once nothing uses it.
+        let old_credential = host.credential.own().cloned();
         host.credential = match sign_in {
             SignIn::Project => Inherited::Project,
             SignIn::Saved => host.credential.clone(),
@@ -510,7 +522,9 @@ impl Workspace {
                 _ => host.vnc_enabled = desktop_enabled[1],
             }
             let desktop = match entry {
-                None => None,
+                // Switched off: hidden from the menus, as the menu's own opt-out does. Its port,
+                // account and saved password stay for switching it back on.
+                None => continue,
                 Some((mut desktop, new_password)) => {
                     if let Some(password) = new_password {
                         let label = format!("{} ({})", host.name, protocol.label());
@@ -565,7 +579,7 @@ impl Workspace {
             }
         });
         if result.is_ok() {
-            self.forget_unused_credentials(old_desktop_credentials);
+            self.forget_unused_credentials(old_desktop_credentials.into_iter().chain(old_credential));
         }
         result
     }
@@ -1280,6 +1294,7 @@ impl Workspace {
             .cloned()
             .unwrap_or_else(|| Project::new("", "", ""));
         let mut imported = None;
+        let old_credential = project.credential.clone();
         project.credential = match sign_in {
             SignIn::Saved => project.credential.clone(),
             SignIn::KeyFile => {
@@ -1296,13 +1311,18 @@ impl Workspace {
         project.startup_commands = startup_commands;
         let before = std::mem::take(&mut project.jump_hosts);
 
-        self.commit_form(jumps, imported.into_iter().collect(), before, move |library, jumps| {
+        let result = self.commit_form(jumps, imported.into_iter().collect(), before, move |library, jumps| {
             project.jump_hosts = jumps;
             match library.projects.iter_mut().find(|pr| pr.id == project.id) {
                 Some(existing) => *existing = project,
                 None => library.projects.push(project),
             }
-        })
+        });
+        // A project key or password replaced here leaves the Vault once nothing uses it.
+        if result.is_ok() {
+            self.forget_unused_credentials(old_credential);
+        }
+        result
     }
 
     pub(super) fn render_project_form(&self, form: &ProjectForm, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -1354,7 +1374,7 @@ impl Workspace {
         let sign_in_hint = match form.sign_in {
             SignIn::Saved => "Its hosts use the key or password saved for the project.",
             SignIn::KeyFile => "The key is copied into the vault, encrypted, and shared by the project's hosts.",
-            _ => "Hosts ask for a password when you connect. Komando can save a typed one for the whole project.",
+            _ => "Hosts ask for a password when you connect. Komando can save a typed one for each host.",
         };
 
         let defaults = form_section("Defaults for its hosts", p)

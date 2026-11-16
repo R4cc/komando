@@ -27,7 +27,7 @@ use crate::sftp::{self, Access, Allowed, Entry, ErrorKind, Identity, Kind, Listi
 use crate::theme::{AppPalette, Appearance};
 use crate::ui::popup::{self, Popup};
 use crate::ui::transfers::{self, Job, Transfers};
-use crate::ui::widgets::{Busy, BusyPhase, ButtonKind, busy_done, after_delay, button, icon_el, spinner};
+use crate::ui::widgets::{Busy, BusyPhase, ButtonKind, busy_done, after_delay, button, icon_el, plural, spinner};
 
 const ROW_HEIGHT: f32 = 30.;
 
@@ -200,6 +200,8 @@ pub struct FileBrowser {
     show_hidden: bool,
     path_input: Entity<InputState>,
     editing_path: bool,
+    /// Something changed on the server while a listing was loading, which may predate it.
+    refresh_after_load: bool,
     edit: Option<Edit>,
     favorites_open: bool,
     favorite_rename: Option<(String, Entity<InputState>, Subscription)>,
@@ -285,6 +287,7 @@ impl FileBrowser {
             show_hidden,
             path_input,
             editing_path: false,
+            refresh_after_load: false,
             edit: None,
             favorites_open: false,
             favorite_rename: None,
@@ -443,7 +446,10 @@ impl FileBrowser {
 
     /// Something changed in `dir` on the server (an upload finished): show it.
     pub fn changed_on_server(&mut self, dir: &str, cx: &mut Context<Self>) {
-        if self.cwd.as_deref() == Some(dir) && !self.loading {
+        if self.loading {
+            // The listing on its way may have been read before the change: list again after.
+            self.refresh_after_load = true;
+        } else if self.cwd.as_deref() == Some(dir) {
             self.refresh(cx);
         }
     }
@@ -499,6 +505,8 @@ impl FileBrowser {
                     self.anchor = None;
                     self.cursor = None;
                     self.edit = None;
+                    // The path bar shows where the browser is now, not a path typed earlier.
+                    self.editing_path = false;
                     self.scroll.scroll_to_item(0, ScrollStrategy::Top);
                 }
                 self.cwd = Some(listing.path);
@@ -517,8 +525,12 @@ impl FileBrowser {
                 }
                 self.update_rows();
                 self.scroll_to_selection();
+                if std::mem::take(&mut self.refresh_after_load) {
+                    self.refresh(cx);
+                }
             }
             Err(err) => {
+                self.refresh_after_load = false;
                 self.select_after_load = None;
                 match (&self.cwd, history) {
                     // Reloading the folder on screen failed: it's gone or no longer readable.
@@ -904,6 +916,11 @@ impl FileBrowser {
 
     fn start_rename(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(entry) = self.entry(&path) else { return };
+        // F2 as the menu does: not where nothing can be renamed.
+        if self.dir_access.write == Allowed::No {
+            self.notify_error("You don't have permission to rename items here.", cx);
+            return;
+        }
         let name = entry.name.clone();
         self.selected = HashSet::from([path.clone()]);
         self.anchor = Some(path.clone());
@@ -1024,6 +1041,8 @@ impl FileBrowser {
         let in_cwd = self.cwd.as_deref() == Some(dest.trim_end_matches('/')) || self.cwd.as_deref() == Some(dest.as_str());
         let pairs = copy_targets(op, paths, &dest, &taken);
         if pairs.is_empty() {
+            // Moving to where it already is: say so rather than close without a word.
+            self.notify_info("Already in that folder.", cx);
             return;
         }
         let total = pairs.len();
@@ -1335,10 +1354,6 @@ fn explain(action: &str, err: &OpError) -> String {
         _ => "",
     };
     format!("Couldn't {action}: {}.{hint}", err.message.trim_end_matches('.'))
-}
-
-fn plural(n: usize, what: &str) -> String {
-    if n == 1 { format!("1 {what}") } else { format!("{n} {what}s") }
 }
 
 fn list_names(names: &[&str]) -> String {

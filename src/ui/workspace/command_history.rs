@@ -147,7 +147,7 @@ impl Workspace {
     fn copy_history_text(&mut self, cx: &mut Context<Self>) {
         let Some((_, text, shown)) = self.history_text(cx) else { return };
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-        self.show_toast(format!("Copied {shown} commands as text."), cx);
+        self.show_toast(format!("Copied {} as text.", crate::ui::widgets::plural(shown, "command")), cx);
     }
 
     fn copy_history_file(&mut self, cx: &mut Context<Self>) {
@@ -162,13 +162,28 @@ impl Workspace {
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(crate::export::export_dir().join(&name).display().to_string()));
     }
 
-    /// First click asks, the second (not a double click) deletes the open Host's history.
+    /// First click asks, the second (not a double click) deletes the open Host's history. The
+    /// question lapses after a few seconds, so a click much later asks again.
     fn clear_history(&mut self, cx: &mut Context<Self>) {
+        const ARMED: Duration = Duration::from_secs(5);
         let data_dir = self.data_dir.clone();
         let Some(Overlay::History(panel)) = &mut self.overlay else { return };
         let failed = match panel.confirm_clear {
             None => {
-                panel.confirm_clear = Some(Instant::now());
+                let armed = Instant::now();
+                panel.confirm_clear = Some(armed);
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(ARMED).await;
+                    let _ = this.update(cx, |this, cx| {
+                        if let Some(Overlay::History(panel)) = &mut this.overlay
+                            && panel.confirm_clear == Some(armed)
+                        {
+                            panel.confirm_clear = None;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
                 None
             }
             Some(at) if at.elapsed() < Duration::from_millis(500) => return,
@@ -204,6 +219,7 @@ impl Workspace {
             (0, _) => "Nothing kept yet".to_string(),
             (1, false) => "1 command".to_string(),
             (n, false) => format!("{n} commands"),
+            (1, true) => format!("{shown} of 1 command"),
             (n, true) => format!("{shown} of {n} commands"),
         };
         let height = (panel.rows.len() as f32 * ROW_HEIGHT).clamp(ROW_HEIGHT * 3., LIST_MAX_HEIGHT);

@@ -215,9 +215,15 @@ impl Workspace {
         cx.notify();
     }
 
+    /// "Pick all" leaves hosts already in Komando out, as the first selection does; they can
+    /// still be picked one by one.
     fn pick_all_import(&mut self, on: bool, cx: &mut Context<Self>) {
         if let Some(selection) = self.selection_mut() {
-            selection.picked.iter_mut().flatten().for_each(|p| *p = on);
+            for (picked, planned) in selection.picked.iter_mut().zip(&selection.plan.groups) {
+                for (pick, duplicate) in picked.iter_mut().zip(&planned.hosts) {
+                    *pick = on && !duplicate.is_duplicate();
+                }
+            }
             cx.notify();
         }
     }
@@ -872,10 +878,11 @@ impl Workspace {
         ));
         left.extend(selection.found.notes.iter().map(|note| info_line("x", note, p)));
 
+        let go = if picked == 1 { "goes" } else { "go" };
         let summary = match new_projects {
-            0 => format!("{} go into {} existing project{}.", hosts_label(picked), projects, if projects == 1 { "" } else { "s" }),
-            n if n == projects => format!("{} go into {n} new project{}.", hosts_label(picked), if n == 1 { "" } else { "s" }),
-            n => format!("{} go into {projects} projects, {n} of them new.", hosts_label(picked)),
+            0 => format!("{} {go} into {} existing project{}.", hosts_label(picked), projects, if projects == 1 { "" } else { "s" }),
+            n if n == projects => format!("{} {go} into {n} new project{}.", hosts_label(picked), if n == 1 { "" } else { "s" }),
+            n => format!("{} {go} into {projects} projects, {n} of them new.", hosts_label(picked)),
         };
         div()
             .flex()

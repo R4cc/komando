@@ -923,7 +923,8 @@ impl Workspace {
                 let rules: usize = imported.iter().map(|s| s.keywords.len()).sum();
                 let (added, replaced) = highlight::merge(&mut this.highlights, imported);
                 this.save_highlights(cx);
-                let mut message = format!("Imported {} set(s), {rules} rules", added + replaced);
+                let plural = crate::ui::widgets::plural;
+                let mut message = format!("Imported {}, {}", plural(added + replaced, "set"), plural(rules, "rule"));
                 if replaced > 0 {
                     message.push_str(&format!(" ({replaced} replaced)"));
                 }
@@ -2053,7 +2054,7 @@ impl Workspace {
         let count = self.sessions_of(key).filter(|s| s.is_live()).count();
         let printing = if busy == 1 { "One of them is".to_string() } else { format!("{busy} of them are") };
         self.overlay = Some(Overlay::Confirm {
-            title: format!("Disconnect all {count} sessions of {name}?"),
+            title: if count == 1 { format!("Disconnect the session of {name}?") } else { format!("Disconnect all {count} sessions of {name}?") },
             body: format!("{printing} still printing output, so a command may be running. Disconnecting ends it; the output so far stays until you close the sessions."),
             action: ConfirmAction::DisconnectAll(key.clone()),
         });
@@ -2291,7 +2292,7 @@ impl Workspace {
         let text = view.read(cx).output_text();
         let lines = text.lines().count();
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-        self.show_toast(format!("Copied {lines} lines as text."), cx);
+        self.show_toast(format!("Copied {} as text.", crate::ui::widgets::plural(lines, "line")), cx);
     }
 
     fn copy_output_file(&mut self, cx: &mut Context<Self>) {
@@ -2484,6 +2485,7 @@ impl Workspace {
             .filter(|h| !self.library.projects.iter().any(|p| p.id != project_id && p.hosts.contains(h)))
             .count();
         let body = match only_here {
+            0 if project.hosts.is_empty() => "It has no hosts. Open sessions in this project are closed.".to_string(),
             0 => "Its hosts are also in other projects and stay there. Open sessions in this project are closed.".to_string(),
             1 => "Its 1 host is deleted too. Open sessions in this project are closed.".to_string(),
             n => format!("Its {n} hosts are deleted too. Open sessions in this project are closed."),
@@ -3563,7 +3565,9 @@ impl Workspace {
         let ws = cx.entity().downgrade();
         let menu_item_src = item.clone();
         let menu_key = key.clone();
-        let count = sessions.len();
+        // What "Disconnect all" / "Close all" acts on: the live Sessions while any is, else
+        // the dropped ones (see `close_item_sessions`).
+        let count = sessions.iter().filter(|s| s.is_live() == any_live).count();
         // Beside the Session shown, unless that is the one this would show.
         let can_split = self.active.is_some() && self.placement_possible(&key);
         let history = self.settings.command_history;

@@ -718,6 +718,14 @@ impl TerminalView {
             SessionEvent::Wakeup => {
                 crate::perf::count("session wakeup");
                 self.proxy.clear_dirty();
+                // New output may have moved the link's text from under the pointer: the
+                // underline goes unless the same link is still where it was drawn.
+                if let Some(link) = &self.hover_link
+                    && let Some((line, cols)) = link.spans.first()
+                    && link_at(&*self.term.lock(), GridPoint::new(*line, Column(cols.start))).as_ref() != Some(link)
+                {
+                    self.hover_link = None;
+                }
                 if self.status == Status::Connected {
                     self.note_output(cx);
                 }
@@ -1052,6 +1060,11 @@ impl TerminalView {
         if !self.focus.is_focused(window) {
             return;
         }
+        // A question answered with buttons holds the keyboard: typing must not reach the
+        // shell behind it. Its Enter and Escape are actions, handled elsewhere.
+        if self.prompt_holds_keys() {
+            return;
+        }
         let m = &ks.modifiers;
         let mods = Mods { ctrl: m.control, alt: m.alt, shift: m.shift };
         if self.windows_selection && !m.alt && !m.platform && self.prompt.is_none()
@@ -1110,7 +1123,7 @@ impl TerminalView {
     /// Type text from the platform's text input: a key, a dead-key composition or an IME's
     /// commit.
     fn type_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        if text.is_empty() || self.is_disconnected() {
+        if text.is_empty() || self.is_disconnected() || self.prompt_holds_keys() {
             return;
         }
         self.scroll_to_bottom();
@@ -1135,8 +1148,18 @@ impl TerminalView {
         self.paste_or_confirm(text, cx);
     }
 
+    /// A question answered with its buttons (a Host Key, a multi-line paste) is open, and the
+    /// terminal keeps the focus for its Enter and Escape.
+    fn prompt_holds_keys(&self) -> bool {
+        matches!(self.prompt, Some(ActivePrompt::HostKey { .. } | ActivePrompt::HostKeyChanged { .. } | ActivePrompt::ConfirmPaste { .. }))
+    }
+
     /// Paste `text`, asking first when it has several lines and that setting is on.
     fn paste_or_confirm(&mut self, text: String, cx: &mut Context<Self>) {
+        // Nothing reaches the shell, or replaces the question, while one is open.
+        if self.prompt.is_some() {
+            return;
+        }
         let lines = text.trim_end_matches(['\r', '\n']).lines().count();
         if self.confirm_multiline_paste && lines > 1 {
             self.prompt = Some(ActivePrompt::ConfirmPaste { text, lines });
@@ -3557,6 +3580,12 @@ impl Render for TerminalView {
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))
             .on_mouse_move(cx.listener(Self::mouse_move))
+            // Moves are heard only over the terminal: leaving it takes the link underline away.
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered && this.hover_link.take().is_some() {
+                    cx.notify();
+                }
+            }))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::mouse_up))
             .on_mouse_up(MouseButton::Right, cx.listener(Self::mouse_up))

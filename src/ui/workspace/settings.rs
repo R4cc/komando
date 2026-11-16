@@ -803,7 +803,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "RDP: fit the desktop to the window",
-                    "Ask the server for a desktop the size of the pane, and again when it changes size. Off, the server picks the size and Komando scales it down to fit.",
+                    "Ask the server for a desktop the size of the pane, and again when it changes size. Off, the server picks the size and Komando scales it down to fit. Applies from the next connection.",
                     switch("rdp-fit-desktop".into(), "Fit RDP desktops to the window", fit, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.rdp_fit_desktop = !fit;
@@ -1456,7 +1456,10 @@ impl Workspace {
                                 div()
                                     .text_size(px(12.))
                                     .text_color(p.text_faint)
-                                    .child(format!("{enabled_rules} of {} rules on", set.keywords.len())),
+                                    .child(match set.keywords.len() {
+                                        1 => format!("{enabled_rules} of 1 rule on"),
+                                        n => format!("{enabled_rules} of {n} rules on"),
+                                    }),
                             ),
                     )
                     .child(
@@ -1678,7 +1681,7 @@ impl Workspace {
                             .flex_1()
                             .text_size(px(12.))
                             .text_color(p.text_faint)
-                            .child(format!("{} rules active.", self.active_rule_count())),
+                            .child(format!("{} active.", crate::ui::widgets::plural(self.active_rule_count(), "rule"))),
                     )
                     .child(
                         button("hl-new-set", "New set", ButtonKind::Primary, p)

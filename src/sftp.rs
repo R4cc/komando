@@ -1714,11 +1714,13 @@ pub fn format_size(bytes: u64) -> String {
     }
     let mut value = bytes as f64;
     let mut unit = 0;
-    while value >= 1024. && unit < UNITS.len() - 1 {
+    // Compared as shown, so 1,048,500 bytes is "1.0 MB", not "1024 KB".
+    let shown = |value: f64| if value < 9.95 { (value * 10.).round() / 10. } else { value.round() };
+    while shown(value) >= 1024. && unit < UNITS.len() - 1 {
         value /= 1024.;
         unit += 1;
     }
-    if value < 10. { format!("{value:.1} {}", UNITS[unit]) } else { format!("{value:.0} {}", UNITS[unit]) }
+    if value < 9.95 { format!("{value:.1} {}", UNITS[unit]) } else { format!("{value:.0} {}", UNITS[unit]) }
 }
 
 #[cfg(test)]
@@ -1870,6 +1872,9 @@ mod tests {
         assert_eq!(format_size(2150), "2.1 KB");
         assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
         assert_eq!(format_size(300 * 1024 * 1024), "300 MB");
+        assert_eq!(format_size(1_048_500), "1.0 MB", "not 1024 KB");
+        assert_eq!(format_size(10_200), "10 KB", "not 10.0 KB");
+        assert_eq!(format_size(1_047_552), "1023 KB");
     }
 
     #[test]

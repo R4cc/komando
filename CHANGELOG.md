@@ -35,6 +35,26 @@ All notable changes to Komando are listed here. The format follows
   back towards where it started.
 - Renaming a remote file without changing its name no longer removes spaces at the start or
   end of the name.
+- Switching off RDP or VNC in Edit host only hides it from the host's menus, as described.
+  Its port, account and saved password are kept for switching it back on.
+- A saved key or password replaced in Edit host or Edit project, or no longer used, is
+  removed from the vault instead of lingering there.
+- Typing, pasting and Ctrl+Shift+V no longer reach the shell, or replace the question, while
+  a Host Key or multi-line paste question is open.
+- A link's underline goes away when the pointer leaves the terminal or output moves the link.
+- The File Browser's path bar shows the current folder after Back, Forward or Up, F2 says
+  when a folder can't be renamed in instead of failing afterwards, and an upload that
+  finishes while a folder loads appears without refreshing by hand.
+- Sizes just under 1 MB, 1 GB and so on show as "1.0 MB" rather than "1024 KB".
+- Moving files to the folder they are already in says so instead of doing nothing.
+- "Pick all" in the import list leaves out hosts already in Komando, as the first selection
+  does.
+- "Click again to delete" in Command History resets after a few seconds, so a much later
+  click no longer deletes the history without asking again.
+- A form's error message goes away as soon as you start correcting it.
+- Clearer wording: singular counts ("1 line", "1 rule", "1 host goes"), a matching count in
+  Disconnect all, the delete question for a Project without hosts, the project password
+  hint, and a note that the RDP fit setting applies from the next connection.
 
 ### Security
 
