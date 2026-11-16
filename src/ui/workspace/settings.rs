@@ -4,7 +4,7 @@
 use std::sync::OnceLock;
 
 use super::*;
-use crate::model::MinimapPlacement;
+use crate::model::{AppIcon, MinimapPlacement};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsSection {
@@ -115,9 +115,13 @@ pub struct ShellEditor {
     error: Option<String>,
 }
 
-fn logo() -> &'static crate::ui::artwork::Artwork {
-    static LOGO: OnceLock<crate::ui::artwork::Artwork> = OnceLock::new();
-    LOGO.get_or_init(|| crate::ui::artwork::Artwork::png(include_bytes!("../../../assets/icon.png"), 0.01, 0.22))
+fn logo(icon: AppIcon) -> &'static crate::ui::artwork::Artwork {
+    static DARK: OnceLock<crate::ui::artwork::Artwork> = OnceLock::new();
+    static LIGHT: OnceLock<crate::ui::artwork::Artwork> = OnceLock::new();
+    match icon {
+        AppIcon::Dark => DARK.get_or_init(|| crate::ui::artwork::Artwork::png(include_bytes!("../../../assets/icon.png"), 0., 0.)),
+        AppIcon::Light => LIGHT.get_or_init(|| crate::ui::artwork::Artwork::png(include_bytes!("../../../assets/icon-light.png"), 0., 0.)),
+    }
 }
 
 
@@ -382,6 +386,17 @@ impl Workspace {
         let app = self.settings.app_theme;
         let term = self.settings.terminal_theme;
         let blur = self.settings.background_blur;
+        let icon_choice = segmented(
+            "app-icon",
+            &[("Dark", self.settings.app_icon == AppIcon::Dark), ("Light", self.settings.app_icon == AppIcon::Light)],
+            p,
+            cx,
+            |this, i, window, cx| {
+                this.settings.app_icon = [AppIcon::Dark, AppIcon::Light][i];
+                this.save_settings(cx);
+                this.apply_appearance(window, cx);
+            },
+        );
         let mode_choice = segmented(
             "app-theme",
             &[("Dark", app == AppThemeSetting::Dark), ("Light", app == AppThemeSetting::Light), ("System", app == AppThemeSetting::System)],
@@ -421,6 +436,15 @@ impl Workspace {
             .flex_col()
             .gap(px(20.))
             .child(group(p, vec![setting_row(p, "Mode", mode_hint, mode_choice)]))
+            .child(group(p, vec![setting_row(
+                p,
+                "App icon",
+                "Choose the icon for the app, taskbar and notification area, independently of the theme.",
+                div().flex().items_center().gap(px(16.))
+                    .child(logo(self.settings.app_icon).element(40.))
+                    .child(icon_choice)
+                    .into_any_element(),
+            )]))
             .when(cfg!(windows), |el| el.child(group(p, vec![setting_row(
                 p,
                 "Minimize to tray",
@@ -928,7 +952,7 @@ impl Workspace {
                     .child(
                         div()
                             .size(px(72.))
-                            .child(logo().element(72.)),
+                            .child(logo(self.settings.app_icon).element(72.)),
                     )
                     .child(
                         div()

@@ -6,8 +6,12 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-16
+
 ### Added
 
+- New dark and light app icons. Choose either in Settings → Appearance, independently of
+  the app theme; the choice is remembered and updates the taskbar and notification area.
 - Remote desktops have a toolbar above the picture. It shows the protocol, the remote
   screen's size and the zoom, and has:
   - **Scaling**: fit to window, actual size (100%, panning as the pointer nears an edge) or
@@ -28,6 +32,7 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- Refreshed the Komando wordmark and README branding and screenshots.
 - Ctrl+Alt+Del moved from the title bar into the desktop's toolbar, under Keyboard.
 - Session rows under a host keep their SSH, VNC or RDP tag and state visible on hover; the
   close button has its own place at the end of the row.
@@ -1251,7 +1256,9 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/R4cc/komando/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/R4cc/komando/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/R4cc/komando/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/R4cc/komando/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/R4cc/komando/compare/v0.4.4...v0.5.0

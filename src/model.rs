@@ -962,6 +962,15 @@ pub enum TerminalThemeSetting {
     Dark,
 }
 
+/// The app artwork, chosen independently of the app's colour theme.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AppIcon {
+    #[default]
+    Dark,
+    Light,
+}
+
 /// Where the minimap goes.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -978,6 +987,7 @@ pub enum MinimapPlacement {
 pub struct Settings {
     /// Dark, light, or follow Windows.
     pub app_theme: AppThemeSetting,
+    pub app_icon: AppIcon,
     pub terminal_theme: TerminalThemeSetting,
     /// The Theme (by id, see `theme::DARK_THEMES`) used in dark mode.
     pub dark_theme: String,
@@ -1063,6 +1073,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             app_theme: AppThemeSetting::Dark,
+            app_icon: AppIcon::Dark,
             terminal_theme: TerminalThemeSetting::Follow,
             dark_theme: crate::theme::DEFAULT_THEME.into(),
             light_theme: crate::theme::DEFAULT_THEME.into(),
@@ -1201,6 +1212,22 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn app_icon_defaults_for_old_settings_and_persists_independently_of_theme() {
+        let mut settings: Settings = toml::from_str("app_theme = 'light'").unwrap();
+        assert_eq!(settings.app_icon, AppIcon::Dark);
+        settings.app_icon = AppIcon::Light;
+        settings.app_theme = AppThemeSetting::Dark;
+        let dir = std::env::temp_dir().join(format!("komando-icon-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir), settings);
+        settings.app_icon = AppIcon::Dark;
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir).app_icon, AppIcon::Dark);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn viewer_options_default_away_and_keep_what_is_set() {
         let plain = Desktop::new(Protocol::Vnc);

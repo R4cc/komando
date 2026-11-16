@@ -60,6 +60,17 @@ impl Tray {
             self.state.restore();
         }
     }
+
+    pub fn refresh_icon(&self) {
+        if self.state.visible.get() {
+            let mut data = self.state.icon_data();
+            data.uFlags = NIF_ICON;
+            if let Some(icon) = self.state.window_icon() {
+                data.hIcon = icon;
+                unsafe { let _ = Shell_NotifyIconW(NIM_MODIFY, &data); }
+            }
+        }
+    }
 }
 
 impl Drop for Tray {
@@ -74,6 +85,16 @@ impl Drop for Tray {
 }
 
 impl State {
+    fn window_icon(&self) -> Option<HICON> {
+        // The window owns the current choice; shared resource handles are never destroyed.
+        let icon = unsafe { SendMessageW(self.hwnd, WM_GETICON, Some(WPARAM(ICON_SMALL as usize)), None) };
+        if icon.0 != 0 {
+            Some(HICON(icon.0 as *mut _))
+        } else {
+            unsafe { GetModuleHandleW(None).and_then(|module| LoadIconW(Some(module.into()), PCWSTR(1usize as *const u16))).ok() }
+        }
+    }
+
     fn icon_data(&self) -> NOTIFYICONDATAW {
         NOTIFYICONDATAW { cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32, hWnd: self.hwnd, uID: ICON_ID, ..Default::default() }
     }
@@ -82,9 +103,8 @@ impl State {
         let mut data = self.icon_data();
         data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
         data.uCallbackMessage = TRAY_MESSAGE;
-        let icon = unsafe { GetModuleHandleW(None).and_then(|module| LoadIconW(Some(module.into()), PCWSTR(1usize as *const u16))) };
-        let Ok(icon) = icon else { return false };
-        data.hIcon = icon; // LoadIcon returns a shared resource; it must not be destroyed.
+        let Some(icon) = self.window_icon() else { return false };
+        data.hIcon = icon;
         for (dest, ch) in data.szTip.iter_mut().zip("Komando".encode_utf16()) {
             *dest = ch;
         }

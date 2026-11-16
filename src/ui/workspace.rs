@@ -661,6 +661,7 @@ impl Workspace {
             gpui::WindowBackgroundAppearance::Opaque
         });
         crate::platform::set_window_dark_mode(window, app_dark);
+        crate::platform::set_app_icon(window, self.settings.app_icon);
         let backdrop_enabled = crate::platform::set_backdrop(window, blur);
         if blur && !backdrop_enabled {
             window.set_background_appearance(gpui::WindowBackgroundAppearance::Opaque);
@@ -682,6 +683,8 @@ impl Workspace {
             TerminalThemeSetting::Dark => true,
         };
         let backdrop_enabled = self.style_window(window, app_dark);
+        #[cfg(windows)]
+        if let Some(tray) = &self.tray { tray.refresh_icon(); }
         for handle in self.own_windows() {
             let _ = handle.update(cx, |_, window, _| self.style_window(window, app_dark));
         }

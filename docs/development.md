@@ -95,6 +95,7 @@ and VNC on the demo's web01 so their toolbar buttons appear, without opening a d
 `KOMANDO_DEMO_SFTP=1` opens its file browser once SSH connects; use a loopback server that
 offers SFTP for that capture (`logserver` supplies benchmark output only). Capture the real
 demo window with isolated fixture data, and check the resulting PNG before replacing an asset.
+`KOMANDO_DEMO_ICON=light` selects the light app icon for captures; the default is dark.
 
 ### Output throughput
 

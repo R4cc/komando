@@ -1,6 +1,9 @@
 <div align="center">
 
-<img src="assets/logo.png" width="440" alt="Komando">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">
+  <img src="assets/logo.png" width="440" alt="Komando">
+</picture>
 
 ### SSH, SFTP and remote desktops for Windows 11. Built with Rust.
 
@@ -17,7 +20,7 @@ Your servers, files and remote desktops organized into projects.
 
 <br>
 
-<img src="assets/screenshot-dark.png" alt="Komando in dark mode: colour-coded hosts, highlighted SSH logs and a minimap, with SFTP, RDP and VNC actions in the toolbar">
+<img src="assets/screenshot-dark.png" alt="Komando in dark mode: colour-coded hosts, highlighted SSH logs, a scrollback minimap and SFTP access">
 
 ## Why Komando
 
@@ -134,6 +137,21 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 - **Server fingerprints checked.** New hosts ask for trust, changed keys are blocked, and your
   OpenSSH `known_hosts` is honoured.
 - **OpenSSH and PuTTY (`.ppk`) keys** both work.
+
+### Make it yours
+
+- **Light and dark themes**, with separate app and terminal colours.
+- **A light or dark app icon.** Choose either in Settings → Appearance, independently of
+  the theme. The choice is remembered and updates the app, taskbar and notification area.
+
+<img src="assets/screenshot-appearance.png" alt="Appearance settings with the light Komando icon selected while the app stays in dark mode">
+
+<details>
+<summary>Light mode</summary>
+
+<img src="assets/screenshot-light.png" alt="Komando in light mode with colour-coded hosts, highlighted SSH logs and a scrollback minimap">
+
+</details>
 
 ## Performance
 

@@ -1,5 +1,40 @@
 //! Small Windows-only touches gpui doesn't cover.
 
+/// Shared executable resources: Windows retains these handles for the process lifetime.
+/// Set both sizes so the taskbar and Alt+Tab agree, including detached desktop windows.
+#[cfg(windows)]
+pub fn set_app_icon(window: &gpui::Window, icon: crate::model::AppIcon) {
+    use windows::{
+        Win32::{
+            Foundation::{HWND, LPARAM, WPARAM},
+            System::LibraryLoader::GetModuleHandleW,
+            UI::WindowsAndMessaging::{ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_SHARED, LoadImageW, SendMessageW, WM_GETICON, WM_SETICON},
+        },
+        core::PCWSTR,
+    };
+    let Some(handle) = window_handle(window) else { return };
+    let resource = match icon { crate::model::AppIcon::Dark => 1, crate::model::AppIcon::Light => 2 };
+    let hwnd = HWND(handle as *mut _);
+    unsafe {
+        let Ok(module) = GetModuleHandleW(None) else { return };
+        for (kind, size) in [(ICON_SMALL, 16.), (ICON_BIG, 32.)] {
+            let side = (size * window.scale_factor()).round() as i32;
+            match LoadImageW(Some(module.into()), PCWSTR(resource as *const u16), IMAGE_ICON, side, side, LR_SHARED) {
+                Ok(handle) => {
+                    let which = Some(WPARAM(kind as usize));
+                    if SendMessageW(hwnd, WM_GETICON, which, None).0 != handle.0 as isize {
+                        SendMessageW(hwnd, WM_SETICON, which, Some(LPARAM(handle.0 as isize)));
+                    }
+                }
+                Err(error) => log::warn!("Could not load app icon: {error}"),
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn set_app_icon(_window: &gpui::Window, _icon: crate::model::AppIcon) {}
+
 /// Tell Windows whether the window is dark. This picks the dark or light Mica tint and title
 /// bar. gpui sets it from the *system* theme; Komando's App Theme can differ from that.
 #[cfg(windows)]

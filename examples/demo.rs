@@ -176,6 +176,9 @@ fn main() {
     // Screenshots and load tests shouldn't depend on GitHub.
     settings.check_for_updates = false;
     settings.app_theme = if theme == "light" { AppThemeSetting::Light } else { AppThemeSetting::Dark };
+    if env::var("KOMANDO_DEMO_ICON").as_deref() == Ok("light") {
+        settings.app_icon = komando::model::AppIcon::Light;
+    }
     // KOMANDO_DEMO_THEMES="dark-id,light-id", e.g. "midnight,paper".
     if let Ok(themes) = std::env::var("KOMANDO_DEMO_THEMES")
         && let Some((dark, light)) = themes.split_once(',')
