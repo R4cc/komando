@@ -17,8 +17,9 @@ default (ADR 0012). The session's port belongs to the desktop, not SSH. RDP keep
 including `DOMAIN\user` or a UPN; VNC has no user. The Host's SSH user and Credential are
 switched off so an unspecified desktop account never takes an unrelated Project's SSH user.
 Each session remains a separate Host; importing does not merge sessions by address or modify
-an existing Host. Duplicate checks compare protocol, address, port and account, including
-Remote Desktops on existing Hosts regardless of which protocol the Host opens first.
+an existing Host. Duplicate checks compare the name, protocol, address, port and account (and
+for SSH the Jump Hosts and Startup Commands), including Remote Desktops on existing Hosts
+regardless of which protocol the Host opens first.
 
 Passwords stay in MobaXterm: `[Passwords]` and `[Credentials]` are never read. A private key
 and an SSH proxy are listed in the review as settings that don't come over. Desktop preferences

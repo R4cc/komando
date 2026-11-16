@@ -30,6 +30,9 @@ pub(super) enum ImportFlow {
     NotFound(Source),
     /// The picked or found file couldn't be read, or has no supported sessions.
     Failed { from: Source, path: PathBuf, error: String },
+    /// Tabby's configuration is encrypted with its vault: the user is shown how to switch
+    /// that off and try the same file again.
+    Encrypted { path: PathBuf },
     Pick(Selection),
     Review(Selection),
     Done(Applied),
@@ -173,6 +176,7 @@ impl Workspace {
             _ => (tabby::read(&path, &is_icon), "There are no SSH profiles in this file."),
         };
         self.import = match read {
+            Err(err) if err.is::<tabby::Encrypted>() => ImportFlow::Encrypted { path },
             Err(err) => ImportFlow::Failed { from, path, error: format!("{err:#}") },
             Ok(found) if found.groups.is_empty() => {
                 let mut error = none.to_string();
@@ -268,10 +272,56 @@ impl Workspace {
             ImportFlow::Start => self.import_start(None, p, cx),
             ImportFlow::NotFound(from) => self.import_start(Some(self.import_not_found(*from, p, cx)), p, cx),
             ImportFlow::Failed { from, path, error } => self.import_start(Some(self.import_failed(*from, path, error, p, cx)), p, cx),
+            ImportFlow::Encrypted { path } => self.import_start(Some(self.import_encrypted(path, p, cx)), p, cx),
             ImportFlow::Pick(selection) => self.import_pick(selection, p, cx),
-            ImportFlow::Review(selection) => self.import_review(selection, p, cx),
+            ImportFlow::Review(selection) => self.import_review(selection, p),
             ImportFlow::Done(applied) => self.import_done(applied, p, cx),
         }
+    }
+
+    /// The buttons that move the import on, pinned below the page so they stay in view however
+    /// long the list of hosts is. None outside the pick and review steps.
+    pub(super) fn settings_import_footer(&self, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (selection, review) = match &self.import {
+            ImportFlow::Pick(selection) => (selection, false),
+            ImportFlow::Review(selection) => (selection, true),
+            _ => return None,
+        };
+        let picked = selection.picked_count();
+        let status = if review {
+            format!("{} ready to import", hosts_label(picked))
+        } else {
+            format!("{picked} of {} picked", hosts_label(selection.found.host_count()))
+        };
+        let buttons = if review {
+            vec![
+                button("import-back", "Back", ButtonKind::Ghost, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.import_step(false, cx)))
+                    .into_any_element(),
+                button("import-run", format!("Import {}", hosts_label(picked)), ButtonKind::Primary, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.run_import(cx)))
+                    .into_any_element(),
+            ]
+        } else {
+            vec![
+                button("import-cancel", "Cancel", ButtonKind::Ghost, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_import(cx)))
+                    .into_any_element(),
+                button("import-next", format!("Review {}", hosts_label(picked)), ButtonKind::Primary, p)
+                    .when(picked == 0, |el| el.opacity(0.5).cursor_default())
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.import_step(true, cx)))
+                    .into_any_element(),
+            ]
+        };
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().flex_1().min_w_0().truncate().text_size(px(12.5)).text_color(p.text_muted).child(status))
+                .children(buttons)
+                .into_any_element(),
+        )
     }
 
     fn import_start(&self, problem: Option<AnyElement>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -354,12 +404,26 @@ impl Workspace {
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_import_file(Source::ProjectFile, window, cx))),
             )
             .into_any_element();
-        let mut rows = vec![row, moba_row, project_row];
-        rows.extend(problem);
-        group(p, rows)
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(16.))
+            .children(problem)
+            .child(group(p, vec![row, moba_row, project_row]))
+            .into_any_element()
     }
 
     fn import_not_found(&self, from: Source, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let notice = |icon: &str, color: Hsla, title: &str, body: &str, action: AnyElement, p: AppPalette| {
+            problem_card(
+                icon,
+                color,
+                title,
+                vec![div().text_size(px(12.5)).line_height(px(18.)).text_color(p.text_muted).child(body.to_string()).into_any_element()],
+                vec![action],
+                p,
+            )
+        };
         if from == Source::MobaXterm {
             return notice(
                 "search-x",
@@ -391,14 +455,98 @@ impl Workspace {
     }
 
     fn import_failed(&self, from: Source, path: &Path, error: &str, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        notice(
+        let title = match from {
+            Source::Tabby => "Couldn't import from Tabby",
+            Source::MobaXterm => "Couldn't import from MobaXterm",
+            Source::ProjectFile => "Couldn't import the project file",
+        };
+        problem_card(
             "circle-alert",
             p.danger,
-            &format!("Couldn't import {}", path.display()),
-            error,
-            button("import-choose", "Choose another file…", ButtonKind::Secondary, p)
-                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.choose_import_file(from, window, cx)))
-                .into_any_element(),
+            title,
+            vec![
+                div().text_size(px(12.5)).line_height(px(18.)).text_color(p.text_muted).child(error.to_string()).into_any_element(),
+                file_line(path, p),
+            ],
+            vec![
+                button("import-choose", "Choose another file…", ButtonKind::Secondary, p)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.choose_import_file(from, window, cx)))
+                    .into_any_element(),
+                button("import-dismiss", "Dismiss", ButtonKind::Ghost, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_import(cx)))
+                    .into_any_element(),
+            ],
+            p,
+        )
+    }
+
+    /// Tabby's configuration is encrypted: what that means and the steps to import anyway.
+    fn import_encrypted(&self, path: &Path, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let step = |n: usize, text: &str| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .size(px(20.))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(p.warning.opacity(if p.dark { 0.18 } else { 0.14 }))
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(p.warning)
+                        .child(n.to_string()),
+                )
+                .child(div().flex_1().min_w_0().text_size(px(12.5)).line_height(px(18.)).text_color(p.text).child(text.to_string()))
+                .into_any_element()
+        };
+        let retry = path.to_path_buf();
+        problem_card(
+            "lock-keyhole",
+            p.warning,
+            "Your Tabby settings are encrypted",
+            vec![
+                div()
+                    .text_size(px(12.5))
+                    .line_height(px(18.))
+                    .text_color(p.text_muted)
+                    .child(
+                        "Tabby's \"Encrypt config file\" option is on, so only Tabby can read your profiles. \
+                         Switch it off for a moment to import them:",
+                    )
+                    .into_any_element(),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .py(px(2.))
+                    .child(step(1, "In Tabby, open Settings → Vault."))
+                    .child(step(2, "Switch off \"Encrypt config file\"."))
+                    .child(step(3, "Come back here and choose Try again."))
+                    .into_any_element(),
+                div()
+                    .text_size(px(12.))
+                    .line_height(px(17.))
+                    .text_color(p.text_faint)
+                    .child("You can switch encryption back on once the import is done. Passwords never come over either way.")
+                    .into_any_element(),
+                file_line(path, p),
+            ],
+            vec![
+                button("import-retry", "Try again", ButtonKind::Primary, p)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.load_client(Source::Tabby, retry.clone(), cx)))
+                    .into_any_element(),
+                button("import-choose", "Choose another file…", ButtonKind::Ghost, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_import_file(Source::Tabby, window, cx)))
+                    .into_any_element(),
+                button("import-dismiss", "Dismiss", ButtonKind::Ghost, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_import(cx)))
+                    .into_any_element(),
+            ],
             p,
         )
     }
@@ -504,7 +652,7 @@ impl Workspace {
                 let mut list = div().flex().flex_col().pl(px(26.)).pb(px(4.));
                 for (h, (host, duplicate)) in found.hosts.iter().zip(&planned.hosts).enumerate() {
                     let on = selection.picked[g][h];
-                    let mut tags = div().flex().flex_shrink_0().gap(px(6.));
+                    let mut tags = div().flex().flex_shrink_0().max_w(px(300.)).gap(px(6.));
                     match duplicate {
                         Duplicate::No => {}
                         Duplicate::InKomando { host, project } => {
@@ -546,14 +694,27 @@ impl Workspace {
                                     .flex()
                                     .items_baseline()
                                     .gap(px(8.))
+                                    .overflow_hidden()
                                     .child(
                                         div()
-                                            .flex_shrink_0()
+                                            .min_w_0()
+                                            .flex_shrink(1.)
+                                            .truncate()
                                             .text_size(px(13.))
                                             .text_color(if on { p.text } else { p.text_muted })
                                             .child(host.name.clone()),
                                     )
-                                    .child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.text_faint).child(login(host))),
+                                    .child(
+                                        div()
+                                            .min_w(px(48.))
+                                            .flex_shrink(1.)
+                                            .flex_basis(px(0.))
+                                            .flex_grow(1.)
+                                            .truncate()
+                                            .text_size(px(12.))
+                                            .text_color(p.text_faint)
+                                            .child(login(host)),
+                                    ),
                             )
                             .child(tags),
                     );
@@ -570,19 +731,6 @@ impl Workspace {
                 .gap(px(6.))
                 .children(selection.found.notes.iter().map(|note| info_line("info", note, p)))
         });
-        let actions = div()
-            .flex()
-            .justify_end()
-            .gap(px(8.))
-            .child(
-                button("import-cancel", "Cancel", ButtonKind::Ghost, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_import(cx))),
-            )
-            .child(
-                button("import-next", format!("Review {}", hosts_label(picked)), ButtonKind::Primary, p)
-                    .when(picked == 0, |el| el.opacity(0.5).cursor_default())
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.import_step(true, cx))),
-            );
         div()
             .flex()
             .flex_col()
@@ -591,11 +739,10 @@ impl Workspace {
             .child(toolbar)
             .child(groups)
             .children(notes)
-            .child(actions)
             .into_any_element()
     }
 
-    fn import_review(&self, selection: &Selection, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn import_review(&self, selection: &Selection, p: AppPalette) -> AnyElement {
         let picked = selection.picked_count();
         let mut projects = 0;
         let mut new_projects = 0;
@@ -629,8 +776,8 @@ impl Workspace {
                         .gap(px(10.))
                         .child(icon_el("check", 15., p.success))
                         .child(icon_el(host.icon.as_deref().unwrap_or("server"), 15., p.text_muted))
-                        .child(div().flex_shrink_0().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(host.name.clone()))
-                        .child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.text_muted).child(login(host))),
+                        .child(div().min_w_0().flex_shrink(1.).truncate().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(host.name.clone()))
+                        .child(div().min_w(px(48.)).flex_shrink(1.).flex_basis(px(0.)).flex_grow(1.).truncate().text_size(px(12.)).text_color(p.text_muted).child(login(host))),
                 );
                 for (setting, detail) in comes_over(host) {
                     row = row.child(
@@ -719,18 +866,6 @@ impl Workspace {
             n if n == projects => format!("{} go into {n} new project{}.", hosts_label(picked), if n == 1 { "" } else { "s" }),
             n => format!("{} go into {projects} projects, {n} of them new.", hosts_label(picked)),
         };
-        let actions = div()
-            .flex()
-            .justify_end()
-            .gap(px(8.))
-            .child(
-                button("import-back", "Back", ButtonKind::Ghost, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.import_step(false, cx))),
-            )
-            .child(
-                button("import-run", format!("Import {}", hosts_label(picked)), ButtonKind::Primary, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.run_import(cx))),
-            );
         div()
             .flex()
             .flex_col()
@@ -760,7 +895,6 @@ impl Workspace {
                     .child(section_label("Not imported", p))
                     .child(div().flex().flex_col().gap(px(6.)).children(left)),
             )
-            .child(actions)
             .into_any_element()
     }
 
@@ -869,7 +1003,8 @@ fn tag(text: &str, color: Hsla, p: AppPalette) -> impl IntoElement {
         .bg(color.opacity(if p.dark { 0.14 } else { 0.12 }))
         .text_size(px(11.5))
         .text_color(color)
-        .whitespace_nowrap()
+        .min_w_0()
+        .truncate()
         .child(text.to_string())
 }
 
@@ -884,24 +1019,42 @@ fn info_line(icon: &str, text: &str, p: AppPalette) -> AnyElement {
         .into_any_element()
 }
 
-/// A problem with what to do about it: icon, title and explanation, and a button.
-fn notice(icon: &str, color: Hsla, title: &str, body: &str, action: AnyElement, p: AppPalette) -> AnyElement {
+/// A problem with what to do about it, above the import sources: an icon and title, what
+/// it means, and the buttons that deal with it.
+fn problem_card(icon: &str, color: Hsla, title: &str, body: Vec<AnyElement>, actions: Vec<AnyElement>, p: AppPalette) -> AnyElement {
     div()
+        .rounded(p.corner(12.))
+        .border_1()
+        .border_color(color.opacity(0.45))
+        .bg(color.opacity(if p.dark { 0.08 } else { 0.06 }))
+        .px(px(18.))
+        .py(px(16.))
         .flex()
         .items_start()
-        .gap(px(12.))
-        .child(div().pt(px(2.)).child(icon_el(icon, 16., color)))
+        .gap(px(14.))
+        .child(badge(icon, color, 36.))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(4.))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(title.to_string()))
-                .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(body.to_string())),
+                .gap(px(8.))
+                .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title.to_string()))
+                .children(body)
+                .child(div().pt(px(4.)).flex().flex_wrap().gap(px(8.)).children(actions)),
         )
-        .child(div().flex_shrink_0().child(action))
+        .into_any_element()
+}
+
+/// The file a problem is about, on one line, cut short when long.
+fn file_line(path: &Path, p: AppPalette) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .child(icon_el("file-text", 13., p.text_faint))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.text_faint).child(path.display().to_string()))
         .into_any_element()
 }
 
@@ -914,7 +1067,7 @@ mod tests {
         for (fa, lucide) in tabby::ICON_MAP {
             assert!(is_icon(lucide), "{fa} maps to {lucide}, which isn't bundled");
         }
-        for icon in ["import", "search-x", "circle-alert", "file-text", "check", "minus", "x", "info", "folder-input", "share-2"] {
+        for icon in ["import", "search-x", "circle-alert", "file-text", "check", "minus", "x", "info", "folder-input", "share-2", "lock-keyhole"] {
             assert!(is_icon(icon), "{icon}");
         }
     }
