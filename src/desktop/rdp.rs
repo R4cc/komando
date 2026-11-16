@@ -85,10 +85,10 @@ async fn connect(target: &Target, link: &Link, user: &str, password: &Zeroizing<
     let channels = DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
     let mut connector = ClientConnector::new(config, target.route.local_address()).with_static_channel(channels);
 
-    let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await.map_err(failure)?;
+    let should_upgrade = within(ironrdp_tokio::connect_begin(&mut framed, &mut connector)).await?.map_err(failure)?;
     let (stream, leftover) = framed.into_inner();
     let (tls, certificate) =
-        ironrdp_tls::upgrade(stream, &target.address).await.map_err(|err| anyhow!("TLS with the server failed: {err}"))?;
+        within(ironrdp_tls::upgrade(stream, &target.address)).await?.map_err(|err| anyhow!("TLS with the server failed: {err}"))?;
     let der = tls.get_ref().1.peer_certificates().and_then(|c| c.first()).map(|c| c.to_vec());
     let der = der.ok_or_else(|| anyhow!("The server sent no certificate."))?;
     check_certificate(target, link, &der).await?;
@@ -98,7 +98,7 @@ async fn connect(target: &Target, link: &Link, user: &str, password: &Zeroizing<
 
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
     let mut framed = Framed::new_with_leftover(Box::new(tls) as Stream, leftover);
-    let result = ironrdp_tokio::connect_finalize(
+    let result = within(ironrdp_tokio::connect_finalize(
         upgraded,
         connector,
         &mut framed,
@@ -106,12 +106,23 @@ async fn connect(target: &Target, link: &Link, user: &str, password: &Zeroizing<
         ServerName::new(target.address.clone()),
         public_key,
         None,
-    )
-    .await
+    ))
+    .await?
     .map_err(failure)?
     .into_connected()
     .map_err(|_| anyhow!("The server redirected the connection to another server, which Komando doesn't follow."))?;
     Ok((framed, result))
+}
+
+/// How long one step of reaching the desktop (before or after the certificate question) may
+/// take: a port that accepts the connection but never speaks RDP must not leave the pane
+/// connecting forever.
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+async fn within<T>(step: impl std::future::Future<Output = T>) -> Result<T, Failure> {
+    tokio::time::timeout(HANDSHAKE_TIMEOUT, step).await.map_err(|_| {
+        Failure::Other(anyhow!("The server didn't finish connecting within {} seconds.", HANDSHAKE_TIMEOUT.as_secs()))
+    })
 }
 
 /// Trusted on first use, like a Host Key: most RDP servers sign their own certificate.
@@ -134,6 +145,19 @@ async fn check_certificate(target: &Target, link: &Link, der: &[u8]) -> Result<(
 fn failure(err: ConnectorError) -> Failure {
     let text = format!("{err:#}");
     let lower = text.to_lowercase();
+    // Windows names why it refused (NTSTATUS). These aren't a wrong password: asking again
+    // would only count more failed sign-ins against the account.
+    const REFUSALS: [(&str, &str); 6] = [
+        ("STATUS_ACCOUNT_LOCKED_OUT", "This account is locked. Ask its administrator to unlock it, or wait and try again later."),
+        ("STATUS_ACCOUNT_DISABLED", "This account is disabled on the server."),
+        ("STATUS_PASSWORD_EXPIRED", "The password of this account has expired. Change it on the server (or with its administrator), then connect again."),
+        ("STATUS_PASSWORD_MUST_CHANGE", "The password of this account must be changed before it can sign in. Change it on the server, then connect again."),
+        ("STATUS_LOGON_TYPE_NOT_GRANTED", "This account isn't allowed to sign in through Remote Desktop. Add it to the server's Remote Desktop Users group."),
+        ("STATUS_INVALID_LOGON_HOURS", "This account isn't allowed to sign in at this time of day."),
+    ];
+    if let Some((_, message)) = REFUSALS.iter().find(|(status, _)| text.contains(status)) {
+        return Failure::Other(anyhow!("{message}"));
+    }
     match err.kind() {
         ConnectorErrorKind::Credssp(_) if lower.contains("logon") || lower.contains("password") || lower.contains("credentials") => {
             Failure::SignIn("The user name or password is incorrect.".into())
@@ -270,6 +294,8 @@ async fn active(framed: Framed, result: ConnectionResult, link: &mut Link) -> Re
                 let (action, payload) = match frame {
                     Ok(frame) => frame,
                     Err(_) if closing => return Ok("Session closed.".into()),
+                    // The server hung up (its own disconnect, a restart, the network).
+                    Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return Ok("The server closed the connection.".into()),
                     Err(err) => return Ok(format!("The connection ended: {err}")),
                 };
                 stage.process(&mut image, action, &payload, reader.last_read_at()).map_err(|e| anyhow!("{e}"))?

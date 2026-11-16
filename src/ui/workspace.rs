@@ -1090,7 +1090,10 @@ impl Workspace {
                     "Key files and jump host passwords go into the vault: unlock it, or leave them out.",
                     cx,
                 ),
-                Pending::Save { .. } | Pending::SaveDesktop { .. } => {}
+                // "Remember" was ticked: say why nothing was remembered.
+                Pending::Save { .. } | Pending::SaveDesktop { .. } => {
+                    self.show_toast("The password wasn't saved, as the vault stayed locked. Komando asks for it next time.", cx)
+                }
             }
         }
         if self.overlay.is_none() {

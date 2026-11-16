@@ -79,6 +79,32 @@ All notable changes to Komando are listed here. The format follows
 - In the File Browser, Enter confirms the delete question, Escape while renaming a favorite
   ends only the rename, and Enter on a selection of only folders explains that Download
   handles folders.
+- A wrong VNC password on current VNC servers asks again, with the server's reason, instead
+  of ending the session. Servers that offer only sign-ins Komando doesn't support (Apple,
+  VeNCrypt) say so plainly.
+- Touchpad scrolling on a VNC desktop scrolls as far as the gesture, instead of a whole
+  notch for every small step.
+- A VNC server that changes its screen size on its own (such as wayvnc) keeps showing the
+  whole desktop.
+- RDP says why Windows refused a sign-in when it isn't the password: a locked or disabled
+  account, an expired password, or an account not allowed to use Remote Desktop. It no
+  longer asks again for a password in those cases.
+- An RDP server that accepts the connection but never answers stops trying after 30
+  seconds instead of showing Connecting forever.
+- A user name such as `ada@corp.example` signs in to RDP even when the host has a domain set.
+- "The server closed the connection" replaces "not enough bytes" when an RDP server hangs up,
+  and a slow SSH tunnel is no longer reported as an ended SSH session.
+- A remote desktop that goes through SSH connects when the host's SSH session starts from
+  another Project the host is in.
+- A remote desktop connecting behind another session no longer takes the keyboard for its
+  password question; the question gets the keyboard once the desktop is shown.
+- Escape cancels a remote desktop's sign-in or certificate question in its own window too.
+- Clicking beside a fitted remote desktop no longer moves the remote pointer to its edge
+  when the button is released.
+- Reconnecting a remote desktop in its own window on another monitor asks for the size and
+  scale of that window.
+- Choosing "Not now" at the vault's unlock after ticking Remember says the password wasn't
+  saved.
 
 ### Security
 

@@ -126,6 +126,8 @@ pub struct DesktopView {
     /// Keys sent down and not yet up, and the modifiers the remote side has down.
     held: HashSet<u16>,
     modifiers: Modifiers,
+    /// Mouse buttons pressed on the picture and not yet let go.
+    pressed: HashSet<MouseButton>,
     /// The window the pane is shown in: Komando's own, or one of its own after it was dragged
     /// out. Its prompts and pictures belong to that window (see `bind`).
     window: Option<AnyWindowHandle>,
@@ -177,6 +179,7 @@ impl DesktopView {
             requested: None,
             resize: None,
             held: HashSet::new(),
+            pressed: HashSet::new(),
             modifiers: Modifiers::default(),
             window: None,
             pending_prompt: None,
@@ -239,7 +242,9 @@ impl DesktopView {
     /// The size to ask a server for: the pane in device pixels, and the display's scale in
     /// percent. Before the pane was laid out, the window less the sidebar.
     pub fn desired_size(&self, window: &Window) -> (u32, u32, u32) {
-        let scale = window.scale_factor();
+        // The scale of the window the pane was last laid out in: a desktop in its own window
+        // on another monitor may differ from the window asking (Reconnect from Komando's).
+        let scale = self.pane.get().map_or_else(|| window.scale_factor(), |(_, scale)| scale);
         let logical = match self.pane.get() {
             Some((bounds, _)) => bounds.size,
             None => {
@@ -318,6 +323,7 @@ impl DesktopView {
         self._events = None;
         self.resize = None;
         self.held.clear();
+        self.pressed.clear();
         self.modifiers = Modifiers::default();
     }
 
@@ -454,6 +460,7 @@ impl DesktopView {
 
     fn release_all(&mut self) {
         self.held.clear();
+        self.pressed.clear();
         self.modifiers = Modifiers::default();
         // A mouse drag can be held even when no key is down.
         self.send(DesktopInput::ReleaseAll);
@@ -497,6 +504,13 @@ impl DesktopView {
         }
     }
 
+    /// Whether the keyboard is in this pane (or nowhere), so a question arriving may take it.
+    /// A desktop connecting behind another Session asks once it is shown (`focus_prompt`),
+    /// instead of pulling typing into a field nobody can see.
+    fn has_keyboard(&self, window: &Window, cx: &App) -> bool {
+        self.focus.contains_focused(window, cx) || window.focused(cx).is_none()
+    }
+
     fn show_prompt(&mut self, prompt: DesktopPrompt, window: &mut Window, cx: &mut Context<Self>) {
         match prompt {
             DesktopPrompt::SignIn { user, needs_user, error, reply } => {
@@ -514,11 +528,15 @@ impl DesktopView {
                 let password = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Password"));
                 self._subscriptions.push(cx.subscribe_in(&password, window, submit));
                 self.prompt = Some(ActivePrompt::SignIn { user, password, remember: false, error, reply: Some(reply) });
-                self.focus_prompt(window, cx);
+                if self.has_keyboard(window, cx) {
+                    self.focus_prompt(window, cx);
+                }
             }
             DesktopPrompt::Certificate { fingerprint, previous, reply } => {
                 self.prompt = Some(ActivePrompt::Certificate { fingerprint, previous, reply: Some(reply) });
-                window.focus(&self.focus, cx);
+                if self.has_keyboard(window, cx) {
+                    window.focus(&self.focus, cx);
+                }
             }
         }
     }
@@ -558,6 +576,13 @@ impl DesktopView {
     // Input
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Escape answers the open question with its Cancel button, in Komando's window and in
+        // the desktop's own window alike (which has no Workspace to do it).
+        if event.keystroke.key == "escape" && !event.keystroke.modifiers.modified() && self.prompt.is_some() {
+            self.cancel_prompt(window, cx);
+            cx.stop_propagation();
+            return;
+        }
         if !self.focus.is_focused(window) || !self.accepts_input() {
             return;
         }
@@ -671,12 +696,18 @@ impl DesktopView {
             return;
         }
         if let (Some((x, y)), Some(button)) = (self.remote_point(event.position), button_of(event.button)) {
+            self.pressed.insert(event.button);
             self.send(DesktopInput::Pointer { x, y });
             self.send(DesktopInput::Button { button, down: true });
         }
     }
 
     fn mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
+        // Only a button pressed on the picture is let go there: a click on the bars beside it
+        // must not move the remote pointer to the edge on release.
+        if !self.pressed.remove(&event.button) {
+            return;
+        }
         if let (Some((x, y)), Some(button)) = (self.remote_point(event.position), button_of(event.button)) {
             self.send(DesktopInput::Pointer { x, y });
             self.send(DesktopInput::Button { button, down: false });

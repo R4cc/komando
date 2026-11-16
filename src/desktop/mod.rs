@@ -132,7 +132,9 @@ impl Route {
             Route::Ssh { sink, port } => {
                 let ended = || anyhow!("The host's SSH session has ended: connect it again, then reconnect.");
                 let answer = sink.open_tunnel(*port).ok_or_else(ended)?;
-                tokio::time::timeout(CONNECT_TIMEOUT, answer).await.map_err(|_| ended())?.map_err(|_| ended())?
+                // Still connected but slow to answer: not the same as an ended session.
+                let slow = || anyhow!("The tunnel to port {port} on the host didn't open within {} seconds.", CONNECT_TIMEOUT.as_secs());
+                tokio::time::timeout(CONNECT_TIMEOUT, answer).await.map_err(|_| slow())?.map_err(|_| ended())?
             }
         }
     }
@@ -340,6 +342,9 @@ pub fn spawn(target: Target) -> Connection {
 fn split_domain(user: &str, domain: Option<&str>) -> (String, Option<String>) {
     match user.split_once('\\') {
         Some((domain, user)) if !domain.is_empty() => (user.to_string(), Some(domain.to_string())),
+        // "ada@corp.example" names its domain itself: with the Host's domain in front too it
+        // would be CORP\ada@corp.example, which no server accepts.
+        _ if user.contains('@') => (user.to_string(), None),
         _ => (user.to_string(), domain.filter(|d| !d.is_empty()).map(str::to_string)),
     }
 }
@@ -541,5 +546,6 @@ mod tests {
         assert_eq!(split_domain("CORP\\ada", None), ("ada".into(), Some("CORP".into())));
         assert_eq!(split_domain("ada", Some("CORP")), ("ada".into(), Some("CORP".into())));
         assert_eq!(split_domain("ada@corp.example", Some("")), ("ada@corp.example".into(), None));
+        assert_eq!(split_domain("ada@corp.example", Some("CORP")), ("ada@corp.example".into(), None));
     }
 }

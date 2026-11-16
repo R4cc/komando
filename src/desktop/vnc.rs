@@ -5,6 +5,7 @@
 //! reached through its SSH Session (`Desktop::through_ssh`); the form says so.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -23,12 +24,17 @@ const ATTEMPTS: usize = 5;
 /// The password the server asked for, typed in: kept to remember it once signed in.
 type Typed = Arc<Mutex<Option<(Zeroizing<String>, bool)>>>;
 
+/// vnc-rs's words when the server offers only sign-ins it doesn't implement (Apple, VeNCrypt,
+/// TLS…).
+const UNSUPPORTED_SIGN_IN: &str = "Security type apart from Vnc Auth has not been implemented";
+
 pub(super) async fn run(target: Target, link: &mut Link) -> Result<String> {
     let mut password = target.password.clone();
     let mut error = None;
     for _ in 0..ATTEMPTS {
         let typed = Typed::default();
-        match connect(&target, link, password.take(), error.take(), typed.clone()).await {
+        let sent = Arc::new(AtomicBool::new(false));
+        match connect(&target, link, password.take(), error.take(), typed.clone(), sent.clone()).await {
             Ok(client) => {
                 if let Some((password, true)) = typed.lock().expect("typed").take() {
                     link.send(DesktopEvent::Remember { user: None, password });
@@ -38,6 +44,19 @@ pub(super) async fn run(target: Target, link: &mut Link) -> Result<String> {
             }
             Err(VncError::WrongPassword) => error = Some("The password is incorrect.".to_string()),
             Err(VncError::General(reason)) if reason == CANCELLED => return Ok("Sign-in cancelled.".into()),
+            // RFB 3.8 servers refuse a password with a reason of their own rather than as
+            // "wrong password": once one was sent, ask again, with the server's words.
+            Err(VncError::General(reason)) if sent.load(Ordering::Acquire) => {
+                let reason = reason.trim();
+                error = Some(if reason.is_empty() {
+                    "The password is incorrect.".to_string()
+                } else {
+                    format!("The password was refused: {reason}")
+                });
+            }
+            Err(VncError::General(reason)) if reason == UNSUPPORTED_SIGN_IN => {
+                return Err(anyhow!("{}", describe(&VncError::ConnectError)));
+            }
             Err(err @ VncError::General(_)) => return Err(anyhow!("{}", describe(&err))),
             Err(err) => return Err(anyhow!("Connecting failed: {}", describe(&err))),
         }
@@ -63,12 +82,14 @@ async fn connect(
     password: Option<Zeroizing<String>>,
     error: Option<String>,
     typed: Typed,
+    sent: Arc<AtomicBool>,
 ) -> Result<VncClient, VncError> {
     let stream = target.route.open().await.map_err(|err| VncError::General(format!("{err:#}")))?;
     // Asked only if the server wants a password: a saved one first, else the user.
     let events = link.events.clone();
     let ask = async move {
         if let Some(password) = password {
+            sent.store(true, Ordering::Release);
             return Ok(password.to_string());
         }
         let (reply, answer) = futures::channel::oneshot::channel();
@@ -78,6 +99,7 @@ async fn connect(
             Some(answer) => {
                 let password = answer.password.to_string();
                 *typed.lock().expect("typed") = Some((answer.password, answer.remember));
+                sent.store(true, Ordering::Release);
                 Ok(password)
             }
             None => Err(VncError::General(CANCELLED.into())),
@@ -190,6 +212,10 @@ async fn active(client: VncClient, link: &mut Link, format: PixelFormat) -> Resu
 fn show(event: VncEvent, link: &Link, format: &PixelFormat) -> Result<Option<String>> {
     match event {
         VncEvent::SetResolution(screen) => link.draw(|p| p.resize(screen.width.into(), screen.height.into()))?,
+        // A server that changes its layout on its own (wayvnc): the picture follows.
+        VncEvent::DesktopUpdate(vnc::DesktopUpdate { layout: Some(layout), .. }) => {
+            link.draw(|p| p.resize(layout.width.into(), layout.height.into()))?
+        }
         VncEvent::RawImage(rect, data) => {
             let data = to_bgra(&data, format);
             link.draw(|p| p.put(rect.x.into(), rect.y.into(), rect.width.into(), rect.height.into(), &data, usize::from(rect.width) * 4))
@@ -211,6 +237,9 @@ struct Pointer {
     y: u16,
     buttons: u8,
     held: HashSet<u32>,
+    /// Wheel movement short of a notch (120), down and across: a touchpad sends many small
+    /// steps that add up.
+    wheel: [i32; 2],
 }
 
 impl Pointer {
@@ -255,7 +284,14 @@ impl Pointer {
                     (false, true) => 64,
                     (false, false) => 32,
                 };
-                let notches = (i32::from(amount).abs() / 120).max(1);
+                let rest = &mut self.wheel[usize::from(!vertical)];
+                // Turning back starts over, so the first step the other way isn't lost.
+                if (*rest > 0) != (amount > 0) {
+                    *rest = 0;
+                }
+                *rest += i32::from(amount);
+                let notches = rest.abs() / 120;
+                *rest %= 120;
                 (0..notches).flat_map(|_| [self.message(self.buttons | bit), self.message(self.buttons)]).collect()
             }
             Input::CtrlAltDel => {
@@ -291,6 +327,21 @@ mod tests {
         // Full color is passed through untouched.
         let high = pixel_format(Quality::High);
         assert!(matches!(to_bgra(&[1, 2, 3, 4], &high), std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn small_wheel_steps_add_up_to_notches() {
+        let mut pointer = Pointer::default();
+        let notches = |events: Vec<X11Event>| events.len() / 2;
+        // A touchpad's small steps: nothing until they make a notch.
+        assert_eq!(notches(pointer.events(Input::Wheel { vertical: true, amount: 60 })), 0);
+        assert_eq!(notches(pointer.events(Input::Wheel { vertical: true, amount: 60 })), 1);
+        // A mouse notch is one notch; three at once are three.
+        assert_eq!(notches(pointer.events(Input::Wheel { vertical: true, amount: 120 })), 1);
+        assert_eq!(notches(pointer.events(Input::Wheel { vertical: true, amount: 360 })), 3);
+        // Turning back isn't held up by what was left the other way.
+        pointer.events(Input::Wheel { vertical: true, amount: 100 });
+        assert_eq!(notches(pointer.events(Input::Wheel { vertical: true, amount: -120 })), 1);
     }
 
     #[test]

@@ -112,7 +112,7 @@ impl Render for DesktopWindow {
                 )))
             })
             .child(
-                strip_action("desktop-back", "undo-2", "Back to the Komando window", false, p)
+                strip_action("desktop-back", "undo-2", "Back to Komando", false, p)
                     .on_click(|_: &ClickEvent, window, _| window.remove_window()),
             )
             .child(div().w(px(1.)).h(px(14.)).mx(px(4.)).bg(p.border))

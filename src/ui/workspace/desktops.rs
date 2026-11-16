@@ -160,7 +160,7 @@ impl Workspace {
         let (SessionKind::Desktop { host_id, protocol }, Some(view)) = (entry.kind.clone(), entry.view.desktop().cloned()) else {
             return;
         };
-        let (item, project_id) = (entry.item.clone(), entry.project_id.clone().unwrap_or_default());
+        let project_id = entry.project_id.clone().unwrap_or_default();
         let Some(host) = self.library.host(&host_id).cloned() else {
             return view.update(cx, |v, cx| v.end("This host is no longer saved.", cx));
         };
@@ -186,7 +186,8 @@ impl Workspace {
             let sink = self
                 .sessions
                 .iter()
-                .filter(|s| s.item == item && matches!(s.kind, SessionKind::Ssh { .. }) && matches!(s.status, Status::Connected))
+                // The Host's SSH Session in any of its Projects: a Host can be in several.
+                .filter(|s| matches!(&s.kind, SessionKind::Ssh { host_id: h } if *h == host_id) && matches!(s.status, Status::Connected))
                 .find_map(|s| s.view.terminal()?.read(cx).sink());
             match sink {
                 Some(sink) => Route::Ssh { sink, port: remote.port },
@@ -229,11 +230,13 @@ impl Workspace {
     /// A Host's SSH Session just connected: its Remote Desktops waiting to go through it
     /// connect now. If one was asked for from its own pane, it comes back into view.
     pub(super) fn ssh_connected(&mut self, ssh_id: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(item) = self.sessions.iter().find(|s| s.id == ssh_id).map(|s| s.item.clone()) else { return };
+        // By Host, not sidebar item: the desktop may be under the Host in another Project.
+        let Some(SessionKind::Ssh { host_id }) = self.sessions.iter().find(|s| s.id == ssh_id).map(|s| s.kind.clone()) else { return };
         let waiting: Vec<usize> = self
             .sessions
             .iter()
-            .filter(|s| s.item == item && s.view.desktop().is_some_and(|v| v.read(cx).waiting_for_ssh))
+            .filter(|s| matches!(&s.kind, SessionKind::Desktop { host_id: h, .. } if *h == host_id))
+            .filter(|s| s.view.desktop().is_some_and(|v| v.read(cx).waiting_for_ssh))
             .map(|s| s.id)
             .collect();
         for &id in &waiting {
