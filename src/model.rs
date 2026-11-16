@@ -923,6 +923,9 @@ pub struct Settings {
     pub sftp_width: f32,
     /// Preferred sidebar width in logical pixels, adjusted by dragging its divider.
     pub sidebar_width: f32,
+    /// Start with the sidebar hidden, and float it out over the Sessions while the pointer
+    /// rests at the window's left edge, like a browser's vertical tabs.
+    pub sidebar_auto_hide: bool,
     /// The SFTP browser lists files starting with a dot.
     pub sftp_show_hidden: bool,
     /// "Rename" in the SFTP browser's context menu (F2 renames either way).
@@ -979,6 +982,7 @@ impl Default for Settings {
             check_for_updates: true,
             sftp_width: 540.,
             sidebar_width: 264.,
+            sidebar_auto_hide: false,
             sftp_show_hidden: true,
             sftp_menu_rename: false,
             sftp_menu_copy_to: false,

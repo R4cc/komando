@@ -15,6 +15,9 @@ All notable changes to Komando are listed here. The format follows
   dark and light terminals: Default (VS Code's standard terminal palette), Campbell,
   One Half, Solarized, Tango, Gruvbox, Dracula and Nord, or Match theme to use the app
   theme's terminal colors.
+- Expand sidebar on hover (Settings → Appearance): the sidebar stays hidden and slides out
+  over the terminal when you point at the window's left edge, like a browser's vertical
+  tabs. It slides back once the pointer moves away; Ctrl+Shift+B still pins it open.
 - Remote desktops can run in a window of their own: drag a VNC or RDP session's sidebar row
   out of Komando's window, or use "Open in its own window" in the title bar or the row's
   menu. Closing that window, or "Back to the Komando window", returns the desktop to the

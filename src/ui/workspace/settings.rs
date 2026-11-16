@@ -372,7 +372,8 @@ impl Workspace {
             // The title bar above is the top margin.
             .px(px(ISLAND_GAP))
             .pb(px(ISLAND_GAP))
-            .when(self.sidebar_visible, |el| el.child(nav))
+            // With the sidebar set to expand on hover, Settings keeps its own list in view.
+            .when(self.sidebar_visible || self.settings.sidebar_auto_hide, |el| el.child(nav))
             .child(content)
             .into_any_element()
     }
@@ -436,6 +437,21 @@ impl Workspace {
                     }))
                     .into_any_element(),
             )])))
+            .child(group(p, vec![setting_row(
+                p,
+                "Expand sidebar on hover",
+                "Keep the sidebar hidden and slide it out over the terminal while the pointer rests at the window's left edge. Ctrl+Shift+B still pins it open.",
+                switch("sidebar-auto-hide".into(), "Expand sidebar on hover", self.settings.sidebar_auto_hide, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.settings.sidebar_auto_hide = !this.settings.sidebar_auto_hide;
+                        this.sidebar_visible = !this.settings.sidebar_auto_hide;
+                        this.sidebar_peek = false;
+                        this.sidebar_peek_timer = None;
+                        this.save_settings(cx);
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            )]))
             .child(group(p, vec![self.theme_picker(true, p, cx), self.theme_picker(false, p, cx)]))
             .child(group(
                 p,

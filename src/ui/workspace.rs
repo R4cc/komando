@@ -78,6 +78,13 @@ enum Page {
 }
 
 const SIDEBAR_WIDTH: f32 = 264.;
+/// Expand sidebar on hover: the strip along the window's left edge that floats it out, how
+/// long the pointer rests there first, how far past the sidebar it may stray, and how long it
+/// stays away before the sidebar slides back.
+const SIDEBAR_PEEK_EDGE: f32 = 12.;
+const SIDEBAR_PEEK_OPEN_MS: u64 = 120;
+const SIDEBAR_PEEK_SLACK: f32 = 32.;
+const SIDEBAR_PEEK_CLOSE_MS: u64 = 350;
 
 /// Leave a usable terminal beside the navigation, including at the minimum window size.
 fn sidebar_width(preferred: f32, window_width: f32) -> f32 {
@@ -340,6 +347,10 @@ pub struct Workspace {
     /// Per-window navigation visibility; the title-bar toggle stays available when hidden.
     sidebar_visible: bool,
     sidebar_resizing: bool,
+    /// The hidden sidebar floated out over the Sessions (Expand sidebar on hover).
+    sidebar_peek: bool,
+    /// A pending open (`true`) or close of `sidebar_peek`, cancelled by dropping it.
+    sidebar_peek_timer: Option<(bool, gpui::Task<()>)>,
     /// The highlight set whose delete button was clicked once and now asks for a second click.
     confirm_delete_set: Option<(String, Instant)>,
     blur_slider: Option<Entity<SliderState>>,
@@ -458,6 +469,7 @@ impl Workspace {
             crate::platform::instance::WindowBinding::new(window, &data_dir)
                 .map_err(|error| log::error!("Could not register the running window: {error:#}")).ok()
         };
+        let sidebar_visible = !settings.sidebar_auto_hide;
         let mut this = Self {
             data_dir,
             library,
@@ -476,8 +488,10 @@ impl Workspace {
             confirm_delete_set: None,
             sidebar_list: ListState::new(0, ListAlignment::Top, px(240.)),
             sidebar_rows: vec![],
-            sidebar_visible: true,
+            sidebar_visible,
             sidebar_resizing: false,
+            sidebar_peek: false,
+            sidebar_peek_timer: None,
             blur_slider: None,
             font_slider: None,
             font_input: None,
@@ -1700,6 +1714,9 @@ impl Workspace {
             return;
         }
         self.sidebar_visible = !self.sidebar_visible;
+        // Pinning a floated-out sidebar keeps it where it is.
+        self.sidebar_peek = false;
+        self.sidebar_peek_timer = None;
         if !self.sidebar_visible {
             self.transfers.update(cx, |transfers, cx| transfers.close(cx));
         }
@@ -1709,6 +1726,117 @@ impl Workspace {
             window.focus(&self.focus, cx);
         }
         cx.notify();
+    }
+
+    /// Expand sidebar on hover: whether the hidden sidebar may float out over the Sessions.
+    fn sidebar_can_peek(&self) -> bool {
+        self.settings.sidebar_auto_hide && !self.sidebar_visible && self.page == Page::Sessions && self.unlock.is_none()
+    }
+
+    /// Open (`true`) or close the floated-out sidebar after a short rest, so passing the
+    /// pointer over the edge on the way somewhere else doesn't flash it. A pending change the
+    /// other way is cancelled; one the same way keeps its timer.
+    fn peek_sidebar_later(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.sidebar_peek == open {
+            self.sidebar_peek_timer = None;
+            return;
+        }
+        if self.sidebar_peek_timer.as_ref().is_some_and(|(target, _)| *target == open) {
+            return;
+        }
+        let delay = Duration::from_millis(if open { SIDEBAR_PEEK_OPEN_MS } else { SIDEBAR_PEEK_CLOSE_MS });
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = this.update(cx, |this, cx| {
+                this.sidebar_peek_timer = None;
+                if open && !this.sidebar_can_peek() {
+                    return;
+                }
+                this.sidebar_peek = open;
+                if !open {
+                    this.transfers.update(cx, |transfers, cx| transfers.close(cx));
+                }
+                cx.notify();
+            });
+        });
+        self.sidebar_peek_timer = Some((open, task));
+    }
+
+    /// The pointer moved over the Sessions while the sidebar is floated out: close it once
+    /// the pointer is well clear of it, unless something opened from it is still in use.
+    fn sidebar_peek_pointer(&mut self, x: f32, window: &Window, cx: &mut Context<Self>) {
+        if !self.sidebar_peek {
+            return;
+        }
+        let right = self.sidebar_width(window) + ISLAND_GAP * 2.;
+        if x <= right + SIDEBAR_PEEK_SLACK {
+            self.peek_sidebar_later(true, cx);
+        } else if !cx.has_active_drag() && !self.transfers.read(cx).is_open() && !self.modal_open(cx) {
+            self.peek_sidebar_later(false, cx);
+        }
+    }
+
+    /// The thin strip along the left edge that floats the hidden sidebar out, and the
+    /// sidebar itself while it is out. Laid over the Sessions; nothing moves underneath.
+    fn render_sidebar_peek(&mut self, p: AppPalette, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.sidebar_can_peek() {
+            self.sidebar_peek = false;
+            self.sidebar_peek_timer = None;
+            return None;
+        }
+        if !self.sidebar_peek {
+            return Some(
+                div()
+                    .id("sidebar-peek-edge")
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(SIDEBAR_PEEK_EDGE))
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                        if *hovered {
+                            this.peek_sidebar_later(true, cx);
+                        } else if !this.sidebar_peek {
+                            this.sidebar_peek_timer = None;
+                        }
+                    }))
+                    .into_any_element(),
+            );
+        }
+        let width = self.sidebar_width(window);
+        // Opaque: it covers the terminal, so the window's blur must not show the output through.
+        let mut backdrop = p.canvas;
+        backdrop.a = 1.;
+        let sidebar = self.render_sidebar(p, window, cx);
+        Some(
+            div()
+                .id("sidebar-peek")
+                .absolute()
+                .left_0()
+                .top_0()
+                .bottom_0()
+                .w(px(width + ISLAND_GAP * 2.))
+                .pl(px(ISLAND_GAP))
+                .pr(px(ISLAND_GAP))
+                .pb(px(ISLAND_GAP))
+                .flex()
+                .bg(backdrop)
+                .rounded_r(p.corner(ISLAND_RADIUS))
+                .shadow(elevation(p))
+                .occlude()
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    if *hovered {
+                        this.peek_sidebar_later(true, cx);
+                    }
+                }))
+                .child(sidebar)
+                .with_animation(
+                    "sidebar-peek-in",
+                    Animation::new(Duration::from_millis(160)).with_easing(gpui::ease_out_quint()),
+                    move |el, t| el.left(px(-(width + ISLAND_GAP * 2.) * (1. - t))),
+                )
+                .into_any_element(),
+        )
     }
 
     fn active_entry(&self) -> Option<&SessionEntry> {
@@ -4761,6 +4889,9 @@ impl Render for Workspace {
                 }
             }))
             .on_drop(cx.listener(|this, _: &SidebarDivider, _, cx| this.finish_sidebar_resize(cx)))
+            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
+                this.sidebar_peek_pointer(f32::from(event.position.x), window, cx);
+            }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 if this.modal_open(cx) {
                     return;
@@ -4799,10 +4930,12 @@ impl Render for Workspace {
                 // The title bar above is the top margin.
                 .px(px(ISLAND_GAP))
                 .pb(px(ISLAND_GAP))
+                .relative()
                 .when(self.sidebar_visible, |el| {
                     el.child(self.render_sidebar(p, window, cx)).child(self.render_sidebar_divider(p, cx))
                 })
                 .child(self.render_main(p, window, cx))
+                .children(self.render_sidebar_peek(p, window, cx))
                 .into_any_element()),
         };
         // Downloads: floats above the sidebar's footer, from any page.
