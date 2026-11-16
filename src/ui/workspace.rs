@@ -1984,12 +1984,12 @@ impl Workspace {
         self.overlay.is_some() || self.prompt_open(cx)
     }
 
-    /// × on a live Session disconnects it but keeps its output (the item goes idle and a
-    /// click reconnects). × on a Session that is already disconnected discards it.
+    /// Explicitly closing a Remote Desktop discards it immediately. A live terminal keeps
+    /// its output until closed again; an unexpected disconnect keeps either kind of Session.
     fn close_session(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_completion_notification(id);
         let Some(index) = self.sessions.iter().position(|s| s.id == id) else { return };
-        if self.sessions[index].is_live() {
+        if self.sessions[index].is_live() && self.sessions[index].view.desktop().is_none() {
             match self.sessions[index].view.clone() {
                 SessionView::Terminal(view) => view.update(cx, |v, cx| {
                     v.close();

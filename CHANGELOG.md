@@ -17,6 +17,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- Disconnecting a remote desktop yourself removes its sidebar entry immediately. If the
+  host or network disconnects it, the entry remains for reconnecting, with its last picture
+  strongly blurred beneath the disconnected message.
 - Remote desktop toolbars now have a window button: open the desktop in its own window,
   or bring it back to Komando, without reconnecting.
 - On Windows, a dragged remote desktop row stays visible beside the pointer outside

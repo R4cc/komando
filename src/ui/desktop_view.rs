@@ -108,6 +108,10 @@ pub struct DesktopView {
     connection: Option<Connection>,
     _events: Option<Task<()>>,
     image: Option<Arc<RenderImage>>,
+    /// A strongly blurred, small copy of the last frame while the desktop isn't live.
+    blurred: Option<Arc<RenderImage>>,
+    blur_task: Option<Task<()>>,
+    image_current: bool,
     remote_size: (u32, u32),
     drawn_version: u64,
     /// Images replaced since the last frame, removed from the GPU atlas when it is drawn.
@@ -161,6 +165,9 @@ impl DesktopView {
             connection: None,
             _events: None,
             image: None,
+            blurred: None,
+            blur_task: None,
+            image_current: false,
             remote_size: (0, 0),
             drawn_version: 0,
             stale: vec![],
@@ -195,7 +202,7 @@ impl DesktopView {
             this.refresh_capture(window, cx);
         });
         let release = cx.on_release_in(window, |this, window, _| {
-            for image in this.image.take().into_iter().chain(this.stale.drain(..)) {
+            for image in this.image.take().into_iter().chain(this.blurred.take()).chain(this.stale.drain(..)) {
                 let _ = window.drop_image(image);
             }
             if let Some((sender, _)) = this.capture.take() {
@@ -214,7 +221,7 @@ impl DesktopView {
     /// The pane is no longer shown in `window`: free the picture's copy on its GPU. The
     /// picture itself stays, and is drawn in the next window.
     pub fn leave(&mut self, window: &mut Window) {
-        for image in self.image.clone().into_iter().chain(self.stale.drain(..)) {
+        for image in self.image.clone().into_iter().chain(self.blurred.clone()).chain(self.stale.drain(..)) {
             let _ = window.drop_image(image);
         }
         self.release_all();
@@ -249,6 +256,7 @@ impl DesktopView {
         self.close();
         self.waiting_for_ssh = false;
         self.drawn_version = 0;
+        self.image_current = false;
         self.requested = Some(target.size);
         self.status = Status::Connecting;
         let mut connection = desktop::spawn(target);
@@ -291,7 +299,7 @@ impl DesktopView {
         cx.notify();
     }
 
-    /// End the connection and say why (the picture stays, dimmed under the reason).
+    /// End the connection and say why (the picture stays blurred under the reason).
     pub fn end(&mut self, reason: &str, cx: &mut Context<Self>) {
         self.close();
         self.waiting_for_ssh = false;
@@ -682,6 +690,36 @@ impl DesktopView {
         if let Some(old) = self.image.replace(image) {
             self.stale.push(old);
         }
+        self.image_current = true;
+        self.blur_task = None;
+        if let Some(old) = self.blurred.take() {
+            self.stale.push(old);
+        }
+    }
+
+    /// Blur only once per retained frame, off the UI thread. Until it is ready, draw no
+    /// frame at all: a disconnected desktop must never look like a live screen.
+    fn prepare_blurred_image(&mut self, cx: &mut Context<Self>) {
+        if (self.is_connected() && self.image_current) || self.blurred.is_some() || self.blur_task.is_some() {
+            return;
+        }
+        let Some(image) = self.image.clone() else { return };
+        let id = image.id;
+        let work = cx.background_executor().spawn(async move {
+            let dimensions = image.size(0);
+            let buffer = image::RgbaImage::from_raw(dimensions.width.into(), dimensions.height.into(), image.as_bytes(0)?.to_vec())?;
+            Some(Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(blurred_snapshot(&buffer))])))
+        });
+        self.blur_task = Some(cx.spawn(async move |this, cx| {
+            let blurred = work.await;
+            let _ = this.update(cx, |this, cx| {
+                this.blur_task = None;
+                if this.image.as_ref().is_some_and(|image| image.id == id) && !(this.is_connected() && this.image_current) {
+                    this.blurred = blurred;
+                }
+                cx.notify();
+            });
+        }));
     }
 
     /// After a new pane size has settled, ask an RDP server to follow it.
@@ -711,7 +749,7 @@ impl DesktopView {
     /// The picture, placed by the scaling option, with a thin outline where it starts and
     /// ends. The pane around it is darker, so the desktop's edge reads at a glance.
     fn render_picture(&self, outline: gpui::Hsla) -> AnyElement {
-        let image = self.image.clone();
+        let image = if self.is_connected() && self.image_current { self.image.clone() } else { self.blurred.clone() };
         let (w, h) = self.remote_size;
         let pane = self.pane.clone();
         let placement = self.placement.clone();
@@ -954,6 +992,43 @@ impl DesktopView {
     }
 }
 
+/// Downsample before blurring: text becomes unreadable while the desktop's broad shapes
+/// remain, without retaining another full-resolution frame or blurring every repaint.
+fn blurred_snapshot(buffer: &image::RgbaImage) -> image::RgbaImage {
+    let width = buffer.width().min(160).max(1);
+    let height = ((buffer.height() as f64 * width as f64 / buffer.width().max(1) as f64).round() as u32).max(1);
+    let small = image::imageops::resize(buffer, width, height, image::imageops::FilterType::Triangle);
+    image::imageops::blur(&small, 5.)
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::blurred_snapshot;
+    use image::{Rgba, RgbaImage};
+
+    #[test]
+    fn disconnected_snapshot_removes_fine_detail_and_preserves_shape() {
+        let original = RgbaImage::from_fn(640, 400, |x, _| {
+            let value = if x % 4 < 2 { 0 } else { 255 };
+            Rgba([value, value, value, 255])
+        });
+        let blurred = blurred_snapshot(&original);
+        assert_eq!(blurred.dimensions(), (160, 100));
+        // Sharp black/white detail becomes a soft gray field, rather than just dimming it.
+        assert!(blurred.pixels().all(|p| (80..=175).contains(&p[0]) && p[3] == 255));
+        assert_eq!(original.get_pixel(0, 0)[0], 0);
+        assert_eq!(original.get_pixel(2, 0)[0], 255);
+    }
+
+    #[test]
+    fn disconnected_snapshot_preserves_small_solid_frames() {
+        let original = RgbaImage::from_pixel(16, 8, Rgba([40, 90, 130, 255]));
+        let blurred = blurred_snapshot(&original);
+        assert_eq!(blurred.dimensions(), original.dimensions());
+        assert!(blurred.pixels().all(|p| p.0.into_iter().zip([40u8, 90, 130, 255]).all(|(a, b)| a.abs_diff(b) <= 1)));
+    }
+}
+
 fn button_of(button: MouseButton) -> Option<Button> {
     match button {
         MouseButton::Left => Some(Button::Left),
@@ -966,6 +1041,7 @@ fn button_of(button: MouseButton) -> Option<Button> {
 impl Render for DesktopView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_image(window);
+        self.prepare_blurred_image(cx);
         self.follow_pane(window, cx);
         self.refresh_capture(window, cx);
         let card = self.render_card(cx);
