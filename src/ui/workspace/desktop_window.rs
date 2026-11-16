@@ -168,6 +168,7 @@ impl Workspace {
 
     /// The mouse went up: a desktop's row let go outside the window opens there.
     pub(super) fn finish_tear_off(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.native_drag = None;
         if let Some(tear_off) = self.tear_off.take() {
             // Its title bar under the pointer, as if the window had been carried out.
             let origin = tear_off.screen - point(px(140.), px(TITLE_BAR_HEIGHT / 2.));
@@ -207,6 +208,7 @@ impl Workspace {
         let dark = self.app_dark(window);
         let opened = cx.open_window(options, |new_window, cx| {
             view.update(cx, |v, cx| {
+                v.detached = true;
                 v.bind(new_window, cx);
                 v.focus(new_window, cx);
             });
@@ -246,7 +248,11 @@ impl Workspace {
             return;
         }
         let Some(view) = entry.view.desktop().cloned() else { return };
-        view.update(cx, |v, cx| v.bind(window, cx));
+        view.update(cx, |v, cx| {
+            v.detached = false;
+            v.bind(window, cx);
+            cx.notify();
+        });
         self.activate(id, window, cx);
         window.activate_window();
     }

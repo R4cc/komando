@@ -72,6 +72,19 @@ impl Workspace {
             DesktopViewEvent::Reconnect => this.connect_desktop(id, window, cx),
             DesktopViewEvent::EditHost => this.open_edit_host(project.clone(), host.clone(), window, cx),
             DesktopViewEvent::OpenSsh => this.show_terminal_of(&project, &host, window, cx),
+            DesktopViewEvent::ToggleWindow => {
+                // Finish the emitting view's update before moving it or closing its window.
+                let ws = cx.entity().downgrade();
+                window.defer(cx, move |window, cx| {
+                    let _ = ws.update(cx, |this, cx| {
+                        if this.sessions.iter().any(|s| s.id == id && s.window.is_some()) {
+                            this.close_own_window(id, cx);
+                        } else {
+                            this.detach_desktop(id, None, window, cx);
+                        }
+                    });
+                });
+            }
             DesktopViewEvent::Options { reconnect } => {
                 let options = view.read(cx).options;
                 this.save_viewer_options(&host, protocol, options, cx);

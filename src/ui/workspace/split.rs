@@ -145,9 +145,23 @@ impl Workspace {
         cx: &Context<Self>,
     ) -> impl Fn(&DraggedItem, Point<Pixels>, &mut Window, &mut gpui::App) -> gpui::Entity<DragPreview> + 'static {
         let ws = cx.entity().downgrade();
-        move |dragged, offset, _, cx| {
-            let _ = ws.update(cx, |this, _| this.drop_target = None);
-            cx.new(|_| DragPreview::new(dragged, offset))
+        move |dragged, offset, window, cx| {
+            let native = ws.update(cx, |this, cx| {
+                this.drop_target = None;
+                this.native_drag = dragged.session
+                    .filter(|id| this.sessions.iter().any(|s| s.id == *id && s.view.desktop().is_some()))
+                    .and_then(|_| crate::platform::DragPreview::new(&dragged.label, window, cx.global::<Appearance>().app.dark));
+                this.native_drag.is_some()
+            }).unwrap_or(false);
+            let ws = ws.clone();
+            cx.new(|cx| {
+                cx.on_release(move |_, cx| cx.defer(move |cx| {
+                    let _ = ws.update(cx, |this, _| this.native_drag = None);
+                })).detach();
+                let mut preview = DragPreview::new(dragged, offset);
+                preview.native = native;
+                preview
+            })
         }
     }
 
@@ -489,6 +503,7 @@ impl Workspace {
 
 /// What follows the pointer while a sidebar item is dragged: its icon and name in a chip.
 pub(super) struct DragPreview {
+    native: bool,
     label: SharedString,
     icon: String,
     color: Hsla,
@@ -498,13 +513,16 @@ pub(super) struct DragPreview {
 
 impl DragPreview {
     pub fn new(dragged: &DraggedItem, offset: Point<Pixels>) -> Self {
-        Self { label: dragged.label.clone(), icon: dragged.icon.clone(), color: dragged.color, offset }
+        Self { native: false, label: dragged.label.clone(), icon: dragged.icon.clone(), color: dragged.color, offset }
     }
 }
 
 impl Render for DragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p: AppPalette = cx.global::<Appearance>().app;
+        if self.native {
+            return div();
+        }
         div()
             .pl((self.offset.x - px(14.)).max(px(0.)))
             .pt((self.offset.y - px(15.)).max(px(0.)))

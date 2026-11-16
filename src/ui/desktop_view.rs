@@ -55,6 +55,8 @@ pub enum DesktopViewEvent {
     EditHost,
     /// The desktop goes through the Host's SSH Session, which isn't connected: open it.
     OpenSsh,
+    /// Move this Session between the main window and a window of its own.
+    ToggleWindow,
     /// Its toolbar changed `options`: keep them for the Host. A new quality takes a reconnect.
     Options { reconnect: bool },
 }
@@ -101,6 +103,7 @@ pub struct DesktopView {
     pub waiting_for_ssh: bool,
     /// Scaling, quality and input options, from the Host and changed in the toolbar.
     pub options: ViewerOptions,
+    pub detached: bool,
     focus: FocusHandle,
     connection: Option<Connection>,
     _events: Option<Task<()>>,
@@ -153,6 +156,7 @@ impl DesktopView {
             fit_desktop: true,
             waiting_for_ssh: false,
             options: ViewerOptions::default(),
+            detached: false,
             focus,
             connection: None,
             _events: None,

@@ -439,6 +439,7 @@ pub struct Workspace {
     drop_target: Option<DropTarget>,
     /// A Remote Desktop's sidebar row held outside the window, to open in its own.
     tear_off: Option<desktop_window::TearOff>,
+    native_drag: Option<crate::platform::DragPreview>,
     /// The highest number given to each item's terminals (`true`) or desktops since it last
     /// had none of them open (see `next_number`).
     session_numbers: HashMap<(ItemKey, bool), usize>,
@@ -572,6 +573,7 @@ impl Workspace {
             pending_split: None,
             drop_target: None,
             tear_off: None,
+            native_drag: None,
             session_numbers: HashMap::new(),
             last_active: Default::default(),
             next_id: 1,
@@ -5346,12 +5348,16 @@ impl Render for Workspace {
             .on_drop(cx.listener(|this, _: &DraggedItem, _, cx| {
                 this.drop_target = None;
                 this.tear_off = None;
+                this.native_drag = None;
                 cx.notify();
             }))
             // A Remote Desktop's row dragged out of the window opens in a window of its own
             // where it is let go.
             .on_drag_move(cx.listener(|this, event: &gpui::DragMoveEvent<DraggedItem>, window, cx| {
                 let session = event.drag(cx).session;
+                if let Some(preview) = &this.native_drag {
+                    preview.follow_cursor();
+                }
                 this.drag_outside(session, event.event.position, window, cx);
             }))
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _: &gpui::MouseUpEvent, window, cx| {

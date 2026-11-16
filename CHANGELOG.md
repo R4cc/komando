@@ -8,6 +8,10 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- Remote desktop toolbars now have a window button: open the desktop in its own window,
+  or bring it back to Komando, without reconnecting.
+- On Windows, a dragged remote desktop row stays visible beside the pointer outside
+  Komando's window, until it is dropped or the drag is cancelled.
 - Sidebar menus put New terminal, Browse files and Open in split view first, omit Show
   session when it is already visible, and use shorter desktop labels (Open VNC, Set up RDP…).
 - Sidebar menus show keyboard shortcuts beside New terminal (Ctrl+Enter), Rename session

@@ -11,7 +11,7 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Selectable as _, Sizable as _};
 
-use super::DesktopView;
+use super::{DesktopView, DesktopViewEvent};
 use crate::desktop::keys::{self, Code};
 use crate::desktop::Protocol;
 use crate::model::{Quality, Scaling, ViewerOptions};
@@ -218,6 +218,19 @@ impl DesktopView {
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.change_options(|o| o.view_only = !on, cx)))
             })
             .child(divider(p))
+            .child(
+                Button::new("rd-window")
+                    .ghost()
+                    .small()
+                    .icon(icon(if self.detached { "square-arrow-down-left" } else { "square-arrow-out-up-right" }))
+                    .tooltip(if self.detached { "Back to Komando" } else { "Open in its own window" })
+                    .on_click(cx.listener(|_, _: &ClickEvent, window, cx| {
+                        if window.is_fullscreen() {
+                            window.toggle_fullscreen();
+                        }
+                        cx.emit(DesktopViewEvent::ToggleWindow);
+                    })),
+            )
             .child({
                 Button::new("rd-fullscreen")
                     .ghost()

@@ -1,5 +1,8 @@
 //! Small Windows-only touches gpui doesn't cover.
 
+mod drag_preview;
+pub use drag_preview::DragPreview;
+
 /// Shared executable resources: Windows retains these handles for the process lifetime.
 /// Set both sizes so the taskbar and Alt+Tab agree, including detached desktop windows.
 #[cfg(windows)]
