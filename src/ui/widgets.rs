@@ -126,12 +126,13 @@ fn button_shell(id: impl Into<ElementId>, kind: ButtonKind, p: AppPalette) -> (S
 /// A square icon-only button with a tooltip-free label for accessibility tooling.
 /// A labelled tick box in a dialog. It is a Tab stop: Space toggles it and keeps the focus
 /// there, so Tab carries on to the next control. `toggle` gets `true` when the mouse did it.
+///
+/// gpui turns Space or Enter released on a focused element into a keyboard click, so this
+/// handles no keys itself: doing so would toggle once on key down and back on key up.
 pub fn labelled_checkbox(
     id: impl Into<ElementId>, label: &'static str, ticked: bool, p: AppPalette,
     toggle: impl Fn(bool, &mut gpui::Window, &mut gpui::App) + 'static,
 ) -> Stateful<gpui::Div> {
-    let toggle = std::rc::Rc::new(toggle);
-    let by_key = toggle.clone();
     div()
         .id(id)
         .role(gpui::Role::CheckBox)
@@ -150,12 +151,11 @@ pub fn labelled_checkbox(
         .border_color(gpui::transparent_black())
         .focus_visible(move |s| s.border_color(p.focus))
         .cursor_pointer()
-        .on_click(move |_, window, cx| toggle(true, window, cx))
-        .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
-            if event.keystroke.key == "space" && !event.keystroke.modifiers.modified() {
-                by_key(false, window, cx);
-                cx.stop_propagation();
-            }
+        .on_click(move |event, window, cx| match event {
+            // Enter isn't a checkbox key; leave it alone.
+            gpui::ClickEvent::Keyboard(key) if key.button == gpui::KeyboardButton::Enter => {}
+            gpui::ClickEvent::Keyboard(_) => toggle(false, window, cx),
+            _ => toggle(true, window, cx),
         })
         .child(
             div()

@@ -6,6 +6,12 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Pressing Space on a password prompt's "Remember" checkbox ticks it and keeps the focus
+  there. Before, it ticked and immediately unticked the box and jumped back to the
+  password field.
+
 ## [0.6.0] - 2026-11-16
 
 ### Added
