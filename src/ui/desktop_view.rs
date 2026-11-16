@@ -755,14 +755,30 @@ impl DesktopView {
         let Some(connection) = &self.connection else { return };
         // Before reading: a change made while reading tells the view again.
         connection.drawn();
-        let picture = connection.picture.lock().expect("picture");
-        if picture.version == self.drawn_version || picture.width == 0 || picture.height == 0 {
-            return;
+        {
+            let picture = connection.picture.lock().expect("picture");
+            if picture.version == self.drawn_version || picture.width == 0 || picture.height == 0 {
+                return;
+            }
         }
+        // gpui keeps the frame it is given, so each frame is a new buffer. Copy the last one
+        // before locking, so the engine waits only while what changed since is copied in. A
+        // frame from an earlier connection (`drawn_version` 0) is no starting point.
+        let mut frame = match &self.image {
+            Some(image) if self.drawn_version != 0 => image.as_bytes(0).map(<[u8]>::to_vec).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let mut picture = connection.picture.lock().expect("picture");
+        picture.update_frame(&mut frame);
+        let (width, height) = (picture.width, picture.height);
         self.drawn_version = picture.version;
-        self.remote_size = (picture.width, picture.height);
-        let Some(buffer) = image::RgbaImage::from_raw(picture.width, picture.height, picture.bgra.clone()) else { return };
         drop(picture);
+        self.remote_size = (width, height);
+        let Some(buffer) = image::RgbaImage::from_raw(width, height, frame) else {
+            // Not drawn: the next frame must not start from the one kept.
+            self.drawn_version = 0;
+            return;
+        };
         let image = Arc::new(RenderImage::new(smallvec::smallvec![image::Frame::new(buffer)]));
         if let Some(old) = self.image.replace(image) {
             self.stale.push(old);

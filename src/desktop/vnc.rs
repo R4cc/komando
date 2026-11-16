@@ -142,40 +142,44 @@ fn pixel_format(quality: Quality) -> PixelFormat {
     format
 }
 
-/// Pixels in `format` (little endian, true color) as the picture's BGRA.
-fn to_bgra<'a>(data: &'a [u8], format: &PixelFormat) -> std::borrow::Cow<'a, [u8]> {
+/// Pixels in `format` (little endian, true color) as the picture's BGRA. Fewer bits per pixel
+/// are widened into `scratch`, kept from one rectangle to the next so a busy screen doesn't
+/// allocate for each, and converted before the picture is locked.
+fn to_bgra<'a>(data: &'a [u8], format: &PixelFormat, scratch: &'a mut Vec<u8>) -> &'a [u8] {
     let bytes = usize::from(format.bits_per_pixel / 8);
     if bytes == 4 {
-        return std::borrow::Cow::Borrowed(data);
+        return data;
     }
     // A channel of `max` scaled to 0..=255.
     let scale = |value: u32, max: u16| (value * 255 / u32::from(max.max(1))) as u8;
-    let mut out = Vec::with_capacity(data.len() / bytes * 4);
+    scratch.clear();
+    scratch.reserve(data.len() / bytes * 4);
     for pixel in data.chunks_exact(bytes) {
         let value = match bytes {
             2 => u32::from(u16::from_le_bytes([pixel[0], pixel[1]])),
             _ => u32::from(pixel[0]),
         };
         let channel = |shift: u8, max: u16| scale((value >> shift) & u32::from(max), max);
-        out.extend_from_slice(&[
+        scratch.extend_from_slice(&[
             channel(format.blue_shift, format.blue_max),
             channel(format.green_shift, format.green_max),
             channel(format.red_shift, format.red_max),
             0xff,
         ]);
     }
-    std::borrow::Cow::Owned(out)
+    scratch
 }
 
 async fn active(client: VncClient, link: &mut Link, format: PixelFormat) -> Result<String> {
     let mut refresh = tokio::time::interval(REFRESH);
     let mut pointer = Pointer::default();
+    let mut scratch = Vec::new();
     let _ = client.input(X11Event::FullRefresh).await;
     let reason = loop {
         tokio::select! {
             event = client.recv_event() => match event {
                 Ok(event) => {
-                    if let Some(reason) = show(event, link, &format)? {
+                    if let Some(reason) = show(event, link, &format, &mut scratch)? {
                         break reason;
                     }
                 }
@@ -209,7 +213,7 @@ async fn active(client: VncClient, link: &mut Link, format: PixelFormat) -> Resu
 }
 
 /// Draw what the server sent. `Some` ends the session, with why.
-fn show(event: VncEvent, link: &Link, format: &PixelFormat) -> Result<Option<String>> {
+fn show(event: VncEvent, link: &Link, format: &PixelFormat, scratch: &mut Vec<u8>) -> Result<Option<String>> {
     match event {
         VncEvent::SetResolution(screen) => link.draw(|p| p.resize(screen.width.into(), screen.height.into()))?,
         // A server that changes its layout on its own (wayvnc): the picture follows.
@@ -217,8 +221,8 @@ fn show(event: VncEvent, link: &Link, format: &PixelFormat) -> Result<Option<Str
             link.draw(|p| p.resize(layout.width.into(), layout.height.into()))?
         }
         VncEvent::RawImage(rect, data) => {
-            let data = to_bgra(&data, format);
-            link.draw(|p| p.put(rect.x.into(), rect.y.into(), rect.width.into(), rect.height.into(), &data, usize::from(rect.width) * 4))
+            let data = to_bgra(&data, format, scratch);
+            link.draw(|p| p.put(rect.x.into(), rect.y.into(), rect.width.into(), rect.height.into(), data, usize::from(rect.width) * 4))
         }
         VncEvent::Copy(to, from) => {
             link.draw(|p| p.copy((to.x.into(), to.y.into()), (from.x.into(), from.y.into()), to.width.into(), to.height.into()))
@@ -320,13 +324,16 @@ mod tests {
         // RGB565 white, pure red, and black.
         let medium = pixel_format(Quality::Medium);
         let pixels = [0xffff_u16, 0xf800, 0x0000].iter().flat_map(|p| p.to_le_bytes()).collect::<Vec<u8>>();
-        assert_eq!(&*to_bgra(&pixels, &medium), &[255, 255, 255, 255, 0, 0, 255, 255, 0, 0, 0, 255]);
+        let mut scratch = Vec::new();
+        assert_eq!(to_bgra(&pixels, &medium, &mut scratch), &[255, 255, 255, 255, 0, 0, 255, 255, 0, 0, 0, 255]);
         // BGR233: blue in the top two bits, green in the middle three, red in the low three.
         let low = pixel_format(Quality::Low);
-        assert_eq!(&*to_bgra(&[0b1100_0000, 0b0000_0111], &low), &[255, 0, 0, 255, 0, 0, 255, 255]);
+        // The buffer is reused: nothing of the longer rectangle before is left over.
+        assert_eq!(to_bgra(&[0b1100_0000, 0b0000_0111], &low, &mut scratch), &[255, 0, 0, 255, 0, 0, 255, 255]);
         // Full color is passed through untouched.
         let high = pixel_format(Quality::High);
-        assert!(matches!(to_bgra(&[1, 2, 3, 4], &high), std::borrow::Cow::Borrowed(_)));
+        let data = [1, 2, 3, 4];
+        assert_eq!(to_bgra(&data, &high, &mut scratch).as_ptr(), data.as_ptr());
     }
 
     #[test]

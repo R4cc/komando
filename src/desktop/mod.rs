@@ -44,6 +44,41 @@ pub struct Picture {
     pub bgra: Vec<u8>,
     /// Counts changes, so the view can tell whether it has drawn the latest.
     pub version: u64,
+    /// What changed since the view last took a frame (see `update_frame`).
+    damage: Damage,
+}
+
+/// A rectangle of the picture: x, y, width, height.
+type Rect = [u32; 4];
+
+/// The parts of the picture changed since the view last took a frame.
+#[derive(Default)]
+struct Damage {
+    all: bool,
+    rects: Vec<Rect>,
+}
+
+/// Past this many rectangles, they are merged into the one around them all: a frame full of
+/// small changes costs one larger copy rather than a long list to walk.
+const DAMAGE_RECTS: usize = 32;
+
+impl Damage {
+    fn add(&mut self, rect: Rect) {
+        let [x, y, width, height] = rect;
+        let contains = |&[ox, oy, ow, oh]: &Rect| ox <= x && oy <= y && x + width <= ox + ow && y + height <= oy + oh;
+        if self.all || width == 0 || height == 0 || self.rects.iter().any(contains) {
+            return;
+        }
+        if self.rects.len() == DAMAGE_RECTS {
+            let around = self.rects.drain(..).fold(rect, |[x, y, w, h], [ox, oy, ow, oh]| {
+                let (left, top) = (x.min(ox), y.min(oy));
+                [left, top, (x + w).max(ox + ow) - left, (y + h).max(oy + oh) - top]
+            });
+            self.rects.push(around);
+        } else {
+            self.rects.push(rect);
+        }
+    }
 }
 
 /// Refuse a server's desktop size before anything that size is allocated: up to two 8K
@@ -64,6 +99,7 @@ impl Picture {
             self.height = height;
             self.bgra = [0, 0, 0, 0xff].repeat(width as usize * height as usize);
         }
+        self.damage = Damage { all: true, rects: Vec::new() };
         self.version += 1;
         Ok(())
     }
@@ -87,28 +123,62 @@ impl Picture {
                 pixel[3] = 0xff;
             }
         }
+        self.damage.add([x, y, width, height]);
         self.version += 1;
     }
 
     /// VNC's CopyRect: move a rectangle already on screen. Source and destination may overlap.
     fn copy(&mut self, to: (u32, u32), from: (u32, u32), width: u32, height: u32) {
         let fits = |(x, y): (u32, u32)| {
-            x <= self.width && y <= self.height && width <= self.width - x && height <= self.height - y
+            u64::from(x) + u64::from(width) <= u64::from(self.width) && u64::from(y) + u64::from(height) <= u64::from(self.height)
         };
         if width == 0 || height == 0 || !fits(to) || !fits(from) {
             return;
         }
+        // In place, a row at a time. Moving down, the bottom row goes first, so no source row
+        // is overwritten before it is read; `copy_within` handles overlap within a row. The
+        // picture is already opaque, so nothing needs its alpha set.
         let stride = self.width as usize * 4;
-        // Like memmove: copy bottom-up when the destination is below the source, so an
-        // overlapping row is read before it is overwritten. copy_within handles horizontal
-        // overlap. Pixels here are already opaque; no temporary rectangle or alpha pass.
-        for step in 0..height as usize {
-            let row = if to.1 > from.1 { height as usize - 1 - step } else { step };
-            let start = (from.1 as usize + row) * stride + from.0 as usize * 4;
-            let dest = (to.1 as usize + row) * stride + to.0 as usize * 4;
-            self.bgra.copy_within(start..start + width as usize * 4, dest);
+        let row_bytes = width as usize * 4;
+        let at = |(x, y): (u32, u32), row: usize| (y as usize + row) * stride + x as usize * 4;
+        let mut move_row = |row: usize| {
+            let start = at(from, row);
+            self.bgra.copy_within(start..start + row_bytes, at(to, row));
+        };
+        if to.1 > from.1 {
+            (0..height as usize).rev().for_each(&mut move_row);
+        } else {
+            (0..height as usize).for_each(&mut move_row);
         }
+        self.damage.add([to.0, to.1, width, height]);
         self.version += 1;
+    }
+
+    /// Bring `frame`, a copy of the picture as this method last left it, up to date. Only what
+    /// changed since is copied, so the protocol thread, which waits on this lock to draw, waits
+    /// for that rather than the whole screen. A `frame` of another size (empty, or from before
+    /// a resize) gets the whole picture.
+    pub fn update_frame(&mut self, frame: &mut Vec<u8>) {
+        let damage = std::mem::take(&mut self.damage);
+        if damage.all || frame.len() != self.bgra.len() {
+            frame.clear();
+            frame.extend_from_slice(&self.bgra);
+            return;
+        }
+        let stride = self.width as usize * 4;
+        for [x, y, width, height] in damage.rects {
+            // Full rows are one span: a single copy is markedly faster than one per row.
+            let (rows, row_bytes) = if width == self.width {
+                (y as usize..y as usize + 1, height as usize * stride)
+            } else {
+                (y as usize..(y + height) as usize, width as usize * 4)
+            };
+            for row in rows {
+                let start = row * stride + x as usize * 4;
+                let span = start..start + row_bytes;
+                frame[span.clone()].copy_from_slice(&self.bgra[span]);
+            }
+        }
     }
 }
 
@@ -546,42 +616,161 @@ mod tests {
         assert_eq!(firsts, [1, 1, 2]);
     }
 
+    /// A picture whose every pixel is different, so a pixel out of place shows.
+    fn numbered(width: u32, height: u32) -> Picture {
+        let mut p = picture(width, height);
+        let pixels: Vec<u8> = (0..width * height).flat_map(|i| [i as u8, (i >> 8) as u8, 7, 0xff]).collect();
+        p.put(0, 0, width, height, &pixels, width as usize * 4);
+        p
+    }
+
+    /// CopyRect done the obvious way: the source read whole before anything is written.
+    fn copied_through_a_buffer(p: &Picture, to: (u32, u32), from: (u32, u32), width: u32, height: u32) -> Vec<u8> {
+        let mut expected = p.bgra.clone();
+        if to.0 + width > p.width || to.1 + height > p.height || from.0 + width > p.width || from.1 + height > p.height {
+            return expected;
+        }
+        for row in 0..height {
+            for col in 0..width {
+                let at = |(x, y): (u32, u32)| (((y + row) * p.width + x + col) * 4) as usize;
+                expected[at(to)..at(to) + 4].copy_from_slice(&p.bgra[at(from)..at(from) + 4]);
+            }
+        }
+        expected
+    }
+
     #[test]
-    fn rectangle_moves_match_a_snapshot_in_every_overlap_direction() {
-        let original: Vec<u8> = (0..30).flat_map(|i| [i, i + 1, i + 2, 0xff]).collect();
-        for width in 1..=5 {
-            for height in 1..=6 {
-                for sy in 0..=6 - height {
-                    for sx in 0..=5 - width {
-                        for dy in 0..=6 - height {
-                            for dx in 0..=5 - width {
-                                let mut p = picture(5, 6);
-                                p.bgra.clone_from(&original);
-                                let mut expected = original.clone();
-                                for row in 0..height as usize {
-                                    let source = ((sy as usize + row) * 5 + sx as usize) * 4;
-                                    let dest = ((dy as usize + row) * 5 + dx as usize) * 4;
-                                    expected[dest..dest + width as usize * 4]
-                                        .copy_from_slice(&original[source..source + width as usize * 4]);
-                                }
-                                let version = p.version;
-                                p.copy((dx, dy), (sx, sy), width, height);
-                                assert_eq!(p.bgra, expected, "{sx},{sy} -> {dx},{dy}, {width}x{height}");
-                                assert_eq!(p.version, version + 1);
-                            }
-                        }
-                    }
+    fn copying_in_place_matches_copying_through_a_buffer_for_every_overlap() {
+        // Every source and destination on a small screen, every size: shifts up, down, left,
+        // right and diagonally, overlapping or not, and rectangles reaching past the edge.
+        let (w, h) = (6, 5);
+        let original = numbered(w, h);
+        let points: Vec<(u32, u32)> = (0..=w).flat_map(|x| (0..=h).map(move |y| (x, y))).collect();
+        for &from in &points {
+            for &to in &points {
+                for (width, height) in (1..=w).flat_map(|width| (1..=h).map(move |height| (width, height))) {
+                    let mut p = numbered(w, h);
+                    let expected = copied_through_a_buffer(&original, to, from, width, height);
+                    p.copy(to, from, width, height);
+                    assert_eq!(p.bgra, expected, "{width}×{height} from {from:?} to {to:?}");
                 }
             }
         }
-        let mut p = picture(5, 6);
-        let original = p.bgra.clone();
-        let version = p.version;
+    }
+
+    #[test]
+    fn scrolling_moves_rows_and_keeps_the_rest() {
+        let firsts = |p: &Picture| p.bgra.chunks(4).map(|px| px[0]).collect::<Vec<u8>>();
+        // Up a row, as a terminal scrolls: the last row stays as it was.
+        let mut p = numbered(2, 3);
+        p.copy((0, 0), (0, 1), 2, 2);
+        assert_eq!(firsts(&p), [2, 3, 4, 5, 4, 5]);
+        // Down a row: the first row stays.
+        let mut p = numbered(2, 3);
+        p.copy((0, 1), (0, 0), 2, 2);
+        assert_eq!(firsts(&p), [0, 1, 0, 1, 2, 3]);
+        // Left within one row.
+        let mut p = numbered(3, 1);
+        p.copy((0, 0), (1, 0), 2, 1);
+        assert_eq!(firsts(&p), [1, 2, 2]);
+    }
+
+    #[test]
+    fn a_copy_reaching_past_the_edge_is_ignored() {
+        let mut p = numbered(4, 4);
+        let (before, version) = (p.bgra.clone(), p.version);
+        p.copy((3, 0), (0, 0), 2, 1);
+        p.copy((0, 0), (0, 3), 1, 2);
         p.copy((u32::MAX, 0), (0, 0), 2, 1);
-        p.copy((0, 0), (0, u32::MAX), 1, 2);
         p.copy((0, 0), (0, 0), u32::MAX, u32::MAX);
-        assert_eq!(p.bgra, original, "invalid rectangles leave the picture alone");
-        assert_eq!(p.version, version);
+        p.copy((1, 1), (0, 0), 0, 2);
+        assert_eq!((p.bgra, p.version), (before, version));
+    }
+
+    /// Take a frame from `p` into `frame`, as the view does.
+    fn take(p: &mut Picture, frame: &mut Vec<u8>) {
+        p.update_frame(frame);
+        assert_eq!(*frame, p.bgra, "a frame brought up to date is the picture");
+    }
+
+    #[test]
+    fn a_frame_is_brought_up_to_date_by_copying_only_what_changed() {
+        let mut p = numbered(4, 3);
+        let mut frame = Vec::new();
+        take(&mut p, &mut frame);
+        // Mark the frame, so what was copied in shows.
+        frame.iter_mut().for_each(|b| *b = 0xee);
+        p.put(1, 1, 2, 1, &[1; 8], 8);
+        p.copy((0, 2), (0, 0), 1, 1);
+        p.update_frame(&mut frame);
+        let changed: Vec<usize> = frame.chunks(4).enumerate().filter(|(_, px)| px[0] != 0xee).map(|(i, _)| i).collect();
+        assert_eq!(changed, [5, 6, 8]);
+        assert_eq!(&frame[5 * 4..7 * 4], &p.bgra[5 * 4..7 * 4]);
+        assert_eq!(&frame[8 * 4..9 * 4], &p.bgra[8 * 4..9 * 4]);
+        // Nothing changed since: nothing is copied.
+        frame.iter_mut().for_each(|b| *b = 0xee);
+        p.update_frame(&mut frame);
+        assert!(frame.iter().all(|&b| b == 0xee));
+    }
+
+    #[test]
+    fn a_frame_of_another_size_or_after_a_resize_gets_the_whole_picture() {
+        let mut p = numbered(4, 3);
+        let mut frame = vec![0xee; 5];
+        take(&mut p, &mut frame);
+        // Resized to the same size: the server may have drawn a new desktop.
+        p.resize(4, 3).unwrap();
+        frame.iter_mut().for_each(|b| *b = 0xee);
+        take(&mut p, &mut frame);
+        p.resize(2, 2).unwrap();
+        take(&mut p, &mut frame);
+        assert_eq!(frame.len(), 2 * 2 * 4);
+    }
+
+    #[test]
+    fn frames_stay_exact_through_many_changes_between_takes() {
+        // A small deterministic generator: puts and copies anywhere, sometimes past the edge or
+        // across whole rows, more than `DAMAGE_RECTS` of them between some takes.
+        let mut seed = 0x2545_f491_u32;
+        let mut next = |below: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed % below
+        };
+        let (w, h) = (23, 17);
+        let mut p = numbered(w, h);
+        let mut frame = Vec::new();
+        take(&mut p, &mut frame);
+        for round in 0..200 {
+            for _ in 0..next(DAMAGE_RECTS as u32 * 3) {
+                let (mut x, y, mut width, height) = (next(w + 2), next(h + 2), next(8) + 1, next(8) + 1);
+                // Some whole rows, as a scrolled screen sends.
+                if next(4) == 0 {
+                    (x, width) = (0, w);
+                }
+                if next(2) == 0 {
+                    let fill = [round as u8, x as u8, y as u8, 0];
+                    p.put(x, y, width, height, &fill.repeat((width * height) as usize), width as usize * 4);
+                } else {
+                    p.copy((x, y), (next(w), next(h)), width, height);
+                }
+            }
+            take(&mut p, &mut frame);
+        }
+    }
+
+    #[test]
+    fn many_small_changes_merge_into_the_rectangle_around_them() {
+        let mut damage = Damage::default();
+        for i in 0..DAMAGE_RECTS as u32 {
+            damage.add([i, 2 * i, 1, 1]);
+        }
+        // Inside one already there: nothing to add.
+        damage.add([0, 0, 1, 1]);
+        assert_eq!(damage.rects.len(), DAMAGE_RECTS);
+        damage.add([100, 1, 2, 3]);
+        assert_eq!(damage.rects, [[0, 0, 102, 2 * DAMAGE_RECTS as u32 - 1]]);
     }
 
     #[test]
