@@ -45,6 +45,8 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- In password prompts, Tab now stops on the "Remember" checkbox and Space ticks it, in
+  terminal and remote desktop sign-ins alike.
 - The window border and top edge use the theme's colors instead of the Windows accent
   color when "Show accent color on title bars and window borders" is turned on.
 - Maximized windows can be dragged from the very top edge when background blur is enabled.

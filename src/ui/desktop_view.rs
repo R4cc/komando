@@ -21,7 +21,7 @@ use zeroize::Zeroizing;
 
 use crate::desktop::{self, Button, Connection, DesktopEvent, DesktopPrompt, Input as DesktopInput, Key, Protocol, SignIn, Status, Target};
 use crate::theme::{Appearance};
-use crate::ui::widgets::{ButtonKind, button, elevation, icon_el, password_input, spinner};
+use crate::ui::widgets::{ButtonKind, button, elevation, password_input, spinner};
 
 /// The key context of a desktop pane, so Tab goes to the remote desktop instead of moving focus.
 pub const CONTEXT: &str = "RemoteDesktop";
@@ -576,35 +576,21 @@ impl DesktopView {
                             .when_some(user.clone(), |el, user| el.child(Input::new(&user)))
                             .child(password_input(password, p))
                             .when_some(error.clone(), |el, error| el.child(div().text_size(px(12.)).text_color(p.danger).child(error)))
-                            .child(
-                                div()
-                                    .id("rd-remember")
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .mt(px(2.))
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                            .child({
+                                let view = cx.entity().downgrade();
+                                crate::ui::widgets::labelled_checkbox("rd-remember", "Remember in vault", ticked, p, move |clicked, window, cx| {
+                                    let _ = view.update(cx, |this, cx| {
                                         if let Some(ActivePrompt::SignIn { remember, .. }) = this.prompt.as_mut() {
                                             *remember = !*remember;
                                         }
-                                        this.focus_prompt(window, cx);
+                                        // A click returns to the field; Space keeps the Tab position.
+                                        if clicked {
+                                            this.focus_prompt(window, cx);
+                                        }
                                         cx.notify();
-                                    }))
-                                    .child(
-                                        div()
-                                            .size(px(16.))
-                                            .rounded(p.corner(4.))
-                                            .border_1()
-                                            .border_color(if ticked { p.brand } else { p.border })
-                                            .when(ticked, |el| el.bg(p.brand))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .when(ticked, |el| el.child(icon_el("check", 11., p.on_brand))),
-                                    )
-                                    .child(div().text_size(px(13.)).text_color(p.text).child("Remember in vault")),
-                            )
+                                    });
+                                })
+                            })
                             .into_any_element(),
                         vec![
                             button("rd-cancel", "Cancel", ButtonKind::Ghost, p)

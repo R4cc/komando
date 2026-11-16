@@ -42,7 +42,7 @@ use crate::session::{
 };
 use crate::theme::{Appearance, rgb_to_hsla};
 use crate::ui::box_drawing::{self, Prim};
-use crate::ui::widgets::{button, caps_lock_indicator, icon_el, password_input, ButtonKind};
+use crate::ui::widgets::{button, caps_lock_indicator, password_input, ButtonKind};
 
 mod search;
 mod selection;
@@ -758,11 +758,13 @@ impl TerminalView {
         }
     }
 
-    fn toggle_remember(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_remember(&mut self, clicked: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ActivePrompt::Input { input, remember: Some(remember), .. }) = self.prompt.as_mut() {
             *remember = !*remember;
-            // Keep typing in the field after ticking the box.
-            input.update(cx, |state, cx| state.focus(window, cx));
+            // A click returns to the field so typing carries on; Space keeps the Tab position.
+            if clicked {
+                input.update(cx, |state, cx| state.focus(window, cx));
+            }
             cx.notify();
         }
     }
@@ -1884,29 +1886,10 @@ impl TerminalView {
                         el.child(div().text_size(px(12.)).text_color(p.danger).child(error))
                     })
                     .when_some(*remember, |el, ticked| {
-                        el.child(
-                            div()
-                                .id("in-remember")
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .mt(px(2.))
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, window, cx| this.toggle_remember(window, cx)))
-                                .child(
-                                    div()
-                                        .size(px(16.))
-                                        .rounded(p.corner(4.))
-                                        .border_1()
-                                        .border_color(if ticked { p.brand } else { p.border })
-                                        .when(ticked, |el| el.bg(p.brand))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .when(ticked, |el| el.child(icon_el("check", 11., p.on_brand))),
-                                )
-                                .child(div().text_size(px(13.)).text_color(p.text).child("Remember for this host")),
-                        )
+                        let view = cx.entity().downgrade();
+                        el.child(crate::ui::widgets::labelled_checkbox("in-remember", "Remember for this host", ticked, p, move |clicked, window, cx| {
+                            let _ = view.update(cx, |this, cx| this.toggle_remember(clicked, window, cx));
+                        }))
                     })
                     .into_any_element(),
                 vec![

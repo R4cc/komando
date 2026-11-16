@@ -124,6 +124,55 @@ fn button_shell(id: impl Into<ElementId>, kind: ButtonKind, p: AppPalette) -> (S
 }
 
 /// A square icon-only button with a tooltip-free label for accessibility tooling.
+/// A labelled tick box in a dialog. It is a Tab stop: Space toggles it and keeps the focus
+/// there, so Tab carries on to the next control. `toggle` gets `true` when the mouse did it.
+pub fn labelled_checkbox(
+    id: impl Into<ElementId>, label: &'static str, ticked: bool, p: AppPalette,
+    toggle: impl Fn(bool, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> Stateful<gpui::Div> {
+    let toggle = std::rc::Rc::new(toggle);
+    let by_key = toggle.clone();
+    div()
+        .id(id)
+        .role(gpui::Role::CheckBox)
+        .aria_label(label)
+        .aria_toggled(if ticked { gpui::Toggled::True } else { gpui::Toggled::False })
+        .tab_index(0)
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .mt(px(2.))
+        .px(px(4.))
+        .mx(px(-4.))
+        .py(px(2.))
+        .rounded(p.corner(6.))
+        .border_1()
+        .border_color(gpui::transparent_black())
+        .focus_visible(move |s| s.border_color(p.focus))
+        .cursor_pointer()
+        .on_click(move |_, window, cx| toggle(true, window, cx))
+        .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+            if event.keystroke.key == "space" && !event.keystroke.modifiers.modified() {
+                by_key(false, window, cx);
+                cx.stop_propagation();
+            }
+        })
+        .child(
+            div()
+                .size(px(16.))
+                .flex_shrink_0()
+                .rounded(p.corner(4.))
+                .border_1()
+                .border_color(if ticked { p.brand } else { p.border })
+                .when(ticked, |el| el.bg(p.brand))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(ticked, |el| el.child(icon_el("check", 11., p.on_brand))),
+        )
+        .child(div().text_size(px(13.)).text_color(p.text).child(label))
+}
+
 pub fn icon_button(id: impl Into<ElementId>, icon: &str, p: AppPalette) -> Stateful<gpui::Div> {
     div()
         .id(id)
