@@ -54,6 +54,7 @@ try {
         @{ Scope = '1'; Code = 3010; Failed = $false },
         @{ Scope = '1'; Code = 1603; Failed = $true },
         @{ Scope = '1'; Code = 0; Cancel = $true; Failed = $true },
+        @{ Scope = '1'; Code = 0; Tampered = $true; Failed = $true },
         @{ Scope = '0'; Code = 0; Timeout = $true; Failed = $true }
     )) {
         $script:komandoEvents = [Collections.Generic.List[string]]::new()
@@ -61,18 +62,28 @@ try {
         $script:komandoCancel = $scenario.Cancel
         $script:komandoTimeout = $scenario.Timeout
         $env:KOMANDO_UPDATE_ALL_USERS = $scenario.Scope
+        # The helper rechecks the downloaded file before starting Windows Installer.
+        # Use a real file and digest so that protection is exercised, not bypassed.
+        [IO.File]::WriteAllText($env:KOMANDO_UPDATE_MSI, 'test installer')
+        $env:KOMANDO_UPDATE_SHA256 = (Get-FileHash -LiteralPath $env:KOMANDO_UPDATE_MSI -Algorithm SHA256).Hash
+        if ($scenario.Tampered) {
+            [IO.File]::WriteAllText($env:KOMANDO_UPDATE_MSI, 'changed installer')
+        }
         # A successful update must clear an earlier failure.
         [IO.File]::WriteAllText($env:KOMANDO_UPDATE_ERROR, 'previous error')
         . (Join-Path $PSScriptRoot '..\src\update-install.ps1')
-        $expected = if ($scenario.Timeout) { 'wait' } else { 'wait,install,relaunch' }
+        $expected = if ($scenario.Timeout) { 'wait' } elseif ($scenario.Tampered) { 'wait,relaunch' } else { 'wait,install,relaunch' }
         Assert-Update (($script:komandoEvents -join ',') -eq $expected) "Wrong process order: $script:komandoEvents"
         Assert-Update ((Test-Path -LiteralPath $env:KOMANDO_UPDATE_ERROR) -eq $scenario.Failed) 'Wrong persisted error state'
         if ($scenario.Failed) {
             Assert-Update ([IO.File]::ReadAllText($env:KOMANDO_UPDATE_ERROR).StartsWith('The update did not finish:')) 'Missing error explanation'
         }
+        if ($scenario.Tampered) {
+            Assert-Update ([IO.File]::ReadAllText($env:KOMANDO_UPDATE_ERROR).Contains('The downloaded installer was changed')) 'Changed installer was not rejected'
+        }
         Assert-Update (-not (Test-Path -LiteralPath $env:KOMANDO_UPDATE_READY)) 'Readiness signal was not cleaned up'
     }
-    Write-Output 'Update helper: all 6 handoff scenarios passed.'
+    Write-Output 'Update helper: all 7 handoff scenarios passed.'
 } finally {
     Remove-Item -LiteralPath $komandoTestDir -Recurse -Force
 }
