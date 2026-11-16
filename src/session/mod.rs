@@ -434,6 +434,10 @@ pub fn drop_blank_scrollback<T>(term: &mut Term<T>) -> bool {
 /// Works through the rows a stretch at a time, so the parser and the UI never wait long for the
 /// terminal. Stops when the width changes again: the resize that changed it starts another pass.
 pub fn compact_rows<T>(term: &FairMutex<Term<T>>, cols: usize) {
+    compact_rows_until(term, cols, &AtomicBool::new(false));
+}
+
+pub(crate) fn compact_rows_until<T>(term: &FairMutex<Term<T>>, cols: usize, cancelled: &AtomicBool) {
     const STRETCH: usize = 2048;
     // Rows done, counted from the oldest. Output that arrives in between shifts the rows a
     // little; a row missed that way stays as big as it was, which is harmless.
@@ -442,7 +446,7 @@ pub fn compact_rows<T>(term: &FairMutex<Term<T>>, cols: usize) {
         let mut term = term.lock();
         let grid = term.grid_mut();
         let total = grid.total_lines();
-        if grid.columns() != cols || done >= total {
+        if cancelled.load(Ordering::Relaxed) || grid.columns() != cols || done >= total {
             return;
         }
         let top = -(grid.history_size() as i32);
@@ -481,30 +485,61 @@ pub fn resize<T: EventListener>(term: &mut Term<T>, size: GridSize) {
     term.resize(size.term_size());
 }
 
+/// Prepare a wider Scrollback off the UI thread without changing its size or contents.
+/// Each batch releases the lock so drawing and output can continue. Output may rotate new
+/// rows into an already visited part of the grid; `resize` handles those remaining rows.
+pub(crate) fn prepare_width<T>(term: &FairMutex<Term<T>>, from: usize, cols: usize, cancelled: &AtomicBool) -> bool {
+    const BATCH: usize = 128;
+    let mut done = 0;
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            return false;
+        }
+        let mut term = term.lock();
+        let grid = term.grid_mut();
+        if grid.columns() != from {
+            return false;
+        }
+        let end = (done + BATCH).min(grid.total_lines());
+        let top = -(grid.history_size() as i32);
+        for i in done..end {
+            reserve_row(&mut grid[Line(top + i as i32)], cols);
+        }
+        let finished = end >= grid.total_lines();
+        drop(term);
+        if finished {
+            return true;
+        }
+        done = end;
+        std::thread::yield_now();
+    }
+}
+
 fn reserve_width<T>(term: &mut Term<T>, cols: usize) {
-    use alacritty_terminal::grid::Row;
     let grid = term.grid_mut();
     if cols <= grid.columns() {
         return;
     }
     let top = -(grid.history_size() as i32);
     for line in top..grid.screen_lines() as i32 {
-        let row = &mut grid[Line(line)];
-        let len = row.len();
-        // Taking all the cells hands over the row's own allocation, without copying. The row's
-        // count of cells a reset has to clear goes with it, and a new count is needed.
-        let mut cells = row.front_split_off(len);
-        let occupied = if cells.capacity() >= cols {
-            // Room enough already (the row was wider before): leave it, and count every cell
-            // rather than look at them all. The next reset clears the whole row, once.
-            len
-        } else {
-            let occupied = occupied(&cells, cols);
-            cells.reserve_exact(cols - len);
-            occupied
-        };
-        *row = Row::from_vec(cells, occupied);
+        reserve_row(&mut grid[Line(line)], cols);
     }
+}
+
+fn reserve_row(row: &mut alacritty_terminal::grid::Row<alacritty_terminal::term::cell::Cell>, cols: usize) {
+    use alacritty_terminal::grid::Row;
+    let len = row.len();
+    // Taking all cells hands over their allocation without copying. Preserve the reset
+    // accounting used by the synchronous resize, including rows with coloured blank tails.
+    let mut cells = row.front_split_off(len);
+    let occupied = if cells.capacity() >= cols {
+        len
+    } else {
+        let occupied = occupied(&cells, cols);
+        cells.reserve_exact(cols - len);
+        occupied
+    };
+    *row = Row::from_vec(cells, occupied);
 }
 
 /// How many cells from the start of a row a reset has to clear once the row is `cols` wide.
@@ -704,6 +739,13 @@ mod tests {
         let steps = [(41u16, true), (97, true), (30, false), (60, false), (50, true), (120, true)];
         for (step, (cols, compact)) in steps.into_iter().enumerate() {
             let size = GridSize { cols, ..size };
+            let from = ours.lock().columns();
+            if cols > from as u16 {
+                let before = rows(&*ours.lock());
+                assert!(prepare_width(&ours, from, cols as usize, &AtomicBool::new(false)));
+                assert_eq!(ours.lock().columns(), from, "preparation must not change layout");
+                assert!(rows(&*ours.lock()) == before, "preparation changed cells");
+            }
             resize(&mut *ours.lock(), size);
             plain.lock().resize(size.term_size());
             same(&format!("resized to {cols}"));
@@ -714,6 +756,54 @@ mod tests {
                 same(&format!("compacted at {cols}"));
                 feed(10_000 + step * 2_000, 12_000 + step * 2_000);
                 same(&format!("output after compacting at {cols}"));
+            }
+        }
+    }
+
+    #[test]
+    fn obsolete_width_preparation_and_compaction_stop_without_changing_cells() {
+        let size = GridSize { cols: 40, rows: 8, cell_width: 8, cell_height: 18 };
+        let term = new_term(size, 300, EventProxy::new(mpsc::unbounded().0));
+        let mut parser: Processor = Processor::new();
+        for i in 0..500 {
+            parser.advance(&mut *term.lock(), varied_output(i).as_bytes());
+        }
+        let before = rows(&*term.lock());
+        let cancelled = AtomicBool::new(true);
+        assert!(!prepare_width(&term, 40, 80, &cancelled));
+        // The layout changed before the worker acquired its first batch.
+        assert!(!prepare_width(&term, 39, 80, &AtomicBool::new(false)));
+        compact_rows_until(&term, 40, &cancelled);
+        assert!(rows(&*term.lock()) == before);
+    }
+
+    #[test]
+    fn narrowing_rows_matches_the_original_tail_split() {
+        use alacritty_terminal::grid::{GridCell, Row};
+        use alacritty_terminal::term::cell::Cell;
+        let size = GridSize { cols: 40, rows: 8, cell_width: 8, cell_height: 18 };
+        let term = new_term(size, 100, EventProxy::new(mpsc::unbounded().0));
+        let mut parser: Processor = Processor::new();
+        for i in 0..200 {
+            parser.advance(&mut *term.lock(), varied_output(i).as_bytes());
+        }
+        // Differential check against the former split-then-trim operation, including blank
+        // tails, wrapped text, links, styled spaces, combining characters and wide cells.
+        for cells in rows(&*term.lock()) {
+            for cols in 2..=41 {
+                let mut original = cells.clone();
+                let expected = if cols < original.len() {
+                    let mut tail = original.split_off(cols);
+                    tail.truncate(tail.iter().rposition(|cell| !cell.is_empty()).map_or(0, |i| i + 1));
+                    (!tail.is_empty()).then_some(tail)
+                } else {
+                    None
+                };
+                let mut row: Row<Cell> = Row::from_vec(cells.clone(), cells.len());
+                assert_eq!(row.shrink(cols), expected);
+                assert_eq!(&row[..], &original);
+                row.reset(&Cell::default());
+                assert!(row.into_iter().all(|cell| *cell == Cell::default()));
             }
         }
     }

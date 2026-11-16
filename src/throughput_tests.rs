@@ -1381,6 +1381,82 @@ fn throughput_lock_holders_with_full_scrollback() {
     }
 }
 
+/// Sidebar collapse adds about 34 terminal columns. Compare the synchronous resize with
+/// preparing allocations on a worker while the UI keeps drawing the old-width terminal.
+/// No timing assertions: CPU speed and memory pressure vary between development hosts.
+#[test]
+#[ignore]
+fn throughput_sidebar_width_preparation() {
+    let size = GridSize { cols: 100, rows: 42, cell_width: 8, cell_height: 18 };
+    for history in [1_000, 100_000] {
+        for prepared in [false, true] {
+            let proxy = EventProxy::new(futures::channel::mpsc::unbounded().0);
+            let term = new_term(size, history, proxy.clone());
+            let mut data = Vec::new();
+            for i in 0..history as u64 + 100 {
+                log_line(i, &mut data);
+            }
+            crate::session::ssh::Output::default().feed(&term, &proxy, &data);
+            let start = Instant::now();
+            let mut longest_lock = Duration::ZERO;
+            if prepared {
+                let shared = term.clone();
+                let worker = std::thread::spawn(move || {
+                    crate::session::prepare_width(&shared, 100, 134, &std::sync::atomic::AtomicBool::new(false))
+                });
+                // The same lock used by drawing, held only long enough to inspect the grid.
+                while !worker.is_finished() {
+                    let wait = Instant::now();
+                    assert_eq!(term.lock().columns(), 100);
+                    longest_lock = longest_lock.max(wait.elapsed());
+                    std::thread::yield_now();
+                }
+                assert!(worker.join().unwrap());
+            }
+            let ui_start = Instant::now();
+            crate::session::resize(&mut *term.lock(), GridSize { cols: 134, ..size });
+            let ui_time = ui_start.elapsed();
+            eprintln!(
+                "sidebar width {history} rows prepared={prepared}: UI resize {:.2} ms, longest preparation lock {:.2} ms, total {:.2} ms",
+                ui_time.as_secs_f64() * 1e3,
+                longest_lock.as_secs_f64() * 1e3,
+                start.elapsed().as_secs_f64() * 1e3,
+            );
+        }
+    }
+}
+
+/// Resizes matching an SFTP divider dragged across a terminal with 56,000 log rows.
+/// Measures synchronous reflow; the redraw cooldown and coalescing have separate unit tests.
+#[test]
+#[ignore]
+fn throughput_sftp_divider_resize() {
+    let size = GridSize { cols: 177, rows: 42, cell_width: 8, cell_height: 18 };
+    let proxy = EventProxy::new(futures::channel::mpsc::unbounded().0);
+    let term = new_term(size, 56_000, proxy.clone());
+    let mut data = Vec::new();
+    for i in 0..57_000 {
+        log_line(i, &mut data);
+    }
+    crate::session::ssh::Output::default().feed(&term, &proxy, &data);
+    for (label, widths) in [
+        ("narrow blank margins", vec![176, 175, 174, 173, 172, 171, 170, 169]),
+        ("narrow through text", vec![150, 130, 110, 90, 80, 70, 60]),
+        ("widen again", vec![70, 80, 90, 110, 130, 150, 177]),
+    ] {
+        let mut timings = Vec::new();
+        for cols in widths {
+            let start = Instant::now();
+            crate::session::resize(&mut *term.lock(), GridSize { cols, ..size });
+            timings.push(start.elapsed());
+        }
+        timings.sort();
+        let median = timings[timings.len() / 2];
+        let max = *timings.last().unwrap();
+        eprintln!("SFTP divider {label}: median {:.2} ms, max {:.2} ms", median.as_secs_f64() * 1e3, max.as_secs_f64() * 1e3);
+    }
+}
+
 /// Counts live heap bytes while [`heap::counting`] is on, for the Scrollback memory benchmark.
 /// Off, it costs one relaxed load per allocation, so the other benchmarks are unaffected.
 mod heap {

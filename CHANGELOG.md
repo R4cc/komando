@@ -6,6 +6,15 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Collapsing the sidebar with a large Scrollback no longer waits for every terminal row's
+  wider allocation on the UI thread. The sidebar responds while the terminal prepares its
+  new width in the background.
+- Resizing the SFTP File Browser updates a terminal with a large Scrollback more promptly:
+  nearby widths share preparation, blank line endings avoid temporary allocations, and
+  slow resizes no longer cause a long extra redraw delay.
+
 ### Changed
 
 - Remote desktop toolbars now have a window button: open the desktop in its own window,

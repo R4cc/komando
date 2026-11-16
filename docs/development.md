@@ -118,6 +118,52 @@ demo window with isolated fixture data, and check the resulting PNG before repla
 
 ### Output throughput
 
+`throughput_sidebar_width_preparation` compares the terminal resize caused by collapsing
+the sidebar (100 to 134 columns), with and without background allocation preparation:
+
+```sh
+cargo test --lib throughput_sidebar_width_preparation -- --ignored --nocapture --test-threads=1
+```
+
+With at least 4,096 Scrollback rows, a wider layout prepares row allocations off the UI
+thread in batches of 128, while drawing at the old column count. Once ready, the usual
+resize reflows the text and reports the new size to the shell. New requests cancel obsolete
+preparation and compaction; abandoned allocations are reclaimed after the layout settles.
+Short Scrollbacks still resize immediately. This also applies to widening the window and
+closing the File Browser. It does not move the final reflow off the UI thread.
+
+On the Linux development host, three runs with 100,000 log rows in the ordinary dev/test
+profile gave a median blocking resize of 197.99 ms synchronously and 27.05 ms after
+preparation. The longest sampled terminal-lock wait during preparation was 3.35 ms across
+those runs. Total preparation plus resize was about 230 ms: this improves responsiveness
+by moving allocations off the UI thread, rather than reducing total work. These are
+headless resize measurements, not Windows sidebar click-to-paint measurements. The benchmark
+also reports a 1,000-row case for comparison; the UI does not start a worker for that case.
+The [three recorded runs](performance/2026-11-16/sidebar-width.log) include all timings.
+
+`throughput_sftp_divider_resize` exercises a sequence of widths matching an SFTP divider
+drag with 56,000 log rows:
+
+```sh
+cargo test --lib throughput_sftp_divider_resize -- --ignored --nocapture --test-threads=1
+```
+
+Narrowing a row with an empty tail now truncates it without allocating a temporary vector.
+The median step while narrowing from 177 to 169 columns was 7.65 ms in the baseline run;
+the medians after the change were 3.79, 3.97 and 3.94 ms. Steps that wrap real text still
+need to move cells and can be much slower: the largest observed step remained over 100 ms.
+See the [baseline](performance/2026-11-16/sftp-divider-before.log) and
+[three subsequent runs](performance/2026-11-16/sftp-divider-after.log). These headless tests
+time synchronous reflow, not GPUI rendering or Windows SFTP interaction.
+
+During widening, preparation groups up to 16 adjacent column widths so small drag movements
+share work. The extra capacity is reclaimed when the layout settles. Reflows are spaced by
+twice the previous reflow duration with a maximum interval of 100 ms, measured from the
+previous reflow's start. Previously the interval was five times that duration, with no cap:
+a 250 ms reflow could leave another second before the next requested width. Regression tests
+cover both the cooldown and preparation coalescing. The current grid continues repainting
+while a new column count waits; reflow itself is still synchronous.
+
 `src/throughput_tests.rs` measures how fast SSH output gets into the terminal: an SSH server in
 the test process prints 1,000,000 coloured log lines through the real Session path, while a
 stand-in for the UI copies the screen every frame. A second test feeds the same output straight

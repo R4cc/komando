@@ -1,0 +1,35 @@
+Run 1
+
+running 1 test
+test throughput_tests::throughput_sidebar_width_preparation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 424 filtered out; finished in 0.97s
+
+sidebar width 1000 rows prepared=false: UI resize 2.08 ms, longest preparation lock 0.00 ms, total 2.08 ms
+sidebar width 1000 rows prepared=true: UI resize 0.20 ms, longest preparation lock 0.06 ms, total 0.84 ms
+sidebar width 100000 rows prepared=false: UI resize 196.54 ms, longest preparation lock 0.00 ms, total 196.54 ms
+sidebar width 100000 rows prepared=true: UI resize 26.62 ms, longest preparation lock 1.64 ms, total 230.13 ms
+
+Run 2
+
+running 1 test
+test throughput_tests::throughput_sidebar_width_preparation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 424 filtered out; finished in 0.99s
+
+sidebar width 1000 rows prepared=false: UI resize 1.91 ms, longest preparation lock 0.00 ms, total 1.91 ms
+sidebar width 1000 rows prepared=true: UI resize 0.20 ms, longest preparation lock 0.09 ms, total 0.99 ms
+sidebar width 100000 rows prepared=false: UI resize 203.56 ms, longest preparation lock 0.00 ms, total 203.56 ms
+sidebar width 100000 rows prepared=true: UI resize 27.33 ms, longest preparation lock 3.35 ms, total 229.78 ms
+
+Run 3
+
+running 1 test
+test throughput_tests::throughput_sidebar_width_preparation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 424 filtered out; finished in 0.96s
+
+sidebar width 1000 rows prepared=false: UI resize 2.02 ms, longest preparation lock 0.00 ms, total 2.02 ms
+sidebar width 1000 rows prepared=true: UI resize 0.24 ms, longest preparation lock 0.14 ms, total 1.34 ms
+sidebar width 100000 rows prepared=false: UI resize 197.99 ms, longest preparation lock 0.00 ms, total 197.99 ms
+sidebar width 100000 rows prepared=true: UI resize 27.05 ms, longest preparation lock 0.96 ms, total 230.26 ms

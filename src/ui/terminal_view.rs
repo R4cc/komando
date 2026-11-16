@@ -7,6 +7,7 @@ use std::hash::Hash;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::grid::{Dimensions as _, Scroll};
@@ -274,7 +275,10 @@ pub struct TerminalView {
     flash: Option<(u64, u64)>,
     /// Shrinks the Scrollback's rows once a new width has settled (see `compact_after_resize`).
     compaction: Option<Task<()>>,
+    compaction_cancel: Option<Arc<AtomicBool>>,
     reflow: Rc<Cell<Reflow>>,
+    width_preparation: Rc<RefCell<WidthPreparation>>,
+    width_task: Option<Task<()>>,
     /// Lines of Scrollback the Session keeps.
     scrollback: usize,
     /// The search bar, while open (Ctrl+Shift+F), and what it last searched for.
@@ -287,11 +291,60 @@ pub struct TerminalView {
 /// edge compacts once at the end rather than every frame.
 const COMPACT_DELAY: Duration = Duration::from_millis(500);
 
-/// A new width rewraps every line of the Scrollback, with the terminal locked: 10 ms for
-/// 100,000 lines, 70 ms for 500,000. Dragging a window edge changes the width every frame, so
-/// while it keeps changing the grid keeps its width for a while after each rewrap, and catches
-/// up when the wait is over: rewrapping takes at most a fifth of the time, and the edge moves
-/// smoothly. A short Scrollback rewraps in well under a frame, so it keeps up every frame.
+/// Below this size widening is cheap enough to do during layout.
+const PREPARE_WIDTH_HISTORY: usize = 4_096;
+
+#[derive(Default)]
+struct WidthPreparation {
+    pending: Option<PreparingWidth>,
+}
+
+struct PreparingWidth {
+    cols: u16,
+    ready: bool,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl Drop for PreparingWidth {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+}
+
+impl WidthPreparation {
+    /// A new request cancels work for the previous width. Repeated frames share one worker.
+    fn request(&mut self, cols: u16) -> Option<(u16, Arc<AtomicBool>)> {
+        if self.pending.as_ref().is_some_and(|p| p.cols >= cols) {
+            return None;
+        }
+        // A divider often moves a column per frame. Prepare a small group together so those
+        // frames can share the worker instead of continually cancelling and restarting it.
+        let cols = ((u32::from(cols) + 15) / 16 * 16).min(u32::from(u16::MAX)) as u16;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.pending = Some(PreparingWidth { cols, ready: false, cancelled: cancelled.clone() });
+        Some((cols, cancelled))
+    }
+
+    fn ready(&self, cols: u16) -> bool {
+        self.pending.as_ref().is_some_and(|p| p.cols >= cols && p.ready)
+    }
+
+    fn finish(&mut self, cancelled: &Arc<AtomicBool>, prepared: bool) {
+        if let Some(pending) = self.pending.as_mut()
+            && Arc::ptr_eq(&pending.cancelled, cancelled)
+        {
+            if prepared {
+                pending.ready = true;
+            } else {
+                self.pending = None;
+            }
+        }
+    }
+}
+
+/// Limit repeated Scrollback reflows during a divider/window drag, while still drawing the
+/// terminal at its existing column count between them. Allow one reflow's duration for other
+/// work, capped at a 100 ms interval: a slow resize must not leave a long redraw cooldown.
 #[derive(Clone, Copy, Default)]
 struct Reflow {
     /// When the width last changed, and how long rewrapping took.
@@ -304,7 +357,7 @@ struct Reflow {
 impl Reflow {
     /// How long a new width still waits.
     fn wait(&self, now: Instant) -> Option<Duration> {
-        let ready = self.at? + self.took * 5;
+        let ready = self.at? + (self.took * 2).min(Duration::from_millis(100));
         (ready > now).then(|| ready - now)
     }
 }
@@ -486,7 +539,10 @@ impl TerminalView {
             hovered_mark: None,
             flash: None,
             compaction: None,
+            compaction_cancel: None,
             reflow: Rc::default(),
+            width_preparation: Rc::default(),
+            width_task: None,
             scrollback,
             search: None,
             last_search: Default::default(),
@@ -529,10 +585,37 @@ impl TerminalView {
     /// After the width changed: once it has settled, shrink the rows' allocations to the new
     /// width, off the UI thread. A newer width replaces (and so cancels) a pending pass.
     fn compact_after_resize(&mut self, cols: u16, cx: &mut Context<Self>) {
+        if let Some(cancelled) = self.compaction_cancel.take() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.compaction_cancel = Some(cancelled.clone());
         let term = self.term.clone();
         self.compaction = Some(cx.spawn(async move |_, cx| {
             cx.background_executor().timer(COMPACT_DELAY).await;
-            cx.background_spawn(async move { crate::session::compact_rows(&term, cols as usize) }).await;
+            cx.background_spawn(async move { crate::session::compact_rows_until(&term, cols as usize, &cancelled) }).await;
+        }));
+    }
+
+    fn prepare_width(&mut self, from: u16, cols: u16, cancelled: Arc<AtomicBool>, cx: &mut Context<Self>) {
+        if cancelled.load(Ordering::Relaxed) {
+            return;
+        }
+        // A compaction for the old width would undo the allocations being prepared.
+        if let Some(cancelled) = self.compaction_cancel.take() {
+            cancelled.store(true, Ordering::Relaxed);
+        }
+        self.compaction = None;
+        let term = self.term.clone();
+        self.width_task = Some(cx.spawn(async move |this, cx| {
+            let stop = cancelled.clone();
+            let prepared = cx.background_spawn(async move {
+                crate::session::prepare_width(&term, from as usize, cols as usize, &stop)
+            }).await;
+            let _ = this.update(cx, |view, cx| {
+                view.width_preparation.borrow_mut().finish(&cancelled, prepared);
+                cx.notify();
+            });
         }));
     }
 
@@ -3117,6 +3200,7 @@ impl Render for TerminalView {
         let proxy = self.proxy.clone();
         let grid = self.grid.clone();
         let reflow = self.reflow.clone();
+        let width_preparation = self.width_preparation.clone();
         let this = cx.entity().downgrade();
         let this_drag = this.clone();
         let this_hover = this.clone();
@@ -3192,10 +3276,40 @@ impl Render for TerminalView {
                 let rows = ((f32::from(bounds.size.height) / lh).floor() as u16).max(1);
                 let mut new_size = GridSize { cols, rows, cell_width: cw.round() as u16, cell_height: lh as u16 };
                 let old_size = grid.get();
+                // Collapsing the sidebar widens every Scrollback row. Prepare their allocations
+                // in short batches off the UI thread and paint at the old column count meanwhile.
+                let preparing = if let Some(old) = old_size.filter(|old| old.cols < cols)
+                    && term.lock().grid().history_size() >= PREPARE_WIDTH_HISTORY
+                {
+                    let mut preparation = width_preparation.borrow_mut();
+                    if let Some((prepared_cols, cancelled)) = preparation.request(cols) {
+                        let this = this.clone();
+                        cx.defer(move |cx| {
+                            let _ = this.update(cx, |view, cx| view.prepare_width(old.cols, prepared_cols, cancelled, cx));
+                        });
+                    }
+                    !preparation.ready(cols)
+                } else {
+                    let abandoned = width_preparation.borrow_mut().pending.take().is_some_and(|p| {
+                        !p.ready || old_size.is_some_and(|old| old.cols != p.cols)
+                    });
+                    if abandoned && let Some(old) = old_size {
+                        // A rapid toggle can cancel preparation without changing the grid's
+                        // width. Reclaim its unused capacity once the layout settles anyway.
+                        let this = this.clone();
+                        cx.defer(move |cx| {
+                            let _ = this.update(cx, |view, cx| view.compact_after_resize(old.cols, cx));
+                        });
+                    }
+                    false
+                };
                 // A new width may have to wait (see `Reflow`); a new height never does.
                 let now = Instant::now();
                 let wait = old_size.filter(|old| old.cols != new_size.cols).and_then(|_| reflow.get().wait(now));
                 if let (Some(_), Some(old)) = (wait, old_size) {
+                    new_size.cols = old.cols;
+                }
+                if preparing && let Some(old) = old_size {
                     new_size.cols = old.cols;
                 }
                 if let Some(wait) = wait
@@ -3489,6 +3603,63 @@ mod tests {
     use std::cell::Cell;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn width_preparation_coalesces_frames_and_rejects_obsolete_completions() {
+        use super::{Ordering, WidthPreparation};
+        let mut preparation = WidthPreparation::default();
+        let (_, first) = preparation.request(120).unwrap();
+        assert!(preparation.request(120).is_none());
+        assert!(!preparation.ready(120));
+        let (_, second) = preparation.request(150).unwrap();
+        assert!(first.load(Ordering::Relaxed));
+        preparation.finish(&first, true);
+        assert!(!preparation.ready(150));
+        preparation.finish(&second, true);
+        assert!(preparation.ready(150));
+        // Collapse, expand, then collapse to the same width before an old worker finishes.
+        preparation.pending = None;
+        assert!(second.load(Ordering::Relaxed));
+        let (_, third) = preparation.request(150).unwrap();
+        preparation.finish(&second, true);
+        assert!(!preparation.ready(150));
+        preparation.finish(&third, false);
+        assert!(preparation.request(150).is_some(), "a failed preparation must be retryable");
+    }
+
+    #[test]
+    fn divider_movements_share_preparation_for_nearby_widths() {
+        use super::{Ordering, WidthPreparation};
+        let mut preparation = WidthPreparation::default();
+        let (target, work) = preparation.request(121).unwrap();
+        assert_eq!(target, 128);
+        for cols in 122..=128 {
+            assert!(preparation.request(cols).is_none(), "column {cols} restarted preparation");
+        }
+        assert!(!work.load(Ordering::Relaxed));
+        preparation.finish(&work, true);
+        for cols in 121..=128 {
+            assert!(preparation.ready(cols));
+        }
+        assert!(preparation.request(129).is_some());
+        assert!(work.load(Ordering::Relaxed));
+        let (target, work) = preparation.request(u16::MAX).unwrap();
+        assert_eq!(target, u16::MAX);
+        preparation.finish(&work, true);
+        assert!(preparation.ready(u16::MAX));
+    }
+
+    #[test]
+    fn slow_reflow_does_not_leave_a_long_redraw_cooldown() {
+        use super::Reflow;
+        let start = Instant::now();
+        let slow = Reflow { at: Some(start), took: Duration::from_millis(250), woken: false };
+        assert!(slow.wait(start + Duration::from_millis(250)).is_none());
+        let normal = Reflow { at: Some(start), took: Duration::from_millis(20), woken: false };
+        assert!(normal.wait(start + Duration::from_millis(40)).is_none());
+        let tiny = Reflow { at: Some(start), took: Duration::from_millis(1), woken: false };
+        assert!(tiny.wait(start + Duration::from_millis(16)).is_none());
+    }
 
     /// Output every `every` ms from `from` to `to` (ms after `t0`).
     fn stream(a: &mut Activity, t0: Instant, from: u64, to: u64, every: u64) {

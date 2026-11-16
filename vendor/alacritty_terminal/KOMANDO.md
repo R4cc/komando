@@ -1,6 +1,6 @@
 # alacritty_terminal 0.26.0, patched for Komando
 
-This is alacritty_terminal 0.26.0 from crates.io with three changes, used through
+This is alacritty_terminal 0.26.0 from crates.io with local changes, used through
 `[patch.crates-io]` in Komando's `Cargo.toml`, against the patched vte in `vendor/vte` (see
 its `KOMANDO.md`). `komando.patch` holds the changes as a diff against the published crate.
 
@@ -171,6 +171,21 @@ and checks that the session reports its exit and preserves its final output.
 Komando's Windows tests in `src/session/local.rs` check handle counts in an isolated process
 after repeated failed and successful launches, and run cmd and PowerShell through the
 actual session event loop to check final output and exit notification.
+
+## Narrowing rows during divider drags
+
+`Row::shrink` in `src/grid/row.rs` checks the cells being removed before splitting them
+into a new vector. If they are all empty, it truncates the existing vector in place. The
+upstream operation allocated and then immediately freed a temporary vector for every such
+row, repeated across the entire Scrollback for each SFTP divider movement. Nonempty tails
+still use the upstream split/trim behavior; the emptiness predicate, retained cells and
+occupancy limit are unchanged.
+
+Komando's `narrowing_rows_matches_the_original_tail_split` checks this operation against
+the original algorithm over rows containing links, coloured backgrounds, styled spaces,
+combining characters, wide characters and wrapped text, then checks their reset behavior.
+`throughput_sftp_divider_resize` measures narrowing and widening with 56,000 log rows.
+Full text reflow still runs on the UI thread.
 
 ## Updating alacritty_terminal
 

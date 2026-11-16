@@ -76,14 +76,18 @@ impl<T: Default> Row<T> {
             return None;
         }
 
-        // Split off cells for a new row.
-        let mut new_row = self.inner.split_off(columns);
-        let index = new_row.iter().rposition(|c| !c.is_empty()).map_or(0, |i| i + 1);
-        new_row.truncate(index);
-
+        // Komando patch: blank tails do not need a temporary allocation. A divider drag
+        // otherwise allocates and discards one buffer per Scrollback row at every width.
+        let index = self.inner[columns..].iter().rposition(|c| !c.is_empty()).map_or(0, |i| i + 1);
         self.occ = min(self.occ, columns);
-
-        if new_row.is_empty() { None } else { Some(new_row) }
+        if index == 0 {
+            self.inner.truncate(columns);
+            None
+        } else {
+            let mut new_row = self.inner.split_off(columns);
+            new_row.truncate(index);
+            Some(new_row)
+        }
     }
 
     /// Reset all cells in the row to the `template` cell.
