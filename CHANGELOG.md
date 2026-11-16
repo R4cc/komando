@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-16
+
 ### Added
 
 - Web links in terminal output are clickable. Hovering one that starts with `http://`,
