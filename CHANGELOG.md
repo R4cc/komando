@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-11-16
+
 ### Added
 
 - When Komando crashes, it now says why in its log (`logs\komando.log` in its data folder) and
