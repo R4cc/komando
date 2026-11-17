@@ -61,11 +61,11 @@ All notable changes to Komando are listed here. The format follows
 - Heavy SSH output releases the terminal lock between smaller pieces so drawing and input
   can take their turn, while keeping UTF-8, escape sequences and synchronized updates intact.
 - VNC moves rectangles within its picture without allocating and copying a temporary image.
-- Settings → Appearance is reorganised around dark and light mode. Each mode has its own
-  card with a live preview of the window and terminal, its Theme and its Terminal Colors,
-  and a badge shows which mode is in use. Mode and App icon are picked from pictures, the
-  theme and terminal color menus show a miniature of each choice, and the window and
-  sidebar settings have their own sections.
+- Settings → Appearance is reorganised. It shows the Theme and Terminal Colors of the mode
+  in use, beside a live preview of the window and terminal; following Windows, the other
+  mode's can be edited too. Mode and App icon are picked from pictures, the theme and
+  terminal color menus show a miniature of each choice, and the window and sidebar
+  settings have their own sections.
 - Settings pages are easier to scan: explanations that only repeated a setting's name are
   gone, and the rest are shortened to what you need to know.
 

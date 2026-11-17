@@ -575,13 +575,10 @@ impl Workspace {
                 this.set_terminal_theme(theme, window, cx);
             },
         );
-        let modes = div()
-            .flex()
-            .flex_wrap()
-            .gap(px(12.))
-            .child(self.mode_card(true, showing_dark, p, cx))
-            .child(self.mode_card(false, !showing_dark, p, cx))
-            .into_any_element();
+        // The theme of the mode in use. Following Windows, the other mode can be shown to
+        // change it before Windows switches; otherwise picking that Mode shows it.
+        let other = app == AppThemeSetting::System && self.appearance_other_mode;
+        let modes = self.mode_theme(showing_dark != other, other, app == AppThemeSetting::System, p, cx);
 
         let icon_choice = {
             let tile = |i: usize, icon: AppIcon, label: &'static str| {
@@ -714,11 +711,13 @@ impl Workspace {
         )
     }
 
-    /// One mode's look in a single card: a preview of the app and its terminal, then the
-    /// Theme and Terminal Colors that make it. `in_use` marks the mode the windows show now.
-    fn mode_card(&self, dark: bool, in_use: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    /// The theme of one mode: a preview of the app and its terminal beside the Theme and
+    /// Terminal Colors that make it. `other`: the mode Windows is not in right now, shown
+    /// while following Windows (`system`), which offers to switch between the two.
+    fn mode_theme(&self, dark: bool, other: bool, system: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let theme = self.theme_for(dark);
-        // With the terminal kept dark or light, this mode's terminal is the other mode's.
+        // With the terminal kept dark or light, this mode's terminal has the other mode's
+        // Terminal Colors, and they are picked here.
         let term_dark = self.terminal_dark(dark);
         let (app, term) = self.mode_look(dark);
         let font: SharedString = if self.settings.font_family.trim().is_empty() {
@@ -730,27 +729,16 @@ impl Workspace {
         let theme_dropdown = crate::ui::theme_picker::dropdown(dark, theme, p, move |id, window, cx| {
             let _ = ws.update(cx, |this, cx| this.set_theme(dark, id, window, cx));
         });
-        let colors_control = if term_dark == dark {
-            let ws = cx.entity().downgrade();
-            crate::ui::theme_picker::terminal_dropdown(dark, self.terminal_colors_for(dark), theme, p, move |id, window, cx| {
-                let _ = ws.update(cx, |this, cx| this.set_terminal_colors(dark, id, window, cx));
-            })
-            .into_any_element()
-        } else {
-            div()
-                .min_h(px(32.))
-                .flex()
-                .items_center()
-                .text_size(px(12.))
-                .line_height(px(17.))
-                .text_color(p.text_muted)
-                .child(if term_dark {
-                    "Uses Dark mode's terminal colors."
-                } else {
-                    "Uses Light mode's terminal colors."
-                })
-                .into_any_element()
-        };
+        let ws = cx.entity().downgrade();
+        let colors_dropdown = crate::ui::theme_picker::terminal_dropdown(
+            term_dark,
+            self.terminal_colors_for(term_dark),
+            self.theme_for(term_dark),
+            p,
+            move |id, window, cx| {
+                let _ = ws.update(cx, |this, cx| this.set_terminal_colors(term_dark, id, window, cx));
+            },
+        );
         let field = |label: &'static str, control: AnyElement| {
             div()
                 .flex()
@@ -759,53 +747,60 @@ impl Workspace {
                 .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(p.text_muted).child(label))
                 .child(control)
         };
+        let colors_label = match (term_dark == dark, term_dark) {
+            (true, _) => "Terminal colors",
+            (false, true) => "Terminal colors (always dark)",
+            (false, false) => "Terminal colors (always light)",
+        };
+        let mode_name = if dark { "Dark mode" } else { "Light mode" };
         let header = div()
-            .h(px(22.))
-            .px(px(2.))
+            .min_h(px(22.))
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(icon_el(if dark { "moon" } else { "sun" }, 15., if in_use { p.brand } else { p.text_muted }))
+            .child(icon_el(if dark { "moon" } else { "sun" }, 15., p.text_muted))
             .child(
                 div()
                     .flex_1()
                     .text_size(px(13.5))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(p.text)
-                    .child(if dark { "Dark mode" } else { "Light mode" }),
+                    .child(if other { format!("{mode_name}, used when Windows switches") } else { mode_name.to_string() }),
             )
-            .when(in_use, |el| {
+            .when(system, |el| {
+                let label = if dark { "Edit light mode" } else { "Edit dark mode" };
                 el.child(
-                    div()
-                        .px(px(7.))
-                        .h(px(20.))
-                        .flex()
-                        .items_center()
-                        .rounded(p.corner(6.))
-                        .bg(p.brand_soft)
-                        .text_color(p.active_text)
-                        .text_size(px(11.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("In use"),
+                    button("appearance-other-mode", label, ButtonKind::Ghost, p).flex_shrink_0().on_click(cx.listener(
+                        |this, _: &ClickEvent, _, cx| {
+                            this.appearance_other_mode = !this.appearance_other_mode;
+                            cx.notify();
+                        },
+                    )),
                 )
             });
         div()
-            .flex_1()
-            .flex_basis(px(280.))
-            .min_w(px(280.))
-            .p(px(10.))
             .flex()
             .flex_col()
             .gap(px(12.))
-            // 4px preview corners + 10px padding.
-            .rounded(p.corner(14.))
-            .border_1()
-            .border_color(if in_use { p.brand } else { p.border })
             .child(header)
-            .child(mode_preview(app, term, font))
-            .child(div().px(px(2.)).pb(px(2.)).flex().flex_col().gap(px(12.))
-                .child(field("Theme", theme_dropdown.into_any_element()))
-                .child(field("Terminal colors", colors_control)))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(16.))
+                    .child(div().flex_1().flex_basis(px(260.)).min_w(px(240.)).child(mode_preview(app, term, font)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex_basis(px(260.))
+                            .min_w(px(260.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(field("Theme", theme_dropdown.into_any_element()))
+                            .child(field(colors_label, colors_dropdown.into_any_element())),
+                    ),
+            )
             .into_any_element()
     }
 

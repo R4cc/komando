@@ -437,6 +437,9 @@ pub struct Workspace {
     blur_slider: Option<Entity<SliderState>>,
     font_slider: Option<Entity<SliderState>>,
     font_input: Option<Entity<InputState>>,
+    /// Settings → Appearance with Mode set to System: show the theme of the mode Windows is
+    /// not in, to change it before Windows switches.
+    appearance_other_mode: bool,
     /// Settings → Mouse & clipboard: the characters that end a double-clicked word.
     word_separators_input: Option<Entity<InputState>>,
     /// Settings → Terminal: the regular and bold font weight fields.
@@ -593,6 +596,7 @@ impl Workspace {
             font_slider: None,
             font_input: None,
             word_separators_input: None,
+            appearance_other_mode: false,
             weight_inputs: None,
             shell_editor: None,
             confirm_remove_shell: None,
@@ -851,6 +855,7 @@ impl Workspace {
 
     fn set_app_theme(&mut self, theme: AppThemeSetting, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.app_theme = theme;
+        self.appearance_other_mode = false;
         self.save_settings(cx);
         self.apply_appearance(window, cx);
     }
