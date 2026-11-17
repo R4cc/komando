@@ -360,8 +360,10 @@ enum Overlay {
 enum ConfirmAction {
     DeleteHost(String),
     DeleteProject(String),
-    /// Disconnect a Session whose command is still printing output.
+    /// Disconnect a Session whose command is still printing output, keeping it.
     Disconnect(usize),
+    /// Close a Session (see `close_session`) whose command is still printing output.
+    Close(usize),
     /// Disconnect all of an item's Sessions, some still printing output.
     DisconnectAll(ItemKey),
     /// Every Host's Command History (Settings → Security).
@@ -2098,33 +2100,54 @@ impl Workspace {
         self.overlay.is_some() || self.prompt_open(cx)
     }
 
-    /// Explicitly closing a Remote Desktop discards it immediately. A live terminal keeps
-    /// its output until closed again; an unexpected disconnect keeps either kind of Session.
+    /// × and Delete: close a Session, removing it from the sidebar. With "Keep sessions after
+    /// disconnecting" on, a live terminal is only disconnected and keeps its output until
+    /// closed again. A Remote Desktop is always discarded at once; an unexpected disconnect
+    /// keeps either kind of Session.
     fn close_session(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let keep = self.settings.keep_disconnected_sessions
+            && self.sessions.iter().any(|s| s.id == id && s.is_live() && s.view.desktop().is_none());
+        if keep {
+            self.disconnect_session(id, window, cx);
+        } else {
+            self.remove_session(id, window, cx);
+        }
+    }
+
+    /// End a Session's connection but keep it, with its output, to reconnect or close later.
+    fn disconnect_session(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_completion_notification(id);
+        let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
+        if !entry.is_live() {
+            return;
+        }
+        match entry.view.clone() {
+            SessionView::Terminal(view) => view.update(cx, |v, cx| {
+                v.close();
+                v.set_status(Status::Disconnected("Session closed.".into()), cx);
+            }),
+            SessionView::Desktop(view) => view.update(cx, |v, cx| v.end("Session closed.", cx)),
+        }
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    /// End a Session (if still connected) and take it out of the sidebar.
+    fn remove_session(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_completion_notification(id);
         let Some(index) = self.sessions.iter().position(|s| s.id == id) else { return };
-        if self.sessions[index].is_live() && self.sessions[index].view.desktop().is_none() {
-            match self.sessions[index].view.clone() {
-                SessionView::Terminal(view) => view.update(cx, |v, cx| {
-                    v.close();
-                    v.set_status(Status::Disconnected("Session closed.".into()), cx);
-                }),
-                SessionView::Desktop(view) => view.update(cx, |v, cx| v.end("Session closed.", cx)),
-            }
-        } else {
-            self.close_own_window(id, cx);
-            let entry = self.sessions.remove(index);
-            self.last_active.retain(|_, v| *v != id);
-            entry.view.close(cx);
-            let partner = self.leave_split(id);
-            if self.active == Some(id) {
-                self.active = None;
-                // The other half of a split fills the area; otherwise stay with the item and
-                // show another of its Sessions, if it has one.
-                let next = partner.or_else(|| self.sessions_of(&entry.item).next().map(|s| s.id));
-                if let Some(next) = next {
-                    self.activate(next, window, cx);
-                }
+        self.close_own_window(id, cx);
+        let entry = self.sessions.remove(index);
+        self.last_active.retain(|_, v| *v != id);
+        entry.view.close(cx);
+        let partner = self.leave_split(id);
+        if self.active == Some(id) {
+            self.active = None;
+            // The other half of a split fills the area; otherwise stay with the item and
+            // show another of its Sessions, if it has one.
+            let next = partner.or_else(|| self.sessions_of(&entry.item).next().map(|s| s.id));
+            if let Some(next) = next {
+                self.activate(next, window, cx);
             }
         }
         self.focus_active(window, cx);
@@ -2134,20 +2157,47 @@ impl Workspace {
     /// × and Ctrl+Shift+W: like `close_session`, but a live Session still printing output (a
     /// command at work) asks first, so a stray click doesn't end a long job.
     fn request_close(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let keep = self.settings.keep_disconnected_sessions;
+        self.ask_if_busy(id, !keep, window, cx);
+    }
+
+    /// The title bar's and menus' Disconnect: end the connection, keeping the Session and its
+    /// output. Asks first while a command is printing output, as × does.
+    fn request_disconnect(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sessions.iter().any(|s| s.id == id && s.is_live()) {
+            self.ask_if_busy(id, false, window, cx);
+        }
+    }
+
+    /// Close (`remove`) or disconnect a Session, asking first if it is still printing output.
+    fn ask_if_busy(&mut self, id: usize, remove: bool, window: &mut Window, cx: &mut Context<Self>) {
         // A dialog is up (this question, perhaps): nothing closes behind it.
         if self.modal_open(cx) {
             return;
         }
         let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
         if !(entry.is_live() && entry.busy) {
-            self.close_session(id, window, cx);
+            // A dropped Session has nothing left to disconnect: × closes it.
+            if remove || !entry.is_live() {
+                self.close_session(id, window, cx);
+            } else {
+                self.disconnect_session(id, window, cx);
+            }
             return;
         }
         let name = self.session_display_name(entry);
-        self.overlay = Some(Overlay::Confirm {
-            title: format!("Disconnect {name}?"),
-            body: format!("{name} is still printing output, so a command may be running. Disconnecting ends it; the output so far stays until you close the session."),
-            action: ConfirmAction::Disconnect(id),
+        self.overlay = Some(if remove {
+            Overlay::Confirm {
+                title: format!("Close {name}?"),
+                body: format!("{name} is still printing output, so a command may be running. Closing the session ends it."),
+                action: ConfirmAction::Close(id),
+            }
+        } else {
+            Overlay::Confirm {
+                title: format!("Disconnect {name}?"),
+                body: format!("{name} is still printing output, so a command may be running. Disconnecting ends it; the output so far stays until you close the session."),
+                action: ConfirmAction::Disconnect(id),
+            }
         });
         cx.notify();
     }
@@ -2162,9 +2212,9 @@ impl Workspace {
         }
         let name = self.session_display_name(entry);
         self.overlay = Some(Overlay::Confirm {
-            title: format!("Disconnect {name}?"),
-            body: "Ctrl+Shift+W is Komando's shortcut for closing a session, so programs on the remote desktop don't receive it. Disconnecting ends the remote desktop session.".into(),
-            action: ConfirmAction::Disconnect(id),
+            title: format!("Close {name}?"),
+            body: "Ctrl+Shift+W is Komando's shortcut for closing a session, so programs on the remote desktop don't receive it. Closing ends the remote desktop session.".into(),
+            action: ConfirmAction::Close(id),
         });
         cx.notify();
     }
@@ -2650,6 +2700,10 @@ impl Workspace {
             ConfirmAction::DeleteHost(id) => library.remove_host(id),
             ConfirmAction::DeleteProject(id) => library.remove_project(id),
             ConfirmAction::Disconnect(id) => {
+                self.disconnect_session(*id, window, cx);
+                return;
+            }
+            ConfirmAction::Close(id) => {
                 self.close_session(*id, window, cx);
                 return;
             }
@@ -2696,6 +2750,7 @@ impl Workspace {
             ConfirmAction::DeleteAllHistory
             | ConfirmAction::DeleteCredential(_)
             | ConfirmAction::Disconnect(_)
+            | ConfirmAction::Close(_)
             | ConfirmAction::DisconnectAll(_) => {}
         }
         self.focus_active(window, cx);
@@ -3456,7 +3511,10 @@ impl Workspace {
         // on every frame). Row heights are measured once and kept until the rows change.
         let rows = crate::perf::time("sidebar rows", || self.sidebar_rows());
         if rows != self.sidebar_rows {
-            self.sidebar_list.reset(rows.len());
+            // Replace only the rows that changed. A reset would scroll the list to the top
+            // whenever a Session opens or closes.
+            let (old, new) = changed_rows(&self.sidebar_rows, &rows);
+            self.sidebar_list.splice(old, new);
             self.sidebar_rows = rows;
         }
         // Keyboard use (see `nav.rs`): the cursor shows while the keyboard is in the list.
@@ -3738,6 +3796,8 @@ impl Workspace {
         // Beside the Session shown, unless that is the one this would show.
         let can_split = self.active.is_some() && self.placement_possible(&key);
         let history = self.settings.command_history;
+        // × and Delete only disconnect a terminal; with the setting off they close it.
+        let keep_sessions = self.settings.keep_disconnected_sessions && main.is_some_and(|s| s.view.desktop().is_none());
         let completion_ids: Vec<usize> = sessions.iter().map(|s| s.id).collect();
         // Its connected terminal, for Browse files: the row's own, else the last shown.
         let files_session = main
@@ -3795,10 +3855,7 @@ impl Workspace {
                         .action(Box::new(nav::NavEdit)),
                 );
                 if live {
-                    menu = menu.item(
-                        menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.request_close(id, window, cx))
-                            .action(Box::new(nav::NavDelete)),
-                    );
+                    menu = live_session_items(menu, id, keep_sessions, &ws);
                 } else {
                     menu = menu.item(
                         menu_item("Close session", "x", &ws, move |this, window, cx| this.close_session(id, window, cx))
@@ -4115,7 +4172,8 @@ impl Workspace {
         // In a narrow sidebar the close button floats over the row's end on hover instead of
         // keeping a place of its own, which the title needs more.
         let compact = self.sidebar_compact;
-        let tip: SharedString = if live { "Disconnect".into() } else { "Close session".into() };
+        let disconnects = live && self.settings.keep_disconnected_sessions && session.view.desktop().is_none();
+        let tip: SharedString = if disconnects { "Disconnect".into() } else { "Close session".into() };
         let close = close_button(SharedString::from(format!("close-{id}")), 22., p)
             .aria_label(tip.clone())
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
@@ -4219,6 +4277,7 @@ impl Workspace {
         let dropped = session.is_some_and(|s| !s.is_live());
         let desktop = session.and_then(desktop_protocol);
         let own_window = session.is_some_and(|s| s.window.is_some());
+        let keep = self.settings.keep_disconnected_sessions && desktop.is_none();
         let files = session.is_some_and(|s| matches!(s.kind, SessionKind::Ssh { .. }) && matches!(s.status, Status::Connected));
         let sidebar_focus = self.nav.focus.clone();
         move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
@@ -4238,7 +4297,7 @@ impl Workspace {
                 }))
                 .item(menu_item("Close", "x", &ws, move |this, window, cx| this.close_session(id, window, cx)).action(Box::new(nav::NavDelete)))
             } else {
-                menu.item(menu_item("Disconnect", "unplug", &ws, move |this, window, cx| this.request_close(id, window, cx)).action(Box::new(nav::NavDelete)))
+                live_session_items(menu, id, keep, &ws)
             };
             if desktop.is_some() {
                 menu = menu.separator().item(if own_window {
@@ -4292,7 +4351,11 @@ impl Workspace {
         let any_live = self.sessions_of(key).any(|s| s.is_live());
         let ids: Vec<usize> = self.sessions_of(key).filter(|s| s.is_live() == any_live).map(|s| s.id).collect();
         for id in ids {
-            self.close_session(id, window, cx);
+            if any_live {
+                self.disconnect_session(id, window, cx);
+            } else {
+                self.remove_session(id, window, cx);
+            }
         }
     }
 
@@ -4326,6 +4389,7 @@ impl Workspace {
             Status::Disconnected(_) => ("Disconnected", p.text_faint),
         };
         let id = entry.id;
+        let live = entry.is_live();
         let is_ssh = matches!(entry.kind, SessionKind::Ssh { .. });
         let sftp_open = entry.sftp_open;
         let sftp_phase = if sftp_open { entry.sftp_busy.phase() } else { BusyPhase::Idle };
@@ -4428,6 +4492,13 @@ impl Workspace {
                             })
                             .child("SFTP"),
                     )
+                    // End the connection, keeping the terminal and its output to reconnect later.
+                    .when(live, |el| {
+                        el.child(
+                            strip_action("session-disconnect", "unplug", "Disconnect", false, p)
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.request_disconnect(id, window, cx))),
+                        )
+                    })
                     // A new connection in the same terminal, the earlier output kept above: for a
                     // session that dropped or hangs. A live one is closed first.
                     .child(
@@ -4869,7 +4940,11 @@ impl Workspace {
                     button("confirm-cancel", "Cancel", ButtonKind::Ghost, p)
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx)))
                         .into_any_element(),
-                    button("confirm-ok", if matches!(action, ConfirmAction::Disconnect(_) | ConfirmAction::DisconnectAll(_)) { "Disconnect" } else { "Delete" }, ButtonKind::Danger, p)
+                    button("confirm-ok", match action {
+                        ConfirmAction::Disconnect(_) | ConfirmAction::DisconnectAll(_) => "Disconnect",
+                        ConfirmAction::Close(_) => "Close",
+                        _ => "Delete",
+                    }, ButtonKind::Danger, p)
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.run_confirm(window, cx)))
                         .into_any_element(),
                 ],
@@ -5265,6 +5340,26 @@ fn form_field(label: &str, hint: Option<&str>, control: AnyElement, p: AppPalett
         .child(control)
         .when_some(hint, |el, hint| el.child(div().text_size(px(12.)).text_color(p.text_muted).child(hint.to_string())))
         .into_any_element()
+}
+
+/// A connected Session's Disconnect and Close entries. Delete does what × does: it closes
+/// the Session, or with `keep` (a terminal, "Keep sessions after disconnecting" on) only
+/// disconnects it, so then there is no separate Close.
+fn live_session_items(menu: PopupMenu, id: usize, keep: bool, ws: &gpui::WeakEntity<Workspace>) -> PopupMenu {
+    let disconnect = menu_item("Disconnect", "unplug", ws, move |this, window, cx| this.request_disconnect(id, window, cx));
+    if keep {
+        return menu.item(disconnect.action(Box::new(nav::NavDelete)));
+    }
+    menu.item(disconnect)
+        .item(menu_item("Close session", "x", ws, move |this, window, cx| this.request_close(id, window, cx)).action(Box::new(nav::NavDelete)))
+}
+
+/// The rows of `old` that differ from `new`, past their shared start and end, and how many
+/// rows of `new` take their place.
+fn changed_rows<T: PartialEq>(old: &[T], new: &[T]) -> (std::ops::Range<usize>, usize) {
+    let start = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let end = old[start..].iter().rev().zip(new[start..].iter().rev()).take_while(|(a, b)| a == b).count();
+    (start..old.len() - end, new.len() - start - end)
 }
 
 /// The ✕ in a dialog's top-right corner. It does what Escape does there.
@@ -5720,5 +5815,24 @@ mod destination_tests {
         assert_eq!(destination(&model::resolve(&host, &project)), "deploy@10.0.0.5:2222");
         host.user = model::Inherited::Off;
         assert_eq!(destination(&model::resolve(&host, &project)), "10.0.0.5:2222");
+    }
+}
+
+#[cfg(test)]
+mod changed_rows_tests {
+    use super::changed_rows;
+
+    #[test]
+    fn only_the_rows_that_differ_are_replaced() {
+        assert_eq!(changed_rows(&[1, 2, 3, 4], &[1, 2, 3, 4]), (4..4, 0));
+        // A Host's row grows a Session.
+        assert_eq!(changed_rows(&[1, 2, 3, 4], &[1, 9, 3, 4]), (1..2, 1));
+        // A row added, and one removed.
+        assert_eq!(changed_rows(&[1, 2, 4], &[1, 2, 3, 4]), (2..2, 1));
+        assert_eq!(changed_rows(&[1, 2, 3, 4], &[1, 3, 4]), (1..2, 0));
+        // Repeated rows never count twice.
+        assert_eq!(changed_rows(&[1, 1], &[1, 1, 1]), (2..2, 1));
+        assert_eq!(changed_rows(&[], &[1, 2]), (0..0, 2));
+        assert_eq!(changed_rows(&[1, 2], &[]), (0..2, 0));
     }
 }

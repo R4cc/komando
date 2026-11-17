@@ -1189,6 +1189,9 @@ pub struct Settings {
     /// Start with the sidebar hidden, and float it out over the Sessions while the pointer
     /// rests at the window's left edge, like a browser's vertical tabs.
     pub sidebar_auto_hide: bool,
+    /// × on a connected terminal Session only disconnects it, keeping it and its output in
+    /// the sidebar until × is clicked again. Off (the default), × closes it at once.
+    pub keep_disconnected_sessions: bool,
     /// Projects folded away in the sidebar, remembered across app launches.
     pub collapsed_projects: BTreeSet<ProjectId>,
     /// The SFTP browser lists files starting with a dot.
@@ -1342,6 +1345,7 @@ impl Default for Settings {
             sftp_width: 540.,
             sidebar_width: 264.,
             sidebar_auto_hide: false,
+            keep_disconnected_sessions: false,
             collapsed_projects: BTreeSet::new(),
             sftp_show_hidden: true,
             sftp_menu_rename: false,

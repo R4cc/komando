@@ -3,7 +3,7 @@
 //! Host's Sessions, Left folds them (or steps out), Enter connects or shows, Ctrl+Enter opens
 //! another Session, Shift+F10 opens the row's menu, and Escape goes back to the Session.
 //!
-//! F2 and Delete act on the Session a row stands for (rename, disconnect), so they mean the
+//! F2 and Delete act on the Session a row stands for (rename, close as × does), so they mean the
 //! same on a Host's row as on its Sessions' rows; on an idle Host or a Project they edit or
 //! delete it. Shift+F2 and Shift+Delete always edit or delete the Host.
 //!
@@ -472,7 +472,7 @@ impl Workspace {
         }
     }
 
-    /// Delete: disconnect (or close) the Session the row stands for, asking first if a
+    /// Delete: close the Session the row stands for as × does, asking first if a
     /// command is still printing output; on an idle Host or a Project, ask to delete it.
     /// `host` (Shift+Delete): always ask to delete the Host.
     pub(super) fn nav_delete(&mut self, host: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -573,10 +573,28 @@ mod tests {
                         this.close_row_menu(cx);
                     }
 
+                    // Rows changing (a Session opened or closed, a Host removed) keep the list
+                    // on the same row rather than jumping to the top.
+                    this.sidebar_list.scroll_to(top);
+                    this.library.projects[0].hosts.pop();
+                    let _ = this.render_sidebar(crate::theme::AppPalette::dark(), window, cx);
+                    assert_eq!(this.sidebar_list.logical_scroll_top(), top, "a change below must keep the sidebar in place");
+                    this.library.projects[0].hosts.remove(10);
+                    let _ = this.render_sidebar(crate::theme::AppPalette::dark(), window, cx);
+                    assert_eq!(
+                        this.sidebar_list.logical_scroll_top(),
+                        ListOffset { item_ix: 59, ..top },
+                        "a change above must keep the same row at the top"
+                    );
+
                     // A keyboard menu still reveals its row if it was scrolled off screen.
+                    let target = NavTarget::Item(ItemKey::Host {
+                        project: this.library.projects[0].id.clone(),
+                        host: this.library.hosts[60].id.clone(),
+                    });
                     this.nav.cursor = Some(target);
                     this.nav_menu(window, cx);
-                    assert_eq!(this.take_nav_reveal(), Some(62));
+                    assert_eq!(this.take_nav_reveal(), Some(61), "host-60 moved up a row");
                     assert_eq!(this.take_nav_reveal(), None);
                 });
                 workspace

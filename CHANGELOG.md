@@ -6,10 +6,25 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A Disconnect button next to Reconnect in the title bar ends the connection and keeps the
+  session's output, so you can reconnect later. Remote desktops have it too.
+- Settings → Appearance → Behaviour → Keep sessions after disconnecting brings back the old
+  two-step ×: the first click disconnects, the second removes the session.
+
 ### Changed
 
 - Settings → Vault groups saved passwords and keys by project, matching the project and
   host order in the sidebar. Other saved items appear below the projects.
+- The × on a session (and Delete or Ctrl+Shift+W) now closes it in one click instead of
+  disconnecting it first. A session whose command is still printing output still asks before
+  closing. Disconnect is in the session's menu and the title bar.
+
+### Fixed
+
+- The sidebar no longer jumps back to the top when a session opens or closes, such as when
+  you click + to open a new session on a host further down the list.
 
 ## [0.7.4] - 2026-11-17
 

@@ -683,6 +683,20 @@ impl Workspace {
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.set_restore_tabs(!this.settings.restore_tabs, cx)))
                 .into_any_element(),
         ));
+        behaviour_rows.push(setting_row(
+            p,
+            "Keep sessions after disconnecting",
+            "× on a connected session only disconnects it, keeping its output until you click × again.",
+            switch("keep-disconnected-sessions".into(), "Keep sessions after disconnecting", self.settings.keep_disconnected_sessions, p)
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.settings.keep_disconnected_sessions = !this.settings.keep_disconnected_sessions;
+                    if let Err(error) = this.settings.save(&this.data_dir) {
+                        log::error!("Could not save keep-sessions setting: {error}");
+                    }
+                    cx.notify();
+                }))
+                .into_any_element(),
+        ));
         if cfg!(windows) {
             behaviour_rows.push(setting_row(
                 p,

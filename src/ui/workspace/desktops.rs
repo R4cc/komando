@@ -353,7 +353,7 @@ impl Workspace {
         }
     }
 
-    /// The title bar's actions on a Remote Desktop: Reconnect once it has dropped, and its own
+    /// The title bar's actions on a Remote Desktop: Disconnect, or Reconnect once it has dropped, and its own
     /// window. Keys, scaling and quality are in the desktop's own toolbar. Moving between a Host's terminal and its desktops is done
     /// from the sidebar, so the bar keeps its layout.
     pub(super) fn desktop_strip_buttons(&self, entry: &SessionEntry, p: AppPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -361,7 +361,13 @@ impl Workspace {
         let id = entry.id;
         let _ = protocol;
         let mut buttons = vec![];
-        if !entry.is_live() {
+        if entry.is_live() {
+            buttons.push(
+                strip_action("desktop-disconnect", "unplug", "Disconnect", false, p)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.request_disconnect(id, window, cx)))
+                    .into_any_element(),
+            );
+        } else {
             buttons.push(
                 strip_action("desktop-reconnect", "refresh-cw", "Reconnect", false, p)
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.connect_desktop(id, window, cx)))
