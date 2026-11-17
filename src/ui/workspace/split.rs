@@ -206,7 +206,7 @@ impl Workspace {
     /// The split on screen: the remembered one, while one of its Sessions is active.
     pub(super) fn shown_split(&self) -> Option<Split> {
         let split = self.split?;
-        self.active.filter(|&id| split.contains(id)).map(|_| split)
+        self.sessions.active().filter(|&id| split.contains(id)).map(|_| split)
     }
 
     /// The payload for dragging a sidebar row.
@@ -248,7 +248,7 @@ impl Workspace {
     /// What dropping `key` (or its `session`) on `side` would do, or `None` when it would
     /// change nothing (it is already there).
     fn placement(&self, key: &ItemKey, session: Option<usize>, side: Side) -> Option<(Placement, usize)> {
-        let active = self.active?;
+        let active = self.sessions.active()?;
         let shown = self.shown_split();
         // The Session that stays on the other side.
         let other = shown.map_or(active, |s| s.at(side.opposite()));
@@ -266,7 +266,7 @@ impl Workspace {
             None => {
                 // Not a desktop in its own window: the split would show its placeholder.
                 let in_main = |id: usize| self.sessions.get(id).is_some_and(|s| !s.own_window());
-                let last = self.last_active.get(key).copied().filter(|&id| id != other && item_of(id) == Some(key) && in_main(id));
+                let last = self.sessions.last_shown(key).filter(|&id| id != other && item_of(id) == Some(key) && in_main(id));
                 match last.or_else(|| self.sessions_of(key).map(|s| s.id()).find(|&id| id != other && in_main(id))) {
                     Some(id) => Placement::Existing(id),
                     None => Placement::New,
@@ -362,7 +362,7 @@ impl Workspace {
         let dragged = event.drag(cx).clone();
         let target = if self.modal_open(cx) {
             None
-        } else if self.active.is_none() {
+        } else if self.sessions.active().is_none() {
             Some(DropTarget::Main)
         } else {
             let side = if position.x < event.bounds.center().x { Side::Left } else { Side::Right };
@@ -512,9 +512,6 @@ impl Workspace {
         let old = ItemKey::Host { project: from.to_string(), host: host_id.to_string() };
         let new = ItemKey::Host { project: to.to_string(), host: host_id.to_string() };
         self.sessions.move_item(&old, &new, &name, None);
-        if let Some(id) = self.last_active.remove(&old) {
-            self.last_active.entry(new.clone()).or_insert(id);
-        }
         if self.collapsed_items.remove(&old) {
             self.collapsed_items.insert(new);
         }

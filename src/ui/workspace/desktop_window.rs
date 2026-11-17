@@ -197,7 +197,6 @@ impl Workspace {
             return;
         }
         let SessionView::Desktop(view) = entry.ui.view.clone() else { return };
-        let item = entry.item().clone();
         let title: SharedString = format!("{} — Komando", entry.label()).into();
         let pane = view.read(cx).pane_size().unwrap_or(size(px(1024.), px(640.)));
         let window_size = size(
@@ -238,19 +237,11 @@ impl Workspace {
         if let Some(entry) = self.sessions.get_mut(id) {
             entry.ui.window = Some(handle);
         }
-        self.sessions.set_own_window(id, true);
         // The main window shows something else: the other half of a split, or the Host's
         // terminal.
         let partner = self.leave_split(id);
-        if self.last_active.get(&item) == Some(&id) {
-            self.last_active.remove(&item);
-        }
-        if self.active == Some(id) {
-            self.active = None;
-            let next = partner.or_else(|| self.sessions_of(&item).find(|s| !s.own_window()).map(|s| s.id()));
-            if let Some(next) = next {
-                self.activate(next, window, cx);
-            }
+        if let Some(next) = self.sessions.detach(id, partner) {
+            self.activate(next, window, cx);
         }
         cx.notify();
     }
@@ -262,7 +253,7 @@ impl Workspace {
             return;
         }
         let view = entry.ui.view.desktop().cloned();
-        self.sessions.set_own_window(id, false);
+        self.sessions.reattach(id);
         let Some(view) = view else { return };
         view.update(cx, |v, cx| {
             v.detached = false;
@@ -285,7 +276,7 @@ impl Workspace {
         let ids: Vec<usize> = self.sessions.iter().filter(|s| s.ui.window.is_some()).map(|s| s.id()).collect();
         for id in ids {
             let handle = self.sessions.get_mut(id).and_then(|s| s.ui.window.take());
-            self.sessions.set_own_window(id, false);
+            self.sessions.reattach(id);
             if let Some(handle) = handle {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
             }

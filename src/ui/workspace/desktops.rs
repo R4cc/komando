@@ -216,7 +216,7 @@ impl Workspace {
             self.connect_desktop(id, window, cx);
         }
         if let [id] = waiting[..]
-            && self.active == Some(ssh_id)
+            && self.sessions.active() == Some(ssh_id)
         {
             self.activate(id, window, cx);
         }
@@ -226,9 +226,8 @@ impl Workspace {
     pub(super) fn show_terminal_of(&mut self, project_id: &str, host_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let item = ItemKey::Host { project: project_id.to_string(), host: host_id.to_string() };
         let ssh = self
-            .last_active
-            .get(&item)
-            .copied()
+            .sessions
+            .last_shown(&item)
             .filter(|id| self.sessions.get(*id).is_some_and(|s| matches!(s.kind(), SessionKind::Ssh { .. })))
             .or_else(|| self.sessions_of(&item).find(|s| matches!(s.kind(), SessionKind::Ssh { .. })).map(|s| s.id()));
         match ssh {

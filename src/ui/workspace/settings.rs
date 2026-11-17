@@ -1663,9 +1663,6 @@ impl Workspace {
         if let (Some(old), Some(saved)) = (editing, saved) {
             let (old_key, new_key) = (ItemKey::Shell { project: None, name: old }, ItemKey::Shell { project: None, name });
             self.sessions.move_item(&old_key, &new_key, &saved.name, Some(SessionKind::Local { shell: saved.clone() }));
-            if let Some(id) = self.last_active.remove(&old_key) {
-                self.last_active.insert(new_key.clone(), id);
-            }
             if self.collapsed_items.remove(&old_key) {
                 self.collapsed_items.insert(new_key);
             }

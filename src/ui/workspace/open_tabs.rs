@@ -22,7 +22,7 @@ impl Workspace {
                 }
                 _ => continue,
             };
-            if self.active == Some(entry.id()) {
+            if self.sessions.active() == Some(entry.id()) {
                 tabs.active = Some(tabs.tabs.len());
             }
             tabs.tabs.push(tab);

@@ -328,7 +328,7 @@ impl Workspace {
             self.nav.cursor = self.nav_home(&targets);
         }
         // Back on the row of the Session in use, which may have changed since.
-        if let Some(home) = self.nav_home(&targets).filter(|_| self.active.is_some()) {
+        if let Some(home) = self.nav_home(&targets).filter(|_| self.sessions.active().is_some()) {
             self.nav.cursor = Some(home);
         }
         self.nav.reveal = true;

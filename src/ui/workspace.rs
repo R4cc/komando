@@ -496,7 +496,6 @@ pub struct Workspace {
     /// Unlocked with "Stay unlocked" off: lock again once what waited has used the Vault.
     lock_after_use: bool,
     sessions: sessions::Sessions<SessionParts>,
-    active: Option<usize>,
     /// The terminal tabs last written for Restore tabs on start; `None` while they aren't
     /// kept (switched off, before the saved ones are reopened, or a window opened by tooling).
     tab_memory: Option<crate::model::OpenTabs>,
@@ -509,8 +508,6 @@ pub struct Workspace {
     /// A Remote Desktop's sidebar row held outside the window, to open in its own.
     tear_off: Option<desktop_window::TearOff>,
     native_drag: Option<crate::platform::DragPreview>,
-    /// The Session last shown for each item, so a click returns to it.
-    last_active: std::collections::HashMap<ItemKey, usize>,
     /// The terminal pane's size, as last laid out. A new Session's shell starts at this size
     /// instead of a guess, so it isn't resized (and repainted) straight after it starts.
     pane_size: Option<session::GridSize>,
@@ -643,14 +640,12 @@ impl Workspace {
             pending: vec![],
             lock_after_use: false,
             sessions: Default::default(),
-            active: None,
             tab_memory: None,
             split: None,
             pending_split: None,
             drop_target: None,
             tear_off: None,
             native_drag: None,
-            last_active: Default::default(),
             pane_size: None,
             collapsed_items: HashSet::new(),
             overlay: None,
@@ -753,16 +748,16 @@ impl Workspace {
                 None => self.show_toast(format!("Couldn't find the shell “{name}”. It may have been renamed or removed."), cx),
             }
         }
-        if let Some(index) = startup.active
-            && let Some(id) = self.sessions.get(index).map(|s| s.id())
-        {
+        // `active` counts the Sessions opened, in order.
+        let active = startup.active.and_then(|index| self.sessions.iter().nth(index).map(|s| s.id()));
+        if let Some(id) = active {
             self.activate(id, window, cx);
         }
         if let Some(section) = startup.settings {
             self.highlights_expanded = self.highlights.first().map(|s| s.id.clone());
             self.open_settings(section, window, cx);
         }
-        if startup.show_files && let Some(id) = self.active {
+        if startup.show_files && let Some(id) = self.sessions.active() {
             // The demo connection signs in asynchronously; the normal SFTP action remains
             // unavailable until then. Wait for it instead of changing production behavior.
             cx.spawn_in(window, async move |this, cx| {
@@ -1369,7 +1364,7 @@ impl Workspace {
     /// deciding whether Show session would do anything.
     fn item_session(&self, key: &ItemKey) -> Option<usize> {
         self.row_terminal(key)
-            .or_else(|| self.last_active.get(key).copied())
+            .or_else(|| self.sessions.last_shown(key))
             .filter(|id| self.sessions.contains(*id))
             // Prefer one shown here to a desktop in its own window.
             .or_else(|| self.sessions_of(key).find(|s| !s.own_window()).map(|s| s.id()))
@@ -1382,7 +1377,7 @@ impl Workspace {
 
     /// Output already visible in either pane needs no extra moving indicator.
     fn background_busy(&self, session: &SessionEntry) -> bool {
-        session.busy() && Some(session.id()) != self.active
+        session.busy() && Some(session.id()) != self.sessions.active()
             && !self.shown_split().is_some_and(|split| split.contains(session.id()))
     }
 
@@ -1745,15 +1740,17 @@ impl Workspace {
     }
 
     fn activate(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
-        // A desktop in a window of its own: that window comes to the front.
-        if let Some(handle) = self.sessions.get(id).and_then(|s| s.ui.window) {
-            let _ = handle.update(cx, |_, window, _| window.activate_window());
-            cx.notify();
-            return;
-        }
-        self.active = Some(id);
-        if let Some(entry) = self.sessions.get(id) {
-            self.last_active.insert(entry.item().clone(), id);
+        match self.sessions.activate(id) {
+            sessions::Shown::Here => {}
+            // A desktop in a window of its own: that window comes to the front.
+            sessions::Shown::InOwnWindow => {
+                if let Some(handle) = self.sessions.get(id).and_then(|s| s.ui.window) {
+                    let _ = handle.update(cx, |_, window, _| window.activate_window());
+                }
+                cx.notify();
+                return;
+            }
+            sessions::Shown::Gone => return,
         }
         if matches!(self.page, Page::Settings(_)) {
             self.page = Page::Sessions;
@@ -2139,7 +2136,7 @@ impl Workspace {
     }
 
     fn active_entry(&self) -> Option<&SessionEntry> {
-        self.sessions.iter().find(|s| Some(s.id()) == self.active)
+        self.sessions.active_entry()
     }
 
     /// Whether the active Session has a question open (a password, a host key…). It is a
@@ -2197,19 +2194,10 @@ impl Workspace {
         if !self.sessions.contains(id) {
             return;
         }
-        self.close_own_window(id, cx);
-        let Some(entry) = self.sessions.remove(id) else { return };
-        self.last_active.retain(|_, v| *v != id);
-        entry.ui.view.close(cx);
-        let partner = self.leave_split(id);
-        if self.active == Some(id) {
-            self.active = None;
-            // The other half of a split fills the area; otherwise stay with the item and
-            // show another of its Sessions, if it has one.
-            let next = partner.or_else(|| self.sessions_of(entry.item()).find(|s| !s.own_window()).map(|s| s.id()));
-            if let Some(next) = next {
-                self.activate(next, window, cx);
-            }
+        // The other half of a split fills the area; otherwise stay with the item and show
+        // another of its Sessions, if it has one.
+        if let Some(next) = self.discard_sessions(|s| s.id() == id, cx) {
+            self.activate(next, window, cx);
         }
         self.focus_active(window, cx);
         cx.notify();
@@ -2391,7 +2379,7 @@ impl Workspace {
         if order.is_empty() {
             return;
         }
-        let pos = self.active.and_then(|a| order.iter().position(|&id| id == a)).unwrap_or(0);
+        let pos = self.sessions.active().and_then(|a| order.iter().position(|&id| id == a)).unwrap_or(0);
         let next = if forward { (pos + 1) % order.len() } else { (pos + order.len() - 1) % order.len() };
         self.activate(order[next], window, cx);
     }
@@ -2802,14 +2790,20 @@ impl Workspace {
         }
         self.library = library;
         match action {
+            // What is shown next comes up without leaving the page the user is on.
             ConfirmAction::DeleteHost(id) => {
-                self.discard_sessions(
+                let next = self.discard_sessions(
                     |s| matches!(s.kind(), SessionKind::Ssh { host_id } | SessionKind::Desktop { host_id, .. } if *host_id == id),
                     cx,
                 );
+                if let Some(next) = next {
+                    self.sessions.activate(next);
+                }
             }
             ConfirmAction::DeleteProject(id) => {
-                self.discard_sessions(|s| s.project_id() == Some(id.as_str()), cx);
+                if let Some(next) = self.discard_sessions(|s| s.project_id() == Some(id.as_str()), cx) {
+                    self.sessions.activate(next);
+                }
                 self.set_project_collapsed(&id, false, cx);
             }
             ConfirmAction::DeleteAllHistory
@@ -2822,21 +2816,20 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Close and drop every Session that matches, e.g. those of a deleted Host.
-    fn discard_sessions(&mut self, matches: impl Fn(&SessionEntry) -> bool, cx: &mut Context<Self>) {
-        let gone = self.sessions.remove_where(matches);
-        for entry in &gone {
+    /// Close and drop every Session that matches, e.g. those of a deleted Host. Returns what
+    /// to show if the shown Session went; the caller shows it.
+    fn discard_sessions(&mut self, matches: impl Fn(&SessionEntry) -> bool, cx: &mut Context<Self>) -> Option<usize> {
+        let split = self.split;
+        let removed = self.sessions.remove_where(matches, |id| split.and_then(|s| s.other(id)));
+        for entry in &removed.entries {
             self.cancel_completion_notification(entry.id());
             if let Some(handle) = entry.ui.window {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
             }
             entry.ui.view.close(cx);
-            self.last_active.retain(|_, v| *v != entry.id());
-            let partner = self.leave_split(entry.id()).filter(|p| !gone.iter().any(|g| g.id() == *p));
-            if self.active == Some(entry.id()) {
-                self.active = partner;
-            }
+            self.leave_split(entry.id());
         }
+        removed.show
     }
 
     fn copy_host_address(&mut self, project_id: &str, host_id: &str, cx: &mut Context<Self>) {
@@ -3436,7 +3429,7 @@ impl Workspace {
             let live = sessions.iter().filter(|s| s.is_live()).count();
             let busy = sessions.iter().any(|s| self.background_busy(s));
             // Folded away with the Session in use inside: the row says so.
-            let holds_active = collapsed && sessions.iter().any(|s| Some(s.id()) == self.active);
+            let holds_active = collapsed && sessions.iter().any(|s| Some(s.id()) == self.sessions.active());
             let focused = self.nav_focus_on(&NavTarget::Project(project.id.clone()));
             let pid = project.id.clone();
             let pid_host = project.id.clone();
@@ -3796,18 +3789,18 @@ impl Workspace {
         let listed = self.listed_sessions(key);
         let grouped = !listed.is_empty();
         let expanded = grouped && !self.collapsed_items.contains(key);
-        let shown = self.last_active.get(key).copied().or_else(|| sessions.first().map(|s| s.id()));
+        let shown = self.sessions.last_shown(key).or_else(|| sessions.first().map(|s| s.id()));
         // The Session the row itself is: its only one, or the terminal beside listed desktops.
         let main = if grouped {
             sessions.iter().find(|s| !listed.iter().any(|l| l.id() == s.id())).copied()
         } else {
             shown.and_then(|id| sessions.iter().find(|s| s.id() == id).copied()).or(sessions.first().copied())
         };
-        let holds_active = sessions.iter().any(|s| Some(s.id()) == self.active);
+        let holds_active = sessions.iter().any(|s| Some(s.id()) == self.sessions.active());
         // Shown in the other half of the split: lit, more faintly than the active row. A row
         // that is the Host's terminal is lit for that terminal alone.
         let split = self.shown_split();
-        let in_split = |s: &SessionEntry| Some(s.id()) != self.active && split.is_some_and(|split| split.contains(s.id()));
+        let in_split = |s: &SessionEntry| Some(s.id()) != self.sessions.active() && split.is_some_and(|split| split.contains(s.id()));
         let beside = match main {
             Some(main) if grouped => in_split(main),
             _ => !holds_active && sessions.iter().any(|s| in_split(s)),
@@ -3830,7 +3823,7 @@ impl Workspace {
         let busy = !holds_active && !beside
             && if grouped { sessions.iter().any(|s| self.background_busy(s)) } else { main.is_some_and(|s| self.background_busy(s)) };
         // With the Sessions listed below, the active one is marked there instead.
-        let active = main.is_some_and(|s| Some(s.id()) == self.active) || (holds_active && !expanded);
+        let active = main.is_some_and(|s| Some(s.id()) == self.sessions.active()) || (holds_active && !expanded);
         ItemState { sessions, listed, grouped, expanded, shown, main, beside, status, live, busy, active }
     }
 
@@ -3849,7 +3842,7 @@ impl Workspace {
         let open_session = self.item_session(&key).and_then(|id| sessions.iter().find(|s| s.id() == id));
         let open_live = open_session.is_some_and(|s| s.is_live());
         let visible = self.page == Page::Sessions && open_session.is_some_and(|s| {
-            !s.own_window() && (Some(s.id()) == self.active || self.shown_split().is_some_and(|split| split.contains(s.id())))
+            !s.own_window() && (Some(s.id()) == self.sessions.active() || self.shown_split().is_some_and(|split| split.contains(s.id())))
         });
         let sidebar_focus = self.nav.focus.clone();
         let ws = cx.entity().downgrade();
@@ -3859,7 +3852,7 @@ impl Workspace {
         // the dropped ones (see `close_item_sessions`).
         let count = sessions.iter().filter(|s| s.is_live() == any_live).count();
         // Beside the Session shown, unless that is the one this would show.
-        let can_split = self.active.is_some() && self.placement_possible(&key);
+        let can_split = self.sessions.active().is_some() && self.placement_possible(&key);
         let history = self.settings.command_history;
         // × and Delete only disconnect a terminal; with the setting off they close it.
         let keep_sessions = self.settings.keep_disconnected_sessions && main.is_some_and(|s| s.ui.view.desktop().is_none());
@@ -4264,7 +4257,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = session.id();
-        let active = Some(id) == self.active;
+        let active = Some(id) == self.sessions.active();
         let focused = self.nav_focus_on(&NavTarget::Session(id));
         let beside = !active && self.shown_split().is_some_and(|s| s.contains(id));
         let dragged = self.dragged(item, Some(id), color);
@@ -4733,7 +4726,7 @@ impl Workspace {
         if entry.own_window() {
             return Some(self.render_in_own_window(id, p, cx));
         }
-        let focused = self.active == Some(id);
+        let focused = self.sessions.active() == Some(id);
         let project = entry.project_id().and_then(|id| self.library.project(id));
         let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.brand);
         let term_bg = cx.global::<Appearance>().term.background_hsla();
@@ -4760,7 +4753,7 @@ impl Workspace {
                 .flex()
                 .when(in_split && !focused, |el| {
                     el.capture_any_mouse_down(cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
-                        if this.active != Some(id) && !this.modal_open(cx) {
+                        if this.sessions.active() != Some(id) && !this.modal_open(cx) {
                             this.activate(id, window, cx);
                         }
                     }))
@@ -5713,7 +5706,7 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|this, _: &CloseSession, window, cx| {
-                if let Some(id) = this.active.filter(|_| !this.modal_open(cx)) {
+                if let Some(id) = this.sessions.active().filter(|_| !this.modal_open(cx)) {
                     this.request_close_by_key(id, window, cx);
                 }
             }))
@@ -5731,7 +5724,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &CopyOutputFile, _, cx| this.copy_output_file(cx)))
             .on_action(cx.listener(|this, _: &LockVault, _, cx| this.lock_vault(cx)))
             .on_action(cx.listener(|this, _: &ToggleSftp, window, cx| {
-                if let Some(id) = this.active.filter(|_| !this.modal_open(cx)) {
+                if let Some(id) = this.sessions.active().filter(|_| !this.modal_open(cx)) {
                     this.toggle_sftp(id, window, cx);
                 }
             }))
