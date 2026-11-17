@@ -6,6 +6,10 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Rename session… starts with the session's current name filled in, ready to edit.
+
 ### Fixed
 
 - With background blur on, a dark terminal in light mode (Terminal: Always dark) or a light

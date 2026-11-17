@@ -2281,8 +2281,8 @@ impl Workspace {
             return;
         }
         let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
-        let current = entry.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
-        let name = cx.new(|cx| InputState::new(window, cx).placeholder("logs, deploy, root…").default_value(current));
+        let current = entry.name.as_ref().unwrap_or(&entry.label).to_string();
+        let name = cx.new(|cx| InputState::new(window, cx).default_value(current));
         let subscription = cx.subscribe_in(&name, window, move |this, _, event: &InputEvent, window, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.save_session_name(window, cx);
@@ -2296,8 +2296,9 @@ impl Workspace {
     fn save_session_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Overlay::RenameSession { id, name, .. }) = &self.overlay else { return };
         let (id, value) = (*id, name.read(cx).value().trim().to_string());
-        let name: Option<SharedString> = (!value.is_empty()).then(|| value.into());
         if let Some(entry) = self.sessions.iter_mut().find(|s| s.id == id) {
+            // The field starts with the host's name; keeping it means no name of its own.
+            let name: Option<SharedString> = (!value.is_empty() && value != entry.label.as_ref()).then(|| value.into());
             entry.name = name.clone();
             // A desktop in a window of its own shows it in that window's title.
             if let SessionView::Desktop(view) = &entry.view {
