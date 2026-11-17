@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.7.7] - 2026-11-17
+
 ### Added
 
 - SSH sign-in works with servers that ask their own questions (keyboard-interactive), such
