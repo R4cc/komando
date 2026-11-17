@@ -222,6 +222,7 @@ pub struct TerminalView {
     /// The name the tab started with; programs that reset their title get it back.
     base_title: SharedString,
     pub status: Status,
+    pub latency: Vec<crate::session::latency::HopLatency>,
     term: SharedTerm,
     proxy: EventProxy,
     sink: Option<InputSink>,
@@ -493,6 +494,7 @@ impl TerminalView {
     pub fn new(title: impl Into<SharedString>, scrollback: usize, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (tx, rx) = mpsc::unbounded();
         let proxy = EventProxy::new(tx);
+        proxy.set_window_active(window.is_window_active());
         let initial = DEFAULT_GRID;
         if let Some(appearance) = cx.try_global::<Appearance>() {
             proxy.set_palette(&appearance.term);
@@ -512,6 +514,7 @@ impl TerminalView {
                 cx.notify();
             }),
             cx.observe_window_activation(window, |this, window, cx| {
+                this.proxy.set_window_active(window.is_window_active());
                 let focused = window.is_window_active() && this.focus.is_focused(window);
                 this.reset_cursor();
                 this.report_focus(focused);
@@ -523,6 +526,7 @@ impl TerminalView {
             base_title: title.clone(),
             title,
             status: Status::Connecting,
+            latency: Vec::new(),
             term,
             proxy,
             sink: None,
@@ -731,6 +735,9 @@ impl TerminalView {
     /// own copy for the sidebar.
     pub fn set_status(&mut self, status: Status, cx: &mut Context<Self>) {
         if self.status != status {
+            if status != Status::Connected {
+                self.latency.clear();
+            }
             self.status = status;
             cx.emit(TerminalEvent::Changed);
         }
@@ -786,6 +793,9 @@ impl TerminalView {
             }
             SessionEvent::Status(status) => {
                 if self.status != status {
+                    if status != Status::Connected {
+                        self.latency.clear();
+                    }
                     self.status = status;
                     match &self.status {
                         Status::Disconnected(reason) => {
@@ -822,6 +832,19 @@ impl TerminalView {
                             }
                         }
                         Status::Connecting => {}
+                    }
+                    cx.emit(TerminalEvent::Changed);
+                    cx.notify();
+                }
+            }
+            SessionEvent::Latency(latency) => {
+                if !self.is_disconnected() {
+                    match self.latency.iter_mut().find(|hop| hop.hop == latency.hop) {
+                        Some(hop) => *hop = latency,
+                        None => {
+                            self.latency.push(latency);
+                            self.latency.sort_by_key(|hop| hop.hop);
+                        }
                     }
                     cx.emit(TerminalEvent::Changed);
                     cx.notify();

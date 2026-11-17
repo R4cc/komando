@@ -694,12 +694,30 @@ async fn run(
     // Signed in everywhere: the shell starts where the log began.
     log.clear();
     // Shared with SFTP channels opened on the same connection.
-    let handle = Arc::new(handles.pop().ok_or_else(|| anyhow!("Nothing to connect to."))?);
-    let result = shell(&handle, &mut size, &term, &proxy, &log, &mut commands, sudo, host_window).await;
+    let handles: Vec<_> = handles.into_iter().map(Arc::new).collect();
+    let handle = handles.last().ok_or_else(|| anyhow!("Nothing to connect to."))?;
+    // Scoped to this Session: dropping the set aborts even a ping that never answers. Each
+    // hop's round trip includes the Jump Hosts before it, all the way from this computer.
+    let mut monitors = tokio::task::JoinSet::new();
+    for (index, (hop, handle)) in target.hops.iter().zip(&handles).enumerate() {
+        let handle = handle.clone();
+        let proxy = proxy.clone();
+        let active = proxy.window_activity();
+        monitors.spawn(super::latency::monitor(index, hop.name.clone(), active, move || {
+            let handle = handle.clone();
+            async move {
+                // russh's helper also returns Ok when its reply channel is dropped on
+                // disconnect. A closed connection must never become a successful sample.
+                handle.send_ping().await.is_ok() && !handle.is_closed()
+            }
+        }, move |latency| proxy.send(SessionEvent::Latency(latency))));
+    }
+    let result = shell(handle, &mut size, &term, &proxy, &log, &mut commands, sudo, host_window).await;
+    monitors.shutdown().await;
     // Always end the connection with the terminal, so SFTP channels opened on it end too.
     let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
     // The Jump Hosts' connections, innermost first.
-    for jump in handles.iter().rev() {
+    for jump in handles[..handles.len() - 1].iter().rev() {
         let _ = jump.disconnect(Disconnect::ByApplication, "", "en").await;
     }
     result

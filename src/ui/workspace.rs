@@ -31,7 +31,7 @@ use crate::ui::terminal_view::{TerminalEvent, TerminalView};
 use crate::ui::transfers::{Activity, Transfers, TransfersChanged};
 use crate::ui::widgets::{
     Busy, BusyPhase, ButtonKind, ISLAND_GAP, ISLAND_RADIUS, MenuTrigger, badge, busy_done, button, close_button, elevation, icon_button, icon_el, icon_text_button, island,
-    is_artwork, password_input, progress_ring, section_label, shell_icon_color, spinner, status_dot, wordmark,
+    connection_indicator, is_artwork, password_input, progress_ring, section_label, shell_icon_color, spinner, status_dot, wordmark,
 };
 use crate::vault::{Credential, Secret, Vault};
 
@@ -4570,6 +4570,12 @@ impl Workspace {
         let id = entry.id;
         let live = entry.is_live();
         let is_ssh = matches!(entry.kind, SessionKind::Ssh { .. });
+        let indicator = if is_ssh {
+            let hops = entry.view.terminal().map(|view| view.read(cx).latency.as_slice()).unwrap_or_default();
+            connection_indicator(&entry.status, hops, p).into_any_element()
+        } else {
+            status_dot(status_color).into_any_element()
+        };
         let sftp_open = entry.sftp_open;
         let sftp_phase = if sftp_open { entry.sftp_busy.phase() } else { BusyPhase::Idle };
         // SFTP runs over the session's connection: until it is connected the button only looks
@@ -4600,7 +4606,7 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .gap(px(7.))
-                .child(status_dot(status_color))
+                .child(indicator)
                 .child(
                     div()
                         .id("session-target")

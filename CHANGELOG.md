@@ -8,6 +8,10 @@ All notable changes to Komando are listed here. The format follows
 
 ### Added
 
+- The top bar shows four connection-quality bars for SSH sessions, with smoothed latency,
+  measurement age and Jump Host round trips on hover. Checks run every 5 seconds while the
+  window is active and every 30 seconds in the background; overdue replies turn the bars
+  amber, then red, without shortening the SSH disconnect timeout.
 - macOS: a menu bar with About, Settings, Hide and Quit, and the usual Cmd shortcuts beside the
   Ctrl+Shift ones: Cmd+C and Cmd+V copy and paste in the terminal, Cmd+F searches, Cmd+T and
   Cmd+W open and close a session, Cmd+, opens Settings, Cmd+Q quits, Cmd+H hides and Cmd+M

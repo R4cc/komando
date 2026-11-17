@@ -657,6 +657,89 @@ pub fn status_dot(color: Hsla) -> impl IntoElement {
     div().size(px(7.)).rounded_full().flex_shrink_0().bg(color)
 }
 
+/// SSH connection quality, with a stable footprint and a hover target larger than the bars.
+/// Local shells and Remote Desktops keep their ordinary connection status dot.
+pub fn connection_indicator(
+    status: &crate::session::Status,
+    hops: &[crate::session::latency::HopLatency],
+    p: AppPalette,
+) -> impl IntoElement {
+    use crate::session::Status;
+    use crate::session::latency::{ReplyState, weakest_hop};
+
+    // The weakest hop drives the bars, including an overdue Jump Host reply. All samples
+    // measure from this computer; adding them together would count the early hops twice.
+    let weakest = weakest_hop(hops);
+    let (bars, color) = match status {
+        Status::Connecting => (1, p.warning),
+        Status::Disconnected(_) => (0, p.text_faint),
+        Status::Connected => match weakest {
+            Some(hop) => {
+                let color = match hop.state {
+                    ReplyState::Measuring | ReplyState::Unavailable => p.text_faint,
+                    ReplyState::Slow => p.warning,
+                    ReplyState::Unresponsive => p.danger,
+                    ReplyState::Responsive => match hop.bars() {
+                        3..=4 => p.success,
+                        2 => p.warning,
+                        _ => p.danger,
+                    },
+                };
+                (hop.bars(), color)
+            }
+            None => (0, p.text_faint),
+        },
+    };
+    let status = status.clone();
+    let hops = hops.to_vec();
+    let label = match &status {
+        Status::Connecting => "Connecting · SSH latency".to_string(),
+        Status::Disconnected(_) => "Disconnected".to_string(),
+        Status::Connected => match weakest {
+            Some(hop) => format!("SSH connection: {} of 4 bars · {}", bars, hop.description(Instant::now())),
+            None => "Connected · Measuring SSH latency…".to_string(),
+        },
+    };
+    div()
+        .id("connection-quality")
+        .role(gpui::Role::Status)
+        .aria_label(label)
+        .w(px(22.))
+        .h(px(24.))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div().h(px(13.)).flex().items_end().gap(px(2.)).children((0..4).map(|bar| {
+                div()
+                    .w(px(3.))
+                    .h(px(4. + bar as f32 * 3.))
+                    .rounded(px(1.))
+                    .bg(if bar < bars { color } else { color.opacity(0.25) })
+            })),
+        )
+        .tooltip(move |window, cx| {
+            let text = match &status {
+                Status::Connecting => "Connecting…\nLatency is measured after sign-in.".to_string(),
+                Status::Disconnected(reason) => format!("Disconnected\n{reason}"),
+                Status::Connected if hops.is_empty() => "Connected · Measuring SSH latency…".to_string(),
+                Status::Connected => {
+                    let now = Instant::now();
+                    let mut lines = vec!["Connected · SSH round trip (smoothed)".to_string()];
+                    for hop in &hops {
+                        lines.push(format!("Hop {} · {}: {}", hop.hop + 1, hop.name, hop.description(now)));
+                    }
+                    if hops.len() > 1 {
+                        lines.push("Each hop is measured from this computer.".into());
+                    }
+                    lines.join("\n")
+                }
+            };
+            Tooltip::new(text).build(window, cx)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

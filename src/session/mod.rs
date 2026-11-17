@@ -6,6 +6,7 @@
 //! costs one repaint per frame, not one per chunk.
 
 pub(crate) mod ledbat;
+pub mod latency;
 pub mod local;
 mod pace;
 pub mod row_pool;
@@ -37,6 +38,8 @@ pub enum SessionEvent {
     Wakeup,
     Title(String),
     Status(Status),
+    /// A hop's smoothed SSH round trip and whether its latest reply is overdue.
+    Latency(latency::HopLatency),
     Prompt(Prompt),
     /// Progress on the way to the Host: `index` is the hop (Jump Hosts first, the Host last).
     Hop { index: usize, step: HopStep },
@@ -226,6 +229,8 @@ pub struct EventProxy {
     wait: Arc<Mutex<Option<wait_for::WaitFor>>>,
     /// Whether `wait` holds one, so output is only looked at while something waits.
     waiting: Arc<AtomicBool>,
+    /// Window activation, independent of terminal focus (e.g. while browsing files).
+    window_active: tokio::sync::watch::Sender<bool>,
 }
 
 #[derive(Default)]
@@ -244,7 +249,16 @@ impl EventProxy {
             connect_log: Arc::default(),
             wait: Arc::default(),
             waiting: Arc::default(),
+            window_active: tokio::sync::watch::channel(false).0,
         }
+    }
+
+    pub fn set_window_active(&self, active: bool) {
+        self.window_active.send_if_modified(|current| std::mem::replace(current, active) != active);
+    }
+
+    pub(crate) fn window_activity(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.window_active.subscribe()
     }
 
     /// Watch the output for this text from now on, replacing any earlier wait (`None`: stop
