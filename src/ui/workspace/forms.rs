@@ -642,6 +642,8 @@ impl Workspace {
                 _ => host.vnc = desktop,
             }
         }
+        // Take the form's choice, then check it against the desktops just saved: `opens_with`
+        // falls back to SSH when that Remote Desktop is turned off or was removed.
         host.opens = opens;
         host.opens = host.opens_with();
         let before = std::mem::take(&mut host.jump_hosts);

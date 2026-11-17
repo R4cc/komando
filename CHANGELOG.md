@@ -25,6 +25,10 @@ All notable changes to Komando are listed here. The format follows
   replacing it with defaults the next time a setting changes.
 - Import from MobaXterm uses the settings file that lists sessions when MobaXterm left an
   empty one in Documents.
+- Settings → Mouse & clipboard no longer shows Copy colors and styles on macOS and Linux,
+  where it had no effect. Copying there puts plain text on the clipboard, as before.
+- If Keep sessions after disconnecting or Minimize to tray can't be saved, Komando now says
+  so, as it does for other settings.
 
 ## [0.7.5] - 2026-11-17
 

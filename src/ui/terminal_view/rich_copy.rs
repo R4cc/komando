@@ -157,6 +157,8 @@ fn escape(text: &str) -> String {
 }
 
 /// Put `text` on the clipboard, with `html` beside it where the platform can hold both.
+/// Only Windows can: gpui's clipboard has no HTML entry on macOS or Linux, so `html` is
+/// dropped there and callers don't build it (Settings hides "Copy colors and styles").
 pub(super) fn write_clipboard(text: String, html: Option<String>, cx: &mut App) {
     #[cfg(windows)]
     if let Some(html) = &html {

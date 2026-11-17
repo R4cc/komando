@@ -1169,7 +1169,8 @@ impl TerminalView {
             if text.is_empty() {
                 return false;
             }
-            let html = self.pointer.copy_formatting.then(|| {
+            // Only Windows can hold the HTML beside the text; see `rich_copy::write_clipboard`.
+            let html = (cfg!(windows) && self.pointer.copy_formatting).then(|| {
                 let appearance = cx.global::<Appearance>();
                 rich_copy::selection_html(&term, &appearance.term, &appearance.font_family, appearance.font_size, self.pointer.trim_copied)
             });

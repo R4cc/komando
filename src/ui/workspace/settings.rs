@@ -690,9 +690,7 @@ impl Workspace {
             switch("keep-disconnected-sessions".into(), "Keep sessions after disconnecting", self.settings.keep_disconnected_sessions, p)
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.settings.keep_disconnected_sessions = !this.settings.keep_disconnected_sessions;
-                    if let Err(error) = this.settings.save(&this.data_dir) {
-                        log::error!("Could not save keep-sessions setting: {error}");
-                    }
+                    this.save_settings(cx);
                     cx.notify();
                 }))
                 .into_any_element(),
@@ -707,9 +705,7 @@ impl Workspace {
                         this.settings.minimize_to_tray = !this.settings.minimize_to_tray;
                         #[cfg(windows)]
                         if let Some(tray) = &this.tray { tray.set_enabled(this.settings.minimize_to_tray); }
-                        if let Err(error) = this.settings.save(&this.data_dir) {
-                            log::error!("Could not save minimize-to-tray setting: {error}");
-                        }
+                        this.save_settings(cx);
                         cx.notify();
                     }))
                     .into_any_element(),
@@ -1150,52 +1146,54 @@ impl Workspace {
                 setting_row(p, "Open links with", link_hint, link_click),
             ],
         );
-        let clipboard = group(
-            p,
-            vec![
-                toggle("copy-on-select", "Copy when selecting", "", pointer.copy_on_select, |s| s.copy_on_select = !s.copy_on_select, cx),
-                toggle(
-                    "copy-formatting",
-                    "Copy colors and styles",
-                    "Pasting into documents, mail or chat keeps the terminal's look. Plain-text programs get the text.",
-                    pointer.copy_formatting,
-                    |s| s.copy_formatting = !s.copy_formatting,
-                    cx,
-                ),
-                toggle(
-                    "trim-copied",
-                    "Trim copied text",
-                    "Leaves out spaces and blank lines at the start and end.",
-                    pointer.trim_copied,
-                    |s| s.trim_copied = !s.trim_copied,
-                    cx,
-                ),
-                toggle(
-                    "paste-confirm",
-                    "Confirm multi-line paste",
-                    "Each line may run as a command.",
-                    pointer.confirm_multiline_paste,
-                    |s| s.confirm_multiline_paste = !s.confirm_multiline_paste,
-                    cx,
-                ),
-                toggle(
-                    "paste-single-line",
-                    "Paste as one line",
-                    "Line breaks in pasted text become spaces.",
-                    pointer.paste_single_line,
-                    |s| s.paste_single_line = !s.paste_single_line,
-                    cx,
-                ),
-                toggle(
-                    "bracketed-paste",
-                    "Bracketed paste",
-                    "Shells that support it treat a paste as text, so nothing runs until you press Enter.",
-                    pointer.bracketed_paste,
-                    |s| s.bracketed_paste = !s.bracketed_paste,
-                    cx,
-                ),
-            ],
-        );
+        let mut clipboard_rows =
+            vec![toggle("copy-on-select", "Copy when selecting", "", pointer.copy_on_select, |s| s.copy_on_select = !s.copy_on_select, cx)];
+        // Only Windows: gpui can't put HTML beside the text on the macOS or Linux clipboard.
+        if cfg!(windows) {
+            clipboard_rows.push(toggle(
+                "copy-formatting",
+                "Copy colors and styles",
+                "Pasting into documents, mail or chat keeps the terminal's look. Plain-text programs get the text.",
+                pointer.copy_formatting,
+                |s| s.copy_formatting = !s.copy_formatting,
+                cx,
+            ));
+        }
+        clipboard_rows.extend([
+            toggle(
+                "trim-copied",
+                "Trim copied text",
+                "Leaves out spaces and blank lines at the start and end.",
+                pointer.trim_copied,
+                |s| s.trim_copied = !s.trim_copied,
+                cx,
+            ),
+            toggle(
+                "paste-confirm",
+                "Confirm multi-line paste",
+                "Each line may run as a command.",
+                pointer.confirm_multiline_paste,
+                |s| s.confirm_multiline_paste = !s.confirm_multiline_paste,
+                cx,
+            ),
+            toggle(
+                "paste-single-line",
+                "Paste as one line",
+                "Line breaks in pasted text become spaces.",
+                pointer.paste_single_line,
+                |s| s.paste_single_line = !s.paste_single_line,
+                cx,
+            ),
+            toggle(
+                "bracketed-paste",
+                "Bracketed paste",
+                "Shells that support it treat a paste as text, so nothing runs until you press Enter.",
+                pointer.bracketed_paste,
+                |s| s.bracketed_paste = !s.bracketed_paste,
+                cx,
+            ),
+        ]);
+        let clipboard = group(p, clipboard_rows);
         div()
             .flex()
             .flex_col()
