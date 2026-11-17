@@ -668,10 +668,9 @@ impl<P> Sessions<P> {
             EndRequest::Close | EndRequest::CloseByKey => match (printing, keep_disconnected) {
                 (true, false) => Ending::Ask(Question::CloseWhilePrinting),
                 (true, true) => Ending::Ask(Question::DisconnectWhilePrinting),
-                // A dropped Session has nothing left to disconnect: × closes it.
-                (false, false) => close,
-                (false, true) if !live => close,
-                (false, true) => Ending::Disconnect,
+                // As a close without the question: a live terminal kept with Keep on, a
+                // desktop or a dropped Session (nothing left to disconnect) discarded.
+                (false, _) => close,
             },
             EndRequest::Disconnect if !live => Ending::Nothing,
             EndRequest::Disconnect if printing => Ending::Ask(Question::DisconnectWhilePrinting),
@@ -1222,9 +1221,9 @@ mod tests {
             (Close, false, true, true, true, Ask(DisconnectWhilePrinting)),
             // A dropped Session has nothing left to disconnect: × closes it.
             (Close, false, false, false, true, Remove),
-            // Pinned as it is: × with Keep on disconnects a live desktop, which a confirmed
-            // close (CloseNow) would discard.
-            (Close, true, true, false, true, Disc),
+            // A desktop is discarded, Keep on or not, as the menus' Close does.
+            (Close, true, true, false, true, Remove),
+            (CloseByKey, true, false, false, true, Remove),
             (CloseByKey, true, true, false, false, Ask(CloseDesktopByKey)),
             (CloseByKey, true, false, false, false, Remove),
             (CloseByKey, false, true, true, false, Ask(CloseWhilePrinting)),

@@ -15,6 +15,12 @@ All notable changes to Komando are listed here. The format follows
 - The connection tooltip says when it is connecting, measuring or waiting for a reply,
   instead of showing "— ms" or an outdated time.
 
+### Fixed
+
+- With "Keep sessions after disconnecting" on, closing a connected remote desktop with its ×,
+  Close session in its menu or Delete in the sidebar closes it, instead of only disconnecting
+  it and leaving it in the sidebar. Remote desktops aren't kept after disconnecting.
+
 ## [0.7.9] - 2026-11-17
 
 ### Changed
