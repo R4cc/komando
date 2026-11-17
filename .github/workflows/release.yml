@@ -1,8 +1,9 @@
 name: Release
 run-name: Release ${{ github.event.release.tag_name || inputs.tag }}
 
-# Publishing a GitHub release (tag like v0.2.0) builds Komando for Windows and attaches
-# the MSI installer and portable .exe with the release version in both filenames.
+# Publishing a GitHub release (tag like v0.2.0) builds Komando and attaches, each with the
+# release version in its filename: the Windows MSI installer and portable .exe, a Linux
+# .tar.gz and a macOS .dmg (Apple Silicon).
 on:
   release:
     types: [published]
@@ -34,16 +35,13 @@ jobs:
           TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: gh workflow run release.yml --ref "$DEFAULT_BRANCH" --field "tag=$TAG"
 
-  msi:
+  # Checked once, before any of the builds below start.
+  version:
     if: github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-    name: Build release
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    # Reruns of one tag must not race to replace its assets. Different tags may build together.
-    concurrency:
-      group: release-build-${{ inputs.tag }}
-      cancel-in-progress: false
+    name: Check version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     env:
       TAG: ${{ inputs.tag }}
     steps:
@@ -53,13 +51,30 @@ jobs:
 
       - name: Read version from tag
         id: version
-        shell: pwsh
         run: |
-          if ($env:TAG -notmatch '^v(\d+\.\d+\.\d+)$') { throw "Tag '$env:TAG' is not vMAJOR.MINOR.PATCH" }
-          $version = $Matches[1]
-          $cargo = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
-          if ($cargo -ne $version) { throw "Tag '$env:TAG' does not match the version in Cargo.toml ($cargo). Bump Cargo.toml or fix the tag." }
-          "version=$version" >> $env:GITHUB_OUTPUT
+          if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then echo "::error::Tag '$TAG' is not vMAJOR.MINOR.PATCH"; exit 1; fi
+          version=${BASH_REMATCH[1]}
+          cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [[ "$cargo" != "$version" ]]; then echo "::error::Tag '$TAG' does not match the version in Cargo.toml ($cargo). Bump Cargo.toml or fix the tag."; exit 1; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  msi:
+    needs: version
+    name: Build release (Windows)
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    # Reruns of one tag must not race to replace its assets. Different tags may build together.
+    concurrency:
+      group: release-build-${{ inputs.tag }}-windows
+      cancel-in-progress: false
+    env:
+      TAG: ${{ inputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -73,7 +88,7 @@ jobs:
       - name: Build MSI
         shell: pwsh
         run: |
-          $v = "${{ steps.version.outputs.version }}"
+          $v = $env:VERSION
           ./packaging/build-msi.ps1 -Version $v -BinDir target\release -Out "Komando-$v-x64.msi"
           Copy-Item target\release\komando.exe "Komando-$v-x64.exe"
 
@@ -82,7 +97,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $v = "${{ steps.version.outputs.version }}"
+          $v = $env:VERSION
           gh release upload $env:TAG "Komando-$v-x64.msi" "Komando-$v-x64.exe" --clobber
 
       - name: Save build timings
@@ -90,6 +105,100 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-build-timings-${{ inputs.tag }}
+          path: target/cargo-timings/*.html
+          if-no-files-found: ignore
+          retention-days: 7
+
+  linux:
+    needs: version
+    name: Build release (Linux)
+    # The oldest supported runner, so the program runs on distributions with an older glibc
+    # (2.35: Ubuntu 22.04, Debian 12, Fedora 36 and later).
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    concurrency:
+      group: release-build-${{ inputs.tag }}-linux
+      cancel-in-progress: false
+    env:
+      TAG: ${{ inputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
+      # Load fontconfig when the app starts instead of linking it, like Wayland and Vulkan.
+      RUST_FONTCONFIG_DLOPEN: "on"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      - name: Install build libraries
+        run: sudo apt-get update && sudo apt-get install -y libxcb1-dev libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked --timings
+
+      - name: Package
+        run: ./packaging/build-linux.sh "$VERSION" target/release/komando "Komando-$VERSION-linux-x86_64.tar.gz"
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "Komando-$VERSION-linux-x86_64.tar.gz" --clobber
+
+      - name: Save build timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-timings-${{ inputs.tag }}-linux
+          path: target/cargo-timings/*.html
+          if-no-files-found: ignore
+          retention-days: 7
+
+  macos:
+    needs: version
+    name: Build release (macOS)
+    # Apple Silicon. Intel Macs are not built.
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-build-${{ inputs.tag }}-macos
+      cancel-in-progress: false
+    env:
+      TAG: ${{ inputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      # GPUI compiles its Metal shaders at build time. Since Xcode 26 the Metal compiler is a
+      # separate download.
+      - name: Check Metal compiler
+        run: xcrun metal --version || xcodebuild -downloadComponent MetalToolchain
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked --timings
+
+      - name: Package
+        run: ./packaging/build-macos.sh "$VERSION" target/release/komando "Komando-$VERSION-macos-arm64.dmg"
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "Komando-$VERSION-macos-arm64.dmg" --clobber
+
+      - name: Save build timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-timings-${{ inputs.tag }}-macos
           path: target/cargo-timings/*.html
           if-no-files-found: ignore
           retention-days: 7

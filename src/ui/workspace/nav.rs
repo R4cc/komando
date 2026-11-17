@@ -184,8 +184,10 @@ impl Workspace {
             cx.notify();
         });
         menu.focus_handle(cx).focus(window, cx);
+        // A ⋯ click needn't reach the row's click handler. Keep the cursor on the row
+        // whose menu opened, without scrolling away from the pointer's position.
+        self.nav.cursor = Some(target.clone());
         self.nav.menu = Some(RowMenu { target, menu, _dismissed: dismissed });
-        self.nav.reveal = true;
         cx.notify();
     }
 
@@ -507,6 +509,8 @@ impl Workspace {
     /// Shift+F10 (or the Menu key): the cursor's row's menu.
     pub(super) fn nav_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((cursor, _)) = self.nav_cursor() else { return };
+        // The keyboard cursor may be off screen after scrolling with the pointer.
+        self.nav.reveal = true;
         self.open_row_menu(cursor, window, cx);
     }
 
@@ -522,5 +526,63 @@ impl Workspace {
         }
         let cursor = self.nav.cursor.clone()?;
         self.nav_targets(&self.sidebar_rows).into_iter().find(|(t, _)| *t == cursor).map(|(_, ix)| ix)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use crate::model::{Host, Library, Project, Settings};
+    use crate::ui::workspace::Startup;
+    use gpui::{ListAlignment, ListOffset, ListState, WindowOptions};
+
+    #[test]
+    fn opening_row_menu_preserves_sidebar_scroll() {
+        let dir = std::env::temp_dir().join(format!("komando-row-menu-{}", uuid::Uuid::new_v4()));
+        Settings { onboarded: true, check_for_updates: false, ..Settings::default() }.save(&dir).unwrap();
+        let data_dir = dir.clone();
+        gpui_platform::headless().run(move |cx| {
+            crate::init(cx);
+            cx.open_window(WindowOptions::default(), move |window, cx| {
+                let workspace = cx.new(|cx| Workspace::new(data_dir, Startup::default(), window, cx));
+                workspace.update(cx, |this, cx| {
+                    let mut project = Project::new("Lab", "blue", "folder");
+                    let hosts: Vec<_> = (0..100).map(|i| Host::new(&format!("host-{i}"), "localhost")).collect();
+                    project.hosts = hosts.iter().map(|host| host.id.clone()).collect();
+                    let first = NavTarget::Project(project.id.clone());
+                    let target = NavTarget::Item(ItemKey::Host {
+                        project: project.id.clone(), host: hosts[60].id.clone(),
+                    });
+                    this.library = Library { shells: Some(vec![]), projects: vec![project], hosts };
+                    this.sidebar_rows = this.sidebar_rows();
+                    this.sidebar_list = ListState::new(this.sidebar_rows.len(), ListAlignment::Top, px(0.));
+                    this.sidebar_list.reset_with_uniform_height(this.sidebar_rows.len(), px(36.));
+                    let top = ListOffset { item_ix: 60, offset_in_item: px(10.) };
+
+                    // The pointer has scrolled past an old keyboard cursor, or the keyboard
+                    // hasn't been used at all. Neither should move the list when ⋯ opens.
+                    for cursor in [Some(first), None] {
+                        this.nav.cursor = cursor;
+                        this.nav.reveal = false;
+                        this.sidebar_list.scroll_to(top);
+                        let menu = PopupMenu::build(window, cx, |menu, _, _| menu);
+                        this.show_row_menu(target.clone(), menu, false, window, cx);
+                        let _ = this.render_sidebar(crate::theme::AppPalette::dark(), window, cx);
+                        assert_eq!(this.sidebar_list.logical_scroll_top(), top, "opening ⋯ must keep the sidebar in place");
+                        assert_eq!(this.nav.cursor.as_ref(), Some(&target));
+                        this.close_row_menu(cx);
+                    }
+
+                    // A keyboard menu still reveals its row if it was scrolled off screen.
+                    this.nav.cursor = Some(target);
+                    this.nav_menu(window, cx);
+                    assert_eq!(this.take_nav_reveal(), Some(62));
+                    assert_eq!(this.take_nav_reveal(), None);
+                });
+                workspace
+            }).unwrap();
+            cx.quit();
+        });
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

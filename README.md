@@ -3,13 +3,15 @@
 <img src="assets/logo-dark.png#gh-dark-mode-only" width="440" alt="Komando.">
 <img src="assets/logo.png#gh-light-mode-only" width="440" alt="Komando.">
 
-### SSH, SFTP and remote desktops for Windows 11. Built with Rust.
+### SSH, SFTP and remote desktops for Windows 11, Linux and macOS. Built with Rust.
 
 Your servers, files and remote desktops organized into projects.
 
 [![Latest release](https://img.shields.io/github/v/release/R4cc/komando?label=release&color=f97316)](https://github.com/R4cc/komando/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/R4cc/komando/total?color=f97316)](https://github.com/R4cc/komando/releases)
-![Windows 11](https://img.shields.io/badge/Windows%2011-only-0078D4?logo=windows11&logoColor=white)
+![Windows 11](https://img.shields.io/badge/Windows%2011-0078D4?logo=windows11&logoColor=white)
+![Linux](https://img.shields.io/badge/Linux-x86__64-FCC624?logo=linux&logoColor=black)
+![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust-GPU%20rendered-000000?logo=rust)
 
 **[Download](#download)** · [Features](#features) · [Performance](#performance) · [Changelog](CHANGELOG.md)
@@ -31,12 +33,16 @@ Your servers, files and remote desktops organized into projects.
 
 ## Download
 
-Komando runs on **Windows 11** (64-bit) only ([why](docs/adr/0001-windows-11-only.md)).
+Komando is made for **Windows 11** (64-bit) and also runs on **Linux** (x86-64) and **macOS**
+(Apple Silicon). Some features are Windows-only for now, including one-click updates
+([which](docs/adr/0014-linux-and-macos-builds.md)).
 
 | | | |
 |---|---|---|
-| **Installer** | `Komando-<version>-x64.msi` | Recommended. Install for yourself (no admin rights) or for every user of the PC. Updates in one click. |
-| **Portable** | `Komando-<version>-x64.exe` | One file, nothing to install. Put it anywhere and run it. |
+| **Windows installer** | `Komando-<version>-x64.msi` | Recommended. Install for yourself (no admin rights) or for every user of the PC. Updates in one click. |
+| **Windows portable** | `Komando-<version>-x64.exe` | One file, nothing to install. Put it anywhere and run it. |
+| **Linux** | `Komando-<version>-linux-x86_64.tar.gz` | Unpack it and run `./install.sh` to add Komando to your app menu, or run `./komando` from the folder. Needs glibc 2.35 or later (Ubuntu 22.04, Debian 12, Fedora 36 and newer). |
+| **macOS** | `Komando-<version>-macos-arm64.dmg` | Open it and drag Komando to Applications. macOS 11 or later on Apple Silicon. |
 
 **[⬇ Get the latest release](https://github.com/R4cc/komando/releases/latest)** and pick a file
 under **Assets**.
@@ -57,9 +63,23 @@ If your company blocks unknown programs entirely (AppLocker), this won't help.
 
 </details>
 
+<details>
+<summary><b>macOS says Komando can't be opened</b></summary>
+<br>
+
+Komando isn't notarized by Apple yet. Open it once, then go to **System Settings** → **Privacy &
+Security** and click **Open Anyway** next to the message about Komando. Or, in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Komando.app
+```
+
+</details>
+
 **First start:** add a project and a host, then click it to connect. The first time Komando saves a
 password or key, it asks you to choose a master password for the vault. Your data stays on your
-machine in `%APPDATA%\Komando`.
+machine: `%APPDATA%\Komando` on Windows, `~/.config/Komando` on Linux and
+`~/Library/Application Support/Komando` on macOS.
 
 **Coming from Tabby or MobaXterm?** Settings → Import brings your SSH profiles and sessions over.
 The experimental MobaXterm importer also brings over direct RDP and VNC sessions; desktop
@@ -263,10 +283,12 @@ separately and survive.
 </details>
 
 <details>
-<summary><b>Why Windows 11 only?</b></summary>
+<summary><b>Does it run on Linux and macOS?</b></summary>
 <br>
-Komando currently focuses on Windows 11. Linux and macOS support are planned for the future,
-but are not a priority until Komando has an established user base.
+Yes. Every release has a Linux and a macOS build with the same SSH, SFTP and remote desktop
+features. Windows 11 is still where Komando is designed and tested first, and a few things are
+Windows-only for now: one-click updates, running a shell as administrator, WSL shells, staying
+unlocked across restarts, the blurred window background and the tray icon.
 </details>
 
 ## Building and contributing

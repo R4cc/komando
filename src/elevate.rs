@@ -103,6 +103,7 @@ pub fn open_shell_elevated(_parent: Option<isize>, _project: Option<&str>, _shel
 
 /// The command line (after the program) that makes a new Komando open a Local Shell;
 /// `shell_from_args` reads it back.
+#[cfg(windows)]
 fn launch_command_line(project: Option<&str>, shell: &str) -> String {
     let mut args = vec![SHELL_FLAG, shell];
     if let Some(project) = project {
@@ -129,10 +130,12 @@ pub fn shell_from_args(args: impl IntoIterator<Item = String>) -> Option<(Option
 /// Join arguments into a Windows command line that splits back into the same arguments
 /// (the rules of `CommandLineToArgvW`, which Rust's `std::env::args` follows too). Shell and
 /// Project names may hold spaces, quotes and backslashes.
+#[cfg(windows)]
 fn command_line(args: &[&str]) -> String {
     args.iter().map(|arg| quote(arg)).collect::<Vec<_>>().join(" ")
 }
 
+#[cfg(windows)]
 fn quote(arg: &str) -> String {
     if !arg.is_empty() && !arg.contains([' ', '\t', '\n', '\u{b}', '"']) {
         return arg.to_string();

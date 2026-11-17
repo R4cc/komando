@@ -2044,10 +2044,11 @@ impl Workspace {
             );
         }
         let width = self.sidebar_width(window);
-        // Opaque: it covers the terminal, so the window's blur must not show the output through.
-        let mut backdrop = p.canvas;
-        backdrop.a = 1.;
-        let sidebar = self.render_sidebar(p, window, cx);
+        // Only the panels cover the terminal. An opaque canvas on the padded wrapper
+        // paints a solid strip around them (black in dark themes with window blur).
+        let mut overlay_palette = p;
+        overlay_palette.sidebar.a = 1.;
+        let sidebar = self.render_sidebar(overlay_palette, window, cx);
         Some(
             div()
                 .id("sidebar-peek")
@@ -2060,9 +2061,6 @@ impl Workspace {
                 .pr(px(ISLAND_GAP))
                 .pb(px(ISLAND_GAP))
                 .flex()
-                .bg(backdrop)
-                .rounded_r(p.corner(ISLAND_RADIUS))
-                .shadow(elevation(p))
                 .occlude()
                 .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                     if *hovered {

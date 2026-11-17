@@ -192,7 +192,7 @@ fn set_native_caption(hwnd: windows::Win32::Foundation::HWND, caption: bool) {
 #[cfg(not(windows))]
 pub fn set_backdrop(_window: &gpui::Window, _on: bool) -> bool { false }
 
-/// Mica is a Windows 11 feature; elsewhere (Linux dev builds) the window stays opaque.
+/// Mica is a Windows 11 feature; on Linux and macOS the window stays opaque.
 pub const SUPPORTS_BACKDROP: bool = cfg!(windows);
 
 #[cfg(windows)]

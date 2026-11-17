@@ -177,6 +177,7 @@ fn builder() -> ureq::AgentBuilder {
 /// so a TLS-inspecting proxy's root CA works) instead of the bundled web roots. PAC/WPAD
 /// auto-configuration is not supported.
 fn agent_for(url: &str, windows_store: bool) -> ureq::Agent {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut builder = builder();
     #[cfg(windows)]
     {
@@ -437,9 +438,13 @@ pub enum InstallKind {
     /// Run the new installer. `all_users`: installed for all users, so Windows asks for
     /// administrator rights.
     Installer { all_users: bool },
-    /// Not on Windows: Komando ships for Windows only, so there is nothing to install.
+    /// Linux and macOS: Komando can't replace itself there yet, so the user downloads the
+    /// new version from the release page.
     Unsupported,
 }
+
+/// What the update prompt says where Komando can't install updates itself.
+pub const MANUAL_UPDATE: &str = "Download the new version from the release page.";
 
 /// The file the MSI puts next to `komando.exe` (see packaging/installed-with-msi.txt).
 pub const MSI_MARKER: &str = "installed-with-msi.txt";
@@ -611,7 +616,7 @@ pub fn run_installer(msi: &Path, sha256: &str, all_users: bool, data_dir: &Path)
     #[cfg(not(windows))]
     {
         let _ = (msi, sha256, all_users, data_dir);
-        bail!("Updates install on Windows only.")
+        bail!(MANUAL_UPDATE)
     }
 }
 

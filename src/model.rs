@@ -1441,7 +1441,10 @@ pub fn default_shells() -> Vec<LocalShell> {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "shell".into());
-        vec![LocalShell { name, program, ..LocalShell::default() }]
+        // macOS terminals start a login shell, which reads ~/.zprofile (Homebrew's PATH is
+        // set there); apps opened from Finder don't inherit a terminal's environment.
+        let args = if cfg!(target_os = "macos") { vec!["-l".into()] } else { Vec::new() };
+        vec![LocalShell { name, program, args, ..LocalShell::default() }]
     }
 }
 

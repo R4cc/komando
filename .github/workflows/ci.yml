@@ -57,3 +57,25 @@ jobs:
           path: target/cargo-timings/*.html
           if-no-files-found: ignore
           retention-days: 7
+
+  linux:
+    name: Build and test (Linux)
+    # The runner releases are built on.
+    runs-on: ubuntu-22.04
+    env:
+      RUST_FONTCONFIG_DLOPEN: "on"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build libraries
+        run: sudo apt-get update && sudo apt-get install -y libxcb1-dev libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v2-ci
+      - name: Build
+        run: cargo build --profile ci --locked
+      - name: Test
+        run: cargo test --profile ci --lib --locked
+      # Packaging is otherwise only exercised by a release.
+      - name: Package
+        run: ./packaging/build-linux.sh 0.0.0 target/ci/komando Komando-ci-linux.tar.gz && tar -tzf Komando-ci-linux.tar.gz

@@ -6,6 +6,20 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Komando now runs on Linux and macOS too. Each release has a Linux download (a `.tar.gz`
+  with an `install.sh` that adds Komando to your app menu) and a macOS download (a `.dmg` for
+  Apple Silicon Macs). One-click updates, running a shell as administrator, WSL shells, staying
+  unlocked across restarts, the blurred window background and the tray icon remain
+  Windows-only for now; on Linux and macOS the update prompt opens the release page.
+
+### Fixed
+
+- Opening a host's ⋯ menu keeps the sidebar at its current scroll position instead of
+  jumping back to the top.
+- Expand sidebar on hover no longer draws a solid black strip around the sidebar panels.
+
 ## [0.7.3] - 2026-11-17
 
 ### Added

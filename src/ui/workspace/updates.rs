@@ -62,7 +62,7 @@ impl Workspace {
         let asset = release.asset_for(&kind).cloned();
         let Some(asset) = asset else {
             self.update = UpdateState::Failed(match kind {
-                InstallKind::Unsupported => "Updates install on Windows only.".into(),
+                InstallKind::Unsupported => update::MANUAL_UPDATE.into(),
                 _ => format!("Release {} has no file for this kind of install.", release.tag),
             });
             cx.notify();
@@ -80,7 +80,7 @@ impl Workspace {
             match &kind {
                 InstallKind::Portable { exe } => update::replace_exe(exe, &dest)?,
                 InstallKind::Installer { all_users } => update::run_installer(&dest, &sha256, *all_users, &data_dir)?,
-                InstallKind::Unsupported => anyhow::bail!("Updates install on Windows only."),
+                InstallKind::Unsupported => anyhow::bail!(update::MANUAL_UPDATE),
             }
             anyhow::Ok(kind)
         });
@@ -320,7 +320,7 @@ impl Workspace {
                     InstallKind::Installer { all_users: false } => {
                         "Komando downloads and checks the update, closes to install it and reopens automatically. Open sessions close."
                     }
-                    InstallKind::Unsupported => "Updates install on Windows only.",
+                    InstallKind::Unsupported => update::MANUAL_UPDATE,
                 };
                 let control = if kind == InstallKind::Unsupported {
                     let url = release.url.clone();
