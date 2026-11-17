@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-11-17
+
 ### Changed
 
 - The SSH connection tooltip shows only the target's round-trip time in milliseconds.
@@ -1842,7 +1844,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.7.8...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.7.9...HEAD
+[0.7.9]: https://github.com/R4cc/komando/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/R4cc/komando/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/R4cc/komando/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/R4cc/komando/compare/v0.7.5...v0.7.6
