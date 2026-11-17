@@ -54,7 +54,7 @@ mod vault_page;
 pub use settings::SettingsSection;
 use desktops::desktop_protocol;
 use nav::NavTarget;
-use sessions::Side;
+use sessions::{EndRequest, Ending, EndingAll, Question, Side};
 use split::{DraggedItem, DraggedProject, DropTarget};
 use updates::UpdateState;
 
@@ -375,7 +375,7 @@ enum ConfirmAction {
     DeleteProject(String),
     /// Disconnect a Session whose command is still printing output, keeping it.
     Disconnect(usize),
-    /// Close a Session (see `close_session`) whose command is still printing output.
+    /// Close a Session (see `end_session`) whose command is still printing output.
     Close(usize),
     /// Disconnect all of an item's Sessions, some still printing output.
     DisconnectAll(ItemKey),
@@ -499,7 +499,7 @@ pub struct Workspace {
     sessions: sessions::Sessions<SessionParts>,
     /// The terminal tabs last written for Restore tabs on start; `None` while they aren't
     /// kept (switched off, before the saved ones are reopened, or a window opened by tooling).
-    tab_memory: Option<crate::model::OpenTabs>,
+    tab_memory: Option<open_tabs::TabMemory>,
     /// Where a sidebar item being dragged would land.
     drop_target: Option<DropTarget>,
     /// A Remote Desktop's sidebar row held outside the window, to open in its own.
@@ -1328,52 +1328,11 @@ impl Workspace {
 
     /// How many Session rows show under an item: its listed Sessions, unless folded away.
     fn nested_rows(&self, key: &ItemKey, sessions: usize) -> usize {
-        if sessions == 0 || self.collapsed_items.contains(key) { 0 } else { self.listed_sessions(key).len() }
-    }
-
-    /// The Sessions an item lists in rows of their own under it. A Remote Desktop always gets
-    /// one, so it never passes for the Host's terminal; the Host's row itself stays its
-    /// terminal while it has only one. With several terminals every Session is listed.
-    fn listed_sessions(&self, key: &ItemKey) -> Vec<&SessionEntry> {
-        let all: Vec<&SessionEntry> = self.sessions_of(key).collect();
-        let terminals = all.iter().filter(|s| s.ui.view.desktop().is_none()).count();
-        if terminals < all.len() && terminals <= 1 {
-            all.into_iter().filter(|s| s.ui.view.desktop().is_some()).collect()
-        } else if all.len() > 1 {
-            all
-        } else {
-            vec![]
-        }
-    }
-
-    /// The terminal an item's own row stands for while only its Remote Desktops are listed.
-    fn row_terminal(&self, key: &ItemKey) -> Option<usize> {
-        let listed = self.listed_sessions(key);
-        if listed.is_empty() {
-            return None;
-        }
-        self.sessions_of(key).find(|s| !listed.iter().any(|l| l.id() == s.id())).map(|s| s.id())
-    }
-
-    /// The Session a click on an item's row shows. Its menu uses the same target when
-    /// deciding whether Show session would do anything.
-    fn item_session(&self, key: &ItemKey) -> Option<usize> {
-        self.row_terminal(key)
-            .or_else(|| self.sessions.last_shown(key))
-            .filter(|id| self.sessions.contains(*id))
-            // Prefer one shown here to a desktop in its own window.
-            .or_else(|| self.sessions_of(key).find(|s| !s.own_window()).map(|s| s.id()))
-            .or_else(|| self.sessions_of(key).next().map(|s| s.id()))
+        if sessions == 0 || self.collapsed_items.contains(key) { 0 } else { self.sessions.listed(key).len() }
     }
 
     fn sessions_of(&self, key: &ItemKey) -> impl Iterator<Item = &SessionEntry> {
         self.sessions.of(key)
-    }
-
-    /// Output already visible in either pane needs no extra moving indicator.
-    fn background_busy(&self, session: &SessionEntry) -> bool {
-        session.busy() && Some(session.id()) != self.sessions.active()
-            && !self.sessions.shown_split().is_some_and(|split| split.contains(session.id()))
     }
 
     /// Clicking a sidebar item: show its Session (reconnecting it in place if it dropped,
@@ -1385,7 +1344,7 @@ impl Workspace {
         let key = item.key();
         if !another {
             // The row is the Host's terminal while its desktops have rows of their own.
-            if let Some(id) = self.item_session(&key) {
+            if let Some(id) = self.sessions.item_session(&key) {
                 self.activate(id, window, cx);
                 let dropped = self.sessions.get(id).is_some_and(|s| !s.is_live());
                 if dropped {
@@ -2147,18 +2106,41 @@ impl Workspace {
         self.overlay.is_some() || self.prompt_open(cx)
     }
 
-    /// × and Delete: close a Session, removing it from the sidebar. With "Keep sessions after
-    /// disconnecting" on, a live terminal is only disconnected and keeps its output until
-    /// closed again. A Remote Desktop is always discarded at once; an unexpected disconnect
-    /// keeps either kind of Session.
-    fn close_session(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let keep = self.settings.keep_disconnected_sessions
-            && self.sessions.get(id).is_some_and(|s| s.is_live() && s.ui.view.desktop().is_none());
-        if keep {
-            self.disconnect_session(id, window, cx);
-        } else {
-            self.remove_session(id, window, cx);
+    /// End a Session as the user asked: close or disconnect it now, or ask first (see
+    /// `Sessions::ending`). With "Keep sessions after disconnecting" on, closing a live
+    /// terminal only disconnects it, keeping its output until closed again; an unexpected
+    /// disconnect keeps either kind of Session.
+    fn end_session(&mut self, id: usize, request: EndRequest, window: &mut Window, cx: &mut Context<Self>) {
+        // A dialog is up (the question, perhaps): nothing closes behind it.
+        if request != EndRequest::CloseNow && self.modal_open(cx) {
+            return;
         }
+        let ending = self.sessions.ending(id, request, self.settings.keep_disconnected_sessions);
+        let question = match ending {
+            Ending::Disconnect => return self.disconnect_session(id, window, cx),
+            Ending::Remove => return self.remove_session(id, window, cx),
+            Ending::Nothing => return,
+            Ending::Ask(question) => question,
+        };
+        let Some(name) = self.sessions.get(id).map(|entry| self.sessions.display_name(entry)) else { return };
+        self.overlay = Some(match question {
+            Question::CloseWhilePrinting => Overlay::Confirm {
+                title: format!("Close {name}?"),
+                body: format!("{name} is still printing output, so a command may be running. Closing the session ends it."),
+                action: ConfirmAction::Close(id),
+            },
+            Question::DisconnectWhilePrinting => Overlay::Confirm {
+                title: format!("Disconnect {name}?"),
+                body: format!("{name} is still printing output, so a command may be running. Disconnecting ends it; the output so far stays until you close the session."),
+                action: ConfirmAction::Disconnect(id),
+            },
+            Question::CloseDesktopByKey => Overlay::Confirm {
+                title: format!("Close {name}?"),
+                body: "Ctrl+Shift+W is Komando's shortcut for closing a session, so programs on the remote desktop don't receive it. Closing ends the remote desktop session.".into(),
+                action: ConfirmAction::Close(id),
+            },
+        });
+        cx.notify();
     }
 
     /// End a Session's connection but keep it, with its output, to reconnect or close later.
@@ -2194,102 +2176,25 @@ impl Workspace {
         cx.notify();
     }
 
-    /// × and Ctrl+Shift+W: like `close_session`, but a live Session still printing output (a
-    /// command at work) asks first, so a stray click doesn't end a long job.
-    fn request_close(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let keep = self.settings.keep_disconnected_sessions;
-        self.ask_if_busy(id, !keep, window, cx);
-    }
-
-    /// The title bar's and menus' Disconnect: end the connection, keeping the Session and its
-    /// output. Asks first while a command is printing output, as × does.
-    fn request_disconnect(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sessions.get(id).is_some_and(|s| s.is_live()) {
-            self.ask_if_busy(id, false, window, cx);
-        }
-    }
-
-    /// Close (`remove`) or disconnect a Session, asking first if it is still printing output.
-    fn ask_if_busy(&mut self, id: usize, remove: bool, window: &mut Window, cx: &mut Context<Self>) {
-        // A dialog is up (this question, perhaps): nothing closes behind it.
-        if self.modal_open(cx) {
-            return;
-        }
-        let Some(entry) = self.sessions.get(id) else { return };
-        if !(entry.is_live() && entry.busy()) {
-            // A dropped Session has nothing left to disconnect: × closes it.
-            if remove || !entry.is_live() {
-                self.close_session(id, window, cx);
-            } else {
-                self.disconnect_session(id, window, cx);
-            }
-            return;
-        }
-        let name = self.session_display_name(entry);
-        self.overlay = Some(if remove {
-            Overlay::Confirm {
-                title: format!("Close {name}?"),
-                body: format!("{name} is still printing output, so a command may be running. Closing the session ends it."),
-                action: ConfirmAction::Close(id),
-            }
-        } else {
-            Overlay::Confirm {
-                title: format!("Disconnect {name}?"),
-                body: format!("{name} is still printing output, so a command may be running. Disconnecting ends it; the output so far stays until you close the session."),
-                action: ConfirmAction::Disconnect(id),
-            }
-        });
-        cx.notify();
-    }
-
-    /// Ctrl+Shift+W: as × does, except that a connected Remote Desktop asks first. Programs on
-    /// the remote side use the same keys (a browser's "close tab"), and ending a desktop can't
-    /// be undone.
-    fn request_close_by_key(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.sessions.get(id) else { return };
-        if !(entry.is_live() && entry.ui.view.desktop().is_some()) {
-            return self.request_close(id, window, cx);
-        }
-        let name = self.session_display_name(entry);
-        self.overlay = Some(Overlay::Confirm {
-            title: format!("Close {name}?"),
-            body: "Ctrl+Shift+W is Komando's shortcut for closing a session, so programs on the remote desktop don't receive it. Closing ends the remote desktop session.".into(),
-            action: ConfirmAction::Close(id),
-        });
-        cx.notify();
-    }
-
     /// Disconnect all of an item's Sessions (or close them once dropped), asking once first if
-    /// any is still printing output.
-    fn request_close_all(&mut self, key: &ItemKey, window: &mut Window, cx: &mut Context<Self>) {
-        if self.modal_open(cx) {
+    /// any is still printing output, unless `confirmed`.
+    fn end_item_sessions(&mut self, key: &ItemKey, confirmed: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !confirmed && self.modal_open(cx) {
             return;
         }
-        let busy = self.sessions_of(key).filter(|s| s.is_live() && s.busy()).count();
-        if busy == 0 {
-            self.close_item_sessions(key, window, cx);
-            return;
-        }
-        let name = self.item_for_key(key).map(|item| item.label().to_string()).unwrap_or_default();
-        let count = self.sessions_of(key).filter(|s| s.is_live()).count();
-        let printing = if busy == 1 { "One of them is".to_string() } else { format!("{busy} of them are") };
-        self.overlay = Some(Overlay::Confirm {
-            title: if count == 1 { format!("Disconnect the session of {name}?") } else { format!("Disconnect all {count} sessions of {name}?") },
-            body: format!("{printing} still printing output, so a command may be running. Disconnecting ends it; the output so far stays until you close the sessions."),
-            action: ConfirmAction::DisconnectAll(key.clone()),
-        });
-        cx.notify();
-    }
-
-    /// How the title bar names a Session: "web01", "web01 #2", "web01 #1" once the Host has
-    /// another terminal, and the name it was given after a dot.
-    fn session_display_name(&self, entry: &SessionEntry) -> SharedString {
-        let others = entry.ui.view.terminal().is_some()
-            && self.sessions_of(entry.item()).any(|s| s.id() != entry.id() && s.ui.view.terminal().is_some());
-        let base = if entry.number() == 1 && others { format!("{} #1", entry.label()) } else { entry.label().to_string() };
-        match entry.name() {
-            Some(name) => format!("{base} · {name}").into(),
-            None => base.into(),
+        match self.sessions.ending_all(key, confirmed) {
+            EndingAll::Disconnect(ids) => ids.into_iter().for_each(|id| self.disconnect_session(id, window, cx)),
+            EndingAll::Remove(ids) => ids.into_iter().for_each(|id| self.remove_session(id, window, cx)),
+            EndingAll::Ask { printing, live } => {
+                let name = self.item_for_key(key).map(|item| item.label().to_string()).unwrap_or_default();
+                let printing = if printing == 1 { "One of them is".to_string() } else { format!("{printing} of them are") };
+                self.overlay = Some(Overlay::Confirm {
+                    title: if live == 1 { format!("Disconnect the session of {name}?") } else { format!("Disconnect all {live} sessions of {name}?") },
+                    body: format!("{printing} still printing output, so a command may be running. Disconnecting ends it; the output so far stays until you close the sessions."),
+                    action: ConfirmAction::DisconnectAll(key.clone()),
+                });
+                cx.notify();
+            }
         }
     }
 
@@ -2359,20 +2264,10 @@ impl Workspace {
     }
 
     fn cycle(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        // Sessions in sidebar order.
-        let order: Vec<usize> = self
-            .sidebar_items()
-            .iter()
-            // A desktop in its own window isn't shown here: activating it only raises that
-            // window, so the cycle would stop on it.
-            .flat_map(|item| self.sessions_of(&item.key()).filter(|s| !s.own_window()).map(|s| s.id()).collect::<Vec<_>>())
-            .collect();
-        if order.is_empty() {
-            return;
+        let items: Vec<ItemKey> = self.sidebar_items().iter().map(|item| item.key()).collect();
+        if let Some(next) = self.sessions.cycle(&items, forward) {
+            self.activate(next, window, cx);
         }
-        let pos = self.sessions.active().and_then(|a| order.iter().position(|&id| id == a)).unwrap_or(0);
-        let next = if forward { (pos + 1) % order.len() } else { (pos + order.len() - 1) % order.len() };
-        self.activate(order[next], window, cx);
     }
 
     /// The item of the active Session, for "new session on this item".
@@ -2748,11 +2643,11 @@ impl Workspace {
                 return;
             }
             ConfirmAction::Close(id) => {
-                self.close_session(*id, window, cx);
+                self.end_session(*id, EndRequest::CloseNow, window, cx);
                 return;
             }
             ConfirmAction::DisconnectAll(key) => {
-                self.close_item_sessions(key, window, cx);
+                self.end_item_sessions(key, true, window, cx);
                 return;
             }
             ConfirmAction::DeleteAllHistory => {
@@ -3416,7 +3311,7 @@ impl Workspace {
                 ItemKey::Shell { project: id, name } => id.as_ref() == Some(&project.id) && project.shells.iter().any(|sh| &sh.name == name),
             }).collect();
             let live = sessions.iter().filter(|s| s.is_live()).count();
-            let busy = sessions.iter().any(|s| self.background_busy(s));
+            let busy = sessions.iter().any(|s| self.sessions.busy_out_of_sight(s));
             // Folded away with the Session in use inside: the row says so.
             let holds_active = collapsed && sessions.iter().any(|s| Some(s.id()) == self.sessions.active());
             let focused = self.nav_focus_on(&NavTarget::Project(project.id.clone()));
@@ -3775,7 +3670,7 @@ impl Workspace {
     /// What an item's row shows, worked out from its Sessions.
     fn item_state(&self, key: &ItemKey) -> ItemState<'_> {
         let sessions: Vec<&SessionEntry> = self.sessions_of(key).collect();
-        let listed = self.listed_sessions(key);
+        let listed = self.sessions.listed(key);
         let grouped = !listed.is_empty();
         let expanded = grouped && !self.collapsed_items.contains(key);
         let shown = self.sessions.last_shown(key).or_else(|| sessions.first().map(|s| s.id()));
@@ -3810,7 +3705,7 @@ impl Workspace {
         };
         let live = matches!(status, Some(Status::Connected | Status::Connecting));
         let busy = !holds_active && !beside
-            && if grouped { sessions.iter().any(|s| self.background_busy(s)) } else { main.is_some_and(|s| self.background_busy(s)) };
+            && if grouped { sessions.iter().any(|s| self.sessions.busy_out_of_sight(s)) } else { main.is_some_and(|s| self.sessions.busy_out_of_sight(s)) };
         // With the Sessions listed below, the active one is marked there instead.
         let active = main.is_some_and(|s| Some(s.id()) == self.sessions.active()) || (holds_active && !expanded);
         ItemState { sessions, listed, grouped, expanded, shown, main, beside, status, live, busy, active }
@@ -3828,7 +3723,7 @@ impl Workspace {
         let any_live = sessions.iter().any(|s| s.is_live());
         let session_id = main.map(|s| s.id());
         let sessions_live = main.is_some_and(|s| s.is_live());
-        let open_session = self.item_session(&key).and_then(|id| sessions.iter().find(|s| s.id() == id));
+        let open_session = self.sessions.item_session(&key).and_then(|id| sessions.iter().find(|s| s.id() == id));
         let open_live = open_session.is_some_and(|s| s.is_live());
         let visible = self.page == Page::Sessions && open_session.is_some_and(|s| {
             !s.own_window() && (Some(s.id()) == self.sessions.active() || self.sessions.shown_split().is_some_and(|split| split.contains(s.id())))
@@ -3838,7 +3733,7 @@ impl Workspace {
         let menu_item_src = item.clone();
         let menu_key = key.clone();
         // What "Disconnect all" / "Close all" acts on: the live Sessions while any is, else
-        // the dropped ones (see `close_item_sessions`).
+        // the dropped ones (see `end_item_sessions`).
         let count = sessions.iter().filter(|s| s.is_live() == any_live).count();
         // Beside the Session shown, unless that is the one this would show.
         let can_split = self.sessions.can_place(&key, None, Side::Right);
@@ -3892,7 +3787,7 @@ impl Workspace {
                         &if any_live { format!("Disconnect all {count}") } else { format!("Close all {count}") },
                         if any_live { "unplug" } else { "x" },
                         &ws,
-                        move |this, window, cx| this.request_close_all(&all, window, cx),
+                        move |this, window, cx| this.end_item_sessions(&all, false, window, cx),
                     ));
             }
             if let Some(id) = session_id {
@@ -3905,7 +3800,7 @@ impl Workspace {
                     menu = live_session_items(menu, id, keep_sessions, &ws);
                 } else {
                     menu = menu.item(
-                        menu_item("Close session", "x", &ws, move |this, window, cx| this.close_session(id, window, cx))
+                        menu_item("Close session", "x", &ws, move |this, window, cx| this.end_session(id, EndRequest::CloseNow, window, cx))
                             .action(Box::new(nav::NavDelete)),
                     );
                 }
@@ -4071,7 +3966,7 @@ impl Workspace {
                     el.on_aux_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         if event.is_middle_click() {
                             cx.stop_propagation();
-                            this.request_close(id, window, cx);
+                            this.end_session(id, EndRequest::Close, window, cx);
                         }
                     }))
                 })
@@ -4148,7 +4043,7 @@ impl Workspace {
                                                         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                                                         .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                                             cx.stop_propagation();
-                                                            this.request_close(id, window, cx);
+                                                            this.end_session(id, EndRequest::Close, window, cx);
                                                         })),
                                                 ),
                                         )
@@ -4279,7 +4174,7 @@ impl Workspace {
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 cx.stop_propagation();
-                this.request_close(id, window, cx);
+                this.end_session(id, EndRequest::Close, window, cx);
             }));
         // The guide hangs from the middle of the item's icon.
         let guide = indent + 7.;
@@ -4309,7 +4204,7 @@ impl Workspace {
                 el.on_aux_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     if event.is_middle_click() {
                         cx.stop_propagation();
-                        this.request_close(id, window, cx);
+                        this.end_session(id, EndRequest::Close, window, cx);
                     }
                 }))
             })
@@ -4352,7 +4247,7 @@ impl Workspace {
                 div()
                     .flex_shrink_0()
                     .id("session-status")
-                    .child(status_indicator(Some(session.status()), self.background_busy(session), p)),
+                    .child(status_indicator(Some(session.status()), self.sessions.busy_out_of_sight(session), p)),
             )
             .map(|el| {
                 if compact {
@@ -4403,7 +4298,7 @@ impl Workspace {
                     this.activate(id, window, cx);
                     this.reconnect(id, window, cx);
                 }))
-                .item(menu_item("Close", "x", &ws, move |this, window, cx| this.close_session(id, window, cx)).action(Box::new(nav::NavDelete)))
+                .item(menu_item("Close", "x", &ws, move |this, window, cx| this.end_session(id, EndRequest::CloseNow, window, cx)).action(Box::new(nav::NavDelete)))
             } else {
                 live_session_items(menu, id, keep, &ws)
             };
@@ -4454,26 +4349,13 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Disconnect every live Session of an item; when none is live, close them all.
-    fn close_item_sessions(&mut self, key: &ItemKey, window: &mut Window, cx: &mut Context<Self>) {
-        let any_live = self.sessions_of(key).any(|s| s.is_live());
-        let ids: Vec<usize> = self.sessions_of(key).filter(|s| s.is_live() == any_live).map(|s| s.id()).collect();
-        for id in ids {
-            if any_live {
-                self.disconnect_session(id, window, cx);
-            } else {
-                self.remove_session(id, window, cx);
-            }
-        }
-    }
-
     /// The active Session's state, name and address with its actions. Lives in the title
     /// bar, above the terminal.
     fn render_session_strip(&self, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = self.active_entry()?;
         // Where you are typing: state, the session's name, then user@address and port. The
         // name is repeated from the sidebar, which may be scrolled away from the active host.
-        let name = self.session_display_name(entry);
+        let name = self.sessions.display_name(entry);
         let target = match entry.kind() {
             SessionKind::Ssh { host_id } => entry
                 .project_id()
@@ -4609,7 +4491,7 @@ impl Workspace {
                     .when(live, |el| {
                         el.child(
                             strip_action("session-disconnect", "unplug", "Disconnect", false, p)
-                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.request_disconnect(id, window, cx))),
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.end_session(id, EndRequest::Disconnect, window, cx))),
                         )
                     })
                     // A new connection in the same terminal, the earlier output kept above: for a
@@ -5463,12 +5345,12 @@ fn form_field(label: &str, hint: Option<&str>, control: AnyElement, p: AppPalett
 /// the Session, or with `keep` (a terminal, "Keep sessions after disconnecting" on) only
 /// disconnects it, so then there is no separate Close.
 fn live_session_items(menu: PopupMenu, id: usize, keep: bool, ws: &gpui::WeakEntity<Workspace>) -> PopupMenu {
-    let disconnect = menu_item("Disconnect", "unplug", ws, move |this, window, cx| this.request_disconnect(id, window, cx));
+    let disconnect = menu_item("Disconnect", "unplug", ws, move |this, window, cx| this.end_session(id, EndRequest::Disconnect, window, cx));
     if keep {
         return menu.item(disconnect.action(Box::new(nav::NavDelete)));
     }
     menu.item(disconnect)
-        .item(menu_item("Close session", "x", ws, move |this, window, cx| this.request_close(id, window, cx)).action(Box::new(nav::NavDelete)))
+        .item(menu_item("Close session", "x", ws, move |this, window, cx| this.end_session(id, EndRequest::Close, window, cx)).action(Box::new(nav::NavDelete)))
 }
 
 /// The rows of `old` that differ from `new`, past their shared start and end, and how many
@@ -5696,7 +5578,7 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &CloseSession, window, cx| {
                 if let Some(id) = this.sessions.active().filter(|_| !this.modal_open(cx)) {
-                    this.request_close_by_key(id, window, cx);
+                    this.end_session(id, EndRequest::CloseByKey, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &NextSession, window, cx| {

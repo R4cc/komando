@@ -1,6 +1,7 @@
-//! The open Sessions: which exist for which sidebar item, their numbers and labels, which one
-//! is shown and what is shown once it goes, Split View, and the state the sidebar and these
-//! rules read (status, busy, a window of their own).
+//! The open Sessions: which exist for which sidebar item, their numbers, labels and names,
+//! which one is shown and what is shown once it goes, Split View, which of them the sidebar
+//! lists under their item (ADR 0005), what closing one comes to, Ctrl+Tab's order, and the
+//! terminal tabs Restore tabs on start keeps.
 //!
 //! Plain data with no gpui context, so its rules are tested without a window. Each Session
 //! carries a payload `P` with what only the UI needs (its view, file browser, subscriptions);
@@ -11,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use gpui::SharedString;
 
 use super::{ItemKey, SessionKind};
+use crate::model::{OpenTabs, SavedTab};
 use crate::session::Status;
 
 pub(super) struct Sessions<P> {
@@ -28,6 +30,57 @@ pub(super) struct Sessions<P> {
     split: Option<Split>,
     /// A split waiting for the new Session dropped into it.
     pending_split: Option<PendingSplit>,
+    /// Goes up whenever something the saved tabs record may have changed (see `tabs`).
+    revision: u64,
+}
+
+/// A way of ending a Session the user asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum EndRequest {
+    /// ×, Close session in the title bar and the nav: a Session still printing output asks
+    /// first, so a stray click doesn't end a long job.
+    Close,
+    /// Ctrl+Shift+W: as `Close`, except that a connected Remote Desktop asks first. Programs on
+    /// the remote side use the same keys, and ending a desktop can't be undone.
+    CloseByKey,
+    /// The menus' Close, and a close already confirmed: no question.
+    CloseNow,
+    /// Disconnect: end the connection, keeping the Session and its output.
+    Disconnect,
+}
+
+/// What a request to end a Session comes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Ending {
+    /// End its connection and keep it, with its output, to reconnect or close later.
+    Disconnect,
+    /// End it and take it out of the sidebar.
+    Remove,
+    /// Ask first.
+    Ask(Question),
+    /// Nothing to do (already disconnected, or gone).
+    Nothing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Question {
+    /// Close it although it is still printing output?
+    CloseWhilePrinting,
+    /// Disconnect it although it is still printing output?
+    DisconnectWhilePrinting,
+    /// Ctrl+Shift+W on a connected Remote Desktop: close it?
+    CloseDesktopByKey,
+}
+
+/// What ending all of an item's Sessions comes to.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum EndingAll {
+    /// Disconnect these, the live ones.
+    Disconnect(Vec<usize>),
+    /// None is live: close these, all of them.
+    Remove(Vec<usize>),
+    /// Ask first: `printing` of the `live` Sessions are still printing output.
+    Ask { printing: usize, live: usize },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -216,6 +269,7 @@ impl<P> Default for Sessions<P> {
             last_shown: HashMap::new(),
             split: None,
             pending_split: None,
+            revision: 0,
         }
     }
 }
@@ -247,6 +301,7 @@ impl<P> Sessions<P> {
             ui,
         });
         self.take_pending_split(id);
+        self.revision += 1;
         id
     }
 
@@ -319,6 +374,7 @@ impl<P> Sessions<P> {
         let item = entry.item.clone();
         self.active = Some(id);
         self.last_shown.insert(item, id);
+        self.revision += 1;
         Shown::Here
     }
 
@@ -339,6 +395,7 @@ impl<P> Sessions<P> {
         if shown.is_some() {
             self.active = None;
         }
+        self.revision += 1;
         Removed { entries, show }
     }
 
@@ -369,6 +426,7 @@ impl<P> Sessions<P> {
         if let Some(entry) = self.get_mut(id) {
             entry.name = name;
         }
+        self.revision += 1;
     }
 
     /// The split on screen: the remembered one, while one of its Sessions is shown.
@@ -481,6 +539,7 @@ impl<P> Sessions<P> {
         if let Some(id) = self.last_shown.remove(from) {
             self.last_shown.entry(to.clone()).or_insert(id);
         }
+        self.revision += 1;
         for entry in self.entries.iter_mut().filter(|s| s.item == *from) {
             entry.item = to.clone();
             if let Some(kind) = &kind {
@@ -514,6 +573,7 @@ impl<P> Sessions<P> {
             return None;
         }
         self.active = None;
+        self.revision += 1;
         self.next_to_show(id, &item, split_partner)
     }
 
@@ -522,6 +582,144 @@ impl<P> Sessions<P> {
         if let Some(entry) = self.get_mut(id) {
             entry.own_window = false;
         }
+    }
+}
+
+/// Naming, the sidebar's rows and Ctrl+Tab.
+impl<P> Sessions<P> {
+    /// How the title bar and sidebar name a Session: "web01", "web01 #2", "web01 #1" once
+    /// the Host has another terminal, and the name it was given after a dot.
+    pub fn display_name(&self, entry: &Entry<P>) -> SharedString {
+        let others = !entry.is_desktop() && self.of(&entry.item).any(|s| s.id != entry.id && !s.is_desktop());
+        let base = if entry.number == 1 && others { format!("{} #1", entry.label) } else { entry.label.to_string() };
+        match &entry.name {
+            Some(name) => format!("{base} · {name}").into(),
+            None => base.into(),
+        }
+    }
+
+    /// Printing output where it can't be seen: not shown in either pane. Output already
+    /// visible needs no extra moving indicator.
+    pub fn busy_out_of_sight(&self, entry: &Entry<P>) -> bool {
+        entry.busy && Some(entry.id) != self.active && !self.shown_split().is_some_and(|split| split.contains(entry.id))
+    }
+
+    /// The Sessions an item lists in rows of their own under it. A Remote Desktop always gets
+    /// one, so it never passes for the Host's terminal; the Host's row itself stays its
+    /// terminal while it has only one. With several terminals every Session is listed.
+    pub fn listed(&self, item: &ItemKey) -> Vec<&Entry<P>> {
+        let all: Vec<&Entry<P>> = self.of(item).collect();
+        let terminals = all.iter().filter(|s| !s.is_desktop()).count();
+        if terminals < all.len() && terminals <= 1 {
+            all.into_iter().filter(|s| s.is_desktop()).collect()
+        } else if all.len() > 1 {
+            all
+        } else {
+            vec![]
+        }
+    }
+
+    /// The terminal an item's own row stands for while only its Remote Desktops are listed.
+    pub fn row_terminal(&self, item: &ItemKey) -> Option<usize> {
+        let listed = self.listed(item);
+        if listed.is_empty() {
+            return None;
+        }
+        self.of(item).find(|s| !listed.iter().any(|l| l.id == s.id)).map(|s| s.id)
+    }
+
+    /// The Session a click on an item's row shows. Its menu uses the same target when
+    /// deciding whether Show session would do anything.
+    pub fn item_session(&self, item: &ItemKey) -> Option<usize> {
+        self.row_terminal(item)
+            .or_else(|| self.last_shown(item))
+            .filter(|&id| self.contains(id))
+            // Prefer one shown here to a desktop in its own window.
+            .or_else(|| self.of(item).find(|s| !s.own_window).map(|s| s.id))
+            .or_else(|| self.of(item).next().map(|s| s.id))
+    }
+
+    /// Ctrl+Tab (`forward`) and Ctrl+Shift+Tab: the next Session in sidebar order, the items'
+    /// order given. A desktop in its own window isn't shown here: showing it only raises that
+    /// window, so the cycle would stop on it.
+    pub fn cycle(&self, items: &[ItemKey], forward: bool) -> Option<usize> {
+        let order: Vec<usize> = items.iter().flat_map(|item| self.of(item).filter(|s| !s.own_window).map(|s| s.id)).collect();
+        if order.is_empty() {
+            return None;
+        }
+        let pos = self.active.and_then(|a| order.iter().position(|&id| id == a)).unwrap_or(0);
+        let next = if forward { (pos + 1) % order.len() } else { (pos + order.len() - 1) % order.len() };
+        Some(order[next])
+    }
+}
+
+/// Ending Sessions.
+impl<P> Sessions<P> {
+    /// What `request` comes to for a Session. With `keep_disconnected` (the setting), closing
+    /// a live terminal disconnects it instead, keeping its output.
+    pub fn ending(&self, id: usize, request: EndRequest, keep_disconnected: bool) -> Ending {
+        let Some(entry) = self.get(id) else { return Ending::Nothing };
+        let live = entry.is_live();
+        let printing = live && entry.busy;
+        let close = if keep_disconnected && live && !entry.is_desktop() { Ending::Disconnect } else { Ending::Remove };
+        match request {
+            EndRequest::CloseNow => close,
+            EndRequest::CloseByKey if live && entry.is_desktop() => Ending::Ask(Question::CloseDesktopByKey),
+            EndRequest::Close | EndRequest::CloseByKey => match (printing, keep_disconnected) {
+                (true, false) => Ending::Ask(Question::CloseWhilePrinting),
+                (true, true) => Ending::Ask(Question::DisconnectWhilePrinting),
+                // A dropped Session has nothing left to disconnect: × closes it.
+                (false, false) => close,
+                (false, true) if !live => close,
+                (false, true) => Ending::Disconnect,
+            },
+            EndRequest::Disconnect if !live => Ending::Nothing,
+            EndRequest::Disconnect if printing => Ending::Ask(Question::DisconnectWhilePrinting),
+            EndRequest::Disconnect => Ending::Disconnect,
+        }
+    }
+
+    /// Ending all of an item's Sessions: disconnect the live ones, or close them all once
+    /// none is live. Asks first if any is still printing output, unless `confirmed`.
+    pub fn ending_all(&self, item: &ItemKey, confirmed: bool) -> EndingAll {
+        let printing = self.of(item).filter(|s| s.is_live() && s.busy).count();
+        if printing > 0 && !confirmed {
+            return EndingAll::Ask { printing, live: self.of(item).filter(|s| s.is_live()).count() };
+        }
+        let any_live = self.of(item).any(|s| s.is_live());
+        let ids = self.of(item).filter(|s| s.is_live() == any_live).map(|s| s.id).collect();
+        if any_live { EndingAll::Disconnect(ids) } else { EndingAll::Remove(ids) }
+    }
+}
+
+/// Restore tabs on start.
+impl<P> Sessions<P> {
+    /// The terminal tabs open now, in tab order, and which was shown. Remote Desktops aren't
+    /// kept.
+    pub fn tabs(&self) -> OpenTabs {
+        let mut tabs = OpenTabs::default();
+        for entry in &self.entries {
+            let name = entry.name.as_ref().map(|n| n.to_string());
+            let tab = match (&entry.kind, &entry.item) {
+                (SessionKind::Ssh { .. }, ItemKey::Host { project, host }) => {
+                    SavedTab::Host { project: project.clone(), host: host.clone(), name }
+                }
+                (SessionKind::Local { .. }, ItemKey::Shell { project, name: shell }) => {
+                    SavedTab::Shell { project: project.clone(), shell: shell.clone(), name }
+                }
+                _ => continue,
+            };
+            if self.active == Some(entry.id) {
+                tabs.active = Some(tabs.tabs.len());
+            }
+            tabs.tabs.push(tab);
+        }
+        tabs
+    }
+
+    /// Goes up whenever `tabs` may have changed, so they are worked out again only then.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -998,6 +1196,224 @@ mod tests {
         sessions.close_split();
         assert_eq!(sessions.shown_split(), None);
         assert_eq!(sessions.active(), Some(left));
+    }
+
+    /// A Session of `kind` that is live (or not) and printing output (or not).
+    fn session_in(sessions: &mut Sessions<()>, kind: SessionKind, live: bool, printing: bool) -> usize {
+        let item = host("web01");
+        let id = open(sessions, &item, kind);
+        sessions.set_status(id, if live { Status::Connected } else { Status::Disconnected("gone".into()) });
+        sessions.set_busy(id, printing);
+        id
+    }
+
+    #[test]
+    fn what_ending_a_session_comes_to() {
+        use EndRequest::*;
+        use Ending::{Ask, Disconnect as Disc, Nothing, Remove};
+        use Question::*;
+        #[rustfmt::skip]
+        let cases = [
+            // request, desktop, live, printing, keep disconnected → ending
+            (Close, false, true, false, false, Remove),
+            (Close, false, true, true, false, Ask(CloseWhilePrinting)),
+            (Close, false, false, false, false, Remove),
+            (Close, false, true, false, true, Disc),
+            (Close, false, true, true, true, Ask(DisconnectWhilePrinting)),
+            // A dropped Session has nothing left to disconnect: × closes it.
+            (Close, false, false, false, true, Remove),
+            // Pinned as it is: × with Keep on disconnects a live desktop, which a confirmed
+            // close (CloseNow) would discard.
+            (Close, true, true, false, true, Disc),
+            (CloseByKey, true, true, false, false, Ask(CloseDesktopByKey)),
+            (CloseByKey, true, false, false, false, Remove),
+            (CloseByKey, false, true, true, false, Ask(CloseWhilePrinting)),
+            (CloseNow, false, true, true, false, Remove),
+            (CloseNow, false, true, true, true, Disc),
+            (CloseNow, true, true, false, true, Remove),
+            (CloseNow, false, false, false, true, Remove),
+            (Disconnect, false, true, false, false, Disc),
+            (Disconnect, false, true, true, false, Ask(DisconnectWhilePrinting)),
+            (Disconnect, false, false, false, false, Nothing),
+            (Disconnect, true, true, false, true, Disc),
+        ];
+        for (request, desktop, live, printing, keep, expected) in cases {
+            let mut sessions = Sessions::default();
+            let kind = if desktop { rdp("web01") } else { ssh("web01") };
+            let id = session_in(&mut sessions, kind, live, printing);
+            assert_eq!(
+                sessions.ending(id, request, keep),
+                expected,
+                "{request:?}, desktop {desktop}, live {live}, printing {printing}, keep {keep}"
+            );
+        }
+        assert_eq!(Sessions::<()>::default().ending(1, Close, false), Nothing);
+    }
+
+    #[test]
+    fn ending_all_of_an_items_sessions_disconnects_the_live_ones_or_closes_the_dropped() {
+        let mut sessions = Sessions::default();
+        let live = session_in(&mut sessions, ssh("web01"), true, false);
+        let dropped = session_in(&mut sessions, ssh("web01"), false, false);
+        let item = host("web01");
+        assert_eq!(sessions.ending_all(&item, false), EndingAll::Disconnect(vec![live]));
+        sessions.set_status(live, Status::Disconnected("gone".into()));
+        assert_eq!(sessions.ending_all(&item, false), EndingAll::Remove(vec![live, dropped]));
+    }
+
+    #[test]
+    fn ending_all_asks_first_while_any_is_printing_unless_confirmed() {
+        let mut sessions = Sessions::default();
+        let printing = session_in(&mut sessions, ssh("web01"), true, true);
+        let quiet = session_in(&mut sessions, ssh("web01"), true, false);
+        session_in(&mut sessions, ssh("web01"), false, false);
+        let item = host("web01");
+        assert_eq!(sessions.ending_all(&item, false), EndingAll::Ask { printing: 1, live: 2 });
+        assert_eq!(sessions.ending_all(&item, true), EndingAll::Disconnect(vec![printing, quiet]));
+    }
+
+    #[test]
+    fn a_hosts_first_terminal_is_called_number_one_once_it_has_another() {
+        let mut sessions = Sessions::default();
+        let web = host("web01");
+        let first = open(&mut sessions, &web, ssh("web01"));
+        let desktop = open(&mut sessions, &web, rdp("web01"));
+        let name = |sessions: &Sessions<()>, id| sessions.display_name(sessions.get(id).unwrap()).to_string();
+        assert_eq!(name(&sessions, first), "web01");
+        let second = open(&mut sessions, &web, ssh("web01"));
+        assert_eq!(name(&sessions, first), "web01 #1");
+        assert_eq!(name(&sessions, second), "web01 #2");
+        assert_eq!(name(&sessions, desktop), "web01 · RDP");
+        sessions.set_name(second, Some("logs".into()));
+        assert_eq!(name(&sessions, second), "web01 #2 · logs");
+    }
+
+    #[test]
+    fn output_printing_in_either_pane_is_in_sight() {
+        let mut sessions = Sessions::default();
+        let left = open(&mut sessions, &host("web01"), ssh("web01"));
+        let right = open(&mut sessions, &host("db01"), ssh("db01"));
+        let hidden = open(&mut sessions, &host("app01"), ssh("app01"));
+        for id in [left, right, hidden] {
+            sessions.set_busy(id, true);
+        }
+        split(&mut sessions, left, right);
+        let out_of_sight = |sessions: &Sessions<()>, id| sessions.busy_out_of_sight(sessions.get(id).unwrap());
+        assert!(!out_of_sight(&sessions, left) && !out_of_sight(&sessions, right));
+        assert!(out_of_sight(&sessions, hidden));
+    }
+
+    #[test]
+    fn an_item_lists_its_sessions_once_it_has_several_or_a_desktop() {
+        let mut sessions = Sessions::default();
+        let web = host("web01");
+        let ids = |list: Vec<&Entry<()>>| list.iter().map(|s| s.id()).collect::<Vec<_>>();
+        let terminal = open(&mut sessions, &web, ssh("web01"));
+        assert!(sessions.listed(&web).is_empty());
+        assert_eq!(sessions.row_terminal(&web), None);
+        // The row stays the Host's terminal; the desktop gets a row of its own.
+        let desktop = open(&mut sessions, &web, rdp("web01"));
+        assert_eq!(ids(sessions.listed(&web)), vec![desktop]);
+        assert_eq!(sessions.row_terminal(&web), Some(terminal));
+        // Two terminals: every Session is listed.
+        let second = open(&mut sessions, &web, ssh("web01"));
+        assert_eq!(ids(sessions.listed(&web)), vec![terminal, desktop, second]);
+        assert_eq!(sessions.row_terminal(&web), None);
+        // A lone desktop is listed too, so it never passes for the Host's terminal.
+        let mut lone = Sessions::default();
+        let only = open(&mut lone, &web, rdp("web01"));
+        assert_eq!(ids(lone.listed(&web)), vec![only]);
+    }
+
+    #[test]
+    fn clicking_an_items_row_shows_its_terminal_or_the_session_last_shown() {
+        let mut sessions = Sessions::default();
+        let web = host("web01");
+        let terminal = open(&mut sessions, &web, ssh("web01"));
+        let desktop = open(&mut sessions, &web, rdp("web01"));
+        sessions.activate(desktop);
+        assert_eq!(sessions.item_session(&web), Some(terminal), "the row is the terminal beside its listed desktop");
+        let second = open(&mut sessions, &web, ssh("web01"));
+        sessions.activate(second);
+        assert_eq!(sessions.item_session(&web), Some(second));
+    }
+
+    #[test]
+    fn clicking_an_items_row_prefers_a_session_shown_here_to_a_desktop_in_its_own_window() {
+        let mut sessions = Sessions::default();
+        let web = host("web01");
+        let away = open(&mut sessions, &web, rdp("web01"));
+        let here = open(&mut sessions, &web, SessionKind::Desktop { host_id: "web01".into(), protocol: crate::model::Protocol::Vnc });
+        sessions.detach(away);
+        assert_eq!(sessions.item_session(&web), Some(here));
+    }
+
+    #[test]
+    fn ctrl_tab_follows_the_sidebar_and_skips_desktops_in_their_own_window() {
+        let mut sessions = Sessions::default();
+        let (web, db) = (host("web01"), host("db01"));
+        let db1 = open(&mut sessions, &db, ssh("db01"));
+        let away = open(&mut sessions, &web, rdp("web01"));
+        let web1 = open(&mut sessions, &web, ssh("web01"));
+        sessions.detach(away);
+        let order = [web.clone(), db.clone()];
+        assert_eq!(sessions.cycle(&order, true), Some(db1), "nothing shown: from the first");
+        sessions.activate(web1);
+        assert_eq!(sessions.cycle(&order, true), Some(db1));
+        assert_eq!(sessions.cycle(&order, false), Some(db1));
+        sessions.activate(db1);
+        assert_eq!(sessions.cycle(&order, true), Some(web1));
+        assert_eq!(Sessions::<()>::default().cycle(&order, true), None);
+    }
+
+    #[test]
+    fn the_saved_tabs_are_the_terminals_in_order_with_the_shown_one() {
+        let mut sessions = Sessions::default();
+        let web = host("web01");
+        let shell = ItemKey::Shell { project: None, name: "pwsh".into() };
+        open(&mut sessions, &web, ssh("web01"));
+        open(&mut sessions, &web, rdp("web01"));
+        let local = sessions.add(shell, SessionKind::Local { shell: Default::default() }, "pwsh", |_, _| ());
+        sessions.set_name(local, Some("build".into()));
+        sessions.activate(local);
+        let tabs = sessions.tabs();
+        assert_eq!(
+            tabs.tabs,
+            vec![
+                SavedTab::Host { project: "p".into(), host: "web01".into(), name: None },
+                SavedTab::Shell { project: None, shell: "pwsh".into(), name: Some("build".into()) },
+            ]
+        );
+        assert_eq!(tabs.active, Some(1));
+    }
+
+    #[test]
+    fn the_revision_goes_up_with_every_change_the_saved_tabs_record() {
+        let mut sessions = Sessions::default();
+        let web = host("web01");
+        let mut last = sessions.revision();
+        let mut changed = |sessions: &Sessions<()>| {
+            let now = sessions.revision();
+            let up = now > last;
+            last = now;
+            up
+        };
+        let id = open(&mut sessions, &web, ssh("web01"));
+        assert!(changed(&sessions), "add");
+        sessions.activate(id);
+        assert!(changed(&sessions), "activate");
+        sessions.set_name(id, Some("logs".into()));
+        assert!(changed(&sessions), "rename");
+        sessions.move_item(&web, &host("web02"), "web01", None);
+        assert!(changed(&sessions), "move");
+        close(&mut sessions, id);
+        assert!(changed(&sessions), "remove");
+        // Status and busy aren't saved.
+        let other = open(&mut sessions, &web, ssh("web01"));
+        changed(&sessions);
+        sessions.set_status(other, Status::Connected);
+        sessions.set_busy(other, true);
+        assert!(!changed(&sessions));
     }
 
     #[test]

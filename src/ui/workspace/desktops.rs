@@ -4,6 +4,7 @@
 use gpui::{AnyElement, ClickEvent, Context, Window, prelude::*};
 use zeroize::Zeroizing;
 
+use super::sessions::EndRequest;
 use super::{ItemKey, Pending, SessionEntry, SessionKind, SessionParts, SessionView, Workspace, strip_action};
 use crate::desktop::{self, Route, Target};
 use crate::model::Protocol;
@@ -336,7 +337,7 @@ impl Workspace {
         if entry.is_live() {
             buttons.push(
                 strip_action("desktop-disconnect", "unplug", "Disconnect", false, p)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.request_disconnect(id, window, cx)))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.end_session(id, EndRequest::Disconnect, window, cx)))
                     .into_any_element(),
             );
         } else {

@@ -13,6 +13,7 @@ use gpui::{AnyElement, Context, DismissEvent, Entity, FocusHandle, Focusable as 
 use gpui_component::menu::PopupMenu;
 use gpui_component::popover::Popover;
 
+use super::sessions::EndRequest;
 use super::{ItemKey, SidebarRow, Workspace};
 use crate::ui::widgets::MenuTrigger;
 
@@ -242,7 +243,7 @@ impl Workspace {
         let mut out = vec![];
         let item = |out: &mut Vec<(NavTarget, usize)>, key: ItemKey, ix: usize| {
             let expanded = !self.collapsed_items.contains(&key);
-            let listed: Vec<usize> = if expanded { self.listed_sessions(&key).iter().map(|s| s.id()).collect() } else { vec![] };
+            let listed: Vec<usize> = if expanded { self.sessions.listed(&key).iter().map(|s| s.id()).collect() } else { vec![] };
             out.push((NavTarget::Item(key), ix));
             out.extend(listed.into_iter().map(|id| (NavTarget::Session(id), ix)));
         };
@@ -374,7 +375,7 @@ impl Workspace {
         let Some((cursor, targets)) = self.nav_cursor() else { return };
         match &cursor {
             NavTarget::Project(id) if self.settings.collapsed_projects.contains(id) => self.set_project_collapsed(id, false, cx),
-            NavTarget::Item(key) if !self.listed_sessions(key).is_empty() && self.collapsed_items.contains(key) => {
+            NavTarget::Item(key) if !self.sessions.listed(key).is_empty() && self.collapsed_items.contains(key) => {
                 self.toggle_item_sessions(key, cx)
             }
             NavTarget::Project(_) | NavTarget::Item(_) => {
@@ -402,7 +403,7 @@ impl Workspace {
                     self.nav_move_to(NavTarget::Item(item), cx);
                 }
             }
-            NavTarget::Item(key) if !self.listed_sessions(&key).is_empty() && !self.collapsed_items.contains(&key) => {
+            NavTarget::Item(key) if !self.sessions.listed(&key).is_empty() && !self.collapsed_items.contains(&key) => {
                 self.toggle_item_sessions(&key, cx)
             }
             NavTarget::Item(ItemKey::Host { project, .. } | ItemKey::Shell { project: Some(project), .. })
@@ -483,7 +484,7 @@ impl Workspace {
     fn nav_delete_inner(&mut self, host: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some((cursor, _)) = self.nav_cursor() else { return };
         if !host && let Some(id) = self.nav_session(&cursor) {
-            self.request_close(id, window, cx);
+            self.end_session(id, EndRequest::Close, window, cx);
             // Stay in the sidebar, which closing would have left.
             if !self.modal_open(cx) {
                 window.focus(&self.nav.focus, cx);

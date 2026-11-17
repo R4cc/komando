@@ -9,6 +9,7 @@ use gpui::{
     WeakEntity, Window, WindowBounds, WindowControlArea, WindowOptions, div, point, prelude::*, px, size,
 };
 
+use super::sessions::EndRequest;
 use super::{SessionView, TITLE_BAR_HEIGHT, TRAFFIC_LIGHT_POSITION, TRAFFIC_LIGHTS_WIDTH, Workspace, strip_action, window_controls};
 use crate::session::Status;
 use crate::theme::Appearance;
@@ -124,7 +125,7 @@ impl Render for DesktopWindow {
                 strip_action("desktop-close", "unplug", if live { "Disconnect" } else { "Close session" }, true, p).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         this.on_workspace(cx, move |ws, window, cx| {
-                            if live { ws.request_disconnect(id, window, cx) } else { ws.close_session(id, window, cx) }
+                            if live { ws.end_session(id, EndRequest::Disconnect, window, cx) } else { ws.end_session(id, EndRequest::CloseNow, window, cx) }
                         })
                     },
                 )),
