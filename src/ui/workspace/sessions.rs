@@ -1,6 +1,6 @@
 //! The open Sessions: which exist for which sidebar item, their numbers and labels, which one
-//! is shown and what is shown once it goes, and the state the sidebar and these rules read
-//! (status, busy, a window of their own).
+//! is shown and what is shown once it goes, Split View, and the state the sidebar and these
+//! rules read (status, busy, a window of their own).
 //!
 //! Plain data with no gpui context, so its rules are tested without a window. Each Session
 //! carries a payload `P` with what only the UI needs (its view, file browser, subscriptions);
@@ -24,6 +24,91 @@ pub(super) struct Sessions<P> {
     active: Option<usize>,
     /// The Session last shown for each item, so a click returns to it.
     last_shown: HashMap<ItemKey, usize>,
+    /// Two Sessions side by side, shown while either is active.
+    split: Option<Split>,
+    /// A split waiting for the new Session dropped into it.
+    pending_split: Option<PendingSplit>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Side {
+    Left,
+    Right,
+}
+
+impl Side {
+    fn opposite(self) -> Self {
+        match self {
+            Side::Left => Side::Right,
+            Side::Right => Side::Left,
+        }
+    }
+}
+
+/// Two Sessions side by side. It is remembered while another Session is shown and comes
+/// back when either of its two is activated again.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct Split {
+    pub left: usize,
+    pub right: usize,
+}
+
+impl Split {
+    /// `placed` on `side`, `other` on the other one.
+    fn new(side: Side, placed: usize, other: usize) -> Self {
+        match side {
+            Side::Left => Split { left: placed, right: other },
+            Side::Right => Split { left: other, right: placed },
+        }
+    }
+
+    pub fn contains(&self, id: usize) -> bool {
+        self.left == id || self.right == id
+    }
+
+    fn at(&self, side: Side) -> usize {
+        match side {
+            Side::Left => self.left,
+            Side::Right => self.right,
+        }
+    }
+
+    pub fn other(&self, id: usize) -> Option<usize> {
+        if self.left == id {
+            Some(self.right)
+        } else if self.right == id {
+            Some(self.left)
+        } else {
+            None
+        }
+    }
+}
+
+/// A split waiting for its new Session, which may first need the Vault unlocked.
+pub(super) struct PendingSplit {
+    item: ItemKey,
+    partner: usize,
+    side: Side,
+}
+
+/// How a drop on one half plays out.
+enum Placement {
+    /// The two Sessions of the split trade places.
+    Swap,
+    /// This Session goes there.
+    Existing(usize),
+    /// A new Session of the item goes there.
+    New,
+}
+
+/// What putting an item in the split did, for the caller to finish.
+pub(super) enum Placed {
+    /// The split is set: show this Session.
+    Show(usize),
+    /// The split is set with this Session in it: show it, and reconnect it if it dropped.
+    Existing(usize),
+    /// A new Session of the item goes there: open one, after `wait_for_split`.
+    New(PendingSplit),
 }
 
 /// What showing a Session comes to.
@@ -123,7 +208,15 @@ impl<P> Entry<P> {
 
 impl<P> Default for Sessions<P> {
     fn default() -> Self {
-        Self { entries: Vec::new(), next_id: 1, numbers: HashMap::new(), active: None, last_shown: HashMap::new() }
+        Self {
+            entries: Vec::new(),
+            next_id: 1,
+            numbers: HashMap::new(),
+            active: None,
+            last_shown: HashMap::new(),
+            split: None,
+            pending_split: None,
+        }
     }
 }
 
@@ -153,6 +246,7 @@ impl<P> Sessions<P> {
             own_window: false,
             ui,
         });
+        self.take_pending_split(id);
         id
     }
 
@@ -228,15 +322,20 @@ impl<P> Sessions<P> {
         Shown::Here
     }
 
-    /// Take out every Session that `matches`, keeping the others in order. If the shown one
-    /// goes, nothing is shown, and `show` says what to show next: the other half of its split
-    /// (`split_partner`), or else another Session of its item in the main window.
-    pub fn remove_where(&mut self, matches: impl Fn(&Entry<P>) -> bool, split_partner: impl Fn(usize) -> Option<usize>) -> Removed<P> {
+    /// Take out every Session that `matches`, keeping the others in order. A split one of
+    /// them was in is forgotten. If the shown one goes, nothing is shown, and `show` says what
+    /// to show next: the other half of its split, or else another Session of its item in the
+    /// main window.
+    pub fn remove_where(&mut self, matches: impl Fn(&Entry<P>) -> bool) -> Removed<P> {
         let (entries, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.entries).into_iter().partition(|s| matches(s));
         self.entries = kept;
         self.last_shown.retain(|_, id| !entries.iter().any(|s| s.id == *id));
+        let split = self.split;
+        if split.is_some_and(|split| entries.iter().any(|s| split.contains(s.id))) {
+            self.split = None;
+        }
         let shown = self.active.and_then(|active| entries.iter().find(|s| s.id == active));
-        let show = shown.and_then(|shown| self.next_to_show(shown.id, &shown.item, split_partner(shown.id)));
+        let show = shown.and_then(|shown| self.next_to_show(shown.id, &shown.item, split.and_then(|s| s.other(shown.id))));
         if shown.is_some() {
             self.active = None;
         }
@@ -272,6 +371,103 @@ impl<P> Sessions<P> {
         }
     }
 
+    /// The split on screen: the remembered one, while one of its Sessions is shown.
+    pub fn shown_split(&self) -> Option<Split> {
+        let split = self.split?;
+        self.active.filter(|&id| split.contains(id)).map(|_| split)
+    }
+
+    /// Whether a Session is in the remembered split, shown or not.
+    pub fn in_split(&self, id: usize) -> bool {
+        self.split.is_some_and(|split| split.contains(id))
+    }
+
+    /// Back to one Session: the shown one fills the terminal area again.
+    pub fn close_split(&mut self) {
+        self.split = None;
+    }
+
+    /// Forget the split once one of its Sessions leaves it. Returns the one left.
+    fn leave_split(&mut self, id: usize) -> Option<usize> {
+        let partner = self.split?.other(id)?;
+        self.split = None;
+        Some(partner)
+    }
+
+    /// What dropping `item` (or its `session`) on `side` would do, and the Session that stays
+    /// on the other side, or `None` when it would change nothing (it is already there).
+    fn placement(&self, item: &ItemKey, session: Option<usize>, side: Side) -> Option<(Placement, usize)> {
+        let active = self.active?;
+        let shown = self.shown_split();
+        // The Session that stays on the other side.
+        let other = shown.map_or(active, |s| s.at(side.opposite()));
+        let here = shown.map(|s| s.at(side));
+        let item_of = |id: usize| self.get(id).map(|s| &s.item);
+        // Dragging the other half's Session (or its item) across swaps the two.
+        if shown.is_some() && (session == Some(other) || (session.is_none() && item_of(other) == Some(item))) {
+            return Some((Placement::Swap, other));
+        }
+        let placed = match session {
+            Some(id) if id == other => return None,
+            Some(id) => Placement::Existing(id),
+            // The item's Session last shown, unless that one stays on the other side: then
+            // another of its Sessions, or a new one (two shells on one server).
+            None => {
+                // Not a desktop in its own window: the split would show its placeholder.
+                let in_main = |id: usize| self.get(id).is_some_and(|s| !s.own_window);
+                let last = self.last_shown(item).filter(|&id| id != other && item_of(id) == Some(item) && in_main(id));
+                match last.or_else(|| self.of(item).map(|s| s.id).find(|&id| id != other && in_main(id))) {
+                    Some(id) => Placement::Existing(id),
+                    None => Placement::New,
+                }
+            }
+        };
+        if let Placement::Existing(id) = placed
+            && Some(id) == here
+        {
+            return None;
+        }
+        Some((placed, other))
+    }
+
+    /// Whether dropping `item` (or its `session`) on `side` would change anything.
+    pub fn can_place(&self, item: &ItemKey, session: Option<usize>, side: Side) -> bool {
+        self.placement(item, session, side).is_some()
+    }
+
+    /// Put `item` (or its `session`) on `side` of the terminal area, beside what is shown.
+    /// `None` when that changes nothing.
+    pub fn place(&mut self, item: &ItemKey, session: Option<usize>, side: Side) -> Option<Placed> {
+        let (placement, other) = self.placement(item, session, side)?;
+        Some(match placement {
+            Placement::Swap => {
+                let split = self.shown_split()?;
+                self.split = Some(Split { left: split.right, right: split.left });
+                Placed::Show(other)
+            }
+            Placement::Existing(id) => {
+                self.split = Some(Split::new(side, id, other));
+                Placed::Existing(id)
+            }
+            Placement::New => Placed::New(PendingSplit { item: item.clone(), partner: other, side }),
+        })
+    }
+
+    /// The new Session about to be opened for a `Placed::New` goes into its split once it is
+    /// added (after the Vault, if the Host needs it).
+    pub fn wait_for_split(&mut self, pending: PendingSplit) {
+        self.pending_split = Some(pending);
+    }
+
+    /// A Session was just added: put it in the split it was opened for.
+    fn take_pending_split(&mut self, id: usize) {
+        let Some(item) = self.get(id).map(|s| s.item.clone()) else { return };
+        let Some(pending) = self.pending_split.take_if(|p| p.item == item) else { return };
+        if self.contains(pending.partner) {
+            self.split = Some(Split::new(pending.side, id, pending.partner));
+        }
+    }
+
     /// An item's Sessions now belong to another: a Host moved to another Project, or a Local
     /// Shell renamed (`kind` is then the shell as now saved, to reconnect with). They stay
     /// open. Where `to` already has Sessions (a Host in both Projects), a moved one whose
@@ -303,10 +499,11 @@ impl<P> Sessions<P> {
         }
     }
 
-    /// A Remote Desktop moved into a window of its own. It is no longer what its item's row
-    /// returns to, and if the main window showed it, nothing is shown there; the result is
-    /// what to show instead (see `next_to_show`).
-    pub fn detach(&mut self, id: usize, split_partner: Option<usize>) -> Option<usize> {
+    /// A Remote Desktop moved into a window of its own. It leaves its split, it is no longer
+    /// what its item's row returns to, and if the main window showed it, nothing is shown
+    /// there; the result is what to show instead (see `next_to_show`).
+    pub fn detach(&mut self, id: usize) -> Option<usize> {
+        let split_partner = self.leave_split(id);
         let entry = self.get_mut(id)?;
         entry.own_window = true;
         let item = entry.item.clone();
@@ -359,8 +556,16 @@ mod tests {
     }
 
     /// Close one Session, as × does.
-    fn close(sessions: &mut Sessions<()>, id: usize, split_partner: impl Fn(usize) -> Option<usize>) -> Removed<()> {
-        sessions.remove_where(|s| s.id() == id, split_partner)
+    fn close(sessions: &mut Sessions<()>, id: usize) -> Removed<()> {
+        sessions.remove_where(|s| s.id() == id)
+    }
+
+    /// Show `left` and `right` side by side, `left` active.
+    fn split(sessions: &mut Sessions<()>, left: usize, right: usize) {
+        sessions.activate(right);
+        assert!(matches!(sessions.place(&sessions.get(left).unwrap().item().clone(), Some(left), Side::Left), Some(Placed::Existing(_))));
+        sessions.activate(left);
+        assert_eq!(sessions.shown_split(), Some(Split { left, right }));
     }
 
     fn label(sessions: &Sessions<()>, id: usize) -> String {
@@ -396,7 +601,7 @@ mod tests {
         let web = host("web01");
         open(&mut sessions, &web, ssh("web01"));
         let second = open(&mut sessions, &web, ssh("web01"));
-        close(&mut sessions, second, |_| None);
+        close(&mut sessions, second);
         let third = open(&mut sessions, &web, ssh("web01"));
         assert_eq!(label(&sessions, third), "web01 #3");
     }
@@ -407,8 +612,8 @@ mod tests {
         let web = host("web01");
         let first = open(&mut sessions, &web, ssh("web01"));
         let second = open(&mut sessions, &web, ssh("web01"));
-        close(&mut sessions, first, |_| None);
-        close(&mut sessions, second, |_| None);
+        close(&mut sessions, first);
+        close(&mut sessions, second);
         let again = open(&mut sessions, &web, ssh("web01"));
         assert_eq!(label(&sessions, again), "web01");
     }
@@ -505,7 +710,7 @@ mod tests {
     fn a_session_in_its_own_window_says_so() {
         let mut sessions = Sessions::default();
         let id = open(&mut sessions, &host("web01"), rdp("web01"));
-        sessions.detach(id, None);
+        sessions.detach(id);
         assert!(sessions.get(id).unwrap().own_window());
         sessions.reattach(id);
         assert!(!sessions.get(id).unwrap().own_window());
@@ -531,7 +736,7 @@ mod tests {
         let terminal = open(&mut sessions, &web, ssh("web01"));
         let desktop = open(&mut sessions, &web, rdp("web01"));
         sessions.activate(terminal);
-        sessions.detach(desktop, None);
+        sessions.detach(desktop);
         assert_eq!(sessions.activate(desktop), Shown::InOwnWindow);
         assert_eq!(sessions.active(), Some(terminal));
         assert_eq!(sessions.activate(99), Shown::Gone);
@@ -544,8 +749,8 @@ mod tests {
         let web = open(&mut sessions, &host("web01"), ssh("web01"));
         open(&mut sessions, &host("web01"), ssh("web01"));
         let db = open(&mut sessions, &host("db01"), ssh("db01"));
-        sessions.activate(web);
-        let removed = close(&mut sessions, web, |id| (id == web).then_some(db));
+        split(&mut sessions, web, db);
+        let removed = close(&mut sessions, web);
         assert_eq!(removed.entries.iter().map(|s| s.id()).collect::<Vec<_>>(), vec![web]);
         assert_eq!(removed.show, Some(db));
         assert_eq!(sessions.active(), None);
@@ -559,9 +764,9 @@ mod tests {
         let first = open(&mut sessions, &item, ssh("web01"));
         let second = open(&mut sessions, &item, ssh("web01"));
         open(&mut sessions, &host("db01"), ssh("db01"));
-        sessions.detach(desktop, None);
+        sessions.detach(desktop);
         sessions.activate(first);
-        assert_eq!(close(&mut sessions, first, |_| None).show, Some(second));
+        assert_eq!(close(&mut sessions, first).show, Some(second));
     }
 
     #[test]
@@ -570,7 +775,7 @@ mod tests {
         let web = open(&mut sessions, &host("web01"), ssh("web01"));
         open(&mut sessions, &host("db01"), ssh("db01"));
         sessions.activate(web);
-        assert_eq!(close(&mut sessions, web, |_| None).show, None);
+        assert_eq!(close(&mut sessions, web).show, None);
         assert_eq!(sessions.active(), None);
     }
 
@@ -582,7 +787,7 @@ mod tests {
         let second = open(&mut sessions, &item, ssh("web01"));
         sessions.activate(second);
         sessions.activate(first);
-        let removed = close(&mut sessions, second, |_| None);
+        let removed = close(&mut sessions, second);
         assert_eq!(removed.show, None);
         assert_eq!(sessions.active(), Some(first));
         assert_eq!(sessions.last_shown(&item), Some(first));
@@ -596,7 +801,7 @@ mod tests {
         let other = open(&mut sessions, &host("db01"), ssh("db01"));
         sessions.activate(first);
         sessions.activate(other);
-        close(&mut sessions, first, |_| None);
+        close(&mut sessions, first);
         assert_eq!(sessions.last_shown(&item), None);
     }
 
@@ -606,13 +811,8 @@ mod tests {
         let a = open(&mut sessions, &host("a"), ssh("a"));
         let b = open(&mut sessions, &host("b"), ssh("b"));
         let kept = open(&mut sessions, &ItemKey::Host { project: "q".into(), host: "c".into() }, ssh("c"));
-        sessions.activate(a);
-        let partner = |id: usize| match id {
-            id if id == a => Some(b),
-            id if id == b => Some(a),
-            _ => None,
-        };
-        let removed = sessions.remove_where(|s| s.project_id() == Some("p"), partner);
+        split(&mut sessions, a, b);
+        let removed = sessions.remove_where(|s| s.project_id() == Some("p"));
         assert_eq!(removed.entries.len(), 2);
         assert_eq!(removed.show, None);
         assert_eq!(sessions.iter().map(|s| s.id()).collect::<Vec<_>>(), vec![kept]);
@@ -625,13 +825,14 @@ mod tests {
         let terminal = open(&mut sessions, &item, ssh("web01"));
         let desktop = open(&mut sessions, &item, rdp("web01"));
         let db = open(&mut sessions, &host("db01"), ssh("db01"));
-        sessions.activate(desktop);
-        assert_eq!(sessions.detach(desktop, Some(db)), Some(db));
+        split(&mut sessions, desktop, db);
+        assert_eq!(sessions.detach(desktop), Some(db));
+        assert_eq!(sessions.shown_split(), None);
         assert_eq!(sessions.active(), None);
         assert_eq!(sessions.last_shown(&item), None);
         sessions.reattach(desktop);
         sessions.activate(desktop);
-        assert_eq!(sessions.detach(desktop, None), Some(terminal));
+        assert_eq!(sessions.detach(desktop), Some(terminal));
     }
 
     #[test]
@@ -642,7 +843,7 @@ mod tests {
         let desktop = open(&mut sessions, &item, rdp("web01"));
         sessions.activate(desktop);
         sessions.activate(terminal);
-        assert_eq!(sessions.detach(desktop, None), None);
+        assert_eq!(sessions.detach(desktop), None);
         assert_eq!(sessions.active(), Some(terminal));
         assert_eq!(sessions.last_shown(&item), Some(terminal));
     }
@@ -665,13 +866,148 @@ mod tests {
     }
 
     #[test]
+    fn a_split_knows_its_sides() {
+        let split = Split::new(Side::Left, 7, 3);
+        assert_eq!(split, Split { left: 7, right: 3 });
+        assert_eq!(Split::new(Side::Right, 7, 3), Split { left: 3, right: 7 });
+        assert_eq!(split.at(Side::Right), 3);
+        assert_eq!(split.other(7), Some(3));
+        assert_eq!(split.other(3), Some(7));
+        assert_eq!(split.other(9), None);
+        assert!(split.contains(3) && !split.contains(9));
+    }
+
+    #[test]
+    fn nothing_is_placed_in_a_split_while_nothing_is_shown() {
+        let mut sessions = Sessions::default();
+        let web = host("web01");
+        open(&mut sessions, &web, ssh("web01"));
+        assert!(!sessions.can_place(&web, None, Side::Right));
+        assert!(sessions.place(&web, None, Side::Right).is_none());
+    }
+
+    #[test]
+    fn an_item_dropped_beside_the_shown_session_brings_its_last_shown_session() {
+        let mut sessions = Sessions::default();
+        let (web, db) = (host("web01"), host("db01"));
+        let first = open(&mut sessions, &web, ssh("web01"));
+        let second = open(&mut sessions, &web, ssh("web01"));
+        let shown = open(&mut sessions, &db, ssh("db01"));
+        sessions.activate(second);
+        sessions.activate(first);
+        sessions.activate(shown);
+        assert!(matches!(sessions.place(&web, None, Side::Right), Some(Placed::Existing(id)) if id == first));
+        assert_eq!(sessions.split, Some(Split { left: shown, right: first }));
+    }
+
+    #[test]
+    fn the_shown_item_dropped_beside_itself_opens_another_session_into_the_split() {
+        let mut sessions = Sessions::default();
+        let web = host("web01");
+        let shown = open(&mut sessions, &web, ssh("web01"));
+        sessions.activate(shown);
+        let Some(Placed::New(pending)) = sessions.place(&web, None, Side::Left) else { panic!("expected a new Session") };
+        assert_eq!(sessions.shown_split(), None);
+        sessions.wait_for_split(pending);
+        let new = open(&mut sessions, &web, ssh("web01"));
+        sessions.activate(new);
+        assert_eq!(sessions.shown_split(), Some(Split { left: new, right: shown }));
+    }
+
+    #[test]
+    fn a_desktop_in_its_own_window_is_not_brought_into_a_split() {
+        let mut sessions = Sessions::default();
+        let (web, db) = (host("web01"), host("db01"));
+        let desktop = open(&mut sessions, &web, rdp("web01"));
+        let shown = open(&mut sessions, &db, ssh("db01"));
+        sessions.detach(desktop);
+        sessions.activate(shown);
+        assert!(matches!(sessions.place(&web, None, Side::Right), Some(Placed::New(_))));
+    }
+
+    #[test]
+    fn a_pending_split_whose_partner_closed_is_dropped() {
+        let mut sessions = Sessions::default();
+        let (web, db) = (host("web01"), host("db01"));
+        let shown = open(&mut sessions, &db, ssh("db01"));
+        sessions.activate(shown);
+        let Some(Placed::New(pending)) = sessions.place(&web, None, Side::Right) else { panic!("expected a new Session") };
+        sessions.wait_for_split(pending);
+        close(&mut sessions, shown);
+        let new = open(&mut sessions, &web, ssh("web01"));
+        assert!(!sessions.in_split(new));
+        assert!(sessions.pending_split.is_none());
+    }
+
+    #[test]
+    fn the_other_halfs_item_dropped_across_swaps_the_sides() {
+        let mut sessions = Sessions::default();
+        let (web, db) = (host("web01"), host("db01"));
+        let left = open(&mut sessions, &web, ssh("web01"));
+        let right = open(&mut sessions, &db, ssh("db01"));
+        split(&mut sessions, left, right);
+        assert!(matches!(sessions.place(&db, None, Side::Left), Some(Placed::Show(id)) if id == right));
+        assert_eq!(sessions.split, Some(Split { left: right, right: left }));
+    }
+
+    #[test]
+    fn a_session_dropped_where_it_already_is_changes_nothing() {
+        let mut sessions = Sessions::default();
+        let left = open(&mut sessions, &host("web01"), ssh("web01"));
+        let right = open(&mut sessions, &host("db01"), ssh("db01"));
+        split(&mut sessions, left, right);
+        assert!(!sessions.can_place(&host("db01"), Some(right), Side::Right));
+        assert!(!sessions.can_place(&host("web01"), Some(left), Side::Left));
+        // Across, it trades places with the other half instead.
+        assert!(sessions.can_place(&host("web01"), Some(left), Side::Right));
+    }
+
+    #[test]
+    fn a_split_comes_back_when_either_half_is_shown_again() {
+        let mut sessions = Sessions::default();
+        let left = open(&mut sessions, &host("web01"), ssh("web01"));
+        let right = open(&mut sessions, &host("db01"), ssh("db01"));
+        let other = open(&mut sessions, &host("app01"), ssh("app01"));
+        split(&mut sessions, left, right);
+        sessions.activate(other);
+        assert_eq!(sessions.shown_split(), None);
+        assert!(sessions.in_split(left));
+        sessions.activate(right);
+        assert_eq!(sessions.shown_split(), Some(Split { left, right }));
+    }
+
+    #[test]
+    fn closing_half_of_a_split_that_is_not_shown_forgets_the_split() {
+        let mut sessions = Sessions::default();
+        let left = open(&mut sessions, &host("web01"), ssh("web01"));
+        let right = open(&mut sessions, &host("db01"), ssh("db01"));
+        let other = open(&mut sessions, &host("app01"), ssh("app01"));
+        split(&mut sessions, left, right);
+        sessions.activate(other);
+        assert_eq!(close(&mut sessions, left).show, None);
+        assert!(!sessions.in_split(right));
+        assert_eq!(sessions.active(), Some(other));
+    }
+
+    #[test]
+    fn closing_the_split_keeps_the_shown_session() {
+        let mut sessions = Sessions::default();
+        let left = open(&mut sessions, &host("web01"), ssh("web01"));
+        let right = open(&mut sessions, &host("db01"), ssh("db01"));
+        split(&mut sessions, left, right);
+        sessions.close_split();
+        assert_eq!(sessions.shown_split(), None);
+        assert_eq!(sessions.active(), Some(left));
+    }
+
+    #[test]
     fn removing_where_keeps_the_others_in_order() {
         let mut sessions = Sessions::default();
         let a = open(&mut sessions, &host("a"), ssh("a"));
         let b = open(&mut sessions, &host("b"), ssh("b"));
         let c = open(&mut sessions, &host("a"), ssh("a"));
         let d = open(&mut sessions, &host("c"), ssh("c"));
-        let gone: Vec<usize> = sessions.remove_where(|s| s.item() == &host("a"), |_| None).entries.iter().map(|s| s.id()).collect();
+        let gone: Vec<usize> = sessions.remove_where(|s| s.item() == &host("a")).entries.iter().map(|s| s.id()).collect();
         assert_eq!(gone, vec![a, c]);
         assert_eq!(sessions.iter().map(|s| s.id()).collect::<Vec<_>>(), vec![b, d]);
     }

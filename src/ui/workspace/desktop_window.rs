@@ -239,8 +239,7 @@ impl Workspace {
         }
         // The main window shows something else: the other half of a split, or the Host's
         // terminal.
-        let partner = self.leave_split(id);
-        if let Some(next) = self.sessions.detach(id, partner) {
+        if let Some(next) = self.sessions.detach(id) {
             self.activate(next, window, cx);
         }
         cx.notify();

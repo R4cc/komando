@@ -93,7 +93,7 @@ impl Workspace {
             });
             SessionParts::new(SessionView::Desktop(view), label, sub)
         });
-        self.show_new_session(&item, id, window, cx);
+        self.activate(id, window, cx);
         id
     }
 

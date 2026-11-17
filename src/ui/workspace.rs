@@ -54,7 +54,8 @@ mod vault_page;
 pub use settings::SettingsSection;
 use desktops::desktop_protocol;
 use nav::NavTarget;
-use split::{DraggedItem, DraggedProject, DropTarget, PendingSplit, Side, Split};
+use sessions::Side;
+use split::{DraggedItem, DraggedProject, DropTarget};
 use updates::UpdateState;
 
 actions!(
@@ -499,10 +500,6 @@ pub struct Workspace {
     /// The terminal tabs last written for Restore tabs on start; `None` while they aren't
     /// kept (switched off, before the saved ones are reopened, or a window opened by tooling).
     tab_memory: Option<crate::model::OpenTabs>,
-    /// Two Sessions side by side, shown while either is active (see `split.rs`).
-    split: Option<Split>,
-    /// A split waiting for the new Session dropped into it.
-    pending_split: Option<PendingSplit>,
     /// Where a sidebar item being dragged would land.
     drop_target: Option<DropTarget>,
     /// A Remote Desktop's sidebar row held outside the window, to open in its own.
@@ -641,8 +638,6 @@ impl Workspace {
             lock_after_use: false,
             sessions: Default::default(),
             tab_memory: None,
-            split: None,
-            pending_split: None,
             drop_target: None,
             tear_off: None,
             native_drag: None,
@@ -1378,7 +1373,7 @@ impl Workspace {
     /// Output already visible in either pane needs no extra moving indicator.
     fn background_busy(&self, session: &SessionEntry) -> bool {
         session.busy() && Some(session.id()) != self.sessions.active()
-            && !self.shown_split().is_some_and(|split| split.contains(session.id()))
+            && !self.sessions.shown_split().is_some_and(|split| split.contains(session.id()))
     }
 
     /// Clicking a sidebar item: show its Session (reconnecting it in place if it dropped,
@@ -1508,7 +1503,7 @@ impl Workspace {
                 TerminalEvent::Sized => {
                     // A new Session opens alone and without a file browser: only a pane laid out
                     // like that has its size. Half a split would start the next one at half width.
-                    let alone = !this.shown_split().is_some_and(|s| s.contains(id))
+                    let alone = !this.sessions.shown_split().is_some_and(|s| s.contains(id))
                         && this.sessions.get(id).is_some_and(|s| !s.ui.sftp_open);
                     if alone {
                         this.pane_size = view.read(cx).measured_size().or(this.pane_size);
@@ -1545,14 +1540,9 @@ impl Workspace {
             made = Some(view.clone());
             SessionParts::new(SessionView::Terminal(view), label, sub)
         });
-        self.show_new_session(&item, id, window, cx);
-        made.expect("Sessions::add builds the payload")
-    }
-
-    /// Switch to a Session just added, into the split waiting for it if any.
-    fn show_new_session(&mut self, item: &ItemKey, id: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.take_pending_split(item, id);
+        // Into the split waiting for it, if any (see `Sessions::add`).
         self.activate(id, window, cx);
+        made.expect("Sessions::add builds the payload")
     }
 
     fn open_local(&mut self, project_id: Option<String>, shell: LocalShell, window: &mut Window, cx: &mut Context<Self>) {
@@ -1591,10 +1581,11 @@ impl Workspace {
     /// resized as soon as the pane appears repaints, and Windows' pseudo-console leaves blank
     /// lines above the prompt when it does.
     fn start_when_sized(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
-        let Some(entry) = self.sessions.iter_mut().find(|s| s.ui.view.terminal() == Some(view)) else { return };
+        let Some(id) = self.sessions.iter().find(|s| s.ui.view.terminal() == Some(view)).map(|s| s.id()) else { return };
         // Opened into a split: it gets half the room, which the last pane laid out may not
         // have had. Wait for its own pane.
-        let in_split = self.split.is_some_and(|s| s.contains(entry.id()));
+        let in_split = self.sessions.in_split(id);
+        let Some(entry) = self.sessions.get_mut(id) else { return };
         let size = view.read(cx).measured_size().or(self.pane_size.filter(|_| !in_split));
         match size {
             Some(size) => {
@@ -2819,15 +2810,13 @@ impl Workspace {
     /// Close and drop every Session that matches, e.g. those of a deleted Host. Returns what
     /// to show if the shown Session went; the caller shows it.
     fn discard_sessions(&mut self, matches: impl Fn(&SessionEntry) -> bool, cx: &mut Context<Self>) -> Option<usize> {
-        let split = self.split;
-        let removed = self.sessions.remove_where(matches, |id| split.and_then(|s| s.other(id)));
+        let removed = self.sessions.remove_where(matches);
         for entry in &removed.entries {
             self.cancel_completion_notification(entry.id());
             if let Some(handle) = entry.ui.window {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
             }
             entry.ui.view.close(cx);
-            self.leave_split(entry.id());
         }
         removed.show
     }
@@ -3799,7 +3788,7 @@ impl Workspace {
         let holds_active = sessions.iter().any(|s| Some(s.id()) == self.sessions.active());
         // Shown in the other half of the split: lit, more faintly than the active row. A row
         // that is the Host's terminal is lit for that terminal alone.
-        let split = self.shown_split();
+        let split = self.sessions.shown_split();
         let in_split = |s: &SessionEntry| Some(s.id()) != self.sessions.active() && split.is_some_and(|split| split.contains(s.id()));
         let beside = match main {
             Some(main) if grouped => in_split(main),
@@ -3842,7 +3831,7 @@ impl Workspace {
         let open_session = self.item_session(&key).and_then(|id| sessions.iter().find(|s| s.id() == id));
         let open_live = open_session.is_some_and(|s| s.is_live());
         let visible = self.page == Page::Sessions && open_session.is_some_and(|s| {
-            !s.own_window() && (Some(s.id()) == self.sessions.active() || self.shown_split().is_some_and(|split| split.contains(s.id())))
+            !s.own_window() && (Some(s.id()) == self.sessions.active() || self.sessions.shown_split().is_some_and(|split| split.contains(s.id())))
         });
         let sidebar_focus = self.nav.focus.clone();
         let ws = cx.entity().downgrade();
@@ -3852,7 +3841,7 @@ impl Workspace {
         // the dropped ones (see `close_item_sessions`).
         let count = sessions.iter().filter(|s| s.is_live() == any_live).count();
         // Beside the Session shown, unless that is the one this would show.
-        let can_split = self.sessions.active().is_some() && self.placement_possible(&key);
+        let can_split = self.sessions.can_place(&key, None, Side::Right);
         let history = self.settings.command_history;
         // × and Delete only disconnect a terminal; with the setting off they close it.
         let keep_sessions = self.settings.keep_disconnected_sessions && main.is_some_and(|s| s.ui.view.desktop().is_none());
@@ -4259,7 +4248,7 @@ impl Workspace {
         let id = session.id();
         let active = Some(id) == self.sessions.active();
         let focused = self.nav_focus_on(&NavTarget::Session(id));
-        let beside = !active && self.shown_split().is_some_and(|s| s.contains(id));
+        let beside = !active && self.sessions.shown_split().is_some_and(|s| s.contains(id));
         let dragged = self.dragged(item, Some(id), color);
         let live = session.is_live();
         let desktop = desktop_protocol(session);
@@ -4630,7 +4619,7 @@ impl Workspace {
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.reconnect(id, window, cx))),
                     )
                 })
-                .when(self.shown_split().is_some(), |el| {
+                .when(self.sessions.shown_split().is_some(), |el| {
                     el.child(
                         strip_action("close-split", "columns-2", "Close split view", false, p)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_split(window, cx))),
@@ -4693,7 +4682,7 @@ impl Workspace {
     /// The terminal area: the active Session, or the two of its split side by side. It is
     /// also where sidebar items are dropped to open them beside the Session shown.
     fn render_main(&self, p: AppPalette, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let content = match (self.active_entry(), self.shown_split()) {
+        let content = match (self.active_entry(), self.sessions.shown_split()) {
             (None, _) => self.render_empty(p, cx),
             (Some(_), Some(split)) => {
                 let mut panes: Vec<AnyElement> =
