@@ -48,7 +48,6 @@ All notable changes to Komando are listed here. The format follows
 - With background blur on, the terminal now lets the blurred desktop show through as the
   intensity slider says. Its background was drawn twice, which kept it almost opaque even
   at 100%. The minimap opened over the output stays opaque so both remain readable.
-
 - Minimap colors refresh when switching Terminal Colors within the same mode or when a
   program changes the terminal palette.
 - Enter confirms the multi-line paste question, just like its Paste button, without sending
