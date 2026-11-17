@@ -3275,7 +3275,6 @@ impl Render for TerminalView {
         let palette = appearance.term.clone();
         let family = appearance.font_family.clone();
         let font_size = px(appearance.font_size);
-        let term_bg = palette.background_hsla();
         let now = Instant::now();
         let minimap_state = self.minimap_state.clone();
         if !self.minimap {
@@ -3674,9 +3673,8 @@ impl Render for TerminalView {
             .relative()
             .size_full()
             .flex()
-            // Inside a rounded island: round our own background too, 1px in for the border.
-            .rounded(app.corner(crate::ui::widgets::ISLAND_RADIUS - 1.))
-            .bg(term_bg)
+            // No background of its own: the pane behind it paints the terminal's, and a
+            // second translucent layer would hide the backdrop.
             // A program that takes the mouse gets an arrow, as in xterm; shift still selects.
             .map(|el| if link_pointer { el.cursor_pointer() } else if mouse_reporting { el.cursor_default() } else { el.cursor_text() })
             .child(

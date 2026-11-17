@@ -988,7 +988,7 @@ pub fn over(
         .max_h_full()
         .py(px(PAD_Y))
         // Opaque: the output underneath would make both unreadable.
-        .bg(palette.background_hsla())
+        .bg(crate::theme::rgb_to_hsla(palette.background))
         .border_l_1()
         .border_b_1()
         .border_color(app.border)

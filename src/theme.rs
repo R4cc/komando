@@ -372,9 +372,11 @@ impl TerminalPalette {
         }
     }
 
-    /// The terminal keeps more of its background than the islands so text stays readable.
+    /// At full intensity the terminal lets most of the backdrop through, as the backdrop
+    /// is blurred and tinted enough to keep text readable. Its pane paints this background
+    /// once; nothing inside the pane repeats it, or the layers would add up to opaque.
     pub fn translucent(mut self, t: f32) -> Self {
-        self.background_alpha = 1. - 0.45 * t.clamp(0., 1.);
+        self.background_alpha = 1. - 0.7 * t.clamp(0., 1.);
         self
     }
 
