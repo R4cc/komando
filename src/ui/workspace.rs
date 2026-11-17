@@ -87,13 +87,16 @@ enum Page {
 }
 
 const SIDEBAR_WIDTH: f32 = 264.;
-/// Expand sidebar on hover: the strip along the window's left edge that floats it out, how
-/// long the pointer rests there first, how far past the sidebar it may stray, and how long it
-/// stays away before the sidebar slides back.
-const SIDEBAR_PEEK_EDGE: f32 = 12.;
-const SIDEBAR_PEEK_OPEN_MS: u64 = 120;
-const SIDEBAR_PEEK_SLACK: f32 = 32.;
-const SIDEBAR_PEEK_CLOSE_MS: u64 = 350;
+/// Expand sidebar on hover, timed like Zen Browser's compact mode: the strip along the
+/// window's left edge that floats the sidebar out (at once), how long the pointer may be off
+/// it before it slides back, and how long sliding in and out takes.
+const SIDEBAR_PEEK_EDGE: f32 = 9.;
+const SIDEBAR_PEEK_CLOSE_MS: u64 = 150;
+const SIDEBAR_PEEK_IN_MS: u64 = 250;
+const SIDEBAR_PEEK_OUT_MS: u64 = 150;
+/// Leaving the window through its left edge keeps the sidebar out until the pointer is this
+/// far past the edge, so overshooting the edge doesn't close it.
+const SIDEBAR_PEEK_OUTSIDE: f32 = 200.;
 
 /// Leave a usable terminal beside the navigation, including at the minimum window size.
 /// Where a Host's icon sits in the sidebar, from the left of its row.
@@ -478,6 +481,10 @@ pub struct Workspace {
     sidebar_peek: bool,
     /// A pending open (`true`) or close of `sidebar_peek`, cancelled by dropping it.
     sidebar_peek_timer: Option<(bool, gpui::Task<()>)>,
+    /// The floated-out sidebar is sliding back; drawn until this finishes.
+    sidebar_peek_closing: Option<gpui::Task<()>>,
+    /// Follows the pointer outside the window while the sidebar is out.
+    sidebar_peek_watch: Option<gpui::Task<()>>,
     /// The highlight set whose delete button was clicked once and now asks for a second click.
     confirm_delete_set: settings::ConfirmTwice,
     blur_slider: Option<Entity<SliderState>>,
@@ -647,6 +654,8 @@ impl Workspace {
             sidebar_resizing: false,
             sidebar_peek: false,
             sidebar_peek_timer: None,
+            sidebar_peek_closing: None,
+            sidebar_peek_watch: None,
             blur_slider: None,
             font_slider: None,
             presentation_slider: None,
@@ -1998,46 +2007,110 @@ impl Workspace {
         self.settings.sidebar_auto_hide && !self.sidebar_visible && self.page == Page::Sessions && self.unlock.is_none()
     }
 
-    /// Open (`true`) or close the floated-out sidebar after a short rest, so passing the
-    /// pointer over the edge on the way somewhere else doesn't flash it. A pending change the
+    /// Float the sidebar out at once (`true`), or slide it back once the pointer has been off
+    /// it for a moment, so brushing past its edge doesn't close it. A pending change the
     /// other way is cancelled; one the same way keeps its timer.
-    fn peek_sidebar_later(&mut self, open: bool, cx: &mut Context<Self>) {
+    fn peek_sidebar_later(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.sidebar_peek == open {
             self.sidebar_peek_timer = None;
+            return;
+        }
+        if open {
+            self.set_sidebar_peek(true, window, cx);
             return;
         }
         if self.sidebar_peek_timer.as_ref().is_some_and(|(target, _)| *target == open) {
             return;
         }
-        let delay = Duration::from_millis(if open { SIDEBAR_PEEK_OPEN_MS } else { SIDEBAR_PEEK_CLOSE_MS });
-        let task = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(delay).await;
-            let _ = this.update(cx, |this, cx| {
-                this.sidebar_peek_timer = None;
-                if open && !this.sidebar_can_peek() {
-                    return;
-                }
-                this.sidebar_peek = open;
-                if !open {
-                    this.transfers.update(cx, |transfers, cx| transfers.close(cx));
-                }
-                cx.notify();
-            });
+        let task = cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(SIDEBAR_PEEK_CLOSE_MS)).await;
+            let _ = this.update_in(cx, |this, window, cx| this.set_sidebar_peek(false, window, cx));
         });
         self.sidebar_peek_timer = Some((open, task));
     }
 
-    /// The pointer moved over the Sessions while the sidebar is floated out: close it once
-    /// the pointer is well clear of it, unless something opened from it is still in use.
-    fn sidebar_peek_pointer(&mut self, x: f32, window: &Window, cx: &mut Context<Self>) {
+    /// Float the sidebar out or slide it back now.
+    fn set_sidebar_peek(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_peek_timer = None;
+        if open == self.sidebar_peek || (open && !self.sidebar_can_peek()) {
+            return;
+        }
+        self.sidebar_peek = open;
+        if open {
+            self.sidebar_peek_closing = None;
+            self.watch_sidebar_peek(window, cx);
+        } else {
+            self.sidebar_peek_watch = None;
+            self.transfers.update(cx, |transfers, cx| transfers.close(cx));
+            self.sidebar_peek_closing = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(Duration::from_millis(SIDEBAR_PEEK_OUT_MS)).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.sidebar_peek_closing = None;
+                    cx.notify();
+                });
+            }));
+        }
+        cx.notify();
+    }
+
+    /// While the sidebar is out, follow the pointer outside the window too (gpui stops
+    /// reporting it there). Out through the left edge, the sidebar stays until the pointer is
+    /// `SIDEBAR_PEEK_OUTSIDE` past it; out any other way, it slides back as if left inside.
+    fn watch_sidebar_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::platform::pointer_in_window(window).is_none() {
+            return;
+        }
+        self.sidebar_peek_watch = Some(cx.spawn_in(window, async move |this, cx| {
+            // Whether the pointer left through the left edge, once it is outside.
+            let mut left_edge: Option<bool> = None;
+            loop {
+                cx.background_executor().timer(Duration::from_millis(16)).await;
+                let alive = this.update_in(cx, |this, window, cx| {
+                    if !this.sidebar_peek {
+                        return false;
+                    }
+                    let Some((x, y)) = crate::platform::pointer_in_window(window) else { return false };
+                    let size = window.viewport_size();
+                    let (w, h) = (f32::from(size.width), f32::from(size.height));
+                    if x >= 0. && x < w && y >= 0. && y < h {
+                        left_edge = None;
+                        return true;
+                    }
+                    let through_left = *left_edge.get_or_insert(x < 0. && y >= 0. && y < h);
+                    if !through_left {
+                        this.sidebar_peek_pointer(f32::MAX, window, cx);
+                    } else if x < -SIDEBAR_PEEK_OUTSIDE || y < 0. || y >= h {
+                        if this.sidebar_peek_may_close(cx) {
+                            this.set_sidebar_peek(false, window, cx);
+                        }
+                    } else {
+                        this.sidebar_peek_timer = None;
+                    }
+                    true
+                });
+                if !alive.unwrap_or(false) {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Whether nothing opened from the floated-out sidebar is still in use.
+    fn sidebar_peek_may_close(&self, cx: &App) -> bool {
+        !cx.has_active_drag() && !self.transfers.read(cx).is_open() && !self.modal_open(cx)
+    }
+
+    /// The pointer moved over the Sessions while the sidebar is floated out: slide it back
+    /// once the pointer is off it, unless something opened from it is still in use.
+    fn sidebar_peek_pointer(&mut self, x: f32, window: &mut Window, cx: &mut Context<Self>) {
         if !self.sidebar_peek {
             return;
         }
         let right = self.sidebar_width(window) + ISLAND_GAP * 2.;
-        if x <= right + SIDEBAR_PEEK_SLACK {
-            self.peek_sidebar_later(true, cx);
-        } else if !cx.has_active_drag() && !self.transfers.read(cx).is_open() && !self.modal_open(cx) {
-            self.peek_sidebar_later(false, cx);
+        if x <= right {
+            self.peek_sidebar_later(true, window, cx);
+        } else if self.sidebar_peek_may_close(cx) {
+            self.peek_sidebar_later(false, window, cx);
         }
     }
 
@@ -2047,35 +2120,32 @@ impl Workspace {
         if !self.sidebar_can_peek() {
             self.sidebar_peek = false;
             self.sidebar_peek_timer = None;
+            self.sidebar_peek_closing = None;
+            self.sidebar_peek_watch = None;
             return None;
         }
-        if !self.sidebar_peek {
-            return Some(
-                div()
-                    .id("sidebar-peek-edge")
-                    .absolute()
-                    .left_0()
-                    .top_0()
-                    .bottom_0()
-                    .w(px(SIDEBAR_PEEK_EDGE))
-                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                        if *hovered {
-                            this.peek_sidebar_later(true, cx);
-                        } else if !this.sidebar_peek {
-                            this.sidebar_peek_timer = None;
-                        }
-                    }))
-                    .into_any_element(),
-            );
+        let edge = div()
+            .id("sidebar-peek-edge")
+            .absolute()
+            .left_0()
+            .top_0()
+            .bottom_0()
+            .w(px(SIDEBAR_PEEK_EDGE))
+            .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                if *hovered {
+                    this.peek_sidebar_later(true, window, cx);
+                }
+            }));
+        if !self.sidebar_peek && self.sidebar_peek_closing.is_none() {
+            return Some(edge.into_any_element());
         }
         let width = self.sidebar_width(window);
         // Only the panels cover the terminal. An opaque canvas on the padded wrapper
         // paints a solid strip around them (black in dark themes with window blur).
         let mut overlay_palette = p;
         overlay_palette.sidebar.a = 1.;
-        let sidebar = self.render_sidebar(overlay_palette, window, cx);
-        Some(
-            div()
+        let panels = self.render_sidebar(overlay_palette, window, cx);
+        let sidebar = div()
                 .id("sidebar-peek")
                 .absolute()
                 .left_0()
@@ -2086,17 +2156,29 @@ impl Workspace {
                 .pr(px(ISLAND_GAP))
                 .pb(px(ISLAND_GAP))
                 .flex()
+                .child(panels);
+        let full = width + ISLAND_GAP * 2.;
+        if !self.sidebar_peek {
+            // Sliding back: the edge strip under it brings it straight out again.
+            let closing = sidebar.with_animation(
+                "sidebar-peek-out",
+                Animation::new(Duration::from_millis(SIDEBAR_PEEK_OUT_MS)).with_easing(crate::ui::easing::ease),
+                move |el, t| el.left(px(-full * t)),
+            );
+            return Some(div().absolute().inset_0().child(closing).child(edge).into_any_element());
+        }
+        Some(
+            sidebar
                 .occlude()
-                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
                     if *hovered {
-                        this.peek_sidebar_later(true, cx);
+                        this.peek_sidebar_later(true, window, cx);
                     }
                 }))
-                .child(sidebar)
                 .with_animation(
                     "sidebar-peek-in",
-                    Animation::new(Duration::from_millis(160)).with_easing(gpui::ease_out_quint()),
-                    move |el, t| el.left(px(-(width + ISLAND_GAP * 2.) * (1. - t))),
+                    Animation::new(Duration::from_millis(SIDEBAR_PEEK_IN_MS)).with_easing(crate::ui::easing::spring),
+                    move |el, t| el.left(px(-full * (1. - t))),
                 )
                 .into_any_element(),
         )

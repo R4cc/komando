@@ -6,6 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Expand sidebar on hover feels like Zen Browser's compact mode: the sidebar opens as soon
+  as the pointer reaches the window's left edge and springs in, then slides back 150 ms
+  after the pointer leaves it. On Windows, moving past the window's left edge keeps it open
+  until the pointer is 200 px beyond it.
+
 ## [0.7.7] - 2026-11-17
 
 ### Added

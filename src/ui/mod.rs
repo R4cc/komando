@@ -1,5 +1,6 @@
 mod artwork;
 pub mod box_drawing;
+pub mod easing;
 pub mod connect_route;
 pub mod desktop_view;
 pub mod file_browser;

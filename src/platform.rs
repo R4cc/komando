@@ -115,6 +115,26 @@ pub fn window_handle(window: &gpui::Window) -> Option<isize> {
 #[cfg(not(windows))]
 pub fn window_handle(_window: &gpui::Window) -> Option<isize> { None }
 
+/// Where the pointer is relative to the window's client area, in the window's logical
+/// pixels, even while it is outside the window (gpui only reports it inside). `None` where
+/// the platform can't say.
+#[cfg(windows)]
+pub fn pointer_in_window(window: &gpui::Window) -> Option<(f32, f32)> {
+    use windows::Win32::{Foundation::{HWND, POINT}, Graphics::Gdi::ScreenToClient, UI::WindowsAndMessaging::GetCursorPos};
+
+    let hwnd = HWND(window_handle(window)? as *mut _);
+    let mut point = POINT::default();
+    unsafe {
+        GetCursorPos(&mut point).ok()?;
+        ScreenToClient(hwnd, &mut point).ok().ok()?;
+    }
+    let scale = window.scale_factor();
+    Some((point.x as f32 / scale, point.y as f32 / scale))
+}
+
+#[cfg(not(windows))]
+pub fn pointer_in_window(_window: &gpui::Window) -> Option<(f32, f32)> { None }
+
 /// Configure DWM directly: gpui 0.3.12's Mica path has a version probe with an
 /// uninitialised structure size, and its Opaque path never clears SYSTEMBACKDROP_TYPE.
 /// Return whether the backdrop was enabled, so failed native calls keep our UI opaque.
