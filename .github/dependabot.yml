@@ -1,0 +1,38 @@
+# Version updates. Security updates are switched on in the repository settings and arrive
+# regardless of the limits below.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      # Patched copies live in vendor/ (see the [patch.crates-io] notes in Cargo.toml). A newer
+      # release would bypass the patch or fail to build against it, so these are updated by hand
+      # together with their vendor/ copy and its KOMANDO.md.
+      - dependency-name: "gpui-pre*"
+      - dependency-name: "gpui-component"
+      - dependency-name: "gpui-kit-assets"
+      - dependency-name: "russh"
+      - dependency-name: "vte"
+      - dependency-name: "alacritty_terminal"
+    groups:
+      # IronRDP's crates are released together and must stay in step.
+      ironrdp:
+        patterns:
+          - "ironrdp*"
+      # Everything else that stays within its current major version, in one pull request.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns:
+          - "*"
