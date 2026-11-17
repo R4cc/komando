@@ -1,0 +1,52 @@
+--- a/src/menu/popup_menu.rs
++++ b/src/menu/popup_menu.rs
+@@ -339,6 +339,12 @@
+     /// reaches it, while the scroll offset is still baked into its anchor.
+     priority: usize,
+ 
++    /// Komando: told when the highlighted item changes, by keyboard or pointer, with its
++    /// index (`None` once nothing is highlighted). See `on_highlight`.
++    on_highlight: Option<Rc<dyn Fn(Option<usize>, &mut Window, &mut App)>>,
++    /// Komando: the highlight last reported to `on_highlight`.
++    reported_highlight: Option<usize>,
++
+     _subscriptions: Vec<Subscription>,
+ }
+ 
+@@ -365,10 +371,20 @@
+             size: Size::default(),
+             submenu_anchor: (Anchor::TopLeft, Pixels::ZERO),
+             priority: gpui_base::POPUP_PRIORITY,
++            on_highlight: None,
++            reported_highlight: None,
+             _subscriptions: vec![],
+         }
+     }
+ 
++    /// Komando: call `handler` whenever the highlighted item changes, as the arrow keys or
++    /// the pointer move it, with the item's index among the menu's items, or `None` when
++    /// nothing is highlighted. It runs after the menu has drawn, so it may update anything.
++    pub fn on_highlight(mut self, handler: impl Fn(Option<usize>, &mut Window, &mut App) + 'static) -> Self {
++        self.on_highlight = Some(Rc::new(handler));
++        self
++    }
++
+     pub fn build(
+         window: &mut Window,
+         cx: &mut App,
+@@ -1555,6 +1571,15 @@
+     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+         self.update_submenu_menu_anchor(window, cx);
+ 
++        // Komando: report a changed highlight once this frame is drawn.
++        if self.reported_highlight != self.selected_index {
++            self.reported_highlight = self.selected_index;
++            if let Some(handler) = self.on_highlight.clone() {
++                let ix = self.selected_index;
++                window.defer(cx, move |window, cx| handler(ix, window, cx));
++            }
++        }
++
+         // Submenus attached via the public `item()` + `PopupMenuItem::submenu()`
+         // path (from contexts that only have the menu value, e.g. a table
+         // delegate's `context_menu`) have no parent wired at construction time.

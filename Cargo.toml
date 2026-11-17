@@ -96,8 +96,11 @@ gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.12", features = ["font-
 # vendor/alacritty_terminal/KOMANDO.md.
 # gpui's Windows backend with three changes to how a window moves, resizes and sits in the
 # tray. See vendor/gpui-pre-windows/KOMANDO.md.
+# gpui-component's menus report the item the arrow keys or pointer are on, so the theme
+# menus can show each theme as you move over it. See vendor/gpui-component/KOMANDO.md.
 [patch.crates-io]
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 russh = { path = "vendor/russh" }
 vte = { path = "vendor/vte" }
 alacritty_terminal = { path = "vendor/alacritty_terminal" }
+gpui-component = { path = "vendor/gpui-component" }

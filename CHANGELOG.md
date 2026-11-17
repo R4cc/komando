@@ -6,6 +6,12 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The theme and terminal color menus in Settings → Appearance show each entry as you move
+  through them with the arrow keys or the pointer, so you can see it on the preview and in
+  the window. Escape or clicking away puts the saved one back.
+
 ## [0.7.2] - 2026-11-17
 
 ### Added

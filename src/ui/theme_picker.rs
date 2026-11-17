@@ -1,6 +1,6 @@
 //! Named theme dropdowns with miniature previews and native menu keyboard handling.
 use std::rc::Rc;
-use gpui::{App, IntoElement, Window, SharedString, div, px, prelude::*};
+use gpui::{App, DismissEvent, IntoElement, Window, SharedString, div, px, prelude::*};
 use gpui_component::{button::Button, menu::{DropdownMenu, PopupMenuItem}, tooltip::Tooltip};
 use crate::theme::{AppPalette, MATCH_THEME, TerminalPalette, ThemeSpec};
 use crate::ui::widgets::icon_el;
@@ -35,11 +35,17 @@ impl Thumb {
     }
 }
 
+/// What a theme menu tells its owner: the choice the keyboard or pointer is on, to show it
+/// for a moment (`None`: nothing is, show the saved one); the one clicked or entered, to keep;
+/// and that the menu closed, after which nothing is being shown for a moment any more.
+pub struct Handlers {
+    pub preview: Box<dyn Fn(Option<&'static str>, &mut Window, &mut App)>,
+    pub select: Box<dyn Fn(&'static str, &mut Window, &mut App)>,
+    pub closed: Box<dyn Fn(&mut Window, &mut App)>,
+}
+
 /// The Theme for one mode.
-pub fn dropdown(
-    dark: bool, current: &'static ThemeSpec, p: AppPalette,
-    selected: impl Fn(&'static str, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+pub fn dropdown(dark: bool, current: &'static ThemeSpec, p: AppPalette, handlers: Handlers) -> impl IntoElement {
     let choices = crate::theme::themes(dark).iter().map(|t| {
         let c = t.colors;
         Choice { id: t.id, name: t.name.into(), thumb: Thumb::Theme {
@@ -48,14 +54,11 @@ pub fn dropdown(
         } }
     }).collect();
     let mode = if dark { "dark" } else { "light" };
-    picker(SharedString::from(format!("{mode}-theme")), format!("{} theme", if dark { "Dark" } else { "Light" }), choices, current.id, p, selected)
+    picker(SharedString::from(format!("{mode}-theme")), format!("{} theme", if dark { "Dark" } else { "Light" }), choices, current.id, p, handlers)
 }
 
 /// The Terminal Colors for one mode, led by the option to match that mode's Theme.
-pub fn terminal_dropdown(
-    dark: bool, current: &str, theme: &'static ThemeSpec, p: AppPalette,
-    selected: impl Fn(&'static str, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+pub fn terminal_dropdown(dark: bool, current: &str, theme: &'static ThemeSpec, p: AppPalette, handlers: Handlers) -> impl IntoElement {
     let matched = std::iter::once((MATCH_THEME, SharedString::from(format!("Match theme ({})", theme.name)), TerminalPalette::from_theme(theme)));
     let named = crate::theme::terminal_colors_list(dark).iter().map(|c| (c.id, c.name.into(), TerminalPalette::from_colors(c)));
     let mut choices: Vec<Choice> = named.chain(matched).map(|(id, name, term)| {
@@ -70,14 +73,12 @@ pub fn terminal_dropdown(
     choices.insert(1, matched);
     let current = choices.iter().find(|c| c.id == current).map_or(choices[0].id, |c| c.id);
     let mode = if dark { "dark" } else { "light" };
-    picker(SharedString::from(format!("{mode}-terminal-colors")), format!("{} terminal colors", if dark { "Dark" } else { "Light" }), choices, current, p, selected)
+    picker(SharedString::from(format!("{mode}-terminal-colors")), format!("{} terminal colors", if dark { "Dark" } else { "Light" }), choices, current, p, handlers)
 }
 
-fn picker(
-    key: SharedString, label: String, choices: Vec<Choice>, current: &'static str, p: AppPalette,
-    selected: impl Fn(&'static str, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    let selected = Rc::new(selected);
+fn picker(key: SharedString, label: String, choices: Vec<Choice>, current: &'static str, p: AppPalette, handlers: Handlers) -> impl IntoElement {
+    let Handlers { preview, select, closed } = handlers;
+    let (selected, preview, closed) = (Rc::new(select), Rc::<dyn Fn(Option<&'static str>, &mut Window, &mut App)>::from(preview), Rc::<dyn Fn(&mut Window, &mut App)>::from(closed));
     let shown = choices.iter().find(|c| c.id == current).unwrap_or(&choices[0]).clone();
     Button::new(SharedString::from(format!("{key}-picker")))
         .w_full()
@@ -85,7 +86,14 @@ fn picker(
         .bg(p.popover).text_color(p.popover_text).border_color(p.input)
         .child(choice_row(&key, &shown, p))
         .child(icon_el("chevron-down", 14., p.text_muted))
-        .dropdown_menu(move |mut menu, _, _| {
+        .dropdown_menu(move |mut menu, window, cx| {
+            // Moving through the list shows each choice; closing without picking one puts
+            // the saved one back.
+            let ids: Vec<&'static str> = choices.iter().map(|c| c.id).collect();
+            let preview = preview.clone();
+            menu = menu.on_highlight(move |ix, window, cx| preview(ix.and_then(|ix| ids.get(ix).copied()), window, cx));
+            let closed = closed.clone();
+            cx.subscribe_in(&cx.entity(), window, move |_, _, _: &DismissEvent, window, cx| closed(window, cx)).detach();
             menu = menu.min_w(px(300.)).max_w(px(380.)).max_h(px(400.));
             for choice in &choices {
                 let selected = selected.clone();

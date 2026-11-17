@@ -445,6 +445,9 @@ pub struct Workspace {
     /// Settings → Appearance with Mode set to System: show the theme of the mode Windows is
     /// not in, to change it before Windows switches.
     appearance_other_mode: bool,
+    /// A theme menu is open and shows the entry under the keyboard or pointer: the saved
+    /// theme settings, put back when it closes without a pick.
+    theme_preview: Option<settings::ThemePreview>,
     /// Settings → Mouse & clipboard: the characters that end a double-clicked word.
     word_separators_input: Option<Entity<InputState>>,
     /// Settings → Terminal: the regular and bold font weight fields.
@@ -602,6 +605,7 @@ impl Workspace {
             font_input: None,
             word_separators_input: None,
             appearance_other_mode: false,
+            theme_preview: None,
             weight_inputs: None,
             shell_editor: None,
             confirm_remove_shell: None,

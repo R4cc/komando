@@ -6,18 +6,30 @@ use gpui::{App, AppContext, Bounds, Render, WindowBounds, WindowOptions, div, px
 use komando::theme::{AppPalette, DEFAULT_THEME};
 use windows::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
 
+/// What the dropdown reported: the entries it previewed, the one picked, and whether it closed.
+#[derive(Default)]
+struct Report {
+    previewed: Vec<Option<&'static str>>,
+    selected: Option<&'static str>,
+    closed: bool,
+}
+
 struct Picker {
-    selected: Arc<Mutex<Option<&'static str>>>,
+    report: Arc<Mutex<Report>>,
 }
 
 impl Render for Picker {
     fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
         let p = AppPalette::dark();
-        let selected = self.selected.clone();
+        let (previewed, selected, closed) = (self.report.clone(), self.report.clone(), self.report.clone());
         div().size_full().bg(p.canvas).p(px(20.)).child(
             div().w(px(420.)).child(komando::ui::theme_picker::dropdown(
                 true, komando::theme::theme(true, DEFAULT_THEME), p,
-                move |id, _, _| *selected.lock().unwrap() = Some(id),
+                komando::ui::theme_picker::Handlers {
+                    preview: Box::new(move |id, _, _| previewed.lock().unwrap().previewed.push(id)),
+                    select: Box::new(move |id, _, _| selected.lock().unwrap().selected = Some(id)),
+                    closed: Box::new(move |_, _| closed.lock().unwrap().closed = true),
+                },
             )),
         )
     }
@@ -25,10 +37,10 @@ impl Render for Picker {
 
 #[test]
 #[ignore = "opens a native window; set KOMANDO_TEST_DISPLAY to the display to test"]
-fn dropdown_renders_opens_and_selects_a_named_theme_by_keyboard() {
+fn dropdown_renders_opens_previews_and_selects_a_named_theme_by_keyboard() {
     let display_index: usize = std::env::var("KOMANDO_TEST_DISPLAY").expect("KOMANDO_TEST_DISPLAY").parse().unwrap();
-    let selected = Arc::new(Mutex::new(None));
-    let report = selected.clone();
+    let result = Arc::new(Mutex::new(Report::default()));
+    let report = result.clone();
     gpui_platform::application().with_assets(gpui_kit_assets::AllAssets).run(move |cx: &mut App| {
         komando::init(cx);
         let fonts = cx.text_system().all_font_names();
@@ -48,7 +60,7 @@ fn dropdown_renders_opens_and_selects_a_named_theme_by_keyboard() {
             titlebar: Some(gpui::TitlebarOptions { appears_transparent: true, ..Default::default() }),
             ..Default::default()
         }, |window, cx| {
-            let picker = cx.new(|_| Picker { selected: report });
+            let picker = cx.new(|_| Picker { report });
             let hwnd = komando::platform::window_handle(window).unwrap();
             unsafe { let _ = ShowWindow(HWND(hwnd as *mut _), SW_SHOW); }
             let scale = window.scale_factor();
@@ -79,5 +91,10 @@ fn dropdown_renders_opens_and_selects_a_named_theme_by_keyboard() {
         }).unwrap();
         cx.activate(true);
     });
-    assert_eq!(*selected.lock().unwrap(), Some("noctua"));
+    let result = result.lock().unwrap();
+    assert_eq!(result.selected, Some("noctua"));
+    // Each arrow key showed the entry it reached, the last of them the one picked.
+    assert_eq!(result.previewed.last(), Some(&Some("noctua")), "{:?}", result.previewed);
+    assert!(result.previewed.len() >= 3, "{:?}", result.previewed);
+    assert!(result.closed);
 }

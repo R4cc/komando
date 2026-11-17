@@ -705,6 +705,55 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// What a theme menu shows and keeps for `choice`: moving through it applies each entry
+    /// without saving, picking one saves it, and closing it otherwise puts the saved one back.
+    fn theme_menu_handlers(&self, choice: ThemeChoice, cx: &mut Context<Self>) -> crate::ui::theme_picker::Handlers {
+        let ws = cx.entity().downgrade();
+        let (preview, select, closed) = (ws.clone(), ws.clone(), ws);
+        crate::ui::theme_picker::Handlers {
+            preview: Box::new(move |id, window, cx| {
+                let _ = preview.update(cx, |this, cx| this.preview_theme(choice, id, window, cx));
+            }),
+            select: Box::new(move |id, window, cx| {
+                let _ = select.update(cx, |this, cx| {
+                    // Kept: closing the menu now has nothing to put back.
+                    this.theme_preview = None;
+                    match choice {
+                        ThemeChoice::Theme { dark } => this.set_theme(dark, id, window, cx),
+                        ThemeChoice::TerminalColors { dark } => this.set_terminal_colors(dark, id, window, cx),
+                    }
+                });
+            }),
+            closed: Box::new(move |window, cx| {
+                let _ = closed.update(cx, |this, cx| this.end_theme_preview(window, cx));
+            }),
+        }
+    }
+
+    /// Show `id` (or, with `None`, the saved choice) for `choice` without saving it.
+    fn preview_theme(&mut self, choice: ThemeChoice, id: Option<&'static str>, window: &mut Window, cx: &mut Context<Self>) {
+        let saved = self.theme_preview.get_or_insert_with(|| ThemePreview::of(&self.settings)).clone();
+        let field = match choice {
+            ThemeChoice::Theme { dark: true } => (&mut self.settings.dark_theme, saved.dark_theme),
+            ThemeChoice::Theme { dark: false } => (&mut self.settings.light_theme, saved.light_theme),
+            ThemeChoice::TerminalColors { dark: true } => (&mut self.settings.dark_terminal_colors, saved.dark_terminal_colors),
+            ThemeChoice::TerminalColors { dark: false } => (&mut self.settings.light_terminal_colors, saved.light_terminal_colors),
+        };
+        let value = id.map_or(field.1, str::to_string);
+        if *field.0 != value {
+            *field.0 = value;
+            self.apply_appearance(window, cx);
+        }
+    }
+
+    /// A theme menu closed: put back what was saved, unless an entry was picked.
+    fn end_theme_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(saved) = self.theme_preview.take() {
+            saved.restore(&mut self.settings);
+            self.apply_appearance(window, cx);
+        }
+    }
+
     /// The app and terminal colors one mode shows, opaque, as the previews draw them.
     fn mode_look(&self, dark: bool) -> (AppPalette, crate::theme::TerminalPalette) {
         let term_dark = self.terminal_dark(dark);
@@ -728,19 +777,14 @@ impl Workspace {
         } else {
             self.settings.font_family.clone().into()
         };
-        let ws = cx.entity().downgrade();
-        let theme_dropdown = crate::ui::theme_picker::dropdown(dark, theme, p, move |id, window, cx| {
-            let _ = ws.update(cx, |this, cx| this.set_theme(dark, id, window, cx));
-        });
-        let ws = cx.entity().downgrade();
+        let theme_dropdown =
+            crate::ui::theme_picker::dropdown(dark, theme, p, self.theme_menu_handlers(ThemeChoice::Theme { dark }, cx));
         let colors_dropdown = crate::ui::theme_picker::terminal_dropdown(
             term_dark,
             self.terminal_colors_for(term_dark),
             self.theme_for(term_dark),
             p,
-            move |id, window, cx| {
-                let _ = ws.update(cx, |this, cx| this.set_terminal_colors(term_dark, id, window, cx));
-            },
+            self.theme_menu_handlers(ThemeChoice::TerminalColors { dark: term_dark }, cx),
         );
         let colors_label = match (term_dark == dark, term_dark) {
             (true, _) => "Terminal colors",
@@ -2085,6 +2129,38 @@ pub(super) fn settings_block(title: &str, p: AppPalette, content: AnyElement) ->
         .child(div().px(px(2.)).child(section_label(title, p)))
         .child(content)
         .into_any_element()
+}
+
+/// Which theme menu: a mode's Theme, or the Terminal Colors of a dark or light terminal.
+#[derive(Clone, Copy)]
+enum ThemeChoice {
+    Theme { dark: bool },
+    TerminalColors { dark: bool },
+}
+
+/// The saved theme settings while a theme menu shows its entries one by one.
+#[derive(Clone)]
+pub(super) struct ThemePreview {
+    dark_theme: String,
+    light_theme: String,
+    dark_terminal_colors: String,
+    light_terminal_colors: String,
+}
+
+impl ThemePreview {
+    fn of(s: &Settings) -> Self {
+        Self {
+            dark_theme: s.dark_theme.clone(),
+            light_theme: s.light_theme.clone(),
+            dark_terminal_colors: s.dark_terminal_colors.clone(),
+            light_terminal_colors: s.light_terminal_colors.clone(),
+        }
+    }
+
+    fn restore(self, s: &mut Settings) {
+        (s.dark_theme, s.light_theme, s.dark_terminal_colors, s.light_terminal_colors) =
+            (self.dark_theme, self.light_theme, self.dark_terminal_colors, self.light_terminal_colors);
+    }
 }
 
 /// Width and height of the Mode choices' window miniatures.
