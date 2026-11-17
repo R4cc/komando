@@ -28,6 +28,16 @@
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <!-- Shown when macOS asks for permission. SSH, SFTP and remote desktops reach hosts on
+         the local network; downloads and uploads use these folders. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Komando connects to SSH, SFTP and remote desktop hosts on your local network.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>Komando saves files you download from your servers here.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Komando opens and saves files you choose to upload, download or import.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>Komando opens and saves files you choose to upload, download or import.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Komando</string>
 </dict>

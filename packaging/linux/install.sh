@@ -8,8 +8,17 @@ bin=$HOME/.local/bin
 
 install -Dm755 "$here/komando" "$bin/komando"
 install -Dm644 "$here/komando.png" "$data/icons/hicolor/512x512/apps/komando.png"
+# Exec must be quoted when the path has spaces, and inside the quotes \ " ` and $ need a
+# backslash. The path goes in through the environment so | or & in it are not read as awk syntax.
 desktop=$(mktemp)
-sed "s|^Exec=komando|Exec=$bin/komando|" "$here/komando.desktop" > "$desktop"
+exe="$bin/komando" awk '
+    /^Exec=komando$/ {
+        exe = ENVIRON["exe"]
+        gsub(/[\\"`$]/, "\\\\&", exe)
+        print "Exec=\"" exe "\""
+        next
+    }
+    { print }' "$here/komando.desktop" > "$desktop"
 install -Dm644 "$desktop" "$data/applications/komando.desktop"
 rm -f "$desktop"
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q "$data/applications" || true

@@ -68,6 +68,7 @@ actions!(
         CopyOutputFile,
         LockVault,
         OpenSettings,
+        ShowAbout,
         ToggleSftp,
         ToggleSidebar,
         TogglePresentation,
@@ -146,6 +147,11 @@ impl Render for SftpDivider {
 }
 /// Height of Komando's own title bar (and of its window buttons).
 const TITLE_BAR_HEIGHT: f32 = 40.;
+/// macOS draws its own close, minimise and zoom buttons (the traffic lights) at the top left
+/// of a window, centred in Komando's title bar. The title bar leaves this much room for them.
+const TRAFFIC_LIGHTS_WIDTH: f32 = if cfg!(target_os = "macos") { 64. } else { 0. };
+pub const TRAFFIC_LIGHT_POSITION: Option<gpui::Point<gpui::Pixels>> =
+    if cfg!(target_os = "macos") { Some(gpui::Point { x: px(ISLAND_GAP + 8.), y: px((TITLE_BAR_HEIGHT - 14.) / 2.) }) } else { None };
 /// The window buttons' highlighted shapes, sized like Windows 11's own caption buttons.
 const WINDOW_BUTTON_WIDTH: f32 = 46.;
 const WINDOW_BUTTON_HEIGHT: f32 = 32.;
@@ -1291,7 +1297,8 @@ impl Workspace {
     fn sync_remembered_unlock_with_notice(&mut self, cx: &mut Context<Self>) {
         if let Err(err) = self.sync_remembered_unlock() {
             log::warn!("Could not remember vault unlock: {err:#}");
-            self.show_toast("Vault unlocked for this window, but Windows could not remember it across restarts.", cx);
+            let system = if cfg!(windows) { "Windows" } else { "Komando" };
+            self.show_toast(format!("Vault unlocked for this window, but {system} could not remember it across restarts."), cx);
         }
     }
 
@@ -1480,6 +1487,7 @@ impl Workspace {
         let pointer = self.settings.pointer.clone();
         let highlight = self.highlights_item(&item);
         let windows_selection = self.settings.windows_selection;
+        let option_as_meta = self.settings.option_as_meta;
         let cursor_shape = self.settings.cursor_shape;
         let cursor_blink = self.settings.cursor_blink;
         let command_rail = self.settings.command_rail;
@@ -1493,6 +1501,7 @@ impl Workspace {
             view.pointer = pointer;
             view.highlight = highlight;
             view.windows_selection = windows_selection;
+            view.option_as_meta = option_as_meta;
             view.set_cursor(cursor_shape, cursor_blink);
             view.command_rail = command_rail;
             view.command_history = command_history;
@@ -2596,7 +2605,7 @@ impl Workspace {
             Ok(note) => self.show_toast(format!("Copied {name}{note}"), cx),
             Err(err) => self.show_toast(format!("Could not create file: {err:#}"), cx),
         }
-        // On non-Windows dev hosts the clipboard gets the path as text instead.
+        // On Linux and macOS the clipboard gets the path as text instead.
         #[cfg(not(windows))]
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(
             crate::export::export_dir().join(&name).display().to_string(),
@@ -3154,7 +3163,8 @@ impl Workspace {
         } else {
             match self.settings.auto_lock_minutes {
                 0 => "Until Komando closes".to_string(),
-                minutes => format!("Locks after {} without use, including across restarts", settings::auto_lock_label(minutes)),
+                minutes if cfg!(windows) => format!("Locks after {} without use, including across restarts", settings::auto_lock_label(minutes)),
+                minutes => format!("Locks after {} without use", settings::auto_lock_label(minutes)),
             }
         };
         let remember = waiting.then(|| {
@@ -4020,7 +4030,9 @@ impl Workspace {
                     .item(menu_item("Delete host…", "trash", &ws, move |this, _, cx| this.confirm_delete_host(hc.clone(), cx)));
             }
             // In an elevated window every Session is elevated already.
+            // Windows only: elsewhere there is no administrator mode to start a shell in.
             if let SidebarItem::Shell { project, shell } = &item
+                && cfg!(windows)
                 && !crate::elevate::is_elevated()
             {
                 let (project, name) = (project.as_ref().map(|p| p.id.clone()), shell.name.clone());
@@ -4709,14 +4721,17 @@ impl Workspace {
             // and snapping work as with any window. Buttons inside take their clicks.
             .window_control_area(WindowControlArea::Drag)
             .when(cfg!(not(windows)), |el| {
-                el.on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
+                el.on_mouse_down(MouseButton::Left, |event, window, _| {
+                    // Double-click zooms (or does what the user set in macOS' settings).
+                    if event.click_count == 2 { window.titlebar_double_click() } else { window.start_window_move() }
+                })
             })
             .child(
                 div()
                     .when(self.sidebar_visible || minimal, |el| el.w(px(self.sidebar_width(window) + ISLAND_GAP * 2.)))
                     .flex_shrink_0()
                     .h_full()
-                    .pl(px(ISLAND_GAP + 8.))
+                    .pl(px(ISLAND_GAP + 8. + TRAFFIC_LIGHTS_WIDTH))
                     .pr(px(ISLAND_GAP))
                     .flex()
                     .items_center()
@@ -4725,7 +4740,8 @@ impl Workspace {
                     .when(crate::elevate::is_elevated(), |el| el.child(admin_badge(p))),
             )
             .child(div().flex_1().min_w_0().h_full().flex().items_center().children(strip))
-            .child(window_controls(p, window))
+            // macOS has its traffic lights instead.
+            .when(!cfg!(target_os = "macos"), |el| el.child(window_controls(p, window)))
             .into_any_element()
     }
 
@@ -5812,6 +5828,11 @@ impl Render for Workspace {
             .on_drop(cx.listener(|this, _: &SidebarDivider, _, cx| this.finish_sidebar_resize(cx)))
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
                 this.sidebar_peek_pointer(f32::from(event.position.x), window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowAbout, window, cx| {
+                if !this.modal_open(cx) {
+                    this.open_settings(SettingsSection::About, window, cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 if this.modal_open(cx) {

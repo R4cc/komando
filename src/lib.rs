@@ -2,6 +2,8 @@
 //! Built for Windows 11 first; Linux and macOS builds ship too (see
 //! docs/adr/0014-linux-and-macos-builds.md).
 
+#[cfg(target_os = "macos")]
+mod app_menu;
 pub mod desktop;
 pub mod elevate;
 pub mod export;
@@ -73,6 +75,8 @@ pub fn init(cx: &mut App) {
     gpui_component::init(cx);
     perf::startup("component library ready");
     cx.bind_keys(key_bindings());
+    #[cfg(target_os = "macos")]
+    app_menu::install(cx);
 }
 
 fn key_bindings() -> Vec<KeyBinding> {
@@ -182,7 +186,7 @@ pub fn run(options: Options) {
                         // Like Windows' own consoles, so the taskbar tells the windows apart.
                         title: Some(if elevate::is_elevated() { "Administrator: Komando" } else { "Komando" }.into()),
                         appears_transparent: true,
-                        ..Default::default()
+                        traffic_light_position: ui::workspace::TRAFFIC_LIGHT_POSITION,
                     }),
                     app_id: Some("komando".into()),
                     ..Default::default()

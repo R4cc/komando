@@ -431,13 +431,19 @@ impl Workspace {
             )
         };
         if from == Source::MobaXterm {
+            let body = if cfg!(windows) {
+                "An installed MobaXterm keeps them in MobaXterm.ini in Documents\\MobaXterm or %APPDATA%\\MobaXterm; a \
+                 portable one keeps it next to MobaXterm.exe. You can also export your sessions from MobaXterm's \
+                 Sessions panel to a .mxtsessions file and choose that file here."
+            } else {
+                "MobaXterm runs on Windows, so its sessions are not on this PC. Export them from MobaXterm's Sessions \
+                 panel to a .mxtsessions file and choose that file here."
+            };
             return notice(
                 "search-x",
                 p.warning,
                 "Komando couldn't find MobaXterm's sessions on this PC.",
-                "An installed MobaXterm keeps them in MobaXterm.ini in Documents\\MobaXterm or %APPDATA%\\MobaXterm; a \
-                 portable one keeps it next to MobaXterm.exe. You can also export your sessions from MobaXterm's \
-                 Sessions panel to a .mxtsessions file and choose that file here.",
+                body,
                 button("import-choose", "Choose MobaXterm file…", ButtonKind::Secondary, p)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_import_file(Source::MobaXterm, window, cx)))
                     .into_any_element(),

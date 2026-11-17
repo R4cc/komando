@@ -59,6 +59,17 @@ pub fn from_keystroke(key: &str, key_char: Option<&str>, ctrl: bool, alt: bool) 
     Some(Key::Code(Code { scancode: scancode_for_char(c)?, keysym: keysym_for_char(c) }))
 }
 
+/// macOS: Option typing a symbol of its own (`@` is Option+L on a German Mac, `€` Option+E,
+/// `|` Option+7): that character, whatever layout the remote side uses. Option with a key that
+/// gives a letter (`ƒ`, `ß` on a US Mac) stays Alt, so Alt shortcuts like Alt+F still work.
+pub fn mac_option_char(key: &str, key_char: Option<&str>, ctrl: bool, alt: bool) -> Option<Key> {
+    if !alt || ctrl {
+        return None;
+    }
+    let c = key_char.and_then(single_char)?;
+    (!c.is_control() && !c.is_alphanumeric() && !c.to_string().eq_ignore_ascii_case(key)).then_some(Key::Char(c))
+}
+
 fn single_char(text: &str) -> Option<char> {
     let mut chars = text.chars();
     let c = chars.next()?;
@@ -188,5 +199,19 @@ mod tests {
         assert_eq!(keysym_for_char('a'), 0x61);
         assert_eq!(keysym_for_char('ä'), 0xe4);
         assert_eq!(keysym_for_char('€'), 0x0100_20ac);
+    }
+
+    #[test]
+    fn mac_option_types_symbols_and_keeps_letters_as_alt() {
+        // German Mac: Option+L is @, Option+E is €, Option+7 is |.
+        assert_eq!(mac_option_char("l", Some("@"), false, true), Some(Key::Char('@')));
+        assert_eq!(mac_option_char("e", Some("\u{20ac}"), false, true), Some(Key::Char('\u{20ac}')));
+        assert_eq!(mac_option_char("7", Some("|"), false, true), Some(Key::Char('|')));
+        // US Mac: Option+F is ƒ, a letter, so it stays Alt+F for the remote menu.
+        assert_eq!(mac_option_char("f", Some("\u{192}"), false, true), None);
+        // Not Option alone, or nothing typed (a dead key): the usual translation.
+        assert_eq!(mac_option_char("l", Some("@"), true, true), None);
+        assert_eq!(mac_option_char("l", Some("l"), false, false), None);
+        assert_eq!(mac_option_char("e", None, false, true), None);
     }
 }

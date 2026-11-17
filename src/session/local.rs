@@ -17,6 +17,10 @@ pub fn spawn(shell: &LocalShell, size: GridSize, term: SharedTerm, proxy: EventP
     env.insert("TERM".to_string(), "xterm-256color".to_string());
     env.insert("COLORTERM".to_string(), "truecolor".to_string());
     env.insert("TERM_PROGRAM".to_string(), "Komando".to_string());
+    #[cfg(target_os = "macos")]
+    if let Some(lang) = mac_locale() {
+        env.insert("LANG".to_string(), lang);
+    }
 
     #[cfg(windows)]
     let program = quote_windows_program(&shell.program);
@@ -44,6 +48,42 @@ pub fn spawn(shell: &LocalShell, size: GridSize, term: SharedTerm, proxy: EventP
     Ok(sink)
 }
 
+/// macOS starts an app from Finder or the Dock without `LANG`, so a shell would run in the C
+/// locale and show UTF-8 file names and text as escapes. Like Terminal.app, set it from the
+/// region in System Settings (`de_DE` gives `de_DE.UTF-8`) when that locale exists, else
+/// `en_US.UTF-8`. Nothing changes when the user's environment already chose a locale.
+#[cfg(target_os = "macos")]
+fn mac_locale() -> Option<String> {
+    if ["LC_ALL", "LC_CTYPE", "LANG"].iter().any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty())) {
+        return None;
+    }
+    static LOCALE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    Some(
+        LOCALE
+            .get_or_init(|| {
+                let region = std::process::Command::new("/usr/bin/defaults")
+                    .args(["read", "-g", "AppleLocale"])
+                    .output()
+                    .ok()
+                    .filter(|out| out.status.success())
+                    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+                    .unwrap_or_default();
+                utf8_locale(&region, |name| std::path::Path::new("/usr/share/locale").join(name).is_dir())
+            })
+            .clone(),
+    )
+}
+
+/// `AppleLocale` (`de_DE`, or `en_US@rg=dezzzz` with a separate region) as a UTF-8 locale
+/// name that `exists`, else `en_US.UTF-8`.
+#[cfg(any(target_os = "macos", test))]
+fn utf8_locale(apple_locale: &str, exists: impl Fn(&str) -> bool) -> String {
+    let base = apple_locale.split('@').next().unwrap_or_default();
+    let valid = !base.is_empty() && base.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let name = format!("{base}.UTF-8");
+    if valid && exists(&name) { name } else { "en_US.UTF-8".into() }
+}
+
 /// alacritty_terminal joins the program and its arguments into one command line for
 /// CreateProcessW without quoting the program, so a path with spaces (`C:\Program Files\...`)
 /// is split at the first space. Quote it unless it is quoted already or has no spaces.
@@ -54,6 +94,22 @@ fn quote_windows_program(program: &str) -> String {
         program.to_string()
     } else {
         format!("\"{program}\"")
+    }
+}
+
+#[cfg(test)]
+mod locale_tests {
+    use super::utf8_locale;
+
+    #[test]
+    fn mac_regions_become_utf8_locales_that_exist() {
+        let exists = |name: &str| ["de_DE.UTF-8", "en_US.UTF-8"].contains(&name);
+        assert_eq!(utf8_locale("de_DE", exists), "de_DE.UTF-8");
+        assert_eq!(utf8_locale("de_DE@rg=chzzzz", exists), "de_DE.UTF-8");
+        // English with a German region (no such locale), nothing read, or junk: en_US.
+        assert_eq!(utf8_locale("en_DE", exists), "en_US.UTF-8");
+        assert_eq!(utf8_locale("", exists), "en_US.UTF-8");
+        assert_eq!(utf8_locale("../x", exists), "en_US.UTF-8");
     }
 }
 

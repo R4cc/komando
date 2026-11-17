@@ -286,7 +286,7 @@ impl Workspace {
         let address = self.form_input("host name or IP", &h.address, window, cx);
         let port = self.form_input("22", &port, window, cx);
         let user = self.form_input("", h.user.own().map_or("", |u| u.as_str()), window, cx);
-        let key_path = self.form_input(r"C:\Users\you\.ssh\id_ed25519", "", window, cx);
+        let key_path = self.form_input(key_file_hint(), "", window, cx);
         let commands = h.startup_commands.iter().map(|c| self.command_row(Some(c), window, cx)).collect();
         let jumps = h.jump_hosts.iter().map(|j| self.jump_row(Some(j), window, cx)).collect();
         name.update(cx, |f, cx| f.focus(window, cx));
@@ -1352,7 +1352,7 @@ impl Workspace {
         let pr = project.clone().unwrap_or_else(|| Project::new("", "blue", "folder"));
         let name = self.form_input("", &pr.name, window, cx);
         let default_user = self.form_input("", pr.default_user.as_deref().unwrap_or(""), window, cx);
-        let key_path = self.form_input(r"C:\Users\you\.ssh\id_ed25519", "", window, cx);
+        let key_path = self.form_input(key_file_hint(), "", window, cx);
         let commands = pr.startup_commands.iter().map(|c| self.command_row(Some(c), window, cx)).collect();
         let jumps = pr.jump_hosts.iter().map(|j| self.jump_row(Some(j), window, cx)).collect();
         name.update(cx, |f, cx| f.focus(window, cx));
@@ -2139,6 +2139,11 @@ fn single_dialog(id: &'static str, aria: &'static str, header: AnyElement, body:
         .child(div().id(id).flex_1().min_h_0().overflow_y_scroll().px(px(24.)).pb(px(22.)).child(body))
         .child(footer)
         .into_any_element()
+}
+
+/// The example key file path shown in an empty key field.
+fn key_file_hint() -> &'static str {
+    if cfg!(windows) { r"C:\Users\you\.ssh\id_ed25519" } else { "~/.ssh/id_ed25519" }
 }
 
 /// A leading `~\` or `~/` means the home folder. Other paths are used as typed.

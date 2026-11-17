@@ -6,6 +6,6 @@ Comment=SSH, SFTP and remote desktops
 Exec=komando
 Icon=komando
 Terminal=false
-Categories=System;TerminalEmulator;Network;RemoteAccess;
+Categories=System;TerminalEmulator;
 Keywords=ssh;sftp;terminal;rdp;vnc;
 StartupWMClass=komando

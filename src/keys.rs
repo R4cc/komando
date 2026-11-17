@@ -109,6 +109,21 @@ pub fn to_bytes(key: &str, key_char: Option<&str>, mods: Mods, app_cursor: bool)
     Some(bytes)
 }
 
+/// macOS: Option with a character key types the character the layout gives it (`@` is
+/// Option+L on a German Mac, `|` Option+7), as in Terminal.app, so no ESC goes before it.
+/// With `option_as_meta` it is Meta instead: ESC and the key without Option, for readline and
+/// Emacs. Other keys (arrows, Backspace, Ctrl+Option) keep Option as Alt either way.
+/// Returns the `key_char` and modifiers to give `to_bytes`.
+pub fn mac_option<'a>(key: &str, key_char: Option<&'a str>, mods: Mods, option_as_meta: bool) -> (Option<&'a str>, Mods) {
+    if !mods.alt || mods.ctrl || key.chars().count() != 1 {
+        (key_char, mods)
+    } else if option_as_meta {
+        (None, mods)
+    } else {
+        (key_char, Mods { alt: false, ..mods })
+    }
+}
+
 /// The C0 control byte ctrl+`key` sends, as in xterm.
 fn control_byte(key: &str) -> Option<u8> {
     let mut chars = key.chars();
@@ -529,5 +544,28 @@ mod tests {
             mouse_report(any, MouseButton::None, MouseAction::Motion, 1, 1, NONE),
             Some(b"\x1b[<35;2;2M".to_vec())
         );
+    }
+
+    #[test]
+    fn mac_option_types_characters_unless_it_is_meta() {
+        let bytes = |key: &str, key_char: Option<&str>, mods: Mods, meta: bool| {
+            let (key_char, mods) = mac_option(key, key_char, mods, meta);
+            to_bytes(key, key_char, mods, false)
+        };
+        // Option+L on a German Mac is @; Option+B on a US Mac is ∫. Typed as they are.
+        assert_eq!(bytes("l", Some("@"), ALT, false), Some(b"@".to_vec()));
+        assert_eq!(bytes("b", Some("\u{222b}"), ALT, false), Some("\u{222b}".as_bytes().to_vec()));
+        // A dead key (Option+E) types nothing yet: the input system composes it.
+        assert_eq!(bytes("e", None, ALT, false), None);
+        // As Meta: ESC and the key itself, whatever the layout makes of Option.
+        assert_eq!(bytes("b", Some("\u{222b}"), ALT, true), Some(b"\x1bb".to_vec()));
+        assert_eq!(bytes("e", None, ALT, true), Some(b"\x1be".to_vec()));
+        // Arrows and Backspace keep Option as Alt either way (word moves and deletes).
+        for meta in [false, true] {
+            assert_eq!(bytes("left", None, ALT, meta), Some(b"\x1b[1;3D".to_vec()));
+            assert_eq!(bytes("backspace", None, ALT, meta), Some(b"\x1b\x7f".to_vec()));
+            assert_eq!(bytes("c", None, CTRL_ALT, meta), Some(b"\x1b\x03".to_vec()));
+        }
+        assert_eq!(mac_option("a", Some("a"), NONE, false), (Some("a"), NONE));
     }
 }

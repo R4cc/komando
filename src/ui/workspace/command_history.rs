@@ -157,7 +157,7 @@ impl Workspace {
             Ok(note) => self.show_toast(format!("Copied {name}{note}"), cx),
             Err(err) => self.show_toast(format!("Could not create file: {err:#}"), cx),
         }
-        // On non-Windows dev hosts the clipboard gets the path as text instead.
+        // On Linux and macOS the clipboard gets the path as text instead.
         #[cfg(not(windows))]
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(crate::export::export_dir().join(&name).display().to_string()));
     }

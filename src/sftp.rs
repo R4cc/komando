@@ -17,7 +17,7 @@
 mod flow;
 
 use std::future::Future;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -497,9 +497,22 @@ pub fn unique_local_path(dir: &Path, name: &str) -> PathBuf {
     dir.join(name)
 }
 
+/// The local name for a remote one. Windows needs it made safe (see `windows_file_name`);
+/// Linux and macOS take nearly any name, so it is kept as the server sent it.
+pub fn local_file_name(name: &str) -> String {
+    if cfg!(windows) { windows_file_name(name) } else { unix_file_name(name) }
+}
+
+/// A remote name as a Linux or macOS file name. Only what could leave the download folder or
+/// can't be a name at all is changed: a server could send "..", "." or a name holding "/".
+fn unix_file_name(name: &str) -> String {
+    let cleaned: String = name.chars().map(|c| if matches!(c, '/' | '\0') { '_' } else { c }).collect();
+    if matches!(cleaned.as_str(), "" | "." | "..") { "_".into() } else { cleaned }
+}
+
 /// Make a remote name safe as a Windows file name: no forbidden characters, no trailing dots
 /// or spaces, and no device name ("con.log" becomes "con_.log").
-pub fn local_file_name(name: &str) -> String {
+fn windows_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control() { '_' } else { c })
@@ -1205,6 +1218,25 @@ impl Remote {
         self.sftp.set_metadata(path, attrs).await.map_err(OpError::from)
     }
 
+    /// Give a new remote file the local file's permission bits when they aren't the usual
+    /// 0644, so an uploaded script stays executable and a private file stays private. The
+    /// server gives new files its own default mode. Windows has no such bits.
+    #[cfg(unix)]
+    async fn match_local_mode(&self, local: &Path, remote: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(meta) = std::fs::metadata(local) else { return };
+        // No setuid, setgid or sticky bits: those are the server admin's to give.
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o777 != 0o644 {
+            if let Err(err) = self.set_mode(remote, mode).await {
+                log::warn!("Could not set the permissions of {remote}: {err}");
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    async fn match_local_mode(&self, _local: &Path, _remote: &str) {}
+
     // ---- downloads ----------------------------------------------------------------
 
     /// Download a file or folder into `local_dir`. Returns where it was saved: under its own
@@ -1231,6 +1263,7 @@ impl Remote {
             input.copy_to(&mut output, remote_path, &partial, progress).await?;
             output.sync_all().await.map_err(|e| OpError::local(&e, &partial))?;
             drop(output);
+            set_local_mode(&partial, attrs.permissions).await;
             finish_local(&partial, &target).await
         }
         .await;
@@ -1262,6 +1295,8 @@ impl Remote {
         // Walk first: an unreadable folder fails before anything is written, and the
         // progress bar knows the total. A level of folders at a time, listed together.
         let mut files: Vec<(String, u64)> = vec![];
+        // The remote mode of each file, by its path in the folder.
+        let mut modes: HashMap<String, u32> = HashMap::new();
         let mut dirs = vec![String::new()];
         let mut level = vec![String::new()];
         while !level.is_empty() {
@@ -1277,6 +1312,9 @@ impl Remote {
                     dirs.push(child_rel.clone());
                     level.push(child_rel);
                 } else if attrs.permissions.is_none_or(|m| m & S_IFMT == S_IFREG) {
+                    if let Some(mode) = attrs.permissions {
+                        modes.insert(child_rel.clone(), mode);
+                    }
                     files.push((child_rel, attrs.size.unwrap_or(0)));
                 }
             }
@@ -1289,6 +1327,7 @@ impl Remote {
         let result = async {
             create_download_dirs(&partial, &local_dirs).await?;
             let partial = &partial;
+            let modes = &modes;
             let jobs: Vec<_> = local_files
                 .iter()
                 .map(|(rel, local_rel, size)| async move {
@@ -1303,6 +1342,8 @@ impl Remote {
                     // folder with an open file in it). Not synced to disk one by one: with
                     // thousands of small files that costs more than the transfer.
                     output.flush().await.map_err(|e| OpError::local(&e, &local))?;
+                    drop(output);
+                    set_local_mode(&local, modes.get(rel).copied()).await;
                     Ok(())
                 })
                 .collect();
@@ -1392,7 +1433,9 @@ impl Remote {
                         let local_path = join_rel(local, rel);
                         let mut input = tokio::fs::File::open(&local_path).await.map_err(|e| OpError::local(&e, &local_path))?;
                         let output = self.create_upload(&remote).await.map_err(|e| e.at(remote_dir))?;
-                        output.copy_from(&mut input, &local_path, &remote, progress).await
+                        output.copy_from(&mut input, &local_path, &remote, progress).await?;
+                        self.match_local_mode(&local_path, &remote).await;
+                        Ok(())
                     }
                 })
                 .collect();
@@ -1568,6 +1611,24 @@ async fn create_download_dirs(base: &Path, dirs: &[String]) -> Result<(), OpErro
     }
     Ok(())
 }
+
+/// Give a downloaded file the remote file's permission bits, so an executable script stays
+/// executable and a private file stays private. Windows has no such bits. A failure is only
+/// logged: the content has arrived.
+#[cfg(unix)]
+async fn set_local_mode(path: &Path, mode: Option<u32>) {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(mode) = mode else { return };
+    // Keep the execute bits and privacy, but the file stays the user's to read and write and
+    // never becomes writable by others, whatever mode the server reports.
+    let mode = (mode & 0o755) | 0o600;
+    if let Err(err) = tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await {
+        log::warn!("Could not set the permissions of {}: {err}", path.display());
+    }
+}
+
+#[cfg(not(unix))]
+async fn set_local_mode(_path: &Path, _mode: Option<u32>) {}
 
 async fn create_download_file(path: &Path) -> Result<tokio::fs::File, OpError> {
     // Exclusive creation is the backstop behind `map_download_names`: fail the whole
@@ -1827,8 +1888,8 @@ mod tests {
         assert_eq!(unique_name("app.conf", is_taken), "app (2).conf");
         assert_eq!(unique_name("logs", is_taken), "logs (1)");
         assert_eq!(unique_name(".env", is_taken), ".env (1)");
-        assert_eq!(local_file_name("a:b?.txt"), "a_b_.txt");
-        assert_eq!(local_file_name("trailing. "), "trailing");
+        assert_eq!(windows_file_name("a:b?.txt"), "a_b_.txt");
+        assert_eq!(windows_file_name("trailing. "), "trailing");
     }
 
     #[test]
@@ -1868,21 +1929,44 @@ mod tests {
 
     #[test]
     fn windows_device_names_are_made_safe() {
-        assert_eq!(local_file_name("con"), "con_");
-        assert_eq!(local_file_name("aux.log"), "aux_.log");
-        assert_eq!(local_file_name("CON.tar.gz"), "CON_.tar.gz");
-        assert_eq!(local_file_name("Nul."), "Nul_");
-        assert_eq!(local_file_name("com1"), "com1_");
-        assert_eq!(local_file_name("LPT9.txt"), "LPT9_.txt");
-        assert_eq!(local_file_name("com\u{b2}.txt"), "com\u{b2}_.txt");
-        assert_eq!(local_file_name("con .txt"), "con _.txt");
-        assert_eq!(local_file_name("conin$"), "conin$_");
+        assert_eq!(windows_file_name("con"), "con_");
+        assert_eq!(windows_file_name("aux.log"), "aux_.log");
+        assert_eq!(windows_file_name("CON.tar.gz"), "CON_.tar.gz");
+        assert_eq!(windows_file_name("Nul."), "Nul_");
+        assert_eq!(windows_file_name("com1"), "com1_");
+        assert_eq!(windows_file_name("LPT9.txt"), "LPT9_.txt");
+        assert_eq!(windows_file_name("com\u{b2}.txt"), "com\u{b2}_.txt");
+        assert_eq!(windows_file_name("con .txt"), "con _.txt");
+        assert_eq!(windows_file_name("conin$"), "conin$_");
         // Only a whole device name before the first dot is reserved.
         for fine in ["console", "com", "com0", "com10", "lpt", "a.con", "my.aux", ".con", "nulls.txt", "con_"] {
-            assert_eq!(local_file_name(fine), fine);
+            assert_eq!(windows_file_name(fine), fine);
         }
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn linux_names_are_kept_as_the_server_sent_them() {
+        for name in ["a:b?.txt", "con", "trailing. ", "back\\slash", "CON.log", "...", ".env"] {
+            assert_eq!(local_file_name(name), name);
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_hostile_server_cannot_name_its_way_out_of_the_download_folder() {
+        for (name, local) in [("..", "_"), (".", "_"), ("", "_"), ("../../.bashrc", ".._.._.bashrc"), ("a/b", "a_b"), ("nul\0l", "nul_l")] {
+            assert_eq!(local_file_name(name), local);
+        }
+        let dirs: Vec<String> = ["", "x", "x/..", "x/../.."].map(String::from).into();
+        let files: Vec<(String, u64)> = [("x/../../evil", 1), ("..", 2)].map(|(rel, size)| (rel.to_string(), size)).into();
+        let (local_dirs, local_files) = map_download_names(&dirs, &files);
+        for path in local_dirs.iter().chain(local_files.iter().map(|(_, local, _)| local)) {
+            assert!(path.split('/').all(|part| !matches!(part, "" | "." | "..")), "{path} leaves the download folder");
+        }
+    }
+
+    #[cfg(windows)]
     #[test]
     fn folder_downloads_name_colliding_entries_apart() {
         let dirs: Vec<String> = ["", "a:b", "a?b", "Docs", "docs", "a:b/nested", "docs/x"].map(String::from).into();
@@ -1918,7 +2002,7 @@ mod tests {
         // A download target is made safe; an upload source is looked up as it is.
         assert_eq!(join_rel(base, "con.log/a. "), base.join("con.log").join("a. "));
         assert_eq!(join_rel(base, ""), base);
-        assert_eq!(local_file_name("con.log"), "con_.log");
+        assert_eq!(windows_file_name("con.log"), "con_.log");
         // The plan holds the names the local files really have.
         let dir = std::env::temp_dir().join(format!("komando-sftp-{}", crate::model::new_id()));
         std::fs::create_dir_all(dir.join("my docs")).unwrap();

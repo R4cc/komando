@@ -9,7 +9,7 @@ use gpui::{
     WeakEntity, Window, WindowBounds, WindowControlArea, WindowOptions, div, point, prelude::*, px, size,
 };
 
-use super::{SessionView, TITLE_BAR_HEIGHT, Workspace, strip_action, window_controls};
+use super::{SessionView, TITLE_BAR_HEIGHT, TRAFFIC_LIGHT_POSITION, TRAFFIC_LIGHTS_WIDTH, Workspace, strip_action, window_controls};
 use crate::session::Status;
 use crate::theme::Appearance;
 use crate::ui::desktop_view::DesktopView;
@@ -88,10 +88,14 @@ impl Render for DesktopWindow {
             .flex()
             .items_center()
             .gap(px(7.))
-            .pl(px(ISLAND_GAP + 10.))
+            .pl(px(ISLAND_GAP + 10. + TRAFFIC_LIGHTS_WIDTH))
             .bg(p.canvas)
             .window_control_area(WindowControlArea::Drag)
-            .when(cfg!(not(windows)), |el| el.on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()))
+            .when(cfg!(not(windows)), |el| {
+                el.on_mouse_down(MouseButton::Left, |event, window, _| {
+                    if event.click_count == 2 { window.titlebar_double_click() } else { window.start_window_move() }
+                })
+            })
             .child(status_dot(status_color))
             .child(
                 div()
@@ -125,8 +129,11 @@ impl Render for DesktopWindow {
                     },
                 )),
             )
-            .child(div().w(px(12.)).h(px(16.)).mr(px(6.)).border_r_1().border_color(p.border))
-            .child(window_controls(p, window));
+            // macOS has its traffic lights instead.
+            .when(!cfg!(target_os = "macos"), |el| {
+                el.child(div().w(px(12.)).h(px(16.)).mr(px(6.)).border_r_1().border_color(p.border))
+                    .child(window_controls(p, window))
+            });
         let fullscreen = window.is_fullscreen();
         div()
             .id("desktop-window")
@@ -205,7 +212,7 @@ impl Workspace {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds { origin, size: window_size })),
             window_min_size: Some(size(px(420.), px(280.))),
-            titlebar: Some(gpui::TitlebarOptions { title: Some(title), appears_transparent: true, ..Default::default() }),
+            titlebar: Some(gpui::TitlebarOptions { title: Some(title), appears_transparent: true, traffic_light_position: TRAFFIC_LIGHT_POSITION }),
             app_id: Some("komando".into()),
             ..Default::default()
         };

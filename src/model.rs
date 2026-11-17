@@ -1152,6 +1152,8 @@ pub struct Settings {
     pub pointer: Pointer,
     /// Local keyboard selection instead of the shell's Ctrl+A and Shift navigation.
     pub windows_selection: bool,
+    /// macOS: Option is the terminal's Meta key instead of typing characters.
+    pub option_as_meta: bool,
     pub cursor_shape: TerminalCursor,
     pub cursor_blink: bool,
     /// Show the command rail: a mark at the terminal's left edge for each line entered.
@@ -1362,6 +1364,7 @@ impl Default for Settings {
             putty_clipboard: false,
             pointer: Pointer::default(),
             windows_selection: false,
+            option_as_meta: false,
             cursor_shape: TerminalCursor::Line,
             cursor_blink: true,
             command_rail: true,
@@ -1515,7 +1518,7 @@ pub fn default_shells() -> Vec<LocalShell> {
     }
     #[cfg(not(windows))]
     {
-        let program = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
+        let program = unix_shell(std::env::var_os("SHELL"));
         let name = Path::new(&program)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -1524,6 +1527,20 @@ pub fn default_shells() -> Vec<LocalShell> {
         // set there); apps opened from Finder don't inherit a terminal's environment.
         let args = if cfg!(target_os = "macos") { vec!["-l".into()] } else { Vec::new() };
         vec![LocalShell { name, program, args, ..LocalShell::default() }]
+    }
+}
+
+/// The login shell offered on Linux and macOS. A `$SHELL` that is unset, empty, relative or
+/// missing would fail every new Local Session, so the system's usual shell stands in for it
+/// (zsh on macOS, bash elsewhere), or `/bin/sh`, which every Unix has.
+#[cfg(not(windows))]
+fn unix_shell(from_env: Option<std::ffi::OsString>) -> String {
+    let usable = |path: &Path| path.is_absolute() && path.is_file();
+    let usual = if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/bash" };
+    match from_env {
+        Some(shell) if usable(Path::new(&shell)) => shell.to_string_lossy().into_owned(),
+        _ if usable(Path::new(usual)) => usual.into(),
+        _ => "/bin/sh".into(),
     }
 }
 
@@ -2476,4 +2493,15 @@ startup_commands = [\"uptime\"]
         }
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_shell_falls_back_when_shell_is_unusable() {
+        use std::ffi::OsString;
+        let usual = if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/bash" };
+        let fallback = if Path::new(usual).is_file() { usual } else { "/bin/sh" };
+        assert_eq!(unix_shell(Some(OsString::from("/bin/sh"))), "/bin/sh");
+        for unusable in [None, Some(""), Some("/nonexistent/komando-shell"), Some("zsh")] {
+            assert_eq!(unix_shell(unusable.map(OsString::from)), fallback);
+        }
+    }
 }

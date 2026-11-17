@@ -37,11 +37,12 @@ Your servers, files and remote desktops organized into projects.
 |---|---|---|
 | **Windows installer** | `Komando-<version>-x64.msi` | Recommended. Install for yourself (no admin rights) or for every user of the PC. Updates in one click. |
 | **Windows portable** | `Komando-<version>-x64.exe` | One file, nothing to install. Put it anywhere and run it. |
-| **Linux** | `Komando-<version>-linux-x86_64.tar.gz` | Unpack it and run `./install.sh` to add Komando to your app menu, or run `./komando` from the folder. Needs glibc 2.35 or later (Ubuntu 22.04, Debian 12, Fedora 36 and newer). |
-| **macOS** | `Komando-<version>-macos-arm64.dmg` | Open it and drag Komando to Applications. macOS 11 or later on Apple Silicon. |
+| **Linux** | `Komando-<version>-linux-x86_64.tar.gz` | Unpack it and run `./install.sh` to add Komando to your app menu for your user (it goes in `~/.local`), or run `./komando` from the folder. Built for X11 and Wayland. Needs glibc 2.35 or later (Ubuntu 22.04, Debian 12, Fedora 36 and newer) and libxcb, libxkbcommon and libxkbcommon-x11 (`libxcb1`, `libxkbcommon0` and `libxkbcommon-x11-0` on Debian and Ubuntu, which desktops normally have). |
+| **macOS** | `Komando-<version>-macos-arm64.dmg` | Open it and drag Komando to Applications. macOS 12 or later on Apple Silicon. |
 
 **[⬇ Get the latest release](https://github.com/R4cc/komando/releases/latest)** and pick a file
-under **Assets**.
+under **Assets**. On Linux and macOS, Komando tells you when a new version is out and opens its
+release page; you install it yourself for now.
 
 <details>
 <summary><b>Windows SmartScreen warns about the portable EXE</b></summary>
@@ -64,7 +65,8 @@ If your company blocks unknown programs entirely (AppLocker), this won't help.
 <br>
 
 Komando isn't notarized by Apple yet. Open it once, then go to **System Settings** → **Privacy &
-Security** and click **Open Anyway** next to the message about Komando. Or, in Terminal:
+Security** and click **Open Anyway** next to the message about Komando. Each new version you
+download needs this once more. Or, in Terminal:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Komando.app
@@ -74,8 +76,8 @@ xattr -dr com.apple.quarantine /Applications/Komando.app
 
 **First start:** add a project and a host, then click it to connect. The first time Komando saves a
 password or key, it asks you to choose a master password for the vault. Your data stays on your
-machine: `%APPDATA%\Komando` on Windows, `~/.config/Komando` on Linux and
-`~/Library/Application Support/Komando` on macOS.
+machine: `%APPDATA%\Komando` on Windows, `~/.config/Komando` (or `$XDG_CONFIG_HOME/Komando`) on
+Linux and `~/Library/Application Support/Komando` on macOS.
 
 **Coming from Tabby or MobaXterm?** Settings → Import brings your SSH profiles and sessions over.
 The experimental MobaXterm importer also brings over direct RDP and VNC sessions; desktop
@@ -103,8 +105,8 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
   fold, Enter to connect, Ctrl+Enter for another session, F2 to rename, Delete to disconnect,
   Shift+F10 for the row's menu.
 - **Resizable navigation.** Drag the gap beside the sidebar to set its width; Komando remembers it.
-- **Local shells too.** PowerShell 7, Windows PowerShell and Command Prompt are detected; add WSL
-  or Git Bash yourself.
+- **Local shells too.** On Windows, PowerShell 7, Windows PowerShell, Command Prompt and your WSL
+  distributions are detected; add Git Bash yourself. On Linux and macOS, your login shell is offered.
 
 ### Remote desktops over RDP and VNC
 
@@ -130,8 +132,8 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 <img src="assets/screenshot-sftp.png" alt="Dark-mode SFTP browser beside live SSH logs, listing deployment folders and files with sizes, dates and permissions">
 
 - **A file browser beside the terminal**, over the connection you already have. No second login.
-- **Upload and download** files and whole folders, or drop them in from Explorer. Create, rename,
-  copy, move and delete, with sizes, dates and permissions.
+- **Upload and download** files and whole folders, or drop them in from Explorer or your file
+  manager. Create, rename, copy, move and delete, with sizes, dates and permissions.
 - **Favorite folders** like `/var/log`, on every server or just one.
 - **Safe with Windows names.** Remote files called `con` or `README` and `readme` side by side
   download without clobbering each other.
@@ -146,7 +148,8 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 - **Command rail.** A mark beside every command you ran. Click one to scroll back to it.
 - **Search the scrollback.** Ctrl+Shift+F finds text or a regular expression in all of the
   output, highlights every match and marks them on the minimap; Enter steps back through them.
-- **Copy the whole output** as text, or as a `.txt` file to drop into Outlook or Teams.
+- **Copy the whole output** as text, or as a `.txt` file to drop into Outlook or Teams. On Linux and
+  macOS, the file's path goes on the clipboard instead.
 
 ### Secure by default
 
@@ -162,7 +165,8 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 
 - **Light and dark themes**, with separate app and terminal colours.
 - **A light or dark app icon.** Choose either in Settings → Appearance, independently of
-  the theme. The choice is remembered and updates the app, taskbar and notification area.
+  the theme. The choice is remembered. On Windows it also updates the taskbar and notification area;
+  on Linux and macOS the icon stays the same for now.
 
 <img src="assets/screenshot-appearance.png" alt="Appearance settings with the light Komando icon selected while the app stays in dark mode">
 
@@ -198,7 +202,12 @@ We have optimized throughput and input performance over simulated slow links:
 ## Keyboard shortcuts
 
 App shortcuts use <kbd>Ctrl</kbd>+<kbd>Shift</kbd>, so plain <kbd>Ctrl</kbd> keys (Ctrl+W, Ctrl+R, …)
-still reach the shell on your server.
+still reach the shell on your server. On macOS the same Ctrl+Shift shortcuts work, and the usual
+Cmd shortcuts too: <kbd>Cmd</kbd>+<kbd>C</kbd>/<kbd>V</kbd> copy and paste in the terminal,
+<kbd>Cmd</kbd>+<kbd>F</kbd> searches, <kbd>Cmd</kbd>+<kbd>T</kbd>/<kbd>W</kbd> open and close a
+session, <kbd>Cmd</kbd>+<kbd>,</kbd> opens Settings and <kbd>Cmd</kbd>+<kbd>Q</kbd> quits. Option
+types characters such as @ and |; Settings → Terminal can make it the Meta key instead. In a
+remote desktop, Cmd is sent as Ctrl.
 
 Settings → Terminal offers **Windows-style keyboard selection** (off by default). When enabled,
 Ctrl+A selects the current recognised command; press it again to select all output. With an
@@ -262,6 +271,31 @@ separately and survive.
 </details>
 
 <details>
+<summary><b>How do I uninstall it?</b></summary>
+<br>
+
+- **Windows:** remove Komando under Settings → Apps, or delete a portable `komando.exe`.
+- **Linux:** run `./uninstall.sh` from the unpacked tarball. It removes the program, menu entry and icon
+  from `~/.local`. Without the folder, delete `~/.local/bin/komando`,
+  `~/.local/share/applications/komando.desktop` and
+  `~/.local/share/icons/hicolor/512x512/apps/komando.png` by hand.
+- **macOS:** drag Komando from Applications to the Trash.
+
+Your hosts, settings and vault stay in the data folder listed under **First start**. Delete that
+folder too to remove them. On Linux and macOS, terminal output copied as a `.txt` file is in
+`~/.cache/Komando` or `~/Library/Caches/Komando`.
+
+</details>
+
+<details>
+<summary><b>Which features are Windows-only?</b></summary>
+<br>
+SSH, SFTP, remote desktops, projects, the vault and themes work on all three systems. For now,
+these are Windows-only: in-place updates, the tray icon and minimize to tray, completion
+notifications, Mica and background blur, remembering the vault unlock, WSL and administrator
+shells, copying text with its colours and styles, copying a file itself to the clipboard, the app
+icon switch, and the keyboard hook that sends Windows keys to a remote desktop.
+</details>
 
 ## Building and contributing
 

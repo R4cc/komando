@@ -592,7 +592,11 @@ impl DesktopView {
         if m.alt && !m.control && (ks.key == "f4" || ks.key == "space") {
             return;
         }
-        let Some(key) = desktop::keys::from_keystroke(&ks.key, ks.key_char.as_deref(), m.control, m.alt) else { return };
+        let mac_char =
+            if cfg!(target_os = "macos") { desktop::keys::mac_option_char(&ks.key, ks.key_char.as_deref(), m.control, m.alt) } else { None };
+        let Some(key) = mac_char.or_else(|| desktop::keys::from_keystroke(&ks.key, ks.key_char.as_deref(), m.control, m.alt)) else {
+            return;
+        };
         // A modifier held down before the pane had the keyboard (Ctrl, then a click into it)
         // was never pressed on the remote side: press it now, or Ctrl+C arrives as C.
         self.sync_modifiers(*m);
@@ -643,9 +647,13 @@ impl DesktopView {
         use desktop::keys::{ALT, CONTROL, SHIFT, WINDOWS};
         // With "Windows key and shortcuts" off, the Windows key is this PC's: the remote side
         // must not open its Start menu as well.
-        let windows = self.options.send_shortcuts;
+        // macOS: Cmd is Ctrl on the remote side, so Cmd+C and Cmd+V copy and paste there as
+        // they do on the Mac. The Windows key is in the Send menu.
+        let mac = cfg!(target_os = "macos");
+        let windows = self.options.send_shortcuts && !mac;
+        let ctrl = |m: Modifiers| m.control || (mac && m.platform);
         for (code, was, is) in [
-            (CONTROL, old.control, new.control),
+            (CONTROL, ctrl(old), ctrl(new)),
             (SHIFT, old.shift, new.shift),
             (ALT, old.alt, new.alt),
             (WINDOWS, old.platform && windows, new.platform && windows),

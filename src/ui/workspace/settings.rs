@@ -207,9 +207,14 @@ impl Workspace {
             }));
         }
         if self.shell_editor.is_none() {
-            let name = cx.new(|cx| InputState::new(window, cx).placeholder("Ubuntu (WSL)"));
-            let program = cx.new(|cx| InputState::new(window, cx).placeholder("wsl.exe"));
-            let args = cx.new(|cx| InputState::new(window, cx).placeholder("-d Ubuntu"));
+            let (name_hint, program_hint, args_hint) = if cfg!(windows) {
+                ("Ubuntu (WSL)", "wsl.exe", "-d Ubuntu")
+            } else {
+                ("Bash", "/bin/bash", "-l")
+            };
+            let name = cx.new(|cx| InputState::new(window, cx).placeholder(name_hint));
+            let program = cx.new(|cx| InputState::new(window, cx).placeholder(program_hint));
+            let args = cx.new(|cx| InputState::new(window, cx).placeholder(args_hint));
             for input in [&name, &program, &args] {
                 let sub = cx.subscribe_in(input, window, |this, _, event: &InputEvent, window, cx| {
                     if matches!(event, InputEvent::PressEnter { .. }) {
@@ -362,6 +367,7 @@ impl Workspace {
     pub(super) fn apply_terminal_settings(&mut self, cx: &mut Context<Self>) {
         let pointer = self.settings.pointer.clone();
         let windows_selection = self.settings.windows_selection;
+        let option_as_meta = self.settings.option_as_meta;
         let cursor_shape = self.settings.cursor_shape;
         let cursor_blink = self.settings.cursor_blink;
         let rail = self.settings.command_rail;
@@ -375,6 +381,7 @@ impl Workspace {
             view.update(cx, |v, cx| {
                 v.pointer = pointer.clone();
                 v.windows_selection = windows_selection;
+                v.option_as_meta = option_as_meta;
                 v.set_cursor(cursor_shape, cursor_blink);
                 v.command_rail = rail;
                 v.command_history = history && ssh;
@@ -689,29 +696,25 @@ impl Workspace {
                 .child(tile(1, AppIcon::Light, "Light"))
                 .into_any_element()
         };
-        let blur_hint = if crate::platform::SUPPORTS_BACKDROP {
-            "Lets the blurred desktop show through the window."
-        } else {
-            "Windows 11 only."
-        };
         let slider = self.blur_slider.clone().map(|s| Slider::new(&s).into_any_element());
-        let mut window_rows = vec![
-            setting_row(
-                p,
-                "App icon",
-                "",
-                icon_choice,
-            ),
-            setting_row(
+        let mut window_rows = vec![setting_row(
+            p,
+            "App icon",
+            "",
+            icon_choice,
+        )];
+        // Windows 11 only (`platform::SUPPORTS_BACKDROP`): elsewhere there is no backdrop to blur.
+        if crate::platform::SUPPORTS_BACKDROP {
+            window_rows.push(setting_row(
                 p,
                 "Background blur",
-                blur_hint,
+                "Lets the blurred desktop show through the window.",
                 switch("blur-toggle".into(), "Background blur", blur, p)
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_background_blur(!blur, window, cx)))
                     .into_any_element(),
-            ),
-        ];
-        if blur {
+            ));
+        }
+        if blur && crate::platform::SUPPORTS_BACKDROP {
             window_rows.push(setting_row(
                 p,
                 "Blur intensity",
@@ -958,7 +961,11 @@ impl Workspace {
                     .text_size(px(13.5))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(p.text)
-                    .child(if other { format!("{mode_name}, used when Windows switches") } else { mode_name.to_string() }),
+                    .child(if other {
+                        format!("{mode_name}, used when {} switches", if cfg!(windows) { "Windows" } else { "the system" })
+                    } else {
+                        mode_name.to_string()
+                    }),
             )
             .when(system, |el| {
                 let label = if dark { "Edit light mode" } else { "Edit dark mode" };
@@ -983,6 +990,7 @@ impl Workspace {
     fn settings_terminal(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let scrollback = self.settings.scrollback_lines;
         let windows_selection = self.settings.windows_selection;
+        let option_as_meta = self.settings.option_as_meta;
         let cursor_blink = self.settings.cursor_blink;
         use crate::model::TerminalCursor;
         let cursor_shapes = [TerminalCursor::Line, TerminalCursor::Block, TerminalCursor::Underline];
@@ -1135,6 +1143,14 @@ impl Workspace {
                     "Open after",
                     "",
                     delay_choice,
+                )
+            }))
+            .chain(cfg!(target_os = "macos").then(|| {
+                setting_row(
+                    p,
+                    "Use Option as Meta key",
+                    "Option+B and Option+F move by word in the shell, as Alt does elsewhere. Off, Option types characters such as @ and |.",
+                    Self::setting_switch("option-as-meta", "Use Option as Meta key", option_as_meta, p, cx, |s, on| s.option_as_meta = on, Self::apply_terminal_settings),
                 )
             }))
             .collect(),
@@ -1615,7 +1631,11 @@ impl Workspace {
         let error = if name.is_empty() {
             Some("Give the shell a name.".to_string())
         } else if program.is_empty() {
-            Some("Enter the program to start, such as wsl.exe or the path to bash.exe.".to_string())
+            Some(if cfg!(windows) {
+                "Enter the program to start, such as wsl.exe or the path to bash.exe.".to_string()
+            } else {
+                "Enter the program to start, such as bash or the path to one.".to_string()
+            })
         } else if self.library.standalone_shells().iter().any(|s| s.name == name && Some(&s.name) != editing.as_ref()) {
             Some(format!("There is already a shell called {name}."))
         } else {
@@ -1833,7 +1853,7 @@ impl Workspace {
             .flex_col()
             .gap(px(14.))
             .child(form_field("Name", None, Input::new(&editor.name).into_any_element(), p))
-            .child(form_field("Program", Some("A program on the PATH, such as wsl.exe, or the full path to one."), program_field, p))
+            .child(form_field("Program", Some(if cfg!(windows) { "A program on the PATH, such as wsl.exe, or the full path to one." } else { "A program on the PATH, such as bash, or the full path to one." }), program_field, p))
             .child(form_field("Arguments", Some("Optional. Put an argument with spaces in double quotes."), Input::new(&editor.args).into_any_element(), p))
             .child(form_field(
                 "Icon",

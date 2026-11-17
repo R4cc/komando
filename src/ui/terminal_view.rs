@@ -267,6 +267,8 @@ pub struct TerminalView {
     /// the press turned into a selection.
     link_press: Option<TermLink>,
     pub windows_selection: bool,
+    /// macOS: Option is Meta (ESC + key) rather than typing the layout's characters.
+    pub option_as_meta: bool,
     keyboard_selection: selection::KeyboardSelection,
     cursor_epoch: Instant,
     cursor_timer: Option<Task<()>>,
@@ -549,6 +551,7 @@ impl TerminalView {
             link_press: None,
             highlight: true,
             windows_selection: false,
+            option_as_meta: false,
             keyboard_selection: Default::default(),
             cursor_epoch: Instant::now(),
             cursor_timer: None,
@@ -1131,9 +1134,14 @@ impl TerminalView {
         if m.is_subset_of(&Modifiers::shift()) && keys::is_text_input(ks.key_char.as_deref()) {
             return;
         }
+        let (key_char, mods) = if cfg!(target_os = "macos") {
+            keys::mac_option(&ks.key, ks.key_char.as_deref(), mods, self.option_as_meta)
+        } else {
+            (ks.key_char.as_deref(), mods)
+        };
         let mode = *self.term.lock().mode();
         let app_cursor = mode.contains(TermMode::APP_CURSOR);
-        if let Some(bytes) = keys::to_bytes(&ks.key, ks.key_char.as_deref(), mods, app_cursor) {
+        if let Some(bytes) = keys::to_bytes(&ks.key, key_char, mods, app_cursor) {
             self.scroll_to_bottom();
             {
                 let mut term = self.term.lock();

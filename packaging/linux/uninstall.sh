@@ -4,4 +4,7 @@
 set -eu
 data=${XDG_DATA_HOME:-$HOME/.local/share}
 rm -f "$HOME/.local/bin/komando" "$data/applications/komando.desktop" "$data/icons/hicolor/512x512/apps/komando.png"
+# Refresh the caches so the menu entry and icon disappear without a re-login.
+command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q "$data/applications" || true
+command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t "$data/icons/hicolor" || true
 echo "Removed Komando. Your data is still in ${XDG_CONFIG_HOME:-$HOME/.config}/Komando."

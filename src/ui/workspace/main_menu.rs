@@ -105,7 +105,7 @@ impl Workspace {
         let presenting = self.presenting();
         let vault_open = self.vault.is_some();
         // Below the button, its left edge lined up with the button's.
-        let position = point(px(ISLAND_GAP + 8.), px(TITLE_BAR_HEIGHT - 4.));
+        let position = point(px(ISLAND_GAP + 8. + TRAFFIC_LIGHTS_WIDTH), px(TITLE_BAR_HEIGHT - 4.));
         self.main_menu = Popup::open(position, |this: &mut Workspace| &mut this.main_menu, window, cx, move |menu, _, _| {
             // A toggle: its checkmark says whether it is on.
             let toggle = |label: &str, on: bool, run: fn(&mut Workspace, &mut Window, &mut Context<Workspace>)| {

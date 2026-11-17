@@ -315,8 +315,18 @@ impl Workspace {
         let paste = s.pointer.confirm_multiline_paste;
         let tray = s.minimize_to_tray;
         let updates = s.check_for_updates;
-        let rows = vec![
-            tour_row(p, "palette", "Theme", "Dark, light, or follow Windows. More themes in Settings → Appearance.", theme),
+        let mut rows = vec![
+            tour_row(
+                p,
+                "palette",
+                "Theme",
+                if cfg!(windows) {
+                    "Dark, light, or follow Windows. More themes in Settings → Appearance."
+                } else {
+                    "Dark, light, or follow the system. More themes in Settings → Appearance."
+                },
+                theme,
+            ),
             tour_row(
                 p,
                 "scroll-text",
@@ -356,27 +366,33 @@ impl Workspace {
             ),
             tour_row(
                 p,
-                "minimize-2",
-                "Minimize to the notification area",
-                "A minimized Komando leaves the taskbar and waits in the notification area, sessions still connected.",
-                Self::setting_switch(
-                    "tour-tray",
-                    "Minimize to the notification area",
-                    tray,
-                    p,
-                    cx,
-                    |s, on| s.minimize_to_tray = on,
-                    Self::apply_minimize_to_tray,
-                ),
-            ),
-            tour_row(
-                p,
                 "refresh-cw",
                 "Check for updates",
                 "Look for a new version on GitHub when Komando starts. Nothing is installed without asking.",
                 Self::setting_switch("tour-updates", "Check for updates", updates, p, cx, |s, on| s.check_for_updates = on, Self::save_settings_and_notify),
             ),
         ];
+        // The tray icon is Windows only (see `Settings` → Behaviour).
+        if cfg!(windows) {
+            rows.insert(
+                4,
+                tour_row(
+                    p,
+                    "minimize-2",
+                    "Minimize to the notification area",
+                    "A minimized Komando leaves the taskbar and waits in the notification area, sessions still connected.",
+                    Self::setting_switch(
+                        "tour-tray",
+                        "Minimize to the notification area",
+                        tray,
+                        p,
+                        cx,
+                        |s, on| s.minimize_to_tray = on,
+                        Self::apply_minimize_to_tray,
+                    ),
+                ),
+            );
+        }
         group(p, rows)
     }
 

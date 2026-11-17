@@ -144,23 +144,29 @@ impl DesktopView {
                 ] {
                     menu = menu.item(PopupMenuItem::new(label).disabled(!input).on_click(send(&view, keys)));
                 }
-                menu.separator()
-                    .label("Pass to the remote desktop")
-                    .item(
-                        PopupMenuItem::new("Windows key and shortcuts")
-                            .checked(options.send_shortcuts)
-                            .on_click(set(&view, |o| o.send_shortcuts = !o.send_shortcuts)),
-                    )
-                    .item(
-                        PopupMenuItem::new("Media keys (play, pause, next)")
-                            .checked(options.send_media_keys)
-                            .on_click(set(&view, |o| o.send_media_keys = !o.send_media_keys)),
-                    )
-                    .item(
-                        PopupMenuItem::new("Volume keys")
-                            .checked(options.send_volume_keys)
-                            .on_click(set(&view, |o| o.send_volume_keys = !o.send_volume_keys)),
-                    )
+                // Taking keys from this PC needs Windows' keyboard hook (ADR 0013); elsewhere
+                // these options would do nothing, so they are not offered.
+                if cfg!(windows) {
+                    menu = menu
+                        .separator()
+                        .label("Pass to the remote desktop")
+                        .item(
+                            PopupMenuItem::new("Windows key and shortcuts")
+                                .checked(options.send_shortcuts)
+                                .on_click(set(&view, |o| o.send_shortcuts = !o.send_shortcuts)),
+                        )
+                        .item(
+                            PopupMenuItem::new("Media keys (play, pause, next)")
+                                .checked(options.send_media_keys)
+                                .on_click(set(&view, |o| o.send_media_keys = !o.send_media_keys)),
+                        )
+                        .item(
+                            PopupMenuItem::new("Volume keys")
+                                .checked(options.send_volume_keys)
+                                .on_click(set(&view, |o| o.send_volume_keys = !o.send_volume_keys)),
+                        );
+                }
+                menu
             }
         };
 

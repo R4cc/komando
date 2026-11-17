@@ -1,6 +1,6 @@
 # Komando
 
-A Windows 11 terminal and remote desktop client, organised by Project and with saved credentials.
+A terminal and remote desktop client for Windows 11, Linux and macOS, organised by Project and with saved credentials.
 
 ## Organisation
 
@@ -37,7 +37,7 @@ _Avoid_: Fingerprint (that is only its display form), known host
 ## Running sessions
 
 **Local Shell**:
-A saved local shell, such as PowerShell or cmd, that Komando can start. It belongs to a Project or stands alone. Standalone ones are managed in Settings → Local shells, where they can be hidden from the sidebar.
+A saved local shell, such as PowerShell or cmd on Windows or the login shell on Linux and macOS, that Komando can start. It belongs to a Project or stands alone. Standalone ones are managed in Settings → Local shells, where they can be hidden from the sidebar.
 _Avoid_: Local profile
 
 **Session**:
@@ -48,7 +48,7 @@ _Avoid_: Connection, shell, instance, tab
 A Session connected to a Host. The shell runs on the remote machine; no local shell is involved.
 
 **Local Session**:
-A Session of a Local Shell, running on the Windows machine itself.
+A Session of a Local Shell, running on this computer itself.
 
 **Remote Desktop**:
 A Host's graphical desktop reached over RDP or VNC, directly or through that Host's SSH Session. Each Remote Desktop runs in its own Session alongside the Host's terminal, listed under the Host in the sidebar. It can be shown in the main window or in a window of its own.

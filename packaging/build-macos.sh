@@ -7,7 +7,7 @@
 # the one the binary was built with.
 set -euo pipefail
 version=$1 binary=$2 out=$3
-min_macos=${MACOSX_DEPLOYMENT_TARGET:-11.0}
+min_macos=${MACOSX_DEPLOYMENT_TARGET:-12.0}
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

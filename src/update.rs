@@ -11,6 +11,9 @@
 //!   installed for one user it is in a folder the user can write to, so the installer leaves
 //!   a marker file next to the program (`MSI_MARKER`) to tell it apart from a portable copy.
 //!
+//! - Linux and macOS have no in-place update yet. Once that platform's own download (the
+//!   `.tar.gz` or `.dmg`) is attached to the release, the update button opens the release page.
+//!
 //! Downloads are checked against the size GitHub reports and, when GitHub lists one, the
 //! asset's SHA-256 digest, before anything is replaced.
 
@@ -77,6 +80,10 @@ pub struct Release {
     pub exe: Option<Asset>,
     /// The installer.
     pub msi: Option<Asset>,
+    /// The Linux tarball, `Komando-<version>-linux-x86_64.tar.gz`.
+    pub tarball: Option<Asset>,
+    /// The macOS disk image, `Komando-<version>-macos-arm64.dmg`.
+    pub dmg: Option<Asset>,
 }
 
 impl Release {
@@ -85,13 +92,10 @@ impl Release {
     }
 
     /// A published release may still be building. Only offer an update once this copy's
-    /// download is attached; development platforms can open the release page instead.
+    /// download is attached. Linux and macOS are offered only with their own file, since
+    /// the platform builds run in parallel and can fail independently.
     pub fn is_available_for(&self, kind: &InstallKind) -> bool {
-        self.is_newer()
-            && match kind {
-                InstallKind::Unsupported => self.exe.iter().chain(self.msi.iter()).any(Asset::is_ready),
-                _ => self.asset_for(kind).is_some(),
-            }
+        self.is_newer() && self.asset_for(kind).is_some()
     }
 
     /// The same download is used when checking availability and when installing.
@@ -99,7 +103,20 @@ impl Release {
         match kind {
             InstallKind::Portable { .. } => self.exe.as_ref(),
             InstallKind::Installer { .. } => self.msi.as_ref(),
-            InstallKind::Unsupported => None,
+            InstallKind::Unsupported => self.manual_download(std::env::consts::OS, std::env::consts::ARCH),
+        }
+        .filter(|asset| asset.is_ready())
+    }
+
+    /// The download for `os` and `arch` (`std::env::consts`) when Komando can't install it
+    /// itself. Releases build Linux for x86-64 and macOS for Apple Silicon only; a copy built
+    /// for anything else (an ARM Linux PC) has no file to update to. Windows has no such file:
+    /// its installs use the EXE or MSI above.
+    fn manual_download(&self, os: &str, arch: &str) -> Option<&Asset> {
+        match (os, arch) {
+            ("linux", "x86_64") => self.tarball.as_ref(),
+            ("macos", "aarch64") => self.dmg.as_ref(),
+            _ => None,
         }
         .filter(|asset| asset.is_ready())
     }
@@ -359,6 +376,8 @@ fn parse_release(release: ApiRelease) -> Result<Release> {
             .or_else(|| release.assets.iter().find(|asset| asset.name == plain))
             .cloned()
     };
+    // Linux and macOS have only ever been published with the version in the name.
+    let exact = |name: String| release.assets.iter().find(|asset| asset.name == name).cloned();
     Ok(Release {
         version,
         tag: release.tag_name.clone(),
@@ -371,6 +390,8 @@ fn parse_release(release: ApiRelease) -> Result<Release> {
         notes: release.body.clone().unwrap_or_default(),
         exe: pick("exe"),
         msi: pick("msi"),
+        tarball: exact(format!("Komando-{a}.{b}.{c}-linux-x86_64.tar.gz")),
+        dmg: exact(format!("Komando-{a}.{b}.{c}-macos-arm64.dmg")),
     })
 }
 
@@ -850,6 +871,15 @@ mod tests {
         assert_eq!(release.msi.unwrap().name, "Komando-x64.msi");
         assert!(!parse_release(api("v0.0.1", &[])).unwrap().is_newer());
         assert!(parse_release(api("nightly", &[])).is_err());
+
+        let release = parse_release(api(
+            "v9.0.1",
+            &["Komando-9.0.1-linux-x86_64.tar.gz", "Komando-9.0.1-macos-arm64.dmg"],
+        ))
+        .unwrap();
+        assert_eq!(release.tarball.unwrap().name, "Komando-9.0.1-linux-x86_64.tar.gz");
+        assert_eq!(release.dmg.unwrap().name, "Komando-9.0.1-macos-arm64.dmg");
+        assert!(release.exe.is_none() && release.msi.is_none());
     }
 
     #[test]
@@ -857,6 +887,7 @@ mod tests {
         let portable = InstallKind::Portable { exe: PathBuf::from("komando.exe") };
         let per_user = InstallKind::Installer { all_users: false };
         let all_users = InstallKind::Installer { all_users: true };
+        let windows = [&portable, &per_user, &all_users];
         let kinds = [&portable, &per_user, &all_users, &InstallKind::Unsupported];
 
         // Publishing the release starts the build; it is not an available update yet.
@@ -870,9 +901,10 @@ mod tests {
         // The files can appear separately. An EXE cannot update an MSI installation.
         let release = parse_release(api("v9.0.1", &["Komando-9.0.1-x64.exe"])).unwrap();
         assert!(release.is_available_for(&portable));
-        assert!(release.is_available_for(&InstallKind::Unsupported));
         assert!(!release.is_available_for(&per_user));
         assert!(!release.is_available_for(&all_users));
+        // A Windows file never makes a Linux or macOS update available.
+        assert!(!release.is_available_for(&InstallKind::Unsupported));
         assert_eq!(release.asset_for(&portable).unwrap().name, "Komando-9.0.1-x64.exe");
 
         let release = parse_release(api("v9.0.1", &["Komando-x64.msi"])).unwrap();
@@ -882,7 +914,7 @@ mod tests {
         assert_eq!(release.asset_for(&per_user).unwrap().name, "Komando-x64.msi");
 
         let release = parse_release(api("v9.0.1", &["Komando-9.0.1-x64.exe", "Komando-9.0.1-x64.msi"])).unwrap();
-        for kind in kinds {
+        for kind in windows {
             assert!(release.is_available_for(kind), "{kind:?}");
         }
 
@@ -890,6 +922,52 @@ mod tests {
         for kind in kinds {
             assert!(!old.is_available_for(kind), "{kind:?}");
         }
+    }
+
+    #[test]
+    fn linux_and_macos_updates_wait_for_their_own_download() {
+        let tarball = "Komando-9.0.1-linux-x86_64.tar.gz";
+        let dmg = "Komando-9.0.1-macos-arm64.dmg";
+        // The Windows files don't count for Linux or macOS, whichever OS runs the tests.
+        let windows = parse_release(api("v9.0.1", &["Komando-9.0.1-x64.exe", "Komando-9.0.1-x64.msi"])).unwrap();
+        assert!(windows.manual_download("linux", "x86_64").is_none());
+        assert!(windows.manual_download("macos", "aarch64").is_none());
+
+        // Each platform is offered only with its own file.
+        let linux_only = parse_release(api("v9.0.1", &[tarball])).unwrap();
+        assert_eq!(linux_only.manual_download("linux", "x86_64").unwrap().name, tarball);
+        assert!(linux_only.manual_download("macos", "aarch64").is_none());
+        let macos_only = parse_release(api("v9.0.1", &[dmg])).unwrap();
+        assert_eq!(macos_only.manual_download("macos", "aarch64").unwrap().name, dmg);
+        assert!(macos_only.manual_download("linux", "x86_64").is_none());
+
+        // Only the file for the running OS counts: the host decides what Unsupported means.
+        let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+        for release in [&linux_only, &macos_only] {
+            let expected = release.manual_download(os, arch).is_some();
+            assert_eq!(release.is_available_for(&InstallKind::Unsupported), expected, "{}", release.tag);
+            assert_eq!(release.asset_for(&InstallKind::Unsupported).is_some(), expected);
+        }
+
+        // A copy built for another processor has no download to update to.
+        assert!(linux_only.manual_download("linux", "aarch64").is_none());
+        assert!(macos_only.manual_download("macos", "x86_64").is_none());
+
+        // An older release's files, or other names, don't match this version's tarball or dmg.
+        let other = parse_release(api(
+            "v9.0.1",
+            &["Komando-9.0.0-linux-x86_64.tar.gz", "Komando-linux-x86_64.tar.gz", "Komando-9.0.1-linux-aarch64.tar.gz", "Komando-9.0.1-macos-x86_64.dmg"],
+        ))
+        .unwrap();
+        assert!(other.manual_download("linux", "x86_64").is_none());
+        assert!(other.manual_download("macos", "aarch64").is_none());
+
+        // A file still uploading (empty) doesn't offer the update yet.
+        let mut building = parse_release(api("v9.0.1", &[tarball])).unwrap();
+        building.tarball.as_mut().unwrap().size = 0;
+        assert!(building.manual_download("linux", "x86_64").is_none());
+        assert!(!building.is_available_for(&InstallKind::Unsupported));
+        assert!(building.asset_for(&InstallKind::Unsupported).is_none());
     }
 
     #[test]

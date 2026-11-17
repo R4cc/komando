@@ -169,7 +169,8 @@ jobs:
     env:
       TAG: ${{ inputs.tag }}
       VERSION: ${{ needs.version.outputs.version }}
-      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      # GPUI's Metal shaders are compiled for macOS 12, so the app can't start on anything older.
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -178,7 +179,8 @@ jobs:
       # GPUI compiles its Metal shaders at build time. Since Xcode 26 the Metal compiler is a
       # separate download.
       - name: Check Metal compiler
-        run: xcrun metal --version || xcodebuild -downloadComponent MetalToolchain
+        run: |
+          xcrun metal --version || { xcodebuild -downloadComponent MetalToolchain && xcrun metal --version; }
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -188,6 +190,20 @@ jobs:
 
       - name: Package
         run: ./packaging/build-macos.sh "$VERSION" target/release/komando "Komando-$VERSION-macos-arm64.dmg"
+
+      # What a user downloads: an arm64 program for macOS 12, signed, in a disk image that opens.
+      - name: Check disk image
+        run: |
+          dmg="Komando-$VERSION-macos-arm64.dmg"
+          hdiutil verify "$dmg"
+          mount=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg"
+          trap 'hdiutil detach "$mount"' EXIT
+          app="$mount/Komando.app"
+          test "$(lipo -archs "$app/Contents/MacOS/komando")" = arm64
+          vtool -show-build "$app/Contents/MacOS/komando" | grep -q "minos $MACOSX_DEPLOYMENT_TARGET"
+          codesign --verify --strict "$app"
+          test "$(defaults read "$app/Contents/Info" CFBundleShortVersionString)" = "$VERSION"
 
       - name: Attach to release
         env:

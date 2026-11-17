@@ -3,6 +3,10 @@
 # the icon and install.sh / uninstall.sh for a per-user install.
 # Usage: packaging/build-linux.sh <version> <path to komando> <out.tar.gz>
 set -euo pipefail
+if [ $# -ne 3 ]; then
+    echo "usage: $0 <version> <path to komando> <out.tar.gz>" >&2
+    exit 2
+fi
 version=$1 binary=$2 out=$3
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
@@ -14,12 +18,12 @@ install -m755 "$binary" "$dir/komando"
 install -m644 "$root/packaging/linux/komando.desktop" "$dir/komando.desktop"
 install -m755 "$root/packaging/linux/install.sh" "$root/packaging/linux/uninstall.sh" "$dir/"
 install -m644 "$root/LICENSE" "$dir/LICENSE"
-# The 1024 px artwork scaled for the hicolor 512x512 slot install.sh uses.
-if command -v convert >/dev/null 2>&1; then
-    convert "$root/assets/icon.png" -resize 512x512 "$dir/komando.png"
-else
-    install -m644 "$root/assets/icon.png" "$dir/komando.png"
-fi
+# A 512 px copy of assets/icon.png, kept in the repository so the build needs no image tools:
+# hicolor's largest standard size, which every icon theme looks in. Regenerate it when the
+# artwork changes.
+install -m644 "$root/packaging/linux/komando.png" "$dir/komando.png"
 
-tar -C "$work" -czf "$out" "komando-$version"
+# Same inputs, same bytes: sorted entries, root ownership, a fixed mtime and no gzip timestamp.
+tar -C "$work" --sort=name --owner=0 --group=0 --numeric-owner \
+    --mtime="@${SOURCE_DATE_EPOCH:-0}" -cf - "komando-$version" | gzip -n > "$out"
 echo "Wrote $out"

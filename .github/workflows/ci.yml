@@ -79,3 +79,18 @@ jobs:
       # Packaging is otherwise only exercised by a release.
       - name: Package
         run: ./packaging/build-linux.sh 0.0.0 target/ci/komando Komando-ci-linux.tar.gz && tar -tzf Komando-ci-linux.tar.gz
+      # Installs the tarball the way a user does, into a HOME with a space in its path and an
+      # empty XDG_DATA_HOME, then uninstalls it again.
+      - name: Install and uninstall the package
+        run: |
+          work=$(mktemp -d)
+          tar -C "$work" -xzf Komando-ci-linux.tar.gz
+          export HOME="$work/home with space"
+          mkdir -p "$HOME"
+          XDG_DATA_HOME= sh "$work/komando-0.0.0/install.sh"
+          test -x "$HOME/.local/bin/komando"
+          test -f "$HOME/.local/share/applications/komando.desktop"
+          test -f "$HOME/.local/share/icons/hicolor/512x512/apps/komando.png"
+          XDG_DATA_HOME= sh "$work/komando-0.0.0/uninstall.sh"
+          test ! -e "$HOME/.local/bin/komando"
+          test ! -e "$HOME/.local/share/applications/komando.desktop"

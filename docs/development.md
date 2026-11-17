@@ -45,13 +45,18 @@ Install Rust with [rustup](https://rustup.rs), then:
 - **Linux** (Debian/Ubuntu package names): `sudo apt install build-essential libxcb1-dev
   libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev`. Build with
   `RUST_FONTCONFIG_DLOPEN=on cargo build --release`, as releases do, so fontconfig is loaded
-  at startup instead of linked. Wayland and Vulkan are always loaded at startup.
+  at startup instead of linked. Wayland and Vulkan are always loaded at startup, and the build
+  supports both X11 and Wayland. The program links libxcb, libxkbcommon and libxkbcommon-x11, so
+  it needs `libxcb1`, `libxkbcommon0` and `libxkbcommon-x11-0` at run time.
 - **macOS**: install Xcode (GPUI compiles its Metal shaders with it; on Xcode 26 and later also
-  run `xcodebuild -downloadComponent MetalToolchain`), then `cargo build --release`.
+  run `xcodebuild -downloadComponent MetalToolchain`), then
+  `MACOSX_DEPLOYMENT_TARGET=12.0 cargo build --release`, as releases do.
 
 The program is `target/release/komando`. `packaging/build-linux.sh` and
-`packaging/build-macos.sh` wrap it the way releases do: a tarball with `install.sh`, and a
-`.dmg` holding `Komando.app`.
+`packaging/build-macos.sh` wrap it the way releases do. The first makes a tarball with
+`install.sh`, for example `packaging/build-linux.sh 0.7.7 target/release/komando
+Komando-0.7.7-linux-x86_64.tar.gz`. The second runs on macOS with the same arguments and makes
+a `.dmg` holding `Komando.app`.
 
 ## Versions and releases
 
@@ -124,10 +129,12 @@ security modes must fail explicitly rather than weaken a server's configuration.
 
 ## Developing on Linux
 
-Komando ships for Windows only, but it also builds on Linux, which is handy for tests and
-screenshots. You need the X11 libraries (`libxcb`, `libxkbcommon`, `libxkbcommon-x11`). Set
-`RUST_FONTCONFIG_DLOPEN=on` if fontconfig has no pkg-config file. `examples/demo.rs` seeds a
-throwaway data folder and opens a few sessions; it's what produced the README screenshot.
+Komando ships for Windows, Linux and macOS (see [ADR 0014](adr/0014-linux-and-macos-builds.md)).
+Linux is handy for tests and screenshots. You need the X11 libraries (`libxcb`, `libxkbcommon`,
+`libxkbcommon-x11`). Set `RUST_FONTCONFIG_DLOPEN=on` if fontconfig has no pkg-config file.
+`KOMANDO_HOME` replaces the data folder (`~/.config/Komando` on Linux), so a test can keep its
+hosts and vault separate. `examples/demo.rs` seeds a throwaway data folder and opens a few
+sessions; it's what produced the README screenshot.
 Set `KOMANDO_DEMO_THEME=dark` for README captures. `KOMANDO_DEMO_DESKTOPS=1` configures RDP
 and VNC on the demo's web01 so their menu entries open configured desktops, without opening one.
 `KOMANDO_DEMO_SFTP=1` opens its file browser once SSH connects; use a loopback server that
@@ -299,8 +306,18 @@ installs it: a portable `komando.exe` in a writable folder is swapped in place (
 kept as `komando.exe.old` until the next start), an MSI install runs the new installer. An install
 for all users is the one under Program Files; one for a single user is in a writable folder too
 (`%LOCALAPPDATA%\Programs\Komando`), and is recognised by the `installed-with-msi.txt` file the
-MSI puts next to `komando.exe`. Downloads are checked against the size and SHA-256 digest GitHub lists. To try the
-flow against the current release, start Komando with `KOMANDO_PRETEND_VERSION=0.0.1`.
+MSI puts next to `komando.exe`. Downloads are checked against the size and SHA-256 digest GitHub
+lists.
+
+On Linux and macOS the check is the same, but the update button only opens the release page, and
+nothing is installed. An update is offered only once that platform's own file
+(`Komando-<version>-linux-x86_64.tar.gz` or `Komando-<version>-macos-arm64.dmg`) is attached, so a
+release whose Linux build is still running isn't offered yet. Windows files never count for them.
+
+To try the flow against the current release, start Komando with `KOMANDO_PRETEND_VERSION=0.0.1`
+(on macOS from Terminal: `KOMANDO_PRETEND_VERSION=0.0.1 /Applications/Komando.app/Contents/MacOS/komando`).
+On Linux and macOS the check uses a proxy only from `HTTPS_PROXY`/`ALL_PROXY` and trusts only
+the bundled web roots; the system's proxy settings and certificate store are Windows-only.
 
 ### Profiling
 
@@ -362,5 +379,5 @@ fixtures; they do not connect to saved Hosts or change a user's library.
 
 - [GLOSSARY.md](../GLOSSARY.md): the terms used in code and docs (Project, Host, Session,
   Vault, …).
-- [docs/adr](adr): decisions and why: Windows only, embedded SSH client, native GPU UI,
-  master-password vault, a sidebar of hosts instead of tabs.
+- [docs/adr](adr): decisions and why: Linux and macOS builds beside Windows, embedded SSH client,
+  native GPU UI, master-password vault, a sidebar of hosts instead of tabs.

@@ -6,12 +6,63 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- macOS: a menu bar with About, Settings, Hide and Quit, and the usual Cmd shortcuts beside the
+  Ctrl+Shift ones: Cmd+C and Cmd+V copy and paste in the terminal, Cmd+F searches, Cmd+T and
+  Cmd+W open and close a session, Cmd+, opens Settings, Cmd+Q quits, Cmd+H hides and Cmd+M
+  minimizes. Double-clicking the title bar zooms the window.
+- macOS: Settings → Terminal → Use Option as Meta key, for Option+B and Option+F word moves in
+  the shell.
+
 ### Changed
 
 - Expand sidebar on hover feels like Zen Browser's compact mode: the sidebar opens as soon
   as the pointer reaches the window's left edge and springs in, then slides back 150 ms
   after the pointer leaves it. On Windows, moving past the window's left edge keeps it open
   until the pointer is 200 px beyond it.
+- On Linux and macOS, the update prompt says how to install the new version: unpack the Linux
+  tarball and run its install.sh, or drag Komando into Applications from the macOS disk image.
+- SFTP keeps a file's permissions on Linux and macOS: a downloaded script stays executable and
+  a private file stays private, and an uploaded file gets the permissions it has on your
+  computer.
+- On Linux and macOS, downloaded files keep the names the server gave them, such as `a:b` or
+  `CON`. Only Windows renames those.
+- On Linux and macOS, settings and menu items that only work on Windows are no longer shown:
+  background blur, minimize to the notification area, Run as administrator for local shells,
+  and the remote desktop options that take the Windows key, media keys and volume keys from
+  this computer. The one-off Send → Windows key item stays.
+- On Linux and macOS, examples and hints show paths and shells from those systems instead of
+  Windows ones, and Stay unlocked no longer says it lasts across restarts.
+- The Linux menu entry lists Komando under System only, as the desktop entry rules ask.
+- macOS: the download now says it needs macOS 12 or later, which its graphics already required.
+- macOS: Komando quits when its window closes, as on Windows and Linux, instead of staying in
+  the Dock with sessions still connected and no window to show them.
+- macOS: in a remote desktop, Cmd is sent as Ctrl, so Cmd+C and Cmd+V copy and paste on the
+  remote computer. Option types the symbols it gives on your keyboard (`@`, `|`, `€`) there,
+  and stays Alt for letters.
+
+### Fixed
+
+- On Linux and macOS, Komando offers an update only once that system's own download is on the
+  release page. Before, a Windows file was enough, so the prompt could appear before the Linux
+  tarball or macOS disk image was ready.
+- The sidebar update button on Linux and macOS says it opens the release page, rather than that
+  it will update and restart.
+- On Linux and macOS, "Copy output as .txt file" no longer starts the file with an invisible
+  byte order mark, and keeps the file in your own cache folder where only you can read it,
+  instead of the temp folder every user shares.
+- On Linux and macOS, a local shell still opens when `$SHELL` is empty or names a program that
+  doesn't exist: Komando starts bash, or `/bin/sh` where there is no bash.
+- On Linux, the app menu entry starts Komando when your home folder's path has a space in it.
+- macOS: the window's own close, minimize and zoom buttons no longer sit on top of the ☰ menu,
+  and Komando no longer draws a second, Windows-style set of them at the top right.
+- macOS: Option no longer sends an escape followed by a stray character in the terminal. It
+  types the character your keyboard gives it, such as `@` or `|` on European layouts.
+- macOS: local shells start in your region's UTF-8 locale when Komando is opened from Finder or
+  the Dock, so accented file names and text show correctly. With no `$SHELL`, zsh is started.
+- macOS: Komando explains why it asks to reach your local network or to use your Downloads,
+  Documents and Desktop folders.
 
 ## [0.7.7] - 2026-11-17
 

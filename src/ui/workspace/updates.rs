@@ -22,6 +22,22 @@ pub(super) enum UpdateState {
 /// The sidebar's update button while an update is offered or downloading.
 const UPDATE_ICON: &str = "circle-fading-arrow-up";
 
+/// Linux and macOS have no in-place update yet: the update button opens the release page.
+/// `install_kind()` is `Unsupported` exactly off Windows. It isn't called here, since it probes
+/// the program's folder and the sidebar button is drawn on every redraw.
+fn opens_release_page() -> bool {
+    !cfg!(windows)
+}
+
+/// How Linux and macOS users install a new version themselves, from the release page.
+fn manual_update_steps() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Download the new version from the release page, quit Komando and drag the new one into Applications, replacing the old. macOS asks again before its first start. Open sessions close when you quit Komando."
+    } else {
+        "Download the new version from the release page, unpack it and run its install.sh. Open sessions close when you quit Komando."
+    }
+}
+
 impl Workspace {
     /// Ask GitHub for the latest release. `quiet` (the check at startup) keeps failures off
     /// the page: being offline isn't worth a message.
@@ -59,12 +75,13 @@ impl Workspace {
         let UpdateState::Available(release) = &self.update else { return };
         let release = release.clone();
         let kind = update::install_kind();
-        let asset = release.asset_for(&kind).cloned();
-        let Some(asset) = asset else {
-            self.update = UpdateState::Failed(match kind {
-                InstallKind::Unsupported => update::MANUAL_UPDATE.into(),
-                _ => format!("Release {} has no file for this kind of install.", release.tag),
-            });
+        if kind == InstallKind::Unsupported {
+            // Linux and macOS: the release page has the download, and the user installs it.
+            cx.open_url(&release.url);
+            return;
+        }
+        let Some(asset) = release.asset_for(&kind).cloned() else {
+            self.update = UpdateState::Failed(format!("Release {} has no file for this kind of install.", release.tag));
             cx.notify();
             return;
         };
@@ -135,6 +152,9 @@ impl Workspace {
         let (icon, label, downloading) = match &self.update {
             // Not "download": the Transfers entry sits right above, and the two must not look
             // alike. Lucide's update icon, an arrow up out of a fading circle.
+            UpdateState::Available(release) if opens_release_page() => {
+                (UPDATE_ICON, format!("Open the release page for Komando {}", release.version_text()), false)
+            }
             UpdateState::Available(release) => {
                 (UPDATE_ICON, format!("Update to Komando {} and restart", release.version_text()), false)
             }
@@ -221,7 +241,11 @@ impl Workspace {
             UpdateState::Available(release) => (
                 format!("Komando {} is available", release.version_text()),
                 format!("You have {major}.{minor}.{patch}"),
-                "Click to update and restart. Open sessions will close.",
+                if opens_release_page() {
+                    "Click to open the release page."
+                } else {
+                    "Click to update and restart. Open sessions will close."
+                },
                 Some(release),
             ),
             UpdateState::Downloading { release, .. } => (
@@ -320,7 +344,7 @@ impl Workspace {
                     InstallKind::Installer { all_users: false } => {
                         "Komando downloads and checks the update, closes to install it and reopens automatically. Open sessions close."
                     }
-                    InstallKind::Unsupported => update::MANUAL_UPDATE,
+                    InstallKind::Unsupported => manual_update_steps(),
                 };
                 let control = if kind == InstallKind::Unsupported {
                     let url = release.url.clone();
