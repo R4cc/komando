@@ -152,7 +152,7 @@ impl Workspace {
             confirm_delete: None,
             _subscriptions: subscriptions,
         })));
-        self.confirm_delete_set = None;
+        self.confirm_delete_set.clear();
         cx.notify();
     }
 
@@ -219,7 +219,7 @@ impl Workspace {
         });
         name.update(cx, |f, cx| f.focus(window, cx));
         self.overlay = Some(Overlay::SetForm(SetForm { editing, name, error: None, _subscriptions: vec![subscription] }));
-        self.confirm_delete_set = None;
+        self.confirm_delete_set.clear();
         cx.notify();
     }
 

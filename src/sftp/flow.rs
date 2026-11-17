@@ -13,9 +13,12 @@
 //! keystroke then waits about [`TARGET`] longer than on an idle connection, while the link
 //! stays busy.
 
+#[cfg(test)]
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use crate::session::ledbat::LinkDelay;
 
 /// The queueing delay transfers may add to everything else on the connection.
 pub(crate) const TARGET: Duration = Duration::from_millis(20);
@@ -46,10 +49,8 @@ struct State {
     in_flight: u64,
     /// Doubling every round trip until queueing shows, as at the start of a TCP connection.
     slow_start: bool,
-    /// Lowest round trip per interval, newest last.
-    base: VecDeque<(Instant, Duration)>,
-    /// When the window was last halved, so it is halved at most once per round trip.
-    last_halved: Option<Instant>,
+    /// The link's own delay, and when the window was last halved.
+    base: LinkDelay,
 }
 
 impl Default for Flow {
@@ -59,8 +60,7 @@ impl Default for Flow {
                 window: START_WINDOW,
                 in_flight: 0,
                 slow_start: true,
-                base: VecDeque::new(),
-                last_halved: None,
+                base: LinkDelay::new(BASE_INTERVAL, BASE_INTERVALS),
             }),
             room: tokio::sync::Notify::new(),
         }
@@ -132,16 +132,7 @@ fn request_len(window: u64) -> u32 {
 
 impl State {
     fn sample(&mut self, len: u32, rtt: Duration, now: Instant) {
-        match self.base.back_mut() {
-            Some((since, lowest)) if now.duration_since(*since) < BASE_INTERVAL => *lowest = (*lowest).min(rtt),
-            _ => {
-                self.base.push_back((now, rtt));
-                if self.base.len() > BASE_INTERVALS {
-                    self.base.pop_front();
-                }
-            }
-        }
-        let base = self.base.iter().map(|(_, d)| *d).min().unwrap_or(rtt);
+        let base = self.base.sample(rtt, now);
         let queueing = rtt.saturating_sub(base);
 
         if self.slow_start {
@@ -153,9 +144,8 @@ impl State {
         } else if queueing > TARGET * 2 {
             // Far over: the link got slower, or something else is using it. Halve, once per
             // round trip, rather than wait for the gentle decrease below.
-            if self.last_halved.is_none_or(|at| now.duration_since(at) > rtt) {
+            if self.base.halve(rtt, now) {
                 self.window /= 2;
-                self.last_halved = Some(now);
             }
         } else {
             // Up to one read's worth more (or less) per window's worth of data received:

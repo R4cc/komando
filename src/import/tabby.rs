@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value, json};
 
-use super::{Found, FoundGroup, FoundHost, LeftOut};
+use super::{Found, FoundGroup, FoundHost, LeftOut, join_and, key_file_name};
 use crate::model::StartupCommand;
 
 /// Why a configuration can't be read: Tabby's "Encrypt config file" is on. The import page
@@ -391,8 +391,7 @@ fn key_label(key: &str) -> String {
     if key.starts_with("vault://") {
         return "one in Tabby's vault".into();
     }
-    let path = key.strip_prefix("file://").unwrap_or(key);
-    path.rsplit(['/', '\\']).find(|s| !s.is_empty()).unwrap_or(path).to_string()
+    key_file_name(key.strip_prefix("file://").unwrap_or(key))
 }
 
 fn kind_label(kind: &str) -> String {
@@ -550,14 +549,6 @@ fn plural(n: usize, word: &str) -> String {
         (1, _) => format!("1 {word}"),
         (_, "try") => format!("{n} tries"),
         _ => format!("{n} {word}s"),
-    }
-}
-
-fn join_and(items: &[String]) -> String {
-    match items {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 

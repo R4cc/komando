@@ -380,6 +380,22 @@ fn next_color(library: &Library) -> &'static str {
     PROJECT_COLORS.iter().map(|(name, _)| *name).min_by_key(|name| used(name)).unwrap_or("blue")
 }
 
+/// "a, b and c", for the importers' notes.
+fn join_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// A private key's file name, from a Windows or Unix path, for what an import leaves out.
+/// MobaXterm also writes `_CurrentDrive_:\…` and `_ProfileDir_\…` for folders it moves along
+/// with a portable install.
+fn key_file_name(path: &str) -> String {
+    path.rsplit(['/', '\\']).find(|s| !s.is_empty()).unwrap_or(path).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

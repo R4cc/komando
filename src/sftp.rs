@@ -635,6 +635,12 @@ impl PacedChannel {
         }
         Ok(PacedChannel { raw: Arc::new(raw), down: Arc::default(), up: Arc::default(), max_read, max_write })
     }
+
+    /// Open a remote file on this channel.
+    async fn open_file(&self, path: &str, flags: OpenFlags) -> Result<RemoteHandle, OpError> {
+        let handle = self.raw.open(path, flags, FileAttributes::empty()).await.map_err(|e| OpError::from(e).at(path))?;
+        Ok(RemoteHandle { raw: self.raw.clone(), name: handle.handle })
+    }
 }
 
 /// A file open on the [`PacedChannel`], closed when dropped if not before.
@@ -674,7 +680,9 @@ enum Download<'a> {
 impl Download<'_> {
     async fn copy_to(self, output: &mut tokio::fs::File, remote: &str, local: &Path, progress: &Progress) -> Result<(), OpError> {
         match self {
-            Download::Plain(mut input) => copy_down(&mut input, output, remote, local, progress).await,
+            Download::Plain(mut input) => {
+                copy_chunks(&mut *input, output, progress, |e| OpError::remote_io(&e).at(remote), |e| OpError::local(&e, local)).await
+            }
             // The file closes when `file` is dropped, without waiting for the server to confirm.
             Download::Paced(file) => file.copy_to(output, remote, local, progress).await,
         }
@@ -742,28 +750,24 @@ impl PacedFile<'_> {
                 _ = flow.room() => continue,
             };
             let (offset, len, _) = pending.pop_front().expect("not empty");
-            match reply.map_err(|_| OpError::connection())? {
-                Ok(data) if data.is_empty() => return Ok(()),
-                Ok(data) => {
-                    output.write_all(&data).await.map_err(|e| OpError::local(&e, local))?;
-                    progress.add(data.len() as u64);
-                    // Less than asked for before the end: get the rest before anything after it.
-                    let (mut at, end) = (offset + data.len() as u64, offset + len as u64);
-                    while at < end {
-                        match self.channel.raw.read(self.handle.name.as_str(), at, (end - at) as u32).await {
-                            Ok(more) if more.data.is_empty() => return Ok(()),
-                            Ok(more) => {
-                                output.write_all(&more.data).await.map_err(|e| OpError::local(&e, local))?;
-                                progress.add(more.data.len() as u64);
-                                at += more.data.len() as u64;
-                            }
-                            Err(SftpError::Status(status)) if status.status_code == StatusCode::Eof => return Ok(()),
-                            Err(e) => return Err(OpError::from(e).at(remote)),
-                        }
+            let mut reply = reply.map_err(|_| OpError::connection())?;
+            let (mut at, end) = (offset, offset + len as u64);
+            loop {
+                match reply {
+                    Ok(data) if data.is_empty() => return Ok(()),
+                    Ok(data) => {
+                        output.write_all(&data).await.map_err(|e| OpError::local(&e, local))?;
+                        progress.add(data.len() as u64);
+                        at += data.len() as u64;
                     }
+                    Err(SftpError::Status(status)) if status.status_code == StatusCode::Eof => return Ok(()),
+                    Err(e) => return Err(OpError::from(e).at(remote)),
                 }
-                Err(SftpError::Status(status)) if status.status_code == StatusCode::Eof => return Ok(()),
-                Err(e) => return Err(OpError::from(e).at(remote)),
+                if at >= end {
+                    break;
+                }
+                // Less than asked for before the end: get the rest before anything after it.
+                reply = self.channel.raw.read(self.handle.name.as_str(), at, (end - at) as u32).await.map(|more| more.data);
             }
         }
     }
@@ -781,7 +785,7 @@ impl Upload<'_> {
     async fn copy_from(self, input: &mut tokio::fs::File, local: &Path, remote: &str, progress: &Progress) -> Result<(), OpError> {
         match self {
             Upload::Plain(mut output) => {
-                copy_up(input, &mut output, local, progress).await?;
+                copy_chunks(input, &mut *output, progress, |e| OpError::local(&e, local), |e| OpError::remote_io(&e)).await?;
                 output.shutdown().await.map_err(|e| OpError::remote_io(&e))
             }
             Upload::Paced(file) => {
@@ -990,8 +994,7 @@ impl Remote {
         }
         let dir_access = access(&self.identity, attrs.permissions, attrs.uid, attrs.gid, true);
         let read = self.sftp.read_dir(path.as_str()).await.map_err(|e| OpError::from(e).at(&path))?;
-        let raw: Vec<(String, FileAttributes)> =
-            read.filter(|e| e.file_name() != "." && e.file_name() != "..").map(|e| (e.file_name(), e.metadata())).collect();
+        let raw: Vec<(String, FileAttributes)> = entries(read).collect();
         // Look up where symlinks lead, a few at a time.
         let lookups: Vec<(String, bool)> =
             raw.iter().map(|(name, attrs)| (join(&path, name), is_link_mode(attrs.permissions))).collect();
@@ -1056,13 +1059,9 @@ impl Remote {
                 .map(|dir| async move {
                     let read = self.read_dir_in_turn(&dir).await?;
                     let (mut folders, mut files) = (vec![], vec![]);
-                    for entry in read {
-                        let name = entry.file_name();
-                        if name == "." || name == ".." {
-                            continue;
-                        }
+                    for (name, attrs) in entries(read) {
                         let child = join(&dir, &name);
-                        if is_dir_mode(entry.metadata().permissions) { folders.push(child) } else { files.push(child) }
+                        if is_dir_mode(attrs.permissions) { folders.push(child) } else { files.push(child) }
                     }
                     futures::stream::iter(files)
                         .map(|file| async move { self.sftp.remove_file(file.as_str()).await.map_err(|e| OpError::from(e).at(&file)) })
@@ -1117,14 +1116,10 @@ impl Remote {
             if is_dir_mode(attrs.permissions) {
                 self.sftp.create_dir(dst.as_str()).await.map_err(|e| OpError::from(e).at(&dst))?;
                 let read = self.sftp.read_dir(src.as_str()).await.map_err(|e| OpError::from(e).at(&src))?;
-                for entry in read {
-                    let name = entry.file_name();
-                    if name == "." || name == ".." {
-                        continue;
-                    }
+                for (name, attrs) in entries(read) {
                     let child = join(&src, &name);
                     // Links to folders are skipped (they can loop), as in `walk_dir`.
-                    if is_link_mode(entry.metadata().permissions)
+                    if is_link_mode(attrs.permissions)
                         && self.sftp.metadata(child.as_str()).await.is_ok_and(|t| is_dir_mode(t.permissions))
                     {
                         continue;
@@ -1250,9 +1245,7 @@ impl Remote {
         let Some(channel) = &self.paced else {
             return self.create_file(path).await.map(|file| Upload::Plain(Box::new(file)));
         };
-        let flags = OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE;
-        let handle = channel.raw.open(path, flags, FileAttributes::empty()).await.map_err(|e| OpError::from(e).at(path))?;
-        let handle = RemoteHandle { raw: channel.raw.clone(), name: handle.handle };
+        let handle = channel.open_file(path, OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE).await?;
         Ok(Upload::Paced(PacedUpload { channel, handle }))
     }
 
@@ -1261,8 +1254,7 @@ impl Remote {
         let Some(channel) = &self.paced else {
             return self.sftp.open(path).await.map(|file| Download::Plain(Box::new(file))).map_err(|e| OpError::from(e).at(path));
         };
-        let handle = channel.raw.open(path, OpenFlags::READ, FileAttributes::empty()).await.map_err(|e| OpError::from(e).at(path))?;
-        let handle = RemoteHandle { raw: channel.raw.clone(), name: handle.handle };
+        let handle = channel.open_file(path, OpenFlags::READ).await?;
         Ok(Download::Paced(PacedFile { channel, handle, size }))
     }
 
@@ -1330,13 +1322,8 @@ impl Remote {
         let dir = if rel.is_empty() { root.to_string() } else { join(root, &rel) };
         let read = self.read_dir_in_turn(&dir).await?;
         let mut out = vec![];
-        for entry in read {
-            let child_name = entry.file_name();
-            if child_name == "." || child_name == ".." {
-                continue;
-            }
+        for (child_name, mut attrs) in entries(read) {
             let child_rel = if rel.is_empty() { child_name.clone() } else { format!("{rel}/{child_name}") };
-            let mut attrs = entry.metadata();
             if is_link_mode(attrs.permissions) {
                 match self.sftp.metadata(join(&dir, &child_name)).await {
                     Ok(target) if !is_dir_mode(target.permissions) => attrs = target,
@@ -1445,6 +1432,14 @@ impl Remote {
 }
 
 /// Whether remote path `path` is `dir` or inside it.
+/// A folder listing's entries, by name and attributes, without `.` and `..`.
+fn entries(read: russh_sftp::client::fs::ReadDir) -> impl Iterator<Item = (String, FileAttributes)> {
+    read.filter_map(|entry| {
+        let name = entry.file_name();
+        (name != "." && name != "..").then(|| (name, entry.metadata()))
+    })
+}
+
 fn is_within(path: &str, dir: &str) -> bool {
     let dir = dir.trim_end_matches('/');
     path == dir || dir.is_empty() || path.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'))
@@ -1607,39 +1602,23 @@ async fn finish_local(partial: &Path, target: &Path) -> Result<PathBuf, OpError>
     .map_err(|e| OpError::new(ErrorKind::Other, e.to_string()))?
 }
 
-async fn copy_down(
-    input: &mut russh_sftp::client::fs::File,
-    output: &mut tokio::fs::File,
-    remote: &str,
-    local: &Path,
+/// Copy `input` to `output` a chunk at a time, for transfers without the paced channel.
+/// The error mappers say which side each is (the remote file or the local one).
+async fn copy_chunks(
+    input: &mut (impl tokio::io::AsyncRead + Unpin),
+    output: &mut (impl tokio::io::AsyncWrite + Unpin),
     progress: &Progress,
+    read_error: impl Fn(std::io::Error) -> OpError,
+    write_error: impl Fn(std::io::Error) -> OpError,
 ) -> Result<(), OpError> {
     let mut buf = vec![0u8; CHUNK];
     loop {
         progress.check()?;
-        let n = input.read(&mut buf).await.map_err(|e| OpError::remote_io(&e).at(remote))?;
+        let n = input.read(&mut buf).await.map_err(&read_error)?;
         if n == 0 {
             return Ok(());
         }
-        output.write_all(&buf[..n]).await.map_err(|e| OpError::local(&e, local))?;
-        progress.add(n as u64);
-    }
-}
-
-async fn copy_up(
-    input: &mut tokio::fs::File,
-    output: &mut russh_sftp::client::fs::File,
-    local: &Path,
-    progress: &Progress,
-) -> Result<(), OpError> {
-    let mut buf = vec![0u8; CHUNK];
-    loop {
-        progress.check()?;
-        let n = input.read(&mut buf).await.map_err(|e| OpError::local(&e, local))?;
-        if n == 0 {
-            return Ok(());
-        }
-        output.write_all(&buf[..n]).await.map_err(|e| OpError::remote_io(&e))?;
+        output.write_all(&buf[..n]).await.map_err(&write_error)?;
         progress.add(n as u64);
     }
 }

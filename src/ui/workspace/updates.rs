@@ -427,11 +427,15 @@ impl Workspace {
                             .child("Look for a new version when Komando starts. Nothing is downloaded without asking."),
                     ),
             )
-            .child(switch("update-auto".into(), "Check for updates automatically", auto, p).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.settings.check_for_updates = !auto;
-                this.save_settings(cx);
-                cx.notify();
-            })))
+            .child(Self::setting_switch(
+                "update-auto",
+                "Check for updates automatically",
+                auto,
+                p,
+                cx,
+                |s, on| s.check_for_updates = on,
+                Self::save_settings_and_notify,
+            ))
             .into_any_element();
         div()
             .rounded(p.corner(12.))

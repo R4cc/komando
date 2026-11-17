@@ -1646,25 +1646,20 @@ impl TerminalView {
     /// minimap), and the overlay opens and closes with it.
     fn minimap_hover(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.minimap_state.clone();
-        // The scrollbar's thumb (minimap off) follows the pointer the same way.
-        if state.bar_dragging() {
+        // So does the scrollbar's thumb, shown while the minimap is off.
+        if state.bar_dragging() || state.dragging() {
             if event.pressed_button == Some(MouseButton::Left) {
-                crate::ui::minimap::bar_drag(&self.term, &state, event.position.y);
-                cx.stop_propagation();
-                cx.notify();
-                return;
-            }
-            state.bar_release();
-            cx.notify();
-        }
-        if state.dragging() {
-            if event.pressed_button == Some(MouseButton::Left) {
-                crate::ui::minimap::drag(&self.term, &state, event.position.y);
+                if state.bar_dragging() {
+                    crate::ui::minimap::bar_drag(&self.term, &state, event.position.y);
+                } else {
+                    crate::ui::minimap::drag(&self.term, &state, event.position.y);
+                }
                 cx.stop_propagation();
                 cx.notify();
                 return;
             }
             // The release happened somewhere nothing reported it.
+            state.bar_release();
             state.release();
             cx.notify();
         }

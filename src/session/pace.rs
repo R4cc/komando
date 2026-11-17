@@ -36,6 +36,8 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use super::ledbat::LinkDelay;
+
 /// The queueing delay shell output may build up: about how much longer than the link's own
 /// round trip output keeps coming after Ctrl+C, and a key's echo waits during a flood. On a
 /// slow link it is at least one SSH packet's time on the link (26 ms at 10 Mbit/s), as the
@@ -76,14 +78,12 @@ pub(crate) struct Pace {
     max: u32,
     /// Doubling every round trip until queueing shows, as at the start of a TCP connection.
     slow_start: bool,
-    /// Lowest round trip per interval, newest last.
-    base: VecDeque<(Instant, Duration)>,
+    /// The link's own delay, and when the window was last halved.
+    base: LinkDelay,
     /// The latest round trips, newest last.
     current: VecDeque<Duration>,
     /// Output rates (bytes per second) of the latest round trips, newest last.
     rates: VecDeque<(Instant, f64)>,
-    /// When the window was last halved, so it is halved at most once per round trip.
-    last_halved: Option<Instant>,
     /// Output bytes received so far, and when the last arrived.
     received: u64,
     last_output: Option<Instant>,
@@ -98,10 +98,9 @@ impl Default for Pace {
             window: START_WINDOW,
             max: MAX_WINDOW,
             slow_start: true,
-            base: VecDeque::new(),
+            base: LinkDelay::new(BASE_INTERVAL, BASE_INTERVALS),
             current: VecDeque::new(),
             rates: VecDeque::new(),
-            last_halved: None,
             received: 0,
             last_output: None,
             ping: None,
@@ -162,20 +161,11 @@ impl Pace {
 
     /// A ping came back after `rtt`, and `received` bytes of output arrived meanwhile.
     fn sample(&mut self, rtt: Duration, received: u64, now: Instant) {
-        match self.base.back_mut() {
-            Some((since, lowest)) if now.duration_since(*since) < BASE_INTERVAL => *lowest = (*lowest).min(rtt),
-            _ => {
-                self.base.push_back((now, rtt));
-                if self.base.len() > BASE_INTERVALS {
-                    self.base.pop_front();
-                }
-            }
-        }
+        let base = self.base.sample(rtt, now);
         self.current.push_back(rtt);
         if self.current.len() > CURRENT_SAMPLES {
             self.current.pop_front();
         }
-        let base = self.base.iter().map(|(_, d)| *d).min().unwrap_or(rtt);
         let current = self.current.iter().min().copied().unwrap_or(rtt);
         let queueing = current.saturating_sub(base);
         // The server keeps nearly all of the window on its way (it is topped up after every
@@ -202,9 +192,8 @@ impl Pace {
             if queueing > target * 2 {
                 // Far over: the link got slower, or something else is using it. Halve, once
                 // per round trip, rather than wait for the gentle decrease below.
-                if self.last_halved.is_none_or(|at| now.duration_since(at) > rtt) {
+                if self.base.halve(rtt, now) {
                     window /= 2.0;
-                    self.last_halved = Some(now);
                 }
             } else {
                 // In proportion to how far from the target, up to GAIN per round trip.

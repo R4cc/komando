@@ -322,66 +322,59 @@ impl Workspace {
                 "scroll-text",
                 "Keep command history",
                 "Saves the commands you type in each host's sessions on this PC, with their date, time and address: your own record of what you ran where. Stored in plain text. Right-click a host to see it.",
-                switch("tour-history".into(), "Keep command history", history, p)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.settings.command_history = !history;
-                        this.apply_terminal_settings(cx);
-                    }))
-                    .into_any_element(),
+                Self::setting_switch("tour-history", "Keep command history", history, p, cx, |s, on| s.command_history = on, Self::apply_terminal_settings),
             ),
             tour_row(
                 p,
                 "clipboard-paste",
                 "Copy on select, paste on right-click",
                 "As in PuTTY: selecting text copies it, a right-click pastes. Off, use Ctrl+Shift+C and Ctrl+Shift+V.",
-                switch("tour-putty".into(), "Copy on select, paste on right-click", putty, p)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.settings.pointer.set_putty_style(!putty);
-                        this.apply_terminal_settings(cx);
-                    }))
-                    .into_any_element(),
+                Self::setting_switch(
+                    "tour-putty",
+                    "Copy on select, paste on right-click",
+                    putty,
+                    p,
+                    cx,
+                    |s, on| s.pointer.set_putty_style(on),
+                    Self::apply_terminal_settings,
+                ),
             ),
             tour_row(
                 p,
                 "triangle-alert",
                 "Ask before pasting several lines",
                 "A pasted block runs line by line on the server. Komando shows it to you first.",
-                switch("tour-paste".into(), "Ask before pasting several lines", paste, p)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.settings.pointer.confirm_multiline_paste = !paste;
-                        this.apply_terminal_settings(cx);
-                    }))
-                    .into_any_element(),
+                Self::setting_switch(
+                    "tour-paste",
+                    "Ask before pasting several lines",
+                    paste,
+                    p,
+                    cx,
+                    |s, on| s.pointer.confirm_multiline_paste = on,
+                    Self::apply_terminal_settings,
+                ),
             ),
             tour_row(
                 p,
                 "minimize-2",
                 "Minimize to the notification area",
                 "A minimized Komando leaves the taskbar and waits in the notification area, sessions still connected.",
-                switch("tour-tray".into(), "Minimize to the notification area", tray, p)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.settings.minimize_to_tray = !tray;
-                        #[cfg(windows)]
-                        if let Some(tray) = &this.tray {
-                            tray.set_enabled(this.settings.minimize_to_tray);
-                        }
-                        this.save_settings(cx);
-                        cx.notify();
-                    }))
-                    .into_any_element(),
+                Self::setting_switch(
+                    "tour-tray",
+                    "Minimize to the notification area",
+                    tray,
+                    p,
+                    cx,
+                    |s, on| s.minimize_to_tray = on,
+                    Self::apply_minimize_to_tray,
+                ),
             ),
             tour_row(
                 p,
                 "refresh-cw",
                 "Check for updates",
                 "Look for a new version on GitHub when Komando starts. Nothing is installed without asking.",
-                switch("tour-updates".into(), "Check for updates", updates, p)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.settings.check_for_updates = !updates;
-                        this.save_settings(cx);
-                        cx.notify();
-                    }))
-                    .into_any_element(),
+                Self::setting_switch("tour-updates", "Check for updates", updates, p, cx, |s, on| s.check_for_updates = on, Self::save_settings_and_notify),
             ),
         ];
         group(p, rows)
@@ -587,12 +580,7 @@ impl Workspace {
                         "map",
                         "Show the minimap",
                         "Beside every terminal.",
-                        switch("tour-minimap".into(), "Show the minimap", on, p)
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.settings.minimap = !on;
-                                this.apply_terminal_settings(cx);
-                            }))
-                            .into_any_element(),
+                        Self::setting_switch("tour-minimap", "Show the minimap", on, p, cx, |s, on| s.minimap = on, Self::apply_terminal_settings),
                     ),
                     div()
                         .flex()

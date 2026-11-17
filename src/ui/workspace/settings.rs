@@ -158,7 +158,7 @@ impl Workspace {
         // Shown secrets don't stay on screen behind another page.
         self.vault_revealed.clear();
         self.overlay = None;
-        self.confirm_delete_set = None;
+        self.confirm_delete_set.clear();
         self.page = Page::Settings(section);
         window.focus(&self.focus, cx);
         cx.notify();
@@ -175,62 +175,36 @@ impl Workspace {
     fn ensure_settings_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.blur_slider.is_none() {
             let value = self.settings.background_blur_intensity as f32;
-            let slider = cx.new(|_| SliderState::new().min(0.).max(100.).step(5.).default_value(value));
-            let sub = cx.subscribe_in(&slider, window, |this, _, event: &SliderEvent, window, cx| match event {
-                // Live preview while dragging; written to disk on release. The slider reports
-                // every pointer move, but restyling the windows is only worth a new value.
-                SliderEvent::Change(value) => {
-                    let blur = value.end().round().clamp(0., 100.) as u8;
-                    if blur != this.settings.background_blur_intensity {
-                        this.settings.background_blur_intensity = blur;
-                        this.apply_appearance(window, cx);
-                    }
+            self.blur_slider = Some(self.settings_slider(0., 100., 5., value, window, cx, |this, value, window, cx| {
+                let blur = value as u8;
+                if blur != this.settings.background_blur_intensity {
+                    this.settings.background_blur_intensity = blur;
+                    this.apply_appearance(window, cx);
                 }
-                SliderEvent::Release(_) => {
-                    this.save_settings(cx);
-                }
-            });
-            self._subscriptions.push(sub);
-            self.blur_slider = Some(slider);
+            }));
         }
         if self.font_slider.is_none() {
             let value = self.settings.font_size;
-            let slider = cx.new(|_| SliderState::new().min(10.).max(24.).step(1.).default_value(value));
-            let sub = cx.subscribe_in(&slider, window, |this, _, event: &SliderEvent, window, cx| match event {
-                SliderEvent::Change(value) => {
-                    let size = value.end().round().clamp(10., 24.);
-                    if size != this.settings.font_size {
-                        this.settings.font_size = size;
-                        this.apply_appearance(window, cx);
-                    }
+            self.font_slider = Some(self.settings_slider(10., 24., 1., value, window, cx, |this, size, window, cx| {
+                if size != this.settings.font_size {
+                    this.settings.font_size = size;
+                    this.apply_appearance(window, cx);
                 }
-                SliderEvent::Release(_) => {
-                    this.save_settings(cx);
-                }
-            });
-            self._subscriptions.push(sub);
-            self.font_slider = Some(slider);
+            }));
         }
         if self.presentation_slider.is_none() {
             let range = main_menu::PRESENTATION_FONT_SIZES;
             let (min, max) = (*range.start(), *range.end());
             let value = self.settings.presentation_font_size.clamp(min, max);
-            let slider = cx.new(|_| SliderState::new().min(min).max(max).step(1.).default_value(value));
-            let sub = cx.subscribe_in(&slider, window, move |this, _, event: &SliderEvent, window, cx| match event {
-                SliderEvent::Change(value) => {
-                    let size = value.end().round().clamp(min, max);
-                    if size != this.settings.presentation_font_size {
-                        this.settings.presentation_font_size = size;
-                        if this.presenting() {
-                            this.apply_appearance(window, cx);
-                        }
-                        cx.notify();
+            self.presentation_slider = Some(self.settings_slider(min, max, 1., value, window, cx, |this, size, window, cx| {
+                if size != this.settings.presentation_font_size {
+                    this.settings.presentation_font_size = size;
+                    if this.presenting() {
+                        this.apply_appearance(window, cx);
                     }
+                    cx.notify();
                 }
-                SliderEvent::Release(_) => this.save_settings(cx),
-            });
-            self._subscriptions.push(sub);
-            self.presentation_slider = Some(slider);
+            }));
         }
         if self.shell_editor.is_none() {
             let name = cx.new(|cx| InputState::new(window, cx).placeholder("Ubuntu (WSL)"));
@@ -314,6 +288,30 @@ impl Workspace {
         }
     }
 
+    /// A settings slider from `min` to `max`. It previews live while dragging, handing
+    /// `change` each value rounded and kept in range, and writes the settings to disk on
+    /// release. The slider reports every pointer move, so `change` should only restyle
+    /// anything when the value is new.
+    #[allow(clippy::too_many_arguments)]
+    fn settings_slider(
+        &mut self,
+        min: f32,
+        max: f32,
+        step: f32,
+        value: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        change: fn(&mut Self, f32, &mut Window, &mut Context<Self>),
+    ) -> Entity<SliderState> {
+        let slider = cx.new(|_| SliderState::new().min(min).max(max).step(step).default_value(value));
+        let sub = cx.subscribe_in(&slider, window, move |this, _, event: &SliderEvent, window, cx| match event {
+            SliderEvent::Change(value) => change(this, value.end().round().clamp(min, max), window, cx),
+            SliderEvent::Release(_) => this.save_settings(cx),
+        });
+        self._subscriptions.push(sub);
+        slider
+    }
+
     fn font_weight_of(&self, kind: FontWeightKind) -> u16 {
         match kind {
             FontWeightKind::Regular => self.settings.font_weight,
@@ -388,6 +386,40 @@ impl Workspace {
         }
         self.save_settings(cx);
         cx.notify();
+    }
+
+    /// A switch for one setting: a click sets it to the opposite of `on`, the value shown,
+    /// then `then` saves it and applies it wherever it matters.
+    pub(super) fn setting_switch(
+        id: &'static str,
+        label: &'static str,
+        on: bool,
+        p: AppPalette,
+        cx: &mut Context<Self>,
+        set: fn(&mut Settings, bool),
+        then: fn(&mut Self, &mut Context<Self>),
+    ) -> AnyElement {
+        switch(id.into(), label, on, p)
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                set(&mut this.settings, !on);
+                then(this, cx);
+            }))
+            .into_any_element()
+    }
+
+    /// For settings that only need writing to disk and the page redrawn.
+    pub(super) fn save_settings_and_notify(&mut self, cx: &mut Context<Self>) {
+        self.save_settings(cx);
+        cx.notify();
+    }
+
+    /// Hand a changed Minimize to tray to the tray icon (Windows only), and save it.
+    pub(super) fn apply_minimize_to_tray(&mut self, cx: &mut Context<Self>) {
+        #[cfg(windows)]
+        if let Some(tray) = &self.tray {
+            tray.set_enabled(self.settings.minimize_to_tray);
+        }
+        self.save_settings_and_notify(cx);
     }
 
     pub(super) fn render_settings(&self, section: SettingsSection, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -687,28 +719,30 @@ impl Workspace {
             p,
             "Keep sessions after disconnecting",
             "× on a connected session only disconnects it, keeping its output until you click × again.",
-            switch("keep-disconnected-sessions".into(), "Keep sessions after disconnecting", self.settings.keep_disconnected_sessions, p)
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.settings.keep_disconnected_sessions = !this.settings.keep_disconnected_sessions;
-                    this.save_settings(cx);
-                    cx.notify();
-                }))
-                .into_any_element(),
+            Self::setting_switch(
+                "keep-disconnected-sessions",
+                "Keep sessions after disconnecting",
+                self.settings.keep_disconnected_sessions,
+                p,
+                cx,
+                |s, on| s.keep_disconnected_sessions = on,
+                Self::save_settings_and_notify,
+            ),
         ));
         if cfg!(windows) {
             behaviour_rows.push(setting_row(
                 p,
                 "Minimize to tray",
                 "Sessions keep running in the notification area when you minimize or close Komando.",
-                switch("minimize-to-tray".into(), "Minimize to tray", self.settings.minimize_to_tray, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.settings.minimize_to_tray = !this.settings.minimize_to_tray;
-                        #[cfg(windows)]
-                        if let Some(tray) = &this.tray { tray.set_enabled(this.settings.minimize_to_tray); }
-                        this.save_settings(cx);
-                        cx.notify();
-                    }))
-                    .into_any_element(),
+                Self::setting_switch(
+                    "minimize-to-tray",
+                    "Minimize to tray",
+                    self.settings.minimize_to_tray,
+                    p,
+                    cx,
+                    |s, on| s.minimize_to_tray = on,
+                    Self::apply_minimize_to_tray,
+                ),
             ));
         }
 
@@ -812,25 +846,29 @@ impl Workspace {
                     p,
                     "Full screen",
                     "Fills the screen, so the terminal gets all of it.",
-                    switch("presentation-full-screen".into(), "Full screen while presenting", full_screen, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.presentation_full_screen = !full_screen;
-                            this.save_settings(cx);
-                            cx.notify();
-                        }))
-                        .into_any_element(),
+                    Self::setting_switch(
+                        "presentation-full-screen",
+                        "Full screen while presenting",
+                        full_screen,
+                        p,
+                        cx,
+                        |s, on| s.presentation_full_screen = on,
+                        Self::save_settings_and_notify,
+                    ),
                 ),
                 setting_row(
                     p,
                     "Hide the sidebar",
                     "Keeps your hosts and projects off the shared screen. Ctrl+Shift+B still shows it.",
-                    switch("presentation-hide-sidebar".into(), "Hide the sidebar while presenting", hide_sidebar, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.presentation_hide_sidebar = !hide_sidebar;
-                            this.save_settings(cx);
-                            cx.notify();
-                        }))
-                        .into_any_element(),
+                    Self::setting_switch(
+                        "presentation-hide-sidebar",
+                        "Hide the sidebar while presenting",
+                        hide_sidebar,
+                        p,
+                        cx,
+                        |s, on| s.presentation_hide_sidebar = on,
+                        Self::save_settings_and_notify,
+                    ),
                 ),
             ],
         )
@@ -1009,23 +1047,21 @@ impl Workspace {
                     p,
                     "Blinking cursor",
                     "",
-                    switch("cursor-blink".into(), "Blinking cursor", cursor_blink, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.cursor_blink = !cursor_blink;
-                            this.apply_terminal_settings(cx);
-                        }))
-                        .into_any_element(),
+                    Self::setting_switch("cursor-blink", "Blinking cursor", cursor_blink, p, cx, |s, on| s.cursor_blink = on, Self::apply_terminal_settings),
                 ),
                 setting_row(
                     p,
                     "Windows-style keyboard selection",
                     "Select output with Shift+arrows and Ctrl+A, as in a text field. Replaces the shell's shortcuts for these keys.",
-                    switch("windows-selection".into(), "Windows-style keyboard selection", windows_selection, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.windows_selection = !windows_selection;
-                            this.apply_terminal_settings(cx);
-                        }))
-                        .into_any_element(),
+                    Self::setting_switch(
+                        "windows-selection",
+                        "Windows-style keyboard selection",
+                        windows_selection,
+                        p,
+                        cx,
+                        |s, on| s.windows_selection = on,
+                        Self::apply_terminal_settings,
+                    ),
                 ),
                 setting_row(
                     p,
@@ -1037,23 +1073,13 @@ impl Workspace {
                     p,
                     "Command rail",
                     "Marks each command at the left edge. Click one to jump back to it.",
-                    switch("command-rail".into(), "Command rail", rail, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.command_rail = !rail;
-                            this.apply_terminal_settings(cx);
-                        }))
-                        .into_any_element(),
+                    Self::setting_switch("command-rail", "Command rail", rail, p, cx, |s, on| s.command_rail = on, Self::apply_terminal_settings),
                 ),
                 setting_row(
                     p,
                     "Minimap",
                     "",
-                    switch("minimap".into(), "Minimap", minimap, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.minimap = !minimap;
-                            this.apply_terminal_settings(cx);
-                        }))
-                        .into_any_element(),
+                    Self::setting_switch("minimap", "Minimap", minimap, p, cx, |s, on| s.minimap = on, Self::apply_terminal_settings),
                 ),
             ]
             .into_iter()
@@ -1084,19 +1110,9 @@ impl Workspace {
     fn settings_mouse_clipboard(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         use crate::model::{LinkClick, RightClick};
         let pointer = &self.settings.pointer;
-        // A switch row that flips one of the pointer settings.
-        let toggle = |id: &'static str, label: &'static str, hint: &'static str, on: bool, flip: fn(&mut crate::model::Pointer), cx: &mut Context<Self>| {
-            setting_row(
-                p,
-                label,
-                hint,
-                switch(id.into(), label, on, p)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        flip(&mut this.settings.pointer);
-                        this.apply_terminal_settings(cx);
-                    }))
-                    .into_any_element(),
-            )
+        // A switch row for one of the pointer settings.
+        let toggle = |id: &'static str, label: &'static str, hint: &'static str, on: bool, set: fn(&mut Settings, bool), cx: &mut Context<Self>| {
+            setting_row(p, label, hint, Self::setting_switch(id, label, on, p, cx, set, Self::apply_terminal_settings))
         };
         const RIGHT_CLICKS: [(RightClick, &str); 3] =
             [(RightClick::Menu, "Menu"), (RightClick::Paste, "Paste"), (RightClick::CopyOrPaste, "Copy or paste")];
@@ -1136,7 +1152,7 @@ impl Workspace {
             p,
             vec![
                 setting_row(p, "Right-click", right_click_hint, right_click),
-                toggle("middle-click-paste", "Middle-click pastes", "", pointer.middle_click_paste, |s| s.middle_click_paste = !s.middle_click_paste, cx),
+                toggle("middle-click-paste", "Middle-click pastes", "", pointer.middle_click_paste, |s, on| s.pointer.middle_click_paste = on, cx),
                 setting_row(
                     p,
                     "Word boundaries",
@@ -1147,7 +1163,7 @@ impl Workspace {
             ],
         );
         let mut clipboard_rows =
-            vec![toggle("copy-on-select", "Copy when selecting", "", pointer.copy_on_select, |s| s.copy_on_select = !s.copy_on_select, cx)];
+            vec![toggle("copy-on-select", "Copy when selecting", "", pointer.copy_on_select, |s, on| s.pointer.copy_on_select = on, cx)];
         // Only Windows: gpui can't put HTML beside the text on the macOS or Linux clipboard.
         if cfg!(windows) {
             clipboard_rows.push(toggle(
@@ -1155,7 +1171,7 @@ impl Workspace {
                 "Copy colors and styles",
                 "Pasting into documents, mail or chat keeps the terminal's look. Plain-text programs get the text.",
                 pointer.copy_formatting,
-                |s| s.copy_formatting = !s.copy_formatting,
+                |s, on| s.pointer.copy_formatting = on,
                 cx,
             ));
         }
@@ -1165,7 +1181,7 @@ impl Workspace {
                 "Trim copied text",
                 "Leaves out spaces and blank lines at the start and end.",
                 pointer.trim_copied,
-                |s| s.trim_copied = !s.trim_copied,
+                |s, on| s.pointer.trim_copied = on,
                 cx,
             ),
             toggle(
@@ -1173,7 +1189,7 @@ impl Workspace {
                 "Confirm multi-line paste",
                 "Each line may run as a command.",
                 pointer.confirm_multiline_paste,
-                |s| s.confirm_multiline_paste = !s.confirm_multiline_paste,
+                |s, on| s.pointer.confirm_multiline_paste = on,
                 cx,
             ),
             toggle(
@@ -1181,7 +1197,7 @@ impl Workspace {
                 "Paste as one line",
                 "Line breaks in pasted text become spaces.",
                 pointer.paste_single_line,
-                |s| s.paste_single_line = !s.paste_single_line,
+                |s, on| s.pointer.paste_single_line = on,
                 cx,
             ),
             toggle(
@@ -1189,7 +1205,7 @@ impl Workspace {
                 "Bracketed paste",
                 "Shells that support it treat a paste as text, so nothing runs until you press Enter.",
                 pointer.bracketed_paste,
-                |s| s.bracketed_paste = !s.bracketed_paste,
+                |s, on| s.pointer.bracketed_paste = on,
                 cx,
             ),
         ]);
@@ -1213,34 +1229,43 @@ impl Workspace {
                     p,
                     "\"Rename\" in the menu",
                     "F2 renames either way.",
-                    switch("sftp-menu-rename".into(), "Rename in the menu", rename, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.sftp_menu_rename = !rename;
-                            this.apply_sftp_menu_settings(cx);
-                        }))
-                        .into_any_element(),
+                    Self::setting_switch(
+                        "sftp-menu-rename",
+                        "Rename in the menu",
+                        rename,
+                        p,
+                        cx,
+                        |s, on| s.sftp_menu_rename = on,
+                        Self::apply_sftp_menu_settings,
+                    ),
                 ),
                 setting_row(
                     p,
                     "\"Copy to…\" in the menu",
                     "",
-                    switch("sftp-menu-copy-to".into(), "Copy to in the menu", copy_to, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.sftp_menu_copy_to = !copy_to;
-                            this.apply_sftp_menu_settings(cx);
-                        }))
-                        .into_any_element(),
+                    Self::setting_switch(
+                        "sftp-menu-copy-to",
+                        "Copy to in the menu",
+                        copy_to,
+                        p,
+                        cx,
+                        |s, on| s.sftp_menu_copy_to = on,
+                        Self::apply_sftp_menu_settings,
+                    ),
                 ),
                 setting_row(
                     p,
                     "\"Move to…\" in the menu",
                     "",
-                    switch("sftp-menu-move-to".into(), "Move to in the menu", move_to, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.sftp_menu_move_to = !move_to;
-                            this.apply_sftp_menu_settings(cx);
-                        }))
-                        .into_any_element(),
+                    Self::setting_switch(
+                        "sftp-menu-move-to",
+                        "Move to in the menu",
+                        move_to,
+                        p,
+                        cx,
+                        |s, on| s.sftp_menu_move_to = on,
+                        Self::apply_sftp_menu_settings,
+                    ),
                 ),
             ],
         )
@@ -1258,25 +1283,21 @@ impl Workspace {
                     p,
                     "RDP: fit the desktop to the window",
                     "Applies from the next connection.",
-                    switch("rdp-fit-desktop".into(), "Fit RDP desktops to the window", fit, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.rdp_fit_desktop = !fit;
-                            this.save_settings(cx);
-                            cx.notify();
-                        }))
-                        .into_any_element(),
+                    Self::setting_switch(
+                        "rdp-fit-desktop",
+                        "Fit RDP desktops to the window",
+                        fit,
+                        p,
+                        cx,
+                        |s, on| s.rdp_fit_desktop = on,
+                        Self::save_settings_and_notify,
+                    ),
                 ),
                 setting_row(
                     p,
                     "VNC: share the desktop",
                     "Off disconnects other viewers. Applies from the next connection.",
-                    switch("vnc-shared".into(), "Share VNC desktops", shared, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.vnc_shared = !shared;
-                            this.save_settings(cx);
-                            cx.notify();
-                        }))
-                        .into_any_element(),
+                    Self::setting_switch("vnc-shared", "Share VNC desktops", shared, p, cx, |s, on| s.vnc_shared = on, Self::save_settings_and_notify),
                 ),
                 setting_row(
                     p,
@@ -1374,12 +1395,7 @@ impl Workspace {
                     p,
                     "Command history",
                     "Kept per host on this PC. Right-click a host to see it. Commands typed after a space are skipped.",
-                    switch("command-history".into(), "Command history", history, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.command_history = !history;
-                            this.apply_terminal_settings(cx);
-                        }))
-                        .into_any_element(),
+                    Self::setting_switch("command-history", "Command history", history, p, cx, |s, on| s.command_history = on, Self::apply_terminal_settings),
                 ),
                 setting_row(
                     p,
@@ -1514,7 +1530,7 @@ impl Workspace {
 
     fn new_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_shell_editor(window, cx);
-        self.confirm_remove_shell = None;
+        self.confirm_remove_shell.clear();
         self.overlay = Some(Overlay::ShellForm);
         if let Some(editor) = &self.shell_editor {
             editor.name.update(cx, |f, cx| f.focus(window, cx));
@@ -1650,7 +1666,7 @@ impl Workspace {
         for shell in &shells {
             let name = shell.name.clone();
             let (n_toggle, n_edit, n_remove, n_confirm) = (name.clone(), name.clone(), name.clone(), name.clone());
-            let confirming = self.confirm_remove_shell.as_ref().is_some_and(|(n, _)| *n == name);
+            let confirming = self.confirm_remove_shell.armed_for(&name);
             let icon = crate::icons::shell_icon(&shell);
             let command = format!("{} {}", shell.program, shell.args_line()).trim().to_string();
             let open = self.sessions_of(&ItemKey::Shell { project: None, name: name.clone() }).count();
@@ -1691,7 +1707,7 @@ impl Workspace {
                             .aria_label(format!("Edit shell: {name}"))
                             .tooltip(|window, cx| Tooltip::new("Edit").build(window, cx))
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.confirm_remove_shell = None;
+                                this.confirm_remove_shell.clear();
                                 this.edit_shell(&n_edit, window, cx);
                             })),
                     )
@@ -1702,11 +1718,9 @@ impl Workspace {
                             .w(px(84.))
                             .justify_center()
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                if this.confirm_remove_shell.as_ref().is_some_and(|(_, at)| at.elapsed() < Duration::from_millis(500)) {
-                                    return;
+                                if this.confirm_remove_shell.confirm() {
+                                    this.remove_shell(&n_confirm, window, cx);
                                 }
-                                this.confirm_remove_shell = None;
-                                this.remove_shell(&n_confirm, window, cx);
                             }))
                             .into_any_element()
                     } else {
@@ -1714,7 +1728,7 @@ impl Workspace {
                             .aria_label(format!("Remove shell: {name}"))
                             .tooltip(|window, cx| Tooltip::new("Remove").build(window, cx))
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.confirm_remove_shell = Some((n_remove.clone(), Instant::now()));
+                                this.confirm_remove_shell.arm(n_remove.clone());
                                 cx.notify();
                             }))
                             .into_any_element()
@@ -1726,7 +1740,7 @@ impl Workspace {
                             .child(
                                 switch(SharedString::from(format!("shell-toggle-{name}")), format!("Show {name} in the sidebar"), !shell.hidden, p)
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                        this.confirm_remove_shell = None;
+                                        this.confirm_remove_shell.clear();
                                         this.toggle_shell_hidden(&n_toggle, cx);
                                     })),
                             ),
@@ -1871,7 +1885,7 @@ impl Workspace {
             let on = !self.settings.disabled_highlight_sets.contains(&set.id);
             let open = expanded.as_deref() == Some(set.id.as_str());
             let enabled_rules = set.keywords.iter().filter(|k| k.enabled).count();
-            let confirming = self.confirm_delete_set.as_ref().is_some_and(|(id, _)| *id == set.id);
+            let confirming = self.confirm_delete_set.armed_for(&set.id);
             let (id_toggle, id_export, id_delete, id_open, id_rename) =
                 (set.id.clone(), set.id.clone(), set.id.clone(), set.id.clone(), set.id.clone());
             list = list.child(
@@ -1891,7 +1905,7 @@ impl Workspace {
                     .cursor_pointer()
                     .hover(|s| s.bg(p.hover))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.confirm_delete_set = None;
+                        this.confirm_delete_set.clear();
                         this.highlights_expanded =
                             if this.highlights_expanded.as_deref() == Some(id_open.as_str()) { None } else { Some(id_open.clone()) };
                         cx.notify();
@@ -1930,7 +1944,7 @@ impl Workspace {
                             .on_click(cx.listener(
                             move |this, _: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
-                                this.confirm_delete_set = None;
+                                this.confirm_delete_set.clear();
                                 this.export_highlight_set(&id_export, window, cx);
                             },
                         )),
@@ -1943,13 +1957,9 @@ impl Workspace {
                             .justify_center()
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 cx.stop_propagation();
-                                // The button appears under the pointer, so the second click of a
-                                // double-click on the trash icon must not count as the confirmation.
-                                if this.confirm_delete_set.as_ref().is_some_and(|(_, at)| at.elapsed() < Duration::from_millis(500)) {
-                                    return;
+                                if this.confirm_delete_set.confirm() {
+                                    this.delete_highlight_set(&id_delete, cx);
                                 }
-                                this.confirm_delete_set = None;
-                                this.delete_highlight_set(&id_delete, cx);
                             }))
                             .into_any_element()
                     } else {
@@ -1958,7 +1968,7 @@ impl Workspace {
                             .tooltip(|window, cx| Tooltip::new("Delete set").build(window, cx))
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 cx.stop_propagation();
-                                this.confirm_delete_set = Some((id_delete.clone(), Instant::now()));
+                                this.confirm_delete_set.arm(id_delete.clone());
                                 cx.notify();
                             }))
                             .into_any_element()
@@ -1966,7 +1976,7 @@ impl Workspace {
                     .child(switch(SharedString::from(format!("hl-toggle-{}", set.id)), format!("Enable highlight set: {}", set.name), on, p).on_click(cx.listener(
                         move |this, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
-                            this.confirm_delete_set = None;
+                            this.confirm_delete_set.clear();
                             this.toggle_highlight_set(&id_toggle, cx);
                         },
                     ))),
@@ -2126,26 +2136,28 @@ impl Workspace {
                 p,
                 "Highlight output",
                 "Hosts and projects can turn it off in their settings.",
-                switch("highlighting".into(), "Highlight output", highlighting, p)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.settings.highlighting = !highlighting;
-                        this.save_settings(cx);
-                        this.apply_highlights(cx);
-                    }))
-                    .into_any_element(),
+                Self::setting_switch("highlighting", "Highlight output", highlighting, p, cx, |s, on| s.highlighting = on, |this, cx| {
+                    this.save_settings(cx);
+                    this.apply_highlights(cx);
+                }),
             ))
             .chain(highlighting.then(|| {
                 setting_row(
                     p,
                     "Highlight full-screen programs",
                     "Such as vim, htop and less. Off leaves their own colors alone.",
-                    switch("highlight-full-screen".into(), "Highlight full-screen programs", full_screen, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.highlight_full_screen = !full_screen;
+                    Self::setting_switch(
+                        "highlight-full-screen",
+                        "Highlight full-screen programs",
+                        full_screen,
+                        p,
+                        cx,
+                        |s, on| s.highlight_full_screen = on,
+                        |this, cx| {
                             this.save_settings(cx);
                             this.apply_highlights(cx);
-                        }))
-                        .into_any_element(),
+                        },
+                    ),
                 )
             }))
             .collect(),
@@ -2220,6 +2232,36 @@ pub(super) fn settings_block(title: &str, p: AppPalette, content: AnyElement) ->
 enum ThemeChoice {
     Theme { dark: bool },
     TerminalColors { dark: bool },
+}
+
+/// A delete that takes a second click: the first arms it for one item (by id or name), and
+/// its button turns into a confirm button under the pointer; the second does it.
+#[derive(Default)]
+pub(super) struct ConfirmTwice(Option<(String, Instant)>);
+
+impl ConfirmTwice {
+    pub(super) fn arm(&mut self, id: String) {
+        self.0 = Some((id, Instant::now()));
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.0 = None;
+    }
+
+    pub(super) fn armed_for(&self, id: &str) -> bool {
+        self.0.as_ref().is_some_and(|(armed, _)| armed == id)
+    }
+
+    /// A click on the confirm button: whether it confirms (and disarms). The button appears
+    /// under the pointer, so the second click of a double-click on the first button, within
+    /// half a second, must not count as the confirmation.
+    pub(super) fn confirm(&mut self) -> bool {
+        if self.0.as_ref().is_some_and(|(_, at)| at.elapsed() < Duration::from_millis(500)) {
+            return false;
+        }
+        self.0 = None;
+        true
+    }
 }
 
 /// The saved theme settings while a theme menu shows its entries one by one.

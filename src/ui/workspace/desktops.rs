@@ -10,7 +10,6 @@ use crate::model::Protocol;
 use crate::session::Status;
 use crate::theme::AppPalette;
 use crate::ui::desktop_view::{DesktopView, DesktopViewEvent};
-use crate::ui::widgets::Busy;
 use crate::vault::{Credential, Secret};
 
 impl Workspace {
@@ -96,31 +95,9 @@ impl Workspace {
         });
         self.collapsed_items.remove(&item);
         self.set_project_collapsed(project_id, false, cx);
-        let key = item.clone();
-        self.sessions.push(SessionEntry {
-            id,
-            item,
-            project_id: Some(project_id.to_string()),
-            kind: SessionKind::Desktop { host_id: host_id.to_string(), protocol },
-            label: label.clone(),
-            number,
-            name: None,
-            title: label,
-            busy: false,
-            view: SessionView::Desktop(view),
-            status: Status::Connecting,
-            browser: None,
-            sftp_open: false,
-            sftp_busy: Busy::default(),
-            waiting_for_size: false,
-            history_on: None,
-            window: None,
-            _subscription: sub,
-            _browser_subscription: None,
-            _browser_observer: None,
-        });
-        self.take_pending_split(&key, id);
-        self.activate(id, window, cx);
+        let kind = SessionKind::Desktop { host_id: host_id.to_string(), protocol };
+        let entry = SessionEntry::new(id, item, Some(project_id.to_string()), kind, label, number, SessionView::Desktop(view), sub);
+        self.show_new_session(entry, window, cx);
         id
     }
 

@@ -1034,22 +1034,7 @@ fn handle(
     marks: Option<SearchMarks>,
     cx: &mut Context<TerminalView>,
 ) -> AnyElement {
-    let ticks_app = *app;
-    // Over the thumb, so matches on screen stay visible.
-    let ticks = marks.map(move |marks| {
-        canvas(
-            move |bounds, _, _| handle_ticks(bounds, &marks, lines, &ticks_app),
-            |_, quads, window, _| {
-                for (bounds, color) in quads {
-                    window.paint_quad(fill(bounds, color));
-                }
-            },
-        )
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
-    });
+    let ticks = marks.map(|marks| tick_marks(marks, lines, *app));
     let (_, hot) = state.look();
     let total = lines.max(1) as f32;
     let top = viewport_top as f32 / total;
@@ -1084,6 +1069,23 @@ fn handle(
         .child(thumb)
         .children(ticks)
         .into_any_element()
+}
+
+/// The search matches' ticks (see `handle_ticks`) over the handle or the scrollbar. Laid over
+/// the thumb, so matches on screen stay visible.
+fn tick_marks(marks: SearchMarks, lines: usize, app: AppPalette) -> impl IntoElement {
+    canvas(
+        move |bounds, _, _| handle_ticks(bounds, &marks, lines, &app),
+        |_, quads, window, _| {
+            for (bounds, color) in quads {
+                window.paint_quad(fill(bounds, color));
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }
 
 /// Narrowest the scrollbar's thumb gets, so a long Scrollback still leaves something to grab.
@@ -1167,26 +1169,14 @@ pub fn scrollbar(
     let hot = state.bar.hovered.get() || state.bar_dragging();
     let color = Hsla { a: if state.bar_dragging() { 0.42 } else if hot { 0.3 } else if app.dark { 0.18 } else { 0.22 }, ..app.text };
     let paint_state = state.clone();
-    let ticks_app = app;
     let track = canvas(
         move |bounds, _, _| {
             paint_state.bar.track.set(Some(bounds));
             let (top, height) = bar_thumb(history, viewport_top, screen, f32::from(bounds.size.height));
             let w = if hot { BAR_HOT_W } else { BAR_W };
-            let thumb = Bounds::new(
-                point(bounds.right() - px(BAR_INSET + w), bounds.origin.y + px(top)),
-                size(px(w), px(height)),
-            );
-            let ticks = marks.as_ref().map(|marks| handle_ticks(bounds, marks, lines, &ticks_app)).unwrap_or_default();
-            (thumb, ticks)
+            Bounds::new(point(bounds.right() - px(BAR_INSET + w), bounds.origin.y + px(top)), size(px(w), px(height)))
         },
-        move |_, (thumb, ticks), window, _| {
-            window.paint_quad(fill(thumb, color).corner_radii(thumb.size.width / 2.));
-            // Over the thumb, so matches on screen stay visible.
-            for (bounds, color) in ticks {
-                window.paint_quad(fill(bounds, color));
-            }
-        },
+        move |_, thumb, window, _| window.paint_quad(fill(thumb, color).corner_radii(thumb.size.width / 2.)),
     )
     .size_full();
     let hover_state = state.clone();
@@ -1229,6 +1219,7 @@ pub fn scrollbar(
                 }),
             )
             .child(track)
+            .children(marks.map(|marks| tick_marks(marks, lines, app)))
             .into_any_element(),
     )
 }

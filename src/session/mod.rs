@@ -5,6 +5,7 @@
 //! is told "something changed" at most once until it has rendered, so a flood of output
 //! costs one repaint per frame, not one per chunk.
 
+pub(crate) mod ledbat;
 pub mod local;
 mod pace;
 pub mod row_pool;

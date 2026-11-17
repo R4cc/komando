@@ -86,6 +86,31 @@ impl Project {
             highlight: true,
         }
     }
+
+    /// The Credentials this Project refers to, in sidebar order: its default, then its Jump
+    /// Hosts'. With [`Host::credential_refs`], every reference to a Credential there is
+    /// (`Library::forget_credential` clears the same fields).
+    fn credential_refs(&self) -> impl Iterator<Item = (&CredentialId, CredentialRef<'_>)> {
+        let own = self.credential.as_ref().map(|c| (c, CredentialRef::Project(&self.name)));
+        own.into_iter().chain(jump_credential_refs(&self.jump_hosts, &self.name))
+    }
+}
+
+/// Where a Credential reference sits, named as the Vault page shows it.
+enum CredentialRef<'a> {
+    /// A Project's default Credential; the Project's name.
+    Project(&'a str),
+    /// A Host's own SSH Credential; the Host's name.
+    Host(&'a str),
+    /// A Host's Remote Desktop: the Host's name and the protocol ("RDP", "VNC").
+    Desktop(&'a str, &'static str),
+    /// A Jump Host, and the name of the Host or Project it belongs to.
+    Jump(&'a JumpHost, &'a str),
+}
+
+/// The Credentials of a Host's or Project's Jump Hosts, in order.
+fn jump_credential_refs<'a>(jumps: &'a [JumpHost], owner: &'a str) -> impl Iterator<Item = (&'a CredentialId, CredentialRef<'a>)> {
+    jumps.iter().filter_map(move |j| Some((j.credential.as_ref()?, CredentialRef::Jump(j, owner))))
 }
 
 /// A Host setting that can come from the Project the Host is opened from.
@@ -376,6 +401,16 @@ impl Quality {
 }
 
 impl Host {
+    /// The Credentials this Host refers to, in sidebar order: its own SSH Credential (not an
+    /// inherited one), its Remote Desktops' (RDP, then VNC), then its Jump Hosts'.
+    fn credential_refs(&self) -> impl Iterator<Item = (&CredentialId, CredentialRef<'_>)> {
+        let own = self.credential.own().map(|c| (c, CredentialRef::Host(&self.name)));
+        let desktops = [(&self.rdp, "RDP"), (&self.vnc, "VNC")]
+            .into_iter()
+            .filter_map(|(desktop, protocol)| Some((desktop.as_ref()?.credential.as_ref()?, CredentialRef::Desktop(&self.name, protocol))));
+        own.into_iter().chain(desktops).chain(jump_credential_refs(&self.jump_hosts, &self.name))
+    }
+
     /// Remote desktops are offered by default; only an explicit opt-out hides one.
     pub fn desktop_enabled(&self, protocol: Protocol) -> bool {
         match protocol {
@@ -972,50 +1007,28 @@ impl Library {
     /// Number of Hosts, Projects and Jump Hosts that reference a Credential, for "used by N"
     /// hints and to tell when one is no longer needed.
     pub fn credential_users(&self, credential: &str) -> usize {
-        let jumps = |list: &[JumpHost]| list.iter().filter(|j| j.credential.as_deref() == Some(credential)).count();
-        let desktops = |h: &Host| {
-            [&h.rdp, &h.vnc].into_iter().flatten().filter(|d| d.credential.as_deref() == Some(credential)).count()
-        };
         self.hosts
             .iter()
-            .map(|h| usize::from(h.credential.own().is_some_and(|c| c == credential)) + jumps(&h.jump_hosts) + desktops(h))
-            .sum::<usize>()
-            + self
-                .projects
-                .iter()
-                .map(|p| usize::from(p.credential.as_deref() == Some(credential)) + jumps(&p.jump_hosts))
-                .sum::<usize>()
+            .flat_map(Host::credential_refs)
+            .chain(self.projects.iter().flat_map(Project::credential_refs))
+            .filter(|(c, _)| *c == credential)
+            .count()
     }
 
     /// What signs in with a Credential, for the Vault page: "web01", "web01 (RDP)",
     /// "bastion (jump host for web01)", "Production (project)". Each once, in library order.
     pub fn credential_uses(&self, credential: &str) -> Vec<String> {
-        let is = |c: Option<&CredentialId>| c.is_some_and(|c| c == credential);
         let mut uses = Vec::new();
-        let mut push = |text: String| {
+        let refs = self.projects.iter().flat_map(Project::credential_refs).chain(self.hosts.iter().flat_map(Host::credential_refs));
+        for (_, at) in refs.filter(|(c, _)| *c == credential) {
+            let text = match at {
+                CredentialRef::Project(name) => format!("{name} (project)"),
+                CredentialRef::Host(name) => name.to_string(),
+                CredentialRef::Desktop(name, protocol) => format!("{name} ({protocol})"),
+                CredentialRef::Jump(jump, name) => format!("{} (jump host for {name})", jump.label()),
+            };
             if !uses.contains(&text) {
                 uses.push(text);
-            }
-        };
-        for project in &self.projects {
-            if is(project.credential.as_ref()) {
-                push(format!("{} (project)", project.name));
-            }
-            for jump in project.jump_hosts.iter().filter(|j| is(j.credential.as_ref())) {
-                push(format!("{} (jump host for {})", jump.label(), project.name));
-            }
-        }
-        for host in &self.hosts {
-            if is(host.credential.own()) {
-                push(host.name.clone());
-            }
-            for (desktop, protocol) in [(&host.rdp, "RDP"), (&host.vnc, "VNC")] {
-                if desktop.as_ref().is_some_and(|d| is(d.credential.as_ref())) {
-                    push(format!("{} ({protocol})", host.name));
-                }
-            }
-            for jump in host.jump_hosts.iter().filter(|j| is(j.credential.as_ref())) {
-                push(format!("{} (jump host for {})", jump.label(), host.name));
             }
         }
         uses
@@ -1025,28 +1038,11 @@ impl Library {
     /// Remote Desktop and Jump Host Credentials. Shared Credentials appear once per Project.
     pub fn project_credentials<'a>(&'a self, project: &'a Project) -> Vec<&'a CredentialId> {
         let mut credentials = Vec::new();
-        let mut push = |id| {
+        let refs = project.credential_refs().chain(self.hosts_of(project).flat_map(Host::credential_refs));
+        for (id, _) in refs {
             if !credentials.contains(&id) {
                 credentials.push(id);
             }
-        };
-        project.credential.iter().for_each(&mut push);
-        project
-            .jump_hosts
-            .iter()
-            .filter_map(|jump| jump.credential.as_ref())
-            .for_each(&mut push);
-        for host in self.hosts_of(project) {
-            host.credential.own().into_iter().for_each(&mut push);
-            [&host.rdp, &host.vnc]
-                .into_iter()
-                .flatten()
-                .filter_map(|desktop| desktop.credential.as_ref())
-                .for_each(&mut push);
-            host.jump_hosts
-                .iter()
-                .filter_map(|jump| jump.credential.as_ref())
-                .for_each(&mut push);
         }
         credentials
     }

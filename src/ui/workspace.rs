@@ -328,6 +328,43 @@ struct SessionEntry {
 }
 
 impl SessionEntry {
+    /// A Session just opened: connecting, titled with its label, without a file browser or a
+    /// window of its own.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        id: usize,
+        item: ItemKey,
+        project_id: Option<String>,
+        kind: SessionKind,
+        label: SharedString,
+        number: usize,
+        view: SessionView,
+        subscription: Subscription,
+    ) -> Self {
+        Self {
+            id,
+            item,
+            project_id,
+            kind,
+            label: label.clone(),
+            number,
+            name: None,
+            title: label,
+            busy: false,
+            view,
+            status: Status::Connecting,
+            browser: None,
+            sftp_open: false,
+            sftp_busy: Busy::default(),
+            waiting_for_size: false,
+            history_on: None,
+            window: None,
+            _subscription: subscription,
+            _browser_subscription: None,
+            _browser_observer: None,
+        }
+    }
+
     fn is_live(&self) -> bool {
         !matches!(self.status, Status::Disconnected(_))
     }
@@ -442,7 +479,7 @@ pub struct Workspace {
     /// A pending open (`true`) or close of `sidebar_peek`, cancelled by dropping it.
     sidebar_peek_timer: Option<(bool, gpui::Task<()>)>,
     /// The highlight set whose delete button was clicked once and now asks for a second click.
-    confirm_delete_set: Option<(String, Instant)>,
+    confirm_delete_set: settings::ConfirmTwice,
     blur_slider: Option<Entity<SliderState>>,
     font_slider: Option<Entity<SliderState>>,
     /// Settings → Appearance: the terminal's font size in Presentation mode.
@@ -465,7 +502,7 @@ pub struct Workspace {
     /// Settings → Local shells: the form that adds a shell or edits one.
     shell_editor: Option<settings::ShellEditor>,
     /// A shell whose Remove button was clicked once, waiting for the second click.
-    confirm_remove_shell: Option<(String, Instant)>,
+    confirm_remove_shell: settings::ConfirmTwice,
     vault: Option<Vault>,
     /// Settings → Vault: the Credentials whose secret is shown. Cleared when the Vault locks
     /// or the page is left.
@@ -600,7 +637,7 @@ impl Workspace {
             highlight_skipped: vec![],
             page: Page::Sessions,
             highlights_expanded: None,
-            confirm_delete_set: None,
+            confirm_delete_set: settings::ConfirmTwice::default(),
             sidebar_list: ListState::new(0, ListAlignment::Top, px(240.)),
             sidebar_compact: false,
             sidebar_width_px: SIDEBAR_WIDTH,
@@ -621,7 +658,7 @@ impl Workspace {
             theme_preview: None,
             weight_inputs: None,
             shell_editor: None,
-            confirm_remove_shell: None,
+            confirm_remove_shell: settings::ConfirmTwice::default(),
             vault: None,
             vault_revealed: HashSet::new(),
             vault_exists: false,
@@ -1548,32 +1585,17 @@ impl Workspace {
         if let Some(project_id) = &project_id {
             self.set_project_collapsed(project_id, false, cx);
         }
-        let key = item.clone();
-        self.sessions.push(SessionEntry {
-            id,
-            item,
-            project_id,
-            kind,
-            label: label.clone(),
-            number,
-            name: None,
-            title: label,
-            busy: false,
-            view: SessionView::Terminal(view.clone()),
-            status: Status::Connecting,
-            browser: None,
-            sftp_open: false,
-            sftp_busy: Busy::default(),
-            waiting_for_size: false,
-            history_on: None,
-            window: None,
-            _subscription: sub,
-            _browser_subscription: None,
-            _browser_observer: None,
-        });
+        let entry = SessionEntry::new(id, item, project_id, kind, label, number, SessionView::Terminal(view.clone()), sub);
+        self.show_new_session(entry, window, cx);
+        view
+    }
+
+    /// Add a new Session to the list and switch to it, into the split waiting for it if any.
+    fn show_new_session(&mut self, entry: SessionEntry, window: &mut Window, cx: &mut Context<Self>) {
+        let (key, id) = (entry.item.clone(), entry.id);
+        self.sessions.push(entry);
         self.take_pending_split(&key, id);
         self.activate(id, window, cx);
-        view
     }
 
     fn open_local(&mut self, project_id: Option<String>, shell: LocalShell, window: &mut Window, cx: &mut Context<Self>) {

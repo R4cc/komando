@@ -464,6 +464,28 @@ impl Workspace {
         }
     }
 
+    /// Put a password typed into a form in the Vault as a new Credential, and note it in
+    /// `added`. On failure (`locked` says why when the Vault is locked), all of `added` leaves
+    /// the Vault again: the form is not saved.
+    fn add_password(&mut self, label: String, password: String, locked: &str, added: &mut Vec<CredentialId>) -> Result<CredentialId, String> {
+        let result = match self.vault.as_mut() {
+            Some(vault) => {
+                vault.add(Credential { label, secret: Secret::Password { password } }).map_err(|err| format!("Could not store the password: {err}"))
+            }
+            None => Err(locked.to_string()),
+        };
+        match result {
+            Ok(id) => {
+                added.push(id.clone());
+                Ok(id)
+            }
+            Err(err) => {
+                self.forget_added(std::mem::take(added));
+                Err(err)
+            }
+        }
+    }
+
     /// Save a form: put the Jump Hosts' new passwords in the Vault, change a copy of the
     /// Library with them, and commit it. On failure the new passwords leave the Vault again;
     /// on success, passwords no Jump Host uses any more do.
@@ -477,21 +499,8 @@ impl Workspace {
         let mut saved = Vec::with_capacity(jumps.len());
         for JumpEntry { mut jump, new_password } in jumps {
             if let Some(password) = new_password {
-                let Some(vault) = self.vault.as_mut() else {
-                    self.forget_added(added);
-                    return Err("Unlock the vault to save the jump host's password.".into());
-                };
-                let credential = Credential { label: format!("{} (jump host)", jump.label()), secret: Secret::Password { password } };
-                match vault.add(credential) {
-                    Ok(id) => {
-                        added.push(id.clone());
-                        jump.credential = Some(id);
-                    }
-                    Err(err) => {
-                        self.forget_added(added);
-                        return Err(format!("Could not store the password: {err}"));
-                    }
-                }
+                let label = format!("{} (jump host)", jump.label());
+                jump.credential = Some(self.add_password(label, password, "Unlock the vault to save the jump host's password.", &mut added)?);
             }
             saved.push(jump);
         }
@@ -614,25 +623,9 @@ impl Workspace {
                 Some((mut desktop, new_password)) => {
                     if let Some(password) = new_password {
                         let label = format!("{} ({})", host.name, protocol.label());
-                        let added = self
-                            .vault
-                            .as_mut()
-                            .ok_or_else(|| "Unlock the vault to save the remote desktop's password.".to_string())
-                            .and_then(|vault| {
-                                vault
-                                    .add(Credential { label, secret: Secret::Password { password } })
-                                    .map_err(|err| format!("Could not store the password: {err}"))
-                            });
-                        match added {
-                            Ok(id) => {
-                                imported.push(id.clone());
-                                desktop.credential = Some(id);
-                            }
-                            Err(err) => {
-                                self.forget_added(imported);
-                                return Err(on_tab(FormTab::RemoteDesktop)(err));
-                            }
-                        }
+                        let locked = "Unlock the vault to save the remote desktop's password.";
+                        let id = self.add_password(label, password, locked, &mut imported).map_err(on_tab(FormTab::RemoteDesktop))?;
+                        desktop.credential = Some(id);
                     }
                     Some(desktop)
                 }

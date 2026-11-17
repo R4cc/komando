@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 
-use super::{Found, FoundGroup, FoundHost, LeftOut};
+use super::{Found, FoundGroup, FoundHost, LeftOut, join_and, key_file_name};
 use crate::model::{JumpHost, Protocol, StartupCommand};
 
 /// The file name MobaXterm keeps its settings and sessions in.
@@ -236,7 +236,7 @@ fn ssh_host(name: &str, session: &Session) -> Option<FoundHost> {
     let command = session.field(7);
     let mut left_out = vec![];
     if let Some(key) = session.field(14) {
-        left_out.push(LeftOut::new("Private key", key_label(&key)));
+        left_out.push(LeftOut::new("Private key", key_file_name(&key)));
     }
     let proxy = session.field(19).filter(|kind| kind != "0");
     if let (Some(_), Some(host)) = (proxy, session.field(20)) {
@@ -305,12 +305,6 @@ fn user(name: String) -> Option<String> {
     (!name.is_empty() && !(name.starts_with('<') && name.ends_with('>'))).then(|| name.to_string())
 }
 
-/// A key's file name. MobaXterm writes `_CurrentDrive_:\…` and `_ProfileDir_\…` for folders it
-/// moves along with a portable install.
-fn key_label(path: &str) -> String {
-    path.rsplit(['/', '\\']).find(|s| !s.is_empty()).unwrap_or(path).to_string()
-}
-
 /// MobaXterm's session escapes. Its macro codec uses different tokens (`__EQQUAL__`,
 /// `__PIIPE__`, `__DBLDOT__`), which must remain literal in a session field.
 fn unescape(text: &str) -> String {
@@ -351,14 +345,6 @@ fn type_label(kind: &str) -> &'static str {
         "9" => "browser",
         "10" => "Mosh",
         _ => "other",
-    }
-}
-
-fn join_and(items: &[String]) -> String {
-    match items {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 
