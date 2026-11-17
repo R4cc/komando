@@ -690,8 +690,16 @@ pub fn connection_indicator(
             None => (0, p.text_faint),
         },
     };
-    let status = status.clone();
-    let hops = hops.to_vec();
+    // The final hop's round trip includes the whole route through any Jump Hosts.
+    let latency = match status {
+        Status::Connected => hops.iter().max_by_key(|hop| hop.hop).and_then(|hop| hop.round_trip),
+        _ => None,
+    };
+    let latency_text = match latency {
+        Some(rtt) if rtt < Duration::from_millis(1) => "<1 ms".to_string(),
+        Some(rtt) => format!("{} ms", rtt.as_millis()),
+        None => "— ms".to_string(),
+    };
     let label = match &status {
         Status::Connecting => "Connecting · SSH latency".to_string(),
         Status::Disconnected(_) => "Disconnected".to_string(),
@@ -719,25 +727,7 @@ pub fn connection_indicator(
                     .bg(if bar < bars { color } else { color.opacity(0.25) })
             })),
         )
-        .tooltip(move |window, cx| {
-            let text = match &status {
-                Status::Connecting => "Connecting…\nLatency is measured after sign-in.".to_string(),
-                Status::Disconnected(reason) => format!("Disconnected\n{reason}"),
-                Status::Connected if hops.is_empty() => "Connected · Measuring SSH latency…".to_string(),
-                Status::Connected => {
-                    let now = Instant::now();
-                    let mut lines = vec!["Connected · SSH round trip (smoothed)".to_string()];
-                    for hop in &hops {
-                        lines.push(format!("Hop {} · {}: {}", hop.hop + 1, hop.name, hop.description(now)));
-                    }
-                    if hops.len() > 1 {
-                        lines.push("Each hop is measured from this computer.".into());
-                    }
-                    lines.join("\n")
-                }
-            };
-            Tooltip::new(text).build(window, cx)
-        })
+        .tooltip(move |window, cx| Tooltip::new(latency_text.clone()).build(window, cx))
 }
 
 #[cfg(test)]

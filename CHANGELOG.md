@@ -6,6 +6,10 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The SSH connection tooltip shows only the target's round-trip time in milliseconds.
+
 ## [0.7.8] - 2026-11-17
 
 ### Added
