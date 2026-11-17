@@ -29,6 +29,8 @@ All notable changes to Komando are listed here. The format follows
 - SSH now connects to Cisco switches and other network gear that only offers older key
   exchanges (NIST-curve ECDH, or Diffie-Hellman group 14, group exchange or group 1 with
   SHA-1), HMAC-SHA1, or AES-CBC ciphers. Komando still prefers modern algorithms whenever the server has them.
+- The prompt of a Cisco switch (and other gear that starts with empty lines) now appears at
+  the top of the terminal instead of below a gap.
 - A long reason for a disconnect, such as a failed key exchange, now wraps inside the
   terminal instead of running off both edges.
 - Moving between buttons and other controls with Tab no longer makes them shift slightly,

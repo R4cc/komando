@@ -753,6 +753,8 @@ async fn shell(
     // that ended it, handled next.
     let mut batch = Vec::new();
     let mut held: Option<ChannelMsg> = None;
+    // Until the server prints something: blank lines before it are dropped.
+    let mut at_start = true;
     let mut exit_status = None;
     // The answer to the ping on its way, if any.
     let mut ping = (paced && pace.started(Instant::now())).then(|| send_ping(handle));
@@ -788,6 +790,7 @@ async fn shell(
                     if paced && pace.output(bytes.len(), Instant::now()) {
                         ping = Some(send_ping(handle));
                     }
+                    let bytes = skip_leading_blank_lines(&mut at_start, bytes);
                     match &mut sudo {
                         Some(sudo) => show_watching_sudo(&mut output, term, proxy, sudo, bytes),
                         None => output.feed(term, proxy, bytes),
@@ -964,6 +967,20 @@ const BATCH: usize = 256 * 1024;
 /// Bound ordinary parsing's lock hold without giving up network batching. The parser keeps
 /// UTF-8, escape sequence and synchronized-update state across pieces.
 const PARSE_CHUNK: usize = 32 * 1024;
+
+/// The output with line breaks before the server's first visible output left out, while
+/// `at_start`. Network gear (Cisco IOS, for one) starts a session with empty lines before its
+/// prompt, which would leave the prompt below a gap at the top of the terminal.
+fn skip_leading_blank_lines<'a>(at_start: &mut bool, bytes: &'a [u8]) -> &'a [u8] {
+    if !*at_start {
+        return bytes;
+    }
+    let first = bytes.iter().position(|b| !matches!(b, b'\r' | b'\n')).unwrap_or(bytes.len());
+    if first < bytes.len() {
+        *at_start = false;
+    }
+    &bytes[first..]
+}
 
 async fn sleep_until(deadline: Option<std::time::Instant>) {
     match deadline {
@@ -1303,6 +1320,18 @@ mod tests {
     use std::time::Duration;
     use anyhow::anyhow;
     use crate::session::{EventProxy, GridSize, new_term, scrollback_text};
+
+    #[test]
+    fn blank_lines_before_the_first_output_are_left_out() {
+        let mut at_start = true;
+        assert_eq!(super::skip_leading_blank_lines(&mut at_start, b"\r\n"), b"");
+        assert!(at_start, "nothing shown yet");
+        assert_eq!(super::skip_leading_blank_lines(&mut at_start, b"\r\n\r\nswitch#"), b"switch#");
+        assert!(!at_start);
+        assert_eq!(super::skip_leading_blank_lines(&mut at_start, b"\r\n\r\nswitch#"), b"\r\n\r\nswitch#", "only at the start");
+        let mut at_start = true;
+        assert_eq!(super::skip_leading_blank_lines(&mut at_start, b"\x1b[0m\r\n$ "), b"\x1b[0m\r\n$ ", "escape sequences count as output");
+    }
 
     #[test]
     fn the_connect_timeout_does_not_count_a_host_key_question() {
