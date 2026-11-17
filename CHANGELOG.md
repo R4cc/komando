@@ -6,6 +6,19 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- While files transfer, the window redraws only when the transfer ring's percentage
+  changes or the transfers panel is open, rather than four times a second.
+- The sidebar, quick connect and icon search do less work each time the window is drawn,
+  which keeps Komando responsive with many hosts. Quick connect works out its matches when
+  you type instead of on every redraw.
+- Dragging the blur or font size slider no longer restyles the window when the value
+  hasn't changed.
+- Remote desktops copy only the parts of the screen that changed, and the connection no
+  longer waits while the whole picture is copied, so busy desktops keep up better. VNC at
+  reduced colors no longer allocates a buffer for every update.
+
 ## [0.7.0] - 2026-11-16
 
 ### Added
