@@ -1097,6 +1097,8 @@ pub struct Settings {
     pub vnc_shared: bool,
     /// The welcome tour was shown (or skipped) and isn't offered again on start.
     pub onboarded: bool,
+    /// Reopen the terminal tabs that were open when Komando last closed (see `OpenTabs`).
+    pub restore_tabs: bool,
 }
 
 /// The cursor used unless a terminal program requests its own style.
@@ -1150,6 +1152,7 @@ impl Default for Settings {
             rdp_fit_desktop: true,
             vnc_shared: true,
             onboarded: false,
+            restore_tabs: false,
         }
     }
 }
@@ -1167,6 +1170,64 @@ impl Settings {
     pub fn save(&self, dir: &Path) -> Result<()> {
         fs::create_dir_all(dir)?;
         write_atomic(&dir.join(Self::FILE), toml::to_string_pretty(self)?.as_bytes())
+    }
+}
+
+/// A terminal tab remembered for Restore tabs on start: what it opened, and the name it was
+/// given with Rename session….
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum SavedTab {
+    /// A Host's SSH terminal.
+    Host {
+        project: ProjectId,
+        host: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    /// A Local Shell, by name; `project` is `None` for a standalone one.
+    Shell {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<ProjectId>,
+        shell: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+}
+
+/// The terminal tabs open in the main window, kept up to date while Restore tabs on start
+/// is on, so a crash or a closed window leaves the last set.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpenTabs {
+    pub tabs: Vec<SavedTab>,
+    /// Index into `tabs` of the tab that was shown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active: Option<usize>,
+}
+
+impl OpenTabs {
+    pub const FILE: &'static str = "tabs.toml";
+
+    /// The tabs last saved; none when the file is missing or unreadable.
+    pub fn load(dir: &Path) -> Self {
+        fs::read_to_string(dir.join(Self::FILE))
+            .ok()
+            .and_then(|text| toml::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self, dir: &Path) -> Result<()> {
+        fs::create_dir_all(dir)?;
+        write_atomic(&dir.join(Self::FILE), toml::to_string_pretty(self)?.as_bytes())
+    }
+
+    /// Forget the tabs, when Restore tabs on start is switched off.
+    pub fn clear(dir: &Path) -> Result<()> {
+        match fs::remove_file(dir.join(Self::FILE)) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.into()),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -1254,6 +1315,26 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn open_tabs_survive_a_relaunch() {
+        let dir = std::env::temp_dir().join(format!("komando-open-tabs-{}", uuid::Uuid::new_v4()));
+        assert_eq!(OpenTabs::load(&dir), OpenTabs::default());
+        let tabs = OpenTabs {
+            tabs: vec![
+                SavedTab::Shell { project: None, shell: "PowerShell 7".into(), name: None },
+                SavedTab::Host { project: "prod".into(), host: "web01".into(), name: Some("logs".into()) },
+                SavedTab::Shell { project: Some("prod".into()), shell: "bash".into(), name: None },
+            ],
+            active: Some(1),
+        };
+        tabs.save(&dir).unwrap();
+        assert_eq!(OpenTabs::load(&dir), tabs);
+        OpenTabs::clear(&dir).unwrap();
+        OpenTabs::clear(&dir).unwrap();
+        assert_eq!(OpenTabs::load(&dir), OpenTabs::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn project_expansion_state_survives_relaunch_and_reopening() {
         let mut settings: Settings = toml::from_str("font_size = 16.0").unwrap();

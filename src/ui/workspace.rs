@@ -44,6 +44,7 @@ mod import;
 pub mod nav;
 mod notifications;
 mod onboarding;
+mod open_tabs;
 mod settings;
 mod split;
 mod updates;
@@ -444,6 +445,9 @@ pub struct Workspace {
     lock_after_use: bool,
     sessions: Vec<SessionEntry>,
     active: Option<usize>,
+    /// The terminal tabs last written for Restore tabs on start; `None` while they aren't
+    /// kept (switched off, before the saved ones are reopened, or a window opened by tooling).
+    tab_memory: Option<crate::model::OpenTabs>,
     /// Two Sessions side by side, shown while either is active (see `split.rs`).
     split: Option<Split>,
     /// A split waiting for the new Session dropped into it.
@@ -582,6 +586,7 @@ impl Workspace {
             lock_after_use: false,
             sessions: vec![],
             active: None,
+            tab_memory: None,
             split: None,
             pending_split: None,
             drop_target: None,
@@ -661,6 +666,8 @@ impl Workspace {
         }
         if !startup.open.is_empty() || startup.open_shell.is_some() {
             cx.defer_in(window, move |this, window, cx| this.run_startup(&startup, window, cx));
+        } else if this.settings.restore_tabs && !tooling {
+            cx.defer_in(window, |this, window, cx| this.restore_tabs(window, cx));
         }
         this
     }
@@ -5367,6 +5374,7 @@ fn kbd(keys: &str, p: AppPalette) -> impl IntoElement {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count("workspace render (frame)");
+        self.remember_tabs();
         if !self.modal_open(cx) {
             self.nav.after_dialog.set(false);
         }

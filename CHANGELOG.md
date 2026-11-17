@@ -6,6 +6,12 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Restore tabs on start (Settings → Appearance → Behaviour): Komando reopens the terminal
+  tabs that were open when it closed, with the names you gave them. Hosts that sign in with
+  a saved password wait for the vault to be unlocked. Remote desktops aren't reopened.
+
 ### Changed
 
 - While files transfer, the window redraws only when the transfer ring's percentage

@@ -539,6 +539,14 @@ impl Workspace {
                 }))
                 .into_any_element(),
         )];
+        behaviour_rows.push(setting_row(
+            p,
+            "Restore tabs on start",
+            "Reopens the terminal tabs that were open when Komando closed.",
+            switch("restore-tabs".into(), "Restore tabs on start", self.settings.restore_tabs, p)
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.set_restore_tabs(!this.settings.restore_tabs, cx)))
+                .into_any_element(),
+        ));
         if cfg!(windows) {
             behaviour_rows.push(setting_row(
                 p,
