@@ -1188,6 +1188,8 @@ pub struct Settings {
     /// × on a connected terminal Session only disconnects it, keeping it and its output in
     /// the sidebar until × is clicked again. Off (the default), × closes it at once.
     pub keep_disconnected_sessions: bool,
+    /// How a sidebar row closes its Session without opening its menu.
+    pub quick_close: QuickClose,
     /// Projects folded away in the sidebar, remembered across app launches.
     pub collapsed_projects: BTreeSet<ProjectId>,
     /// The SFTP browser lists files starting with a dot.
@@ -1213,6 +1215,42 @@ pub struct Settings {
     pub presentation_full_screen: bool,
     /// Presentation mode hides the sidebar (Ctrl+Shift+B still shows it).
     pub presentation_hide_sidebar: bool,
+}
+
+/// How a sidebar row closes the Session it stands for, as × does (Settings → Appearance).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum QuickClose {
+    /// The status dot of a row with one Session turns into × on hover, and a middle-click on
+    /// a row closes its Session.
+    #[default]
+    HoverAndMiddleClick,
+    HoverOnly,
+    MiddleClickOnly,
+    /// Only × on a Session's own row, Ctrl+Shift+W and the menus close.
+    Off,
+}
+
+impl QuickClose {
+    pub const ALL: [QuickClose; 4] = [Self::HoverAndMiddleClick, Self::HoverOnly, Self::MiddleClickOnly, Self::Off];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::HoverAndMiddleClick => "Hover × and middle-click",
+            Self::HoverOnly => "Hover × only",
+            Self::MiddleClickOnly => "Middle-click only",
+            Self::Off => "Off",
+        }
+    }
+
+    /// The status dot turns into × while the pointer is over the row.
+    pub fn on_hover(self) -> bool {
+        matches!(self, Self::HoverAndMiddleClick | Self::HoverOnly)
+    }
+
+    pub fn on_middle_click(self) -> bool {
+        matches!(self, Self::HoverAndMiddleClick | Self::MiddleClickOnly)
+    }
 }
 
 /// What a right-click in the terminal does. With Ctrl or Shift held it always opens the menu.
@@ -1342,6 +1380,7 @@ impl Default for Settings {
             sidebar_width: 264.,
             sidebar_auto_hide: false,
             keep_disconnected_sessions: false,
+            quick_close: QuickClose::default(),
             collapsed_projects: BTreeSet::new(),
             sftp_show_hidden: true,
             sftp_menu_rename: false,

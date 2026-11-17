@@ -408,6 +408,34 @@ impl Workspace {
     }
 
     /// For settings that only need writing to disk and the page redrawn.
+    /// Settings → Close from the sidebar: how a sidebar row closes its Session.
+    fn quick_close_dropdown(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_component::button::Button;
+        use gpui_component::menu::DropdownMenu as _;
+        let current = self.settings.quick_close;
+        let ws = cx.entity().downgrade();
+        Button::new("quick-close")
+            .accessibility_label(format!("Close from the sidebar: {}", current.label()))
+            .bg(p.popover)
+            .text_color(p.popover_text)
+            .border_color(p.input)
+            .label(current.label())
+            .dropdown_caret(true)
+            .dropdown_menu(move |mut menu, _, _| {
+                for choice in crate::model::QuickClose::ALL {
+                    let ws = ws.clone();
+                    menu = menu.item(PopupMenuItem::new(choice.label()).checked(choice == current).on_click(move |_, _, cx| {
+                        let _ = ws.update(cx, |this, cx| {
+                            this.settings.quick_close = choice;
+                            this.save_settings_and_notify(cx);
+                        });
+                    }));
+                }
+                menu
+            })
+            .into_any_element()
+    }
+
     pub(super) fn save_settings_and_notify(&mut self, cx: &mut Context<Self>) {
         self.save_settings(cx);
         cx.notify();
@@ -728,6 +756,12 @@ impl Workspace {
                 |s, on| s.keep_disconnected_sessions = on,
                 Self::save_settings_and_notify,
             ),
+        ));
+        behaviour_rows.push(setting_row(
+            p,
+            "Close from the sidebar",
+            "On hover, the status dot of a row with one session turns into ×. A middle-click on a row closes its session.",
+            self.quick_close_dropdown(p, cx),
         ));
         if cfg!(windows) {
             behaviour_rows.push(setting_row(

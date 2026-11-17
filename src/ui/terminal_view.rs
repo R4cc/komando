@@ -252,6 +252,11 @@ pub struct TerminalView {
     focus_reported: Option<bool>,
     /// While connecting through Jump Hosts: the route page.
     route: Option<ConnectRoute>,
+    /// The backend writes why the connection ended into the output once its shell was open
+    /// (an SSH Session's log), so the reconnect banner isn't needed then.
+    tells_end: bool,
+    /// The Session connected since `begin_connect`.
+    was_connected: bool,
     startup: StartupCommands,
     /// Mouse and clipboard behaviour. Word separators take effect through `set_cursor`.
     pub pointer: crate::model::Pointer,
@@ -537,6 +542,8 @@ impl TerminalView {
             restore_offer: false,
             focus_reported: None,
             route: None,
+            tells_end: false,
+            was_connected: false,
             startup: StartupCommands::default(),
             pointer: crate::model::Pointer::default(),
             link_press: None,
@@ -661,9 +668,12 @@ impl TerminalView {
     }
 
     /// Get ready for a new connection: the route page if it goes through Jump Hosts, and the
-    /// Startup Commands to type once the shell is open.
-    pub fn begin_connect(&mut self, route: Option<Vec<RouteCard>>, startup: Vec<StartupCommand>) {
+    /// Startup Commands to type once the shell is open. `tells_end`: the backend says in the
+    /// output when the connection of an open shell ends.
+    pub fn begin_connect(&mut self, route: Option<Vec<RouteCard>>, startup: Vec<StartupCommand>, tells_end: bool) {
         self.route = route.map(ConnectRoute::new);
+        self.tells_end = tells_end;
+        self.was_connected = false;
         self.startup = StartupCommands { queue: startup.into(), ..StartupCommands::default() };
         // Watched from before the shell opens, so text printed on sign-in isn't missed.
         self.watch_next(false);
@@ -788,6 +798,7 @@ impl TerminalView {
                             }
                         }
                         Status::Connected => {
+                            self.was_connected = true;
                             if let Some(route) = self.route.as_mut() {
                                 route.finish();
                                 cx.spawn_in(window, async move |this, cx| {
@@ -2307,8 +2318,9 @@ impl TerminalView {
 
     fn render_disconnected(&self, cx: &Context<Self>) -> Option<gpui::AnyElement> {
         let Status::Disconnected(reason) = &self.status else { return None };
-        // The route page shows where and why the connection failed.
-        if self.route.is_some() {
+        // The route page shows where and why the connection failed; the output itself says
+        // that a connected SSH Session ended (see `ssh::ConnectLog::ended`).
+        if self.route.is_some() || (self.tells_end && self.was_connected) {
             return None;
         }
         let p = cx.global::<Appearance>().app;
@@ -3488,7 +3500,8 @@ impl Render for TerminalView {
             }
         }
         let focused = self.focus.is_focused(window) && self.prompt.is_none() && window.is_window_active();
-        let cursor_visible = self.cursor_visible(focused, cx);
+        // A dropped Session takes no input: no cursor waits for any.
+        let cursor_visible = !self.is_disconnected() && self.cursor_visible(focused, cx);
         // Colour queries (OSC 10/11/4) are answered with the colours on screen.
         self.proxy.set_palette(&palette);
         let mouse_reporting = self.mouse_mode(false).is_some();

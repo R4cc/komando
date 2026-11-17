@@ -9,7 +9,7 @@
 //! own Credential, exactly as if it were opened directly.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -81,11 +81,45 @@ pub(crate) struct ConnectLog {
     proxy: EventProxy,
     /// Lines written since the last `clear`, by this attempt and earlier ones in the terminal.
     lines: Arc<AtomicUsize>,
+    /// This attempt's shell opened: its end is told below the shell's output (see `ended`).
+    shell_open: Arc<AtomicBool>,
 }
 
 impl ConnectLog {
     pub(crate) fn new(term: SharedTerm, proxy: EventProxy) -> Self {
-        Self { term, lines: proxy.connect_log_lines(), proxy }
+        Self { term, lines: proxy.connect_log_lines(), proxy, shell_open: Arc::default() }
+    }
+
+    /// The shell opened: from now on the Session is connected.
+    pub(crate) fn shell_opened(&self) {
+        self.shell_open.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn is_shell_open(&self) -> bool {
+        self.shell_open.load(Ordering::Relaxed)
+    }
+
+    /// The connection of an open shell ended: say so on a line of its own below the output,
+    /// with how to reconnect, so the last prompt and the cursor no longer look ready for
+    /// input. A program that was running can't undo what it switched on any more, so the
+    /// terminal leaves an editor's alternate screen and drops mouse reporting and the like;
+    /// the next shell starts from plain settings. The lines are part of the log, so the next
+    /// attempt erases them once it has signed in.
+    pub(crate) fn ended(&self, kind: LogKind, reason: &str) {
+        {
+            let mut term = self.term.lock();
+            let mut parser: Processor = Processor::new();
+            if term.mode().contains(TermMode::ALT_SCREEN) {
+                parser.advance(&mut *term, b"\x1b[?1049l");
+            }
+            // Cursor shown, normal cursor and keypad keys, no mouse reporting, no bracketed paste.
+            parser.advance(&mut *term, b"\x1b[0m\x1b[?25h\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l");
+            if term.grid().cursor.point.column.0 > 0 {
+                parser.advance(&mut *term, b"\r\n");
+            }
+        }
+        self.line(kind, &format!("Disconnected: {reason}"));
+        self.line(LogKind::Step, "Press Enter to reconnect");
     }
 
     pub(crate) fn line(&self, kind: LogKind, text: &str) {
@@ -335,18 +369,23 @@ pub fn spawn(target: Target, size: GridSize, term: SharedTerm, proxy: EventProxy
     runtime().spawn(async move {
         proxy.send(SessionEvent::Status(Status::Connecting));
         let log = ConnectLog::new(term.clone(), proxy.clone());
-        let reason = match run(target, size, term, proxy.clone(), log.clone(), rx).await {
-            Ok(reason) => reason,
+        let (reason, kind) = match run(target, size, term, proxy.clone(), log.clone(), rx).await {
+            Ok(reason) => (reason, LogKind::Step),
             Err(err) => {
                 let reason = format!("{err:#}");
-                log.line(LogKind::Fail, &reason);
-                // Enter reconnects a disconnected Session: say so where the user is looking.
-                if is_cancelled(&err) {
-                    log.line(LogKind::Step, "Press Enter to reconnect");
+                if !log.is_shell_open() {
+                    log.line(LogKind::Fail, &reason);
+                    // Enter reconnects a disconnected Session: say so where the user is looking.
+                    if is_cancelled(&err) {
+                        log.line(LogKind::Step, "Press Enter to reconnect");
+                    }
                 }
-                reason
+                (reason, LogKind::Fail)
             }
         };
+        if log.is_shell_open() {
+            log.ended(kind, &reason);
+        }
         proxy.send(SessionEvent::Status(Status::Disconnected(reason)));
     });
     sink
@@ -605,7 +644,7 @@ async fn run(
     log.clear();
     // Shared with SFTP channels opened on the same connection.
     let handle = Arc::new(handles.pop().ok_or_else(|| anyhow!("Nothing to connect to."))?);
-    let result = shell(&handle, &mut size, &term, &proxy, &mut commands, sudo, host_window).await;
+    let result = shell(&handle, &mut size, &term, &proxy, &log, &mut commands, sudo, host_window).await;
     // Always end the connection with the terminal, so SFTP channels opened on it end too.
     let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
     // The Jump Hosts' connections, innermost first.
@@ -615,11 +654,13 @@ async fn run(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn shell(
     handle: &Arc<Handle<Client>>,
     size: &mut GridSize,
     term: &SharedTerm,
     proxy: &EventProxy,
+    log: &ConnectLog,
     commands: &mut mpsc::UnboundedReceiver<Command>,
     mut sudo: Option<SudoPassword>,
     max_window: u32,
@@ -653,6 +694,7 @@ async fn shell(
     // silently, so asking costs nothing.
     channel.set_env(false, "COLORTERM", "truecolor").await?;
     channel.request_shell(true).await?;
+    log.shell_opened();
     proxy.send(SessionEvent::Status(Status::Connected));
 
     let mut output = Output::default();
@@ -1103,6 +1145,49 @@ mod tests {
         assert_eq!(window_for(Duration::from_millis(102)), 2 * WINDOW);
         assert_eq!(window_for(Duration::from_millis(160)), 3 * WINDOW);
         assert_eq!(window_for(Duration::from_secs(2)), MAX_WINDOW, "but not without end");
+    }
+
+    #[test]
+    fn an_ended_shell_says_so_below_its_prompt_and_leaves_full_screen_programs() {
+        let (tx, _rx) = futures::channel::mpsc::unbounded();
+        let proxy = EventProxy::new(tx);
+        let term = new_term(GridSize { cols: 60, rows: 10, cell_width: 9, cell_height: 18 }, 100, proxy.clone());
+        let mut parser: alacritty_terminal::vte::ansi::Processor = alacritty_terminal::vte::ansi::Processor::new();
+        // A prompt waiting for input, then an editor on the alternate screen that hid the cursor.
+        parser.advance(&mut *term.lock(), b"ana@web01:~$ vim\r\n\x1b[?1049h\x1b[?25l\x1b[?1000hediting");
+
+        let log = ConnectLog::new(term.clone(), proxy.clone());
+        log.shell_opened();
+        log.ended(LogKind::Fail, "Connection reset by peer");
+
+        let term = term.lock();
+        assert!(!term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN), "back on the shell's screen");
+        assert!(term.mode().contains(alacritty_terminal::term::TermMode::SHOW_CURSOR));
+        assert!(!term.mode().intersects(alacritty_terminal::term::TermMode::MOUSE_MODE));
+        let text = scrollback_text(&*term);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "ana@web01:~$ vim");
+        assert_eq!(lines[1], "SSH ✕ Disconnected: Connection reset by peer");
+        assert_eq!(lines[2], "SSH · Press Enter to reconnect");
+        assert_eq!(term.grid().cursor.point.column.0, 0);
+    }
+
+    #[test]
+    fn an_ended_shell_starts_its_notice_on_a_line_of_its_own() {
+        let (tx, _rx) = futures::channel::mpsc::unbounded();
+        let proxy = EventProxy::new(tx);
+        let term = new_term(GridSize { cols: 60, rows: 10, cell_width: 9, cell_height: 18 }, 100, proxy.clone());
+        let mut parser: alacritty_terminal::vte::ansi::Processor = alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut *term.lock(), b"ana@web01:~$ ");
+
+        let log = ConnectLog::new(term.clone(), proxy.clone());
+        log.ended(LogKind::Step, "Session closed.");
+        // The next attempt's sign-in erases the notice along with its own log.
+        let next = ConnectLog::new(term.clone(), proxy.clone());
+        next.line(LogKind::Good, "Signed in to web01 as ana");
+        assert!(scrollback_text(&*term.lock()).contains("SSH · Disconnected: Session closed.\r\n"));
+        next.clear();
+        assert_eq!(scrollback_text(&*term.lock()).trim_end(), "ana@web01:~$");
     }
 
     #[test]

@@ -1683,7 +1683,7 @@ impl Workspace {
         };
         let sink = match kind {
             SessionKind::Local { shell } => {
-                view.update(cx, |v, _| v.begin_connect(None, vec![]));
+                view.update(cx, |v, _| v.begin_connect(None, vec![], false));
                 match session::local::spawn(shell, size, term, proxy.clone()) {
                     Ok(sink) => {
                         proxy.send(session::SessionEvent::Status(Status::Connected));
@@ -1697,13 +1697,14 @@ impl Workspace {
             }
             SessionKind::Ssh { host_id } => {
                 let Some(host) = project_id.and_then(|p| self.library.resolve(p, host_id)) else {
+                    view.update(cx, |v, _| v.begin_connect(None, vec![], false));
                     proxy.send(session::SessionEvent::Status(Status::Disconnected("This host is no longer saved.".into())));
                     return;
                 };
                 let cards = (!host.jump_hosts.is_empty()).then(|| {
                     host.jump_hosts.iter().map(|j| jump_card(&j.jump, &host.color)).chain([route_card(&host)]).collect()
                 });
-                view.update(cx, |v, _| v.begin_connect(cards, host.startup_commands.clone()));
+                view.update(cx, |v, _| v.begin_connect(cards, host.startup_commands.clone(), true));
                 let secret = |credential: Option<&str>| {
                     credential.and_then(|id| self.vault.as_ref()?.get(id)).map(|c| c.secret.clone())
                 };
@@ -3978,6 +3979,16 @@ impl Workspace {
         // Folded out, a group's Sessions show their own state, so the row only keeps its
         // terminal's (when it is one) and the chevron.
         let show_status = status.is_some() && (!grouped || main.is_some() || !expanded);
+        // The Session the row itself stands for closes from the row: its status dot turns into
+        // × on hover, and a middle-click closes it, as Settings → Close from the sidebar says.
+        let quick_close = self.settings.quick_close;
+        let row_session = main.filter(|_| show_status).map(|s| s.id);
+        let hover_close = row_session.filter(|_| quick_close.on_hover());
+        let middle_close = row_session.filter(|_| quick_close.on_middle_click());
+        let close_tip: SharedString = match main {
+            Some(s) if s.is_live() && self.settings.keep_disconnected_sessions && s.view.desktop().is_none() => "Disconnect".into(),
+            _ => "Close session".into(),
+        };
         let show_count = grouped && !expanded;
         let trailing: f32 = [(show_status, 16.), (show_count, 14.), (grouped, 22.)]
             .iter()
@@ -4033,6 +4044,14 @@ impl Workspace {
                     this.nav_clicked(NavTarget::Item(click_key.clone()));
                     this.activate_item(item_for_click.clone(), event.modifiers().control, window, cx)
                 }))
+                .when_some(middle_close, |el, id| {
+                    el.on_aux_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        if event.is_middle_click() {
+                            cx.stop_propagation();
+                            this.request_close(id, window, cx);
+                        }
+                    }))
+                })
                 // Drag it onto the terminal area to open it beside, or onto another Project.
                 .on_drag(dragged, self.drag_preview(cx))
                 .child(
@@ -4078,7 +4097,40 @@ impl Workspace {
                         .gap(px(4.))
                         .id("item-status")
                         .when(show_status, |el| {
-                            el.child(div().w(px(16.)).flex().justify_center().child(status_indicator(status.as_ref(), busy, p)))
+                            el.child(
+                                div()
+                                    .relative()
+                                    .w(px(16.))
+                                    .h(px(20.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .when(hover_close.is_some(), |el| el.group_hover("item-row", |s| s.invisible()))
+                                            .child(status_indicator(status.as_ref(), busy, p)),
+                                    )
+                                    .when_some(hover_close, |el, id| {
+                                        let tip = close_tip.clone();
+                                        el.child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .left(px(-2.))
+                                                .invisible()
+                                                .group_hover("item-row", |s| s.visible())
+                                                .child(
+                                                    close_button(SharedString::from(format!("row-close-{id}")), 20., p)
+                                                        .aria_label(tip.clone())
+                                                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                                                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                                            cx.stop_propagation();
+                                                            this.request_close(id, window, cx);
+                                                        })),
+                                                ),
+                                        )
+                                    }),
+                            )
                         })
                         .when(show_count, |el| {
                             el.child(
@@ -4230,6 +4282,14 @@ impl Workspace {
             .when(!active, |el| el.hover(|s| s.bg(p.hover)))
             .when(beside, |el| el.bg(p.hover))
             .on_drag(dragged, self.drag_preview(cx))
+            .when(self.settings.quick_close.on_middle_click(), |el| {
+                el.on_aux_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    if event.is_middle_click() {
+                        cx.stop_propagation();
+                        this.request_close(id, window, cx);
+                    }
+                }))
+            })
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.activate(id, window, cx);
                 let dropped = this.sessions.iter().find(|s| s.id == id).is_some_and(|s| !s.is_live());
