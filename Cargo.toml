@@ -31,7 +31,7 @@ log = "0.4"
 rustc-hash = "2"
 chrono = "0.4"
 base64 = "0.23"
-sha2 = "0.10"
+sha2 = "0.11"
 ureq = { version = "2", default-features = false, features = ["tls", "proxy-from-env"] }
 serde-saphyr = { version = "2.1", default-features = false, features = ["deserialize"] }
 # Remote desktops (see docs/adr/0012-remote-desktops-are-sessions-of-a-host.md): RDP through
