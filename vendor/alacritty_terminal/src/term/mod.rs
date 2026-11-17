@@ -1875,12 +1875,18 @@ impl<T: EventListener> Handler for Term<T> {
 
                     self.vi_mode_cursor.point.line =
                         (self.vi_mode_cursor.point.line - lines).grid_clamp(self, Boundary::Grid);
+
+                    // Komando patch: what scrolled off stays out of sight, but can come back.
+                    self.grid.hide_history();
+                    self.vi_mode_cursor.point.line =
+                        self.vi_mode_cursor.point.line.grid_clamp(self, Boundary::Grid);
                 }
 
                 self.selection = None;
             },
             ansi::ClearMode::Saved if self.history_size() > 0 => {
-                self.grid.clear_history();
+                // Komando patch: hidden rather than erased, so it can come back.
+                self.grid.hide_history();
 
                 self.vi_mode_cursor.point.line =
                     self.vi_mode_cursor.point.line.grid_clamp(self, Boundary::Cursor);
@@ -2584,6 +2590,8 @@ pub mod test {
 // Komando patch.
 #[cfg(test)]
 mod komando_tests;
+#[cfg(test)]
+mod komando_hidden_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2856,7 +2864,9 @@ mod tests {
         // Clear the viewport.
         term.clear_screen(ansi::ClearMode::All);
 
-        assert_eq!(term.grid.display_offset(), 10);
+        // Komando patch: the clear hides the history, so the view is at the bottom.
+        assert_eq!(term.grid.display_offset(), 0);
+        assert_eq!(term.grid.hidden_history(), 10);
     }
 
     #[test]
@@ -2881,8 +2891,9 @@ mod tests {
         // Clear the viewport.
         term.clear_screen(ansi::ClearMode::All);
 
-        assert_eq!(term.grid.display_offset(), 10);
-        assert_eq!(term.vi_mode_cursor.point, Point::new(Line(-5), Column(3)));
+        // Komando patch: the clear hides the history; the vi cursor stays on the screen.
+        assert_eq!(term.grid.display_offset(), 0);
+        assert_eq!(term.vi_mode_cursor.point, Point::new(Line(0), Column(3)));
     }
 
     #[test]

@@ -211,6 +211,27 @@ impl Workspace {
             self._subscriptions.push(sub);
             self.font_slider = Some(slider);
         }
+        if self.presentation_slider.is_none() {
+            let range = main_menu::PRESENTATION_FONT_SIZES;
+            let (min, max) = (*range.start(), *range.end());
+            let value = self.settings.presentation_font_size.clamp(min, max);
+            let slider = cx.new(|_| SliderState::new().min(min).max(max).step(1.).default_value(value));
+            let sub = cx.subscribe_in(&slider, window, move |this, _, event: &SliderEvent, window, cx| match event {
+                SliderEvent::Change(value) => {
+                    let size = value.end().round().clamp(min, max);
+                    if size != this.settings.presentation_font_size {
+                        this.settings.presentation_font_size = size;
+                        if this.presenting() {
+                            this.apply_appearance(window, cx);
+                        }
+                        cx.notify();
+                    }
+                }
+                SliderEvent::Release(_) => this.save_settings(cx),
+            });
+            self._subscriptions.push(sub);
+            self.presentation_slider = Some(slider);
+        }
         if self.shell_editor.is_none() {
             let name = cx.new(|cx| InputState::new(window, cx).placeholder("Ubuntu (WSL)"));
             let program = cx.new(|cx| InputState::new(window, cx).placeholder("wsl.exe"));
@@ -651,14 +672,7 @@ impl Workspace {
             "Expand sidebar on hover",
             "Slides out at the window's left edge. Ctrl+Shift+B pins it open.",
             switch("sidebar-auto-hide".into(), "Expand sidebar on hover", self.settings.sidebar_auto_hide, p)
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.settings.sidebar_auto_hide = !this.settings.sidebar_auto_hide;
-                    this.sidebar_visible = !this.settings.sidebar_auto_hide;
-                    this.sidebar_peek = false;
-                    this.sidebar_peek_timer = None;
-                    this.save_settings(cx);
-                    cx.notify();
-                }))
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.set_sidebar_auto_hide(!this.settings.sidebar_auto_hide, cx)))
                 .into_any_element(),
         )];
         behaviour_rows.push(setting_row(
@@ -702,6 +716,7 @@ impl Workspace {
             ))
             .child(settings_block("Window", p, group(p, window_rows)))
             .child(settings_block("Behaviour", p, group(p, behaviour_rows)))
+            .child(settings_block("Presentation mode", p, self.presentation_settings(p, cx)))
             .into_any_element()
     }
 
@@ -752,6 +767,63 @@ impl Workspace {
             saved.restore(&mut self.settings);
             self.apply_appearance(window, cx);
         }
+    }
+
+    /// Settings → Appearance → Presentation mode: what presenting changes, and a way to start it.
+    fn presentation_settings(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let presenting = self.presenting();
+        let (full_screen, hide_sidebar) = (self.settings.presentation_full_screen, self.settings.presentation_hide_sidebar);
+        group(
+            p,
+            vec![
+                setting_row(
+                    p,
+                    if presenting { "Presenting" } else { "Presentation mode" },
+                    "Larger terminal text for people watching your screen, in a meeting or a screen share. \
+                     Ctrl+Shift+P or the ☰ menu starts and ends it.",
+                    button("presentation-toggle", if presenting { "Stop presenting" } else { "Start presenting" }, ButtonKind::Secondary, p)
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.toggle_presentation(window, cx)))
+                        .into_any_element(),
+                ),
+                setting_row(
+                    p,
+                    "Terminal font size",
+                    &format!("Instead of {} px while presenting.", self.settings.font_size),
+                    div()
+                        .w(px(260.))
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(div().flex_1().children(self.presentation_slider.clone().map(|s| Slider::new(&s).into_any_element())))
+                        .child(value_label(format!("{} px", self.settings.presentation_font_size), p))
+                        .into_any_element(),
+                ),
+                setting_row(
+                    p,
+                    "Full screen",
+                    "Fills the screen, so the terminal gets all of it.",
+                    switch("presentation-full-screen".into(), "Full screen while presenting", full_screen, p)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.settings.presentation_full_screen = !full_screen;
+                            this.save_settings(cx);
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ),
+                setting_row(
+                    p,
+                    "Hide the sidebar",
+                    "Keeps your hosts and projects off the shared screen. Ctrl+Shift+B still shows it.",
+                    switch("presentation-hide-sidebar".into(), "Hide the sidebar while presenting", hide_sidebar, p)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.settings.presentation_hide_sidebar = !hide_sidebar;
+                            this.save_settings(cx);
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ),
+            ],
+        )
     }
 
     /// The app and terminal colors one mode shows, opaque, as the previews draw them.

@@ -41,6 +41,7 @@ mod desktops;
 mod forms;
 mod highlights;
 mod import;
+mod main_menu;
 pub mod nav;
 mod notifications;
 mod onboarding;
@@ -69,6 +70,7 @@ actions!(
         OpenSettings,
         ToggleSftp,
         ToggleSidebar,
+        TogglePresentation,
         PickerUp,
         PickerDown
     ]
@@ -441,6 +443,12 @@ pub struct Workspace {
     confirm_delete_set: Option<(String, Instant)>,
     blur_slider: Option<Entity<SliderState>>,
     font_slider: Option<Entity<SliderState>>,
+    /// Settings → Appearance: the terminal's font size in Presentation mode.
+    presentation_slider: Option<Entity<SliderState>>,
+    /// The menu behind the title bar's ☰ button.
+    main_menu: crate::ui::popup::Popup,
+    /// Presentation mode is on, with what to put back when it ends.
+    presentation: Option<main_menu::Presentation>,
     font_input: Option<Entity<InputState>>,
     /// Settings → Appearance with Mode set to System: show the theme of the mode Windows is
     /// not in, to change it before Windows switches.
@@ -602,6 +610,9 @@ impl Workspace {
             sidebar_peek_timer: None,
             blur_slider: None,
             font_slider: None,
+            presentation_slider: None,
+            main_menu: Default::default(),
+            presentation: None,
             font_input: None,
             word_separators_input: None,
             appearance_other_mode: false,
@@ -809,7 +820,7 @@ impl Workspace {
             app: AppPalette::from_theme(self.theme_for(app_dark)).translucent(t),
             term: TerminalPalette::for_mode(term_dark, self.terminal_colors_for(term_dark), self.theme_for(term_dark)).translucent(t),
             font_family: if self.settings.font_family.trim().is_empty() { self.theme_for(term_dark).font_mono.into() } else { self.settings.font_family.clone().into() },
-            font_size: self.settings.font_size,
+            font_size: self.terminal_font_size(),
             font_weight: font_weight(self.settings.font_weight),
             bold_font_weight: font_weight(self.settings.bold_font_weight),
         });
@@ -3531,9 +3542,13 @@ impl Workspace {
                     .px(px(8.))
                     .pt(px(8.))
                     .pb(px(10.))
+                    .flex()
+                    .gap(px(6.))
                     .child(
                         div()
                             .id("quick-connect")
+                            .flex_1()
+                            .min_w_0()
                             .role(gpui::Role::Button)
                             .aria_label("Quick connect")
                             .tab_index(0)
@@ -3555,7 +3570,8 @@ impl Workspace {
                             .child(icon_el("search", 14., p.hover_text))
                             .child(div().flex_1().min_w_0().truncate().child("Quick connect"))
                             .when(!compact, |el| el.child(kbd("Ctrl Shift K", p.highlighted()))),
-                    ),
+                    )
+                    .child(self.render_sidebar_hide_button(p, cx)),
             )
             .child(list.pb(px(8.)));
 
@@ -4443,8 +4459,6 @@ impl Workspace {
             (Page::Sessions, false) => self.render_session_strip(p, cx),
             _ => None,
         };
-        let sidebar_label = if self.sidebar_visible { "Hide sidebar (Ctrl+Shift+B)" } else { "Show sidebar (Ctrl+Shift+B)" };
-        let sidebar_icon = if self.sidebar_visible { "panel-left-close" } else { "panel-left-open" };
         div()
             .id("title-bar")
             .h(px(TITLE_BAR_HEIGHT))
@@ -4470,20 +4484,8 @@ impl Workspace {
                     .pr(px(ISLAND_GAP))
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .when(!minimal, |el| el.child(
-                        strip_action("sidebar-toggle", sidebar_icon, sidebar_label, false, p)
-                            .size(px(30.))
-                            .aria_expanded(self.sidebar_visible)
-                            .when(self.unlock.is_some(), |el| el.opacity(0.45).cursor_default())
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.toggle_sidebar(window, cx)))
-                            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    this.toggle_sidebar(window, cx);
-                                    cx.stop_propagation();
-                                }
-                            })),
-                    ))
+                    .gap(px(6.))
+                    .when(!minimal, |el| el.children(self.render_main_menu_buttons(p, cx)))
                     .when(crate::elevate::is_elevated(), |el| el.child(admin_badge(p))),
             )
             .child(div().flex_1().min_w_0().h_full().flex().items_center().children(strip))
@@ -5506,6 +5508,7 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| this.toggle_sidebar(window, cx)))
+            .on_action(cx.listener(|this, _: &TogglePresentation, window, cx| this.toggle_presentation(window, cx)))
             .on_action(cx.listener(|this, _: &nav::FocusSidebar, window, cx| this.focus_sidebar(window, cx)))
             // A sidebar item let go anywhere that takes no drop: nothing happens, and the
             // drop indicators go.
@@ -5577,8 +5580,10 @@ impl Render for Workspace {
                 .text_color(p.text)
                 .child(msg.clone())
         });
-        // Full screen, from a desktop's toolbar: the desktop alone, edge to edge.
+        // Full screen, from a desktop's toolbar: the desktop alone, edge to edge. Presentation
+        // mode's full screen keeps the title bar, with its way out.
         if window.is_fullscreen()
+            && self.presentation.is_none()
             && let Some(SessionView::Desktop(view)) =
                 self.active_entry().filter(|e| e.window.is_none() && matches!(self.page, Page::Sessions)).map(|e| e.view.clone())
         {
@@ -5619,6 +5624,7 @@ impl Render for Workspace {
             .children(downloads)
             .children(self.render_overlay(f32::from(window.bounds().size.width) >= WIDE_FORM_MIN_WINDOW, p, cx))
             .children(self.render_prompt_modal(p, cx))
+            .children(self.main_menu.render())
             .children(toast)
             .into_any_element()
     }

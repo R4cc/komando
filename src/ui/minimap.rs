@@ -370,6 +370,17 @@ pub struct MinimapState {
     /// than read every line on it again under the terminal lock.
     strip: RefCell<Option<(StripKey, Rc<Strip>)>>,
     reveal: RefCell<Reveal>,
+    /// The plain scrollbar shown instead while the minimap is off (see `scrollbar`).
+    bar: ScrollbarState,
+}
+
+/// The plain scrollbar's track at the last paint, and its thumb while it is held.
+#[derive(Default)]
+struct ScrollbarState {
+    track: Cell<Option<Bounds<Pixels>>>,
+    /// Where the thumb was picked up, in pixels below its top.
+    grab: Cell<Option<f32>>,
+    hovered: Cell<bool>,
 }
 
 impl MinimapState {
@@ -439,6 +450,15 @@ impl MinimapState {
 
     pub fn cancel_pending(&self) {
         self.reveal.borrow_mut().pending = None;
+    }
+
+    /// The scrollbar's thumb is held.
+    pub fn bar_dragging(&self) -> bool {
+        self.bar.grab.get().is_some()
+    }
+
+    pub fn bar_release(&self) {
+        self.bar.grab.set(None);
     }
 }
 
@@ -1066,9 +1086,169 @@ fn handle(
         .into_any_element()
 }
 
+/// Narrowest the scrollbar's thumb gets, so a long Scrollback still leaves something to grab.
+const BAR_MIN_H: f32 = 24.;
+/// The thumb's width at rest, and while the pointer is on the scrollbar or holds it.
+const BAR_W: f32 = 6.;
+const BAR_HOT_W: f32 = 8.;
+/// Room between the thumb and the terminal's right edge.
+const BAR_INSET: f32 = 3.;
+
+/// The thumb's top and height in a track `track` pixels tall, for a view starting at line
+/// `viewport_top` of `history` lines of Scrollback with `screen` lines on screen.
+fn bar_thumb(history: usize, viewport_top: usize, screen: usize, track: f32) -> (f32, f32) {
+    let total = (history + screen).max(1) as f32;
+    let height = (screen as f32 / total * track).max(BAR_MIN_H).min(track);
+    let top = if history == 0 { 0. } else { viewport_top.min(history) as f32 / history as f32 * (track - height) };
+    (top, height)
+}
+
+/// The first line of the view for the thumb's top at `top` pixels down the track.
+fn bar_line(history: usize, screen: usize, track: f32, top: f32) -> usize {
+    let (_, height) = bar_thumb(history, 0, screen, track);
+    let room = track - height;
+    if room <= 0. {
+        return history;
+    }
+    ((top / room).clamp(0., 1.) * history as f32).round() as usize
+}
+
+/// A press on the scrollbar at `y`: pick up the thumb, or centre it there and pick it up.
+pub fn bar_press(term: &SharedTerm, state: &MinimapState, y: Pixels) {
+    let Some(track) = state.bar.track.get() else { return };
+    let mut term = term.lock();
+    let grid = term.grid();
+    let (history, screen) = (grid.history_size(), grid.screen_lines());
+    if history == 0 {
+        return;
+    }
+    let length = f32::from(track.size.height);
+    let (top, height) = bar_thumb(history, history - grid.display_offset(), screen, length);
+    let at = f32::from(y - track.origin.y);
+    let grab = if (top..top + height).contains(&at) {
+        at - top
+    } else {
+        scroll_to(&mut *term, bar_line(history, screen, length, at - height / 2.));
+        height / 2.
+    };
+    state.bar.grab.set(Some(grab));
+}
+
+/// The pointer moved with the scrollbar's thumb held.
+pub fn bar_drag(term: &SharedTerm, state: &MinimapState, y: Pixels) {
+    let (Some(track), Some(grab)) = (state.bar.track.get(), state.bar.grab.get()) else { return };
+    let mut term = term.lock();
+    let grid = term.grid();
+    let (history, screen) = (grid.history_size(), grid.screen_lines());
+    let line = bar_line(history, screen, f32::from(track.size.height), f32::from(y - track.origin.y) - grab);
+    scroll_to(&mut *term, line);
+}
+
+/// A plain scrollbar in the terminal's right padding, for while the minimap is off: a thumb
+/// to drag, a track to click, and search matches marked beside it. Nothing while there is
+/// nothing to scroll (no Scrollback, or a full-screen program).
+pub fn scrollbar(
+    term: SharedTerm,
+    state: Rc<MinimapState>,
+    app: AppPalette,
+    (width, inset): (f32, f32),
+    marks: Option<SearchMarks>,
+    cx: &mut Context<TerminalView>,
+) -> Option<AnyElement> {
+    let (history, viewport_top, screen, lines) = {
+        let term = term.lock();
+        let grid = term.grid();
+        if term.mode().contains(TermMode::ALT_SCREEN) || grid.history_size() == 0 {
+            state.bar.hovered.set(false);
+            return None;
+        }
+        (grid.history_size(), grid.history_size() - grid.display_offset(), grid.screen_lines(), content_lines(&term))
+    };
+    let hot = state.bar.hovered.get() || state.bar_dragging();
+    let color = Hsla { a: if state.bar_dragging() { 0.42 } else if hot { 0.3 } else if app.dark { 0.18 } else { 0.22 }, ..app.text };
+    let paint_state = state.clone();
+    let ticks_app = app;
+    let track = canvas(
+        move |bounds, _, _| {
+            paint_state.bar.track.set(Some(bounds));
+            let (top, height) = bar_thumb(history, viewport_top, screen, f32::from(bounds.size.height));
+            let w = if hot { BAR_HOT_W } else { BAR_W };
+            let thumb = Bounds::new(
+                point(bounds.right() - px(BAR_INSET + w), bounds.origin.y + px(top)),
+                size(px(w), px(height)),
+            );
+            let ticks = marks.as_ref().map(|marks| handle_ticks(bounds, marks, lines, &ticks_app)).unwrap_or_default();
+            (thumb, ticks)
+        },
+        move |_, (thumb, ticks), window, _| {
+            window.paint_quad(fill(thumb, color).corner_radii(thumb.size.width / 2.));
+            // Over the thumb, so matches on screen stay visible.
+            for (bounds, color) in ticks {
+                window.paint_quad(fill(bounds, color));
+            }
+        },
+    )
+    .size_full();
+    let hover_state = state.clone();
+    Some(
+        div()
+            .id("scrollbar")
+            .absolute()
+            .top(px(inset))
+            .bottom(px(inset))
+            .right_0()
+            .w(px(width))
+            .cursor_default()
+            .on_hover(cx.listener(move |_, hovered: &bool, _, cx| {
+                if hover_state.bar.hovered.replace(*hovered) != *hovered {
+                    cx.notify();
+                }
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    if this.scrollbar_pressed(event.position.y, window, cx) {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if this.scrollbar_released(cx) {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if this.scrollbar_released(cx) {
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .child(track)
+            .into_any_element(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrollbar_thumb_spans_the_track_and_maps_back() {
+        // 950 lines of Scrollback and 50 on screen in a 500 px track: a 25 px thumb.
+        assert_eq!(bar_thumb(950, 950, 50, 500.), (475., 25.));
+        assert_eq!(bar_thumb(950, 0, 50, 500.), (0., 25.));
+        assert_eq!(bar_line(950, 50, 500., 475.), 950);
+        assert_eq!(bar_line(950, 50, 500., 0.), 0);
+        assert_eq!(bar_line(950, 50, 500., -40.), 0);
+        assert_eq!(bar_line(950, 50, 500., 9999.), 950);
+        // A short Scrollback: the thumb is most of the track.
+        assert_eq!(bar_thumb(10, 10, 40, 400.), (80., 320.));
+    }
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::term::Config;
     use alacritty_terminal::term::test::TermSize;

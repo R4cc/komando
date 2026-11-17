@@ -1178,6 +1178,12 @@ pub struct Settings {
     pub onboarded: bool,
     /// Reopen the terminal tabs that were open when Komando last closed (see `OpenTabs`).
     pub restore_tabs: bool,
+    /// Presentation mode: the terminal's font size while presenting.
+    pub presentation_font_size: f32,
+    /// Presentation mode fills the screen.
+    pub presentation_full_screen: bool,
+    /// Presentation mode hides the sidebar (Ctrl+Shift+B still shows it).
+    pub presentation_hide_sidebar: bool,
 }
 
 /// What a right-click in the terminal does. With Ctrl or Shift held it always opens the menu.
@@ -1315,6 +1321,9 @@ impl Default for Settings {
             vnc_shared: true,
             onboarded: false,
             restore_tabs: false,
+            presentation_font_size: 24.0,
+            presentation_full_screen: true,
+            presentation_hide_sidebar: true,
         }
     }
 }

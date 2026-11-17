@@ -44,7 +44,7 @@ use crate::session::{
 use crate::model::{LinkClick, RightClick};
 use crate::theme::{Appearance, rgb_to_hsla};
 use crate::ui::box_drawing::{self, Prim};
-use crate::ui::widgets::{button, caps_lock_indicator, password_input, ButtonKind};
+use crate::ui::widgets::{button, caps_lock_indicator, icon_text_button, password_input, ButtonKind};
 
 mod rich_copy;
 mod search;
@@ -245,6 +245,9 @@ pub struct TerminalView {
     mouse_cell: Option<(usize, usize)>,
     /// Wheel movement smaller than a line, carried over to the next event.
     scroll_remainder: f32,
+    /// Scrolled up past the top after a clear hid older output: the Restore scrollback button
+    /// shows (while that output is still hidden and the view is still at the top).
+    restore_offer: bool,
     /// Focus as last reported to the program (DECSET 1004).
     focus_reported: Option<bool>,
     /// While connecting through Jump Hosts: the route page.
@@ -531,6 +534,7 @@ impl TerminalView {
             marked: None,
             mouse_cell: None,
             scroll_remainder: 0.,
+            restore_offer: false,
             focus_reported: None,
             route: None,
             startup: StartupCommands::default(),
@@ -1043,7 +1047,8 @@ impl TerminalView {
         .detach();
     }
 
-    fn scroll_to_bottom(&self) {
+    fn scroll_to_bottom(&mut self) {
+        self.restore_offer = false;
         let mut term = self.term.lock();
         if term.grid().display_offset() != 0 {
             term.scroll_display(Scroll::Bottom);
@@ -1239,8 +1244,77 @@ impl TerminalView {
             }
             return;
         }
-        self.term.lock().scroll_display(if up { Scroll::PageUp } else { Scroll::PageDown });
+        self.scroll_view(if up { Scroll::PageUp } else { Scroll::PageDown });
         cx.notify();
+    }
+
+    /// Scroll the Scrollback, offering the output a clear hid once the view is at its top.
+    fn scroll_view(&mut self, scroll: Scroll) {
+        let up = matches!(scroll, Scroll::PageUp | Scroll::Top) || matches!(scroll, Scroll::Delta(n) if n > 0);
+        let mut term = self.term.lock();
+        term.scroll_display(scroll);
+        let grid = term.grid();
+        self.restore_offer = up && grid.hidden_history() > 0 && grid.display_offset() == grid.history_size();
+    }
+
+    /// Whether the Restore scrollback button shows.
+    fn shows_restore(&self) -> bool {
+        self.restore_offer && {
+            let term = self.term.lock();
+            let grid = term.grid();
+            !term.mode().contains(TermMode::ALT_SCREEN)
+                && grid.hidden_history() > 0
+                && grid.display_offset() == grid.history_size()
+        }
+    }
+
+    /// Bring back the output a clear hid, and show the end of it.
+    fn restore_scrollback(&mut self, cx: &mut Context<Self>) {
+        self.restore_offer = false;
+        {
+            let mut term = self.term.lock();
+            let half = (term.screen_lines() / 2) as i32;
+            term.grid_mut().restore_history();
+            term.scroll_display(Scroll::Delta(half));
+        }
+        cx.notify();
+    }
+
+    fn render_restore(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if !self.shows_restore() {
+            return None;
+        }
+        let p = cx.global::<Appearance>().app;
+        let stop = |_: &MouseDownEvent, window: &mut Window, cx: &mut gpui::App| {
+            // Not a click on the terminal: no selection, and the keyboard stays where it was.
+            window.prevent_default();
+            cx.stop_propagation();
+        };
+        Some(
+            div()
+                .absolute()
+                .top(px(10.))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .rounded(p.corner(8.))
+                        .shadow(crate::ui::widgets::elevation(p))
+                        .font_family(p.font_family)
+                        .text_size(px(13.))
+                        .cursor_default()
+                        .on_mouse_down(MouseButton::Left, stop)
+                        .on_mouse_down(MouseButton::Middle, stop)
+                        .on_mouse_down(MouseButton::Right, stop)
+                        .child(
+                            icon_text_button("restore-scrollback", "rotate-ccw", "Restore scrollback", ButtonKind::Secondary, p)
+                                .on_click(cx.listener(|this, _, _, cx| this.restore_scrollback(cx))),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     /// The viewport cell under `position`, clamped to the grid.
@@ -1571,6 +1645,17 @@ impl TerminalView {
     /// minimap), and the overlay opens and closes with it.
     fn minimap_hover(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.minimap_state.clone();
+        // The scrollbar's thumb (minimap off) follows the pointer the same way.
+        if state.bar_dragging() {
+            if event.pressed_button == Some(MouseButton::Left) {
+                crate::ui::minimap::bar_drag(&self.term, &state, event.position.y);
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+            state.bar_release();
+            cx.notify();
+        }
         if state.dragging() {
             if event.pressed_button == Some(MouseButton::Left) {
                 crate::ui::minimap::drag(&self.term, &state, event.position.y);
@@ -1681,6 +1766,28 @@ impl TerminalView {
         }
         self.minimap_state.release();
         self.minimap_track(window.mouse_position(), false, window, cx);
+        cx.notify();
+        true
+    }
+
+    /// A press on the scrollbar shown while the minimap is off. Returns whether it took it.
+    pub(crate) fn scrollbar_pressed(&mut self, y: Pixels, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        // A question is open: the terminal's own handler keeps the keyboard on it.
+        if self.prompt.is_some() || self.route.is_some() {
+            return false;
+        }
+        window.focus(&self.focus, cx);
+        crate::ui::minimap::bar_press(&self.term, &self.minimap_state, y);
+        cx.notify();
+        true
+    }
+
+    /// The left button came up. Returns whether it let go of the scrollbar's thumb.
+    pub(crate) fn scrollbar_released(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.minimap_state.bar_dragging() {
+            return false;
+        }
+        self.minimap_state.bar_release();
         cx.notify();
         true
     }
@@ -1819,10 +1926,8 @@ impl TerminalView {
             }
             return;
         }
-        let mut term = self.term.lock();
-        let mode = *term.mode();
+        let mode = *self.term.lock().mode();
         if mode.contains(TermMode::ALT_SCREEN) {
-            drop(term);
             // Full-screen programs (less, man) that did not ask for the mouse get cursor
             // keys, unless they turned that off (DECRST 1007).
             if mode.contains(TermMode::ALTERNATE_SCROLL) && !event.modifiers.shift && self.sink.is_some() {
@@ -1830,7 +1935,7 @@ impl TerminalView {
                 self.write(bytes);
             }
         } else {
-            term.scroll_display(Scroll::Delta(lines));
+            self.scroll_view(Scroll::Delta(lines));
             cx.notify();
         }
     }
@@ -3440,7 +3545,9 @@ impl Render for TerminalView {
             }
         };
         let (minimap_column, minimap_overlay) = if !self.minimap {
-            (None, None)
+            // No minimap: a plain scrollbar in the right padding instead.
+            let bar = crate::ui::minimap::scrollbar(self.term.clone(), minimap_state, app, (PADDING_X, PADDING_Y), minimap_marks, cx);
+            (None, bar)
         } else if beside {
             let column = crate::ui::minimap::beside(
                 self.term.clone(),
@@ -3800,6 +3907,7 @@ impl Render for TerminalView {
             .children(minimap_column)
             .children(minimap_overlay)
             .children(rail)
+            .children(self.render_restore(cx))
             .children(self.render_disconnected(cx))
             .children(self.render_route(cx))
             .context_menu({

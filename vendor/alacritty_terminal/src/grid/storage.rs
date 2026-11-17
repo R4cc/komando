@@ -126,6 +126,22 @@ impl<T> Storage<T> {
         self.inner.truncate(self.len);
     }
 
+    /// Komando patch: take every history row out of the buffer, oldest first.
+    pub fn take_history(&mut self) -> Vec<Row<T>> {
+        self.truncate();
+        let mut rows = self.inner.split_off(self.visible_lines);
+        self.len = self.visible_lines;
+        rows.reverse();
+        rows
+    }
+
+    /// Komando patch: put `rows` (oldest first) back above the oldest history row.
+    pub fn put_history_above(&mut self, rows: impl DoubleEndedIterator<Item = Row<T>>) {
+        self.truncate();
+        self.inner.extend(rows.rev());
+        self.len = self.inner.len();
+    }
+
     /// Dynamically grow the storage buffer at runtime.
     #[inline]
     pub fn initialize(&mut self, additional_rows: usize, columns: usize)

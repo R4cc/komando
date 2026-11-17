@@ -11,6 +11,23 @@ All notable changes to Komando are listed here. The format follows
 - The theme and terminal color menus in Settings → Appearance show each entry as you move
   through them with the arrow keys or the pointer, so you can see it on the preview and in
   the window. Escape or clicking away puts the saved one back.
+- A ☰ menu at the top left: Quick connect, New project, Import, switches for the sidebar,
+  Expand sidebar on hover, the minimap and the command rail, Presentation mode, Lock vault,
+  Settings, the welcome tour and About.
+- Presentation mode (Ctrl+Shift+P or the ☰ menu) makes the terminal text larger for people
+  watching your screen, fills the screen and hides the sidebar. A "Presenting" button in
+  the title bar ends it. Its font size and what it hides are in Settings → Appearance.
+- With the minimap off, the terminal has a plain scrollbar on the right: drag it, or click
+  above or below it to jump there. Search matches are marked beside it.
+
+### Changed
+
+- The button that hides the sidebar is now beside Quick connect at the top of the sidebar.
+  While the sidebar is hidden, a button next to the ☰ menu brings it back.
+- `clear` (and Ctrl+L) now clears the screen and its scrollback: scrolling up no longer
+  shows the old output. It isn't lost: scroll up after a clear and a Restore scrollback
+  button at the top brings it back. Search, the minimap and Copy output leave it out while
+  it's hidden. A terminal reset (`reset`) still erases it.
 
 ## [0.7.2] - 2026-11-17
 

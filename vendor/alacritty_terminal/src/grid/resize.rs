@@ -25,6 +25,11 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             Ordering::Equal => (),
         }
 
+        // Komando patch: the hidden history rewraps the same way as the rest.
+        if !self.hidden.is_empty() && self.columns != columns {
+            self.reflow_hidden(reflow, columns);
+        }
+
         match self.columns.cmp(&columns) {
             Ordering::Less => self.grow_columns(reflow, columns),
             Ordering::Greater => self.shrink_columns(reflow, columns),
@@ -36,6 +41,21 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Komando patch: rows of the old width are no use any more.
         self.report_rows_left();
+    }
+
+    /// Komando patch: rewrap the hidden history to `columns`, as the history of a grid one blank
+    /// line tall. Its newest row doesn't wrap (see `hide_history`), so the blank line stays apart.
+    fn reflow_hidden(&mut self, reflow: bool, columns: usize) {
+        let rows = mem::take(&mut self.hidden);
+        let mut grid = Grid::<T>::new(1, self.columns, usize::MAX / 2);
+        grid.raw.put_history_above(rows.into_iter());
+        if columns > self.columns {
+            grid.grow_columns(reflow, columns);
+        } else {
+            grid.shrink_columns(reflow, columns);
+        }
+        self.hidden = grid.raw.take_history().into();
+        self.trim_hidden();
     }
 
     /// Add lines to the visible area.

@@ -40,7 +40,7 @@ use crate::ui::terminal_view::{
 };
 use crate::ui::workspace::{
     CloseSession, CopyOutputFile, CopyOutputText, LockVault, NewSession, NextSession, OpenSettings, PickerDown, PickerUp,
-    PrevSession, QuickConnect, ToggleSftp, ToggleSidebar, Workspace,
+    PrevSession, QuickConnect, ToggleSftp, TogglePresentation, ToggleSidebar, Workspace,
     nav::{
         self, FocusSidebar, NavCollapse, NavDelete, NavDeleteHost, NavDown, NavEdit, NavEditHost, NavExpand, NavFirst, NavLast,
         NavLeave, NavMenu, NavOpen, NavOpenAnother, NavUp,
@@ -115,6 +115,7 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-,", OpenSettings, None),
         KeyBinding::new("ctrl-shift-e", ToggleSftp, None),
         KeyBinding::new("ctrl-shift-b", ToggleSidebar, Some("Workspace")),
+        KeyBinding::new("ctrl-shift-p", TogglePresentation, None),
         KeyBinding::new("ctrl-shift-h", FocusSidebar, Some("Workspace")),
         KeyBinding::new("up", NavUp, Some(nav::CONTEXT)),
         KeyBinding::new("down", NavDown, Some(nav::CONTEXT)),

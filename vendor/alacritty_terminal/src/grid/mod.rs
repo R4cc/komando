@@ -1,6 +1,7 @@
 //! A specialized 2D grid implementation optimized for use in a terminal.
 
 use std::cmp::{max, min};
+use std::collections::VecDeque;
 use std::ops::{Bound, Deref, Index, IndexMut, Range, RangeBounds};
 use std::sync::Arc;
 
@@ -148,6 +149,11 @@ pub struct Grid<T> {
 
     /// Maximum number of lines in history.
     max_scroll_limit: usize,
+
+    /// Komando patch: history rows a clear hid, oldest first, until `restore_history` puts them
+    /// back. Together with the history they never hold more than `max_scroll_limit` rows.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    hidden: VecDeque<Row<T>>,
 }
 
 impl<T: GridCell + Default + PartialEq> Grid<T> {
@@ -156,6 +162,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             raw: Storage::with_capacity(lines, columns),
             max_scroll_limit,
             display_offset: 0,
+            hidden: VecDeque::new(),
             saved_cursor: Cursor::default(),
             cursor: Cursor::default(),
             lines,
@@ -171,6 +178,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         }
         self.display_offset = min(self.display_offset, history_size);
         self.max_scroll_limit = history_size;
+        self.trim_hidden();
         self.report_rows_left();
     }
 
@@ -190,7 +198,47 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let count = min(count, self.max_scroll_limit - self.history_size());
         if count != 0 {
             self.raw.initialize(count, self.columns);
+            // Komando patch: new history pushes out the oldest hidden rows.
+            self.trim_hidden();
         }
+    }
+
+    /// Komando patch: drop the oldest hidden rows the Scrollback no longer has room for.
+    fn trim_hidden(&mut self) {
+        let over = (self.history_size() + self.hidden.len()).saturating_sub(self.max_scroll_limit);
+        if over != 0 {
+            self.hidden.drain(..over.min(self.hidden.len()));
+        }
+    }
+
+    /// Komando patch: hide the whole history, as if a clear had erased it, until
+    /// `restore_history` brings it back.
+    pub fn hide_history(&mut self) {
+        if self.history_size() == 0 {
+            return;
+        }
+        // The newest hidden row must not wrap into the row after it, or a reflow would join them.
+        let last = self.last_column();
+        self.raw[Line(-1)][last].flags_mut().remove(Flags::WRAPLINE);
+        self.hidden.extend(self.raw.take_history());
+        self.display_offset = 0;
+        self.report_rows_left();
+    }
+
+    /// Komando patch: rows a clear hid (see `hide_history`).
+    pub fn hidden_history(&self) -> usize {
+        self.hidden.len()
+    }
+
+    /// Komando patch: put the hidden rows back above the history. The view stays where it is.
+    pub fn restore_history(&mut self) {
+        if self.hidden.is_empty() {
+            return;
+        }
+        self.trim_hidden();
+        let rows = std::mem::take(&mut self.hidden);
+        self.raw.put_history_above(rows.into_iter());
+        self.report_rows_left();
     }
 
     fn decrease_scroll_limit(&mut self, count: usize) {
@@ -356,6 +404,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         D: PartialEq,
     {
         self.clear_history();
+        self.hidden.clear();
 
         self.saved_cursor = Cursor::default();
         self.cursor = Cursor::default();
