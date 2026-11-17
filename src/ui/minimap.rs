@@ -2,6 +2,7 @@
 //! VS Code. Each terminal line is 2px high and each character a sliver, coloured like the text
 //! (Highlight Rules included), so errors and long blocks of output stand out. A slider marks
 //! the lines on screen: drag it to scroll, or click anywhere else to jump there.
+//! Wide terminal rows are compressed horizontally so highlights near the end stay visible.
 //!
 //! It has two placements:
 //! - **Beside the output** (the default, and what VS Code does): the minimap has a column of its
@@ -45,7 +46,7 @@ const MAX_WIDTH: f32 = 110.;
 const PAD_Y: f32 = 8.;
 /// Height of one terminal line on the minimap.
 const LINE_H: f32 = 2.;
-/// Width of one character.
+/// Maximum width of one character; wide terminal rows shrink to fit the strip.
 const CHAR_W: f32 = 1.;
 const PAD_X: f32 = 8.;
 /// How long an open overlay waits after the pointer leaves it before it fades, so a pointer
@@ -317,6 +318,7 @@ enum Pending {
 /// What `collect` reads under the terminal lock, for `finish` to turn into rectangles after it.
 struct Collected {
     geometry: Geometry,
+    char_w: f32,
     lines: Vec<Pending>,
     /// The cells of the new lines, one after another.
     cells: Vec<(usize, char, Rgb)>,
@@ -520,6 +522,11 @@ fn content_lines<T>(term: &Term<T>) -> usize {
 /// Rectangles to fill, and their colours.
 type Quads = Vec<(Bounds<Pixels>, Hsla)>;
 
+/// Use the same horizontal scale for output and search matches, including long rows.
+fn char_width(bounds: Bounds<Pixels>, columns: usize) -> f32 {
+    ((f32::from(bounds.size.width) - PAD_X * 2.).max(0.) / columns.max(1) as f32).min(CHAR_W)
+}
+
 /// An open search's matches, for the minimap to mark (see `ui::terminal_view::search`).
 #[derive(Clone)]
 pub struct SearchMarks {
@@ -541,7 +548,7 @@ const MATCH_TICK_W: f32 = 4.;
 fn match_quads<T>(term: &Term<T>, geometry: &Geometry, bounds: Bounds<Pixels>, marks: &SearchMarks, app: &AppPalette) -> Quads {
     let grid = term.grid();
     let history = grid.history_size();
-    let shown_cols = (((f32::from(bounds.size.width) - PAD_X * 2.) / CHAR_W).floor().max(0.) as usize).min(grid.columns());
+    let char_w = char_width(bounds, grid.columns());
     let (start, end) = (geometry.start, geometry.total.min(geometry.start + geometry.capacity));
     let SearchMarks { snapshot, matches, moved, current } = marks;
     let first = matches.starts.partition_point(|&row| row < start + moved);
@@ -568,10 +575,10 @@ fn match_quads<T>(term: &Term<T>, geometry: &Geometry, bounds: Bounds<Pixels>, m
                 quads.push(quad(right - PAD_X / 2. - MATCH_TICK_W / 2., MATCH_TICK_W, app.brand));
                 ticked = Some(abs);
             }
-            if let Some(cols) = search::columns(&grid[line], bytes).filter(|c| c.start < shown_cols) {
-                let to = cols.end.min(shown_cols);
-                let x = left + PAD_X + cols.start as f32 * CHAR_W;
-                quads.push(quad(x, ((to - cols.start) as f32 * CHAR_W).max(2.), app.brand));
+            if let Some(cols) = search::columns(&grid[line], bytes) {
+                let x = left + PAD_X + cols.start as f32 * char_w;
+                let width = ((cols.end - cols.start) as f32 * char_w).max(2.).min((right - PAD_X - x).max(0.));
+                quads.push(quad(x, width, app.brand));
             }
         }
     }
@@ -654,9 +661,9 @@ fn collect<T>(
         cache.key = Some((highlighter.clone(), palette.clone(), *colors));
     }
 
-    // Like VS Code: a fixed width per character, and long lines are cut off at the edge.
-    // The start of a line (prompt, timestamp, log level) is what you scan for.
-    let shown_cols = (((f32::from(bounds.size.width) - PAD_X * 2.) / CHAR_W).floor() as usize).min(cols);
+    // Match the whole row: forwarded logs can put INFO near the start and an error much
+    // later. Keep column positions in the cache and compress them only when drawing.
+    let char_w = char_width(bounds, cols);
     let end = total.min(start + capacity);
     let mut lines = Vec::with_capacity(end.saturating_sub(start));
     let mut cells: Vec<(usize, char, Rgb)> = Vec::new();
@@ -666,7 +673,7 @@ fn collect<T>(
         // and the flags that change how they show. Cheap enough for every line at every
         // repaint; the colours are only resolved and the rules only run when it's new.
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for col in 0..shown_cols {
+        for col in 0..cols {
             let cell = &row[Column(col)];
             if cell.c == ' ' && !cell.flags.intersects(Flags::INVERSE) {
                 continue;
@@ -685,7 +692,7 @@ fn collect<T>(
             Some(runs) => lines.push(Pending::Ready(runs)),
             None => {
                 let from = cells.len();
-                for col in 0..shown_cols {
+                for col in 0..cols {
                     let cell = &row[Column(col)];
                     if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
                         continue;
@@ -713,7 +720,7 @@ fn collect<T>(
             size(bounds.size.width, px(box_bottom - box_top)),
         )
     });
-    Collected { geometry, lines, cells, slider }
+    Collected { geometry, char_w, lines, cells, slider }
 }
 
 /// The strip for `bounds`: the last one while nothing it shows has changed, or else worked
@@ -764,7 +771,7 @@ fn finish(
     highlighter: &Highlighter,
     bounds: Bounds<Pixels>,
 ) -> (Geometry, Quads, Option<Bounds<Pixels>>) {
-    let Collected { geometry, lines, cells, slider } = collected;
+    let Collected { geometry, char_w, lines, cells, slider } = collected;
     let mut rects: Quads = Vec::new();
     for (i, line) in lines.into_iter().enumerate() {
         let runs = match line {
@@ -776,12 +783,14 @@ fn finish(
             }
         };
         let y = f32::from(bounds.origin.y) + i as f32 * LINE_H;
-        // Paint the faint text first, then emphasize matches at their original columns.
+        // Paint the faint text first, then emphasize matches at their scaled columns.
         // Leave a gap between rows even in a wall of errors so other levels remain distinct.
-        for emphasized in [false, true] {
-            for run in runs.iter().filter(|run| (run.attention > 0) == emphasized) {
-                let x = f32::from(bounds.origin.x) + PAD_X + run.from as f32 * CHAR_W;
-                let natural_width = (run.to - run.from) as f32 * CHAR_W;
+        // Red matches go last so nearby enlarged highlights cannot cover them.
+        for attention in 0..=2 {
+            let emphasized = attention > 0;
+            for run in runs.iter().filter(|run| run.attention == attention) {
+                let x = f32::from(bounds.origin.x) + PAD_X + run.from as f32 * char_w;
+                let natural_width = (run.to - run.from) as f32 * char_w;
                 let width = if emphasized {
                     natural_width.max(if run.attention == 2 { 8. } else { 6. })
                 } else {
@@ -1321,6 +1330,60 @@ mod tests {
         Bounds::new(point(px(0.), px(0.)), size(px(MAX_WIDTH), px(800.)))
     }
 
+    #[test]
+    fn errors_after_info_remain_visible_across_the_full_line() {
+        for palette in [TerminalPalette::dark(), TerminalPalette::light()] {
+            let prefixes = ["INFO;".to_string(), format!("INFO;{}", "x".repeat(120)), format!("INFO;{}", "x".repeat(220))];
+            for prefix in prefixes {
+                let mut term = Term::new(Config::default(), &TermSize::new(240, 24), VoidListener);
+                let mut parser: Processor = Processor::new();
+                parser.advance(&mut term, format!("{prefix} [error]\r\n").as_bytes());
+                for width in [MIN_WIDTH, MAX_WIDTH] {
+                    let bounds = Bounds::new(strip().origin, size(px(width), strip().size.height));
+                    let (geometry, quads, _) = layout(&term, &mut LineCache::default(), &palette, &bundled_rules(), bounds);
+                    let emphasized: Vec<_> = quads.iter().filter(|(quad, c)| c.a == 1. && quad.size.width > px(0.)).collect();
+                    let colors: Vec<gpui::Rgba> = emphasized.iter().map(|(_, c)| (*c).into()).collect();
+                    assert!(colors.iter().any(|c| c.b > c.r), "INFO should remain visible");
+                    assert!(colors.iter().any(|c| c.r > c.b), "errors after INFO disappeared (prefix length {})", prefix.len());
+                    assert!(emphasized.iter().all(|(quad, _)| {
+                        quad.origin.x >= bounds.origin.x + px(PAD_X) && quad.right() <= bounds.right() - px(PAD_X)
+                    }));
+                    let marks = search_marks(&term, "error", None);
+                    let found = match_quads(&term, &geometry, bounds, &marks, &AppPalette::dark());
+                    let error = emphasized.iter().zip(&colors).find(|(_, c)| c.r > c.b).unwrap().0;
+                    assert!(found.iter().any(|(quad, _)| quad.origin == error.0.origin), "search must align with the error");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compressed_info_cannot_paint_over_a_nearby_error() {
+        let mut term = Term::new(Config::default(), &TermSize::new(240, 24), VoidListener);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, b"ERROR INFO\r\n");
+        let (_, quads, _) = layout(&term, &mut LineCache::default(), &TerminalPalette::dark(), &bundled_rules(), strip());
+        let last = quads.iter().filter(|(_, color)| color.a == 1.).last().unwrap();
+        let color: gpui::Rgba = last.1.into();
+        assert!(color.r > color.b, "red should be on top where enlarged highlights overlap");
+    }
+
+    #[test]
+    fn changes_near_the_end_of_a_row_invalidate_cached_highlights() {
+        let mut term = Term::new(Config::default(), &TermSize::new(240, 24), VoidListener);
+        let mut parser: Processor = Processor::new();
+        let palette = TerminalPalette::dark();
+        let rules = bundled_rules();
+        let mut cache = LineCache::default();
+        parser.advance(&mut term, format!("INFO;{} [info]", "x".repeat(120)).as_bytes());
+        let (_, before, _) = layout(&term, &mut cache, &palette, &rules, strip());
+        parser.advance(&mut term, b"\x1b[1;127H[error]");
+        let (_, after, _) = layout(&term, &mut cache, &palette, &rules, strip());
+        let (_, fresh, _) = layout(&term, &mut LineCache::default(), &palette, &rules, strip());
+        assert_ne!(before, after, "a late error must update the minimap");
+        assert_eq!(after, fresh);
+    }
+
     /// The strip for a repaint, checked against working it out afresh. Returns it, and whether
     /// it is the one from the last repaint.
     fn repaint(
@@ -1422,7 +1485,7 @@ mod tests {
             let highlights: Vec<_> = quads.iter().filter(|(_, c)| c.a == 1.).collect();
             assert_eq!(highlights.len(), 20);
             for (row, (bounds, _)) in highlights.iter().enumerate() {
-                assert_eq!(bounds.origin.x, px(PAD_X + 7. * CHAR_W), "keep the matched column");
+                assert_eq!(bounds.origin.x, px(PAD_X + 7. * char_width(strip(), 100)), "keep the matched column");
                 assert_eq!(bounds.origin.y, px(row as f32 * LINE_H));
                 assert!(bounds.size.height < px(LINE_H), "dense errors must not cover adjacent rows");
                 assert_eq!(bounds.size.width, px(if row == 10 { 6. } else { 8. }));
@@ -1672,7 +1735,8 @@ mod tests {
         let expected: Vec<f32> = (0..300).step_by(37).map(|line| line as f32 * LINE_H).collect();
         assert_eq!(ticks, expected);
         // The characters themselves: "2026-11-11T09:00:00Z " comes first.
-        assert!(quads.iter().any(|(b, _)| f32::from(b.origin.x) == PAD_X + 21. && f32::from(b.size.width) == 5.));
+        let char_w = char_width(strip(), term.columns());
+        assert!(quads.iter().any(|(b, _)| f32::from(b.origin.x) == PAD_X + 21. * char_w && f32::from(b.size.width) == 5. * char_w));
         // The current match's line has a band across the strip.
         let bands: Vec<f32> = quads.iter().filter(|(b, _)| f32::from(b.size.width) == MAX_WIDTH).map(|(b, _)| f32::from(b.origin.y)).collect();
         assert_eq!(bands, vec![74. * LINE_H]);

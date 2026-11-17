@@ -10,6 +10,11 @@ All notable changes to Komando are listed here. The format follows
 
 - The SSH connection tooltip shows only the target's round-trip time in milliseconds.
 
+### Fixed
+
+- The minimap shows highlights across the full width of terminal output, so errors later
+  on a line remain visible even when an earlier log prefix says INFO.
+
 ## [0.7.8] - 2026-11-17
 
 ### Added
