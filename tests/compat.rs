@@ -401,6 +401,12 @@ struct LocalSshd {
 impl LocalSshd {
     /// `None` (with a note) when sshd or ssh-keygen is not installed.
     fn start(name: &str, port_offset: u16) -> Option<Self> {
+        Self::start_with(name, port_offset, "ed25519", "")
+    }
+
+    /// Like `start`, with a host key of `host_key_type` and `extra` lines appended to the
+    /// server's config (to limit its algorithms, say).
+    fn start_with(name: &str, port_offset: u16, host_key_type: &str, extra: &str) -> Option<Self> {
         let (Some(sshd), Some(keygen)) = (find("sshd"), find("ssh-keygen")) else {
             eprintln!("skipped: sshd or ssh-keygen is not installed");
             return None;
@@ -408,9 +414,9 @@ impl LocalSshd {
         let dir = std::env::temp_dir().join(format!("komando-compat-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        for name in ["host", "user"] {
+        for (name, key_type) in [("host", host_key_type), ("user", "ed25519")] {
             let ok = std::process::Command::new(&keygen)
-                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .args(["-q", "-t", key_type, "-N", "", "-f"])
                 .arg(dir.join(name))
                 .status()
                 .unwrap()
@@ -422,7 +428,7 @@ impl LocalSshd {
         let config = format!(
             "Port {port}\nListenAddress 127.0.0.1\nHostKey {host}\nAuthorizedKeysFile {keys}\nPidFile {pid}\n\
              UsePAM no\nStrictModes no\nPasswordAuthentication no\nPrintMotd no\nPrintLastLog no\nAllowTcpForwarding yes\nMaxStartups 100\n\
-             Subsystem sftp internal-sftp\n",
+             Subsystem sftp internal-sftp\n{extra}",
             host = dir.join("host").display(),
             keys = dir.join("authorized_keys").display(),
             pid = dir.join("sshd.pid").display(),
@@ -495,6 +501,28 @@ fn compat_ssh_session_against_a_local_sshd() {
     r.wait_text("40 120");
     r.text("exit\r");
     r.wait("the session to end", |r| r.ended);
+}
+
+/// A server that offers only what an older Cisco switch does: NIST-curve ECDH or
+/// Diffie-Hellman group 14 with SHA-1, an RSA host key signed with SHA-1, AES-CBC and
+/// HMAC-SHA1. Komando falls back to these when the server has nothing better.
+#[test]
+#[ignore]
+fn compat_ssh_session_with_cisco_style_algorithms() {
+    for (i, kex) in ["ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521", "diffie-hellman-group14-sha1"].iter().enumerate() {
+        let extra = format!(
+            "KexAlgorithms {kex}\nHostKeyAlgorithms ssh-rsa\nCiphers aes256-cbc,aes128-cbc\nMACs hmac-sha1\n"
+        );
+        let Some(sshd) = LocalSshd::start_with(&format!("cisco-{i}"), 10 + i as u16, "rsa", &extra) else { return };
+        let size = GridSize { cols: 100, rows: 30, cell_width: 9, cell_height: 18 };
+        let mut r = sshd.connect(vec![sshd.hop("switch", "127.0.0.1")], size);
+        r.settle();
+        r.wait("signing in", |r| r.hops.iter().any(|(_, step)| *step == HopStep::Done));
+        r.text("echo \"kex=ok\"\r");
+        r.wait_text("kex=ok");
+        r.text("exit\r");
+        r.wait("the session to end", |r| r.ended);
+    }
 }
 
 /// A Host reached through a Jump Host: Komando signs in to the Jump Host, tunnels to the

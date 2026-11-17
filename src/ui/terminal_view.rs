@@ -2355,7 +2355,7 @@ impl TerminalView {
                         .child(
                             div()
                                 .min_w_0()
-                                .flex_shrink()
+                                .flex_shrink(1.)
                                 .whitespace_normal()
                                 .line_clamp(3)
                                 .text_ellipsis()
