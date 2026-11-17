@@ -291,6 +291,25 @@ fn parse_forwards(rows: &[ForwardFields], inherited: &[PortForward]) -> Result<V
     Ok(forwards.into_iter().map(|(_, forward)| forward).collect())
 }
 
+/// Whether one of a project's forwards listens on the same port, in the same place, as one of
+/// the own forwards of `hosts` (its hosts that open the project's forwards too).
+fn clash_with_hosts(project: &[PortForward], hosts: &[(&str, &[PortForward])]) -> Result<(), String> {
+    for forward in project {
+        let same = |other: &&PortForward| other.port == forward.port && other.kind.listens_here() == forward.kind.listens_here();
+        if let Some((host, own)) = hosts.iter().find_map(|(host, own)| own.iter().find(same).map(|own| (host, own))) {
+            let place = if forward.kind.listens_here() { "on this computer" } else { "on the host" };
+            return Err(format!(
+                "The project's port forward \"{}\" listens on port {} {place}, as {host}'s own \"{}\" does. Pick another \
+                 port, or have {host} leave out the project's forwards.",
+                forward.label(),
+                forward.port,
+                own.label()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A Jump Host read from a form row, before its new password (if any) is in the Vault.
 struct JumpEntry {
     jump: JumpHost,
@@ -1743,6 +1762,17 @@ impl Workspace {
         }
         let jumps = read_jump_rows(&form.jumps, cx).map_err(on_tab(FormTab::JumpHosts))?;
         let port_forwards = read_forward_rows(&form.forwards, &[], cx).map_err(on_tab(FormTab::Forwards))?;
+        // Its hosts that open the project's forwards open their own beside them: none may listen
+        // on the same port.
+        if let Some(project) = form.editing.as_deref().and_then(|id| self.library.project(id)) {
+            let hosts: Vec<(&str, &[PortForward])> = self
+                .library
+                .hosts_of(project)
+                .filter(|h| h.use_project_forwards)
+                .map(|h| (h.name.as_str(), h.port_forwards.as_slice()))
+                .collect();
+            clash_with_hosts(&port_forwards, &hosts).map_err(on_tab(FormTab::Forwards))?;
+        }
         let startup_commands = read_command_rows(&form.commands, cx).map_err(on_tab(FormTab::Terminal))?;
         let (editing, color, icon, sign_in, highlight) =
             (form.editing.clone(), form.color.clone(), form.icon.clone(), form.sign_in, form.highlight);
@@ -2544,7 +2574,7 @@ fn decode_utf16(bytes: &[u8], unit: fn([u8; 2]) -> u16) -> Result<String, &'stat
 
 #[cfg(test)]
 mod tests {
-    use super::{ForwardFields, ForwardKind, PortForward, decode_key_text, expand_home, name_list, parse_forwards};
+    use super::{ForwardFields, ForwardKind, PortForward, clash_with_hosts, decode_key_text, expand_home, name_list, parse_forwards};
     use std::path::{Path, PathBuf};
 
     const KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n";
@@ -2640,5 +2670,18 @@ mod tests {
         );
         // The same port on this computer and on the host is no clash.
         assert!(parse_forwards(&[row(ForwardKind::Local, "8080", "", ""), row(ForwardKind::Remote, "8080", "", "")], &[]).is_ok());
+    }
+
+    #[test]
+    fn a_projects_forwards_may_not_clash_with_its_hosts_own() {
+        let db_own = [PortForward::local(5432, "localhost", 5432)];
+        let web_own = [PortForward::remote(5432, "localhost", 5432)];
+        let hosts: [(&str, &[PortForward]); 2] = [("web", &web_own), ("db", &db_own)];
+        assert!(clash_with_hosts(&[PortForward::socks(1080)], &hosts).is_ok());
+        assert_eq!(
+            clash_with_hosts(&[PortForward::socks(1080), PortForward::socks(5432)], &hosts).unwrap_err(),
+            "The project's port forward \"SOCKS on 5432\" listens on port 5432 on this computer, as db's own \"5432 → \
+             localhost:5432\" does. Pick another port, or have db leave out the project's forwards."
+        );
     }
 }

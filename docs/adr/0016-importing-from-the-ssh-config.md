@@ -26,8 +26,14 @@ What stays in the file, listed per host in the review: `IdentityFile` and `Certi
 (keys stay where they are; importing them into the Vault means asking for each passphrase,
 which belongs in the host form), `ProxyCommand`, `ForwardAgent` (until agent support), X11
 forwarding, `RemoteCommand`, `LocalCommand`, `SetEnv`, keep-alives, and forwards Komando can't
-represent (Unix sockets, a reverse SOCKS proxy, a specific bind address). `Match` blocks are
-left out with a note, because they depend on things only known while connecting.
+represent (Unix sockets, a reverse SOCKS proxy, a specific bind address). A Jump Host's own
+key, certificate or proxy command is listed with the host that goes through it ("Private key
+of jump host bastion"), since a Jump Host's sign-in is typed in, not imported.
+
+`Match` blocks count when every criterion depends only on the name: `all`, `final`, `host`
+(against the host name found so far, as `ssh` checks it), `originalhost`, and `canonical`,
+which never holds because Komando doesn't canonicalize. A block that depends on the user, a
+command, the network or a tag is left out, with a note saying so.
 
 ## Consequences
 
@@ -35,5 +41,6 @@ left out with a note, because they depend on things only known while connecting.
   starts hosts that are already in Komando unticked (ADR 0008's duplicate check).
 - `Include` follows `~`, absolute paths and paths relative to `~/.ssh`, with `*` and `?` in
   the file name only. Missing files are skipped, as `ssh` does.
-- Tokens other than `%h` and `%%` in `HostName`, and a `User` with tokens, are not expanded.
-  Such a user is listed as left out.
+- `HostName` takes `%h` and `%%`, as in `ssh`. Any other token is an error for `ssh`: the host
+  keeps its name as its address and the `HostName` is listed as left out. A `User` with tokens
+  is listed as left out too.

@@ -11,8 +11,8 @@
 //! and `DynamicForward` (as Port Forwards). Settings that change how `ssh` connects but don't
 //! come over are listed per host, such as `IdentityFile` (keys stay where they are, see
 //! docs/adr/0016-importing-from-the-ssh-config.md), `ProxyCommand` and `ForwardAgent`.
-//! `Match` blocks depend on things only known while connecting, so they are left out with a
-//! note.
+//! `Match` blocks count when they depend only on the name (`all`, `host`, `originalhost`,
+//! `final`); one that depends on the user, a command or the network is left out with a note.
 
 use std::path::{Path, PathBuf};
 
@@ -149,7 +149,11 @@ fn include_files(pattern: &str, base: &Path, home: Option<&Path>) -> Vec<PathBuf
         .flatten()
         .flatten()
         .filter(|entry| entry.file_type().is_ok_and(|t| t.is_file()))
-        .filter(|entry| wildcard(&name, &entry.file_name().to_string_lossy(), false))
+        // As glob(3) does, a wildcard doesn't match a leading dot: editors' `.config.swp`.
+        .filter(|entry| {
+            let file = entry.file_name().to_string_lossy().into_owned();
+            (!file.starts_with('.') || name.starts_with('.')) && wildcard(&name, &file, false)
+        })
         .map(|entry| entry.path())
         .collect();
     files.sort();
@@ -197,6 +201,60 @@ fn host_matches(patterns: &[String], name: &str) -> bool {
     matched
 }
 
+/// One criterion of a `Match` line Komando can check before connecting.
+#[derive(Debug, PartialEq)]
+struct Criterion {
+    negated: bool,
+    kind: CriterionKind,
+}
+
+#[derive(Debug, PartialEq)]
+enum CriterionKind {
+    /// `all`, and `final` (the last pass, which reading the whole file is).
+    Always,
+    /// `canonical`: Komando doesn't canonicalize host names, so never.
+    Never,
+    /// `host`: the patterns, against the host name found so far.
+    Host(Vec<String>),
+    /// `originalhost`: the patterns, against the name as typed.
+    OriginalHost(Vec<String>),
+}
+
+impl Criterion {
+    fn holds(&self, name: &str, host_name: &str) -> bool {
+        let held = match &self.kind {
+            CriterionKind::Always => true,
+            CriterionKind::Never => false,
+            CriterionKind::Host(patterns) => host_matches(patterns, host_name),
+            CriterionKind::OriginalHost(patterns) => host_matches(patterns, name),
+        };
+        held != self.negated
+    }
+}
+
+/// A `Match` line's criteria, all of which must hold. None when one depends on what only
+/// connecting tells (`user`, `localuser`, `exec`, `localnetwork`, `tagged` and the like).
+fn match_criteria(args: &[String]) -> Option<Vec<Criterion>> {
+    let mut criteria = vec![];
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let (negated, keyword) = match arg.strip_prefix('!') {
+            Some(keyword) => (true, keyword.to_ascii_lowercase()),
+            None => (false, arg.to_ascii_lowercase()),
+        };
+        let patterns = |list: &String| list.split(',').map(str::to_string).collect::<Vec<_>>();
+        let kind = match keyword.as_str() {
+            "all" | "final" => CriterionKind::Always,
+            "canonical" => CriterionKind::Never,
+            "host" => CriterionKind::Host(patterns(args.next()?)),
+            "originalhost" => CriterionKind::OriginalHost(patterns(args.next()?)),
+            _ => return None,
+        };
+        criteria.push(Criterion { negated, kind });
+    }
+    (!criteria.is_empty()).then_some(criteria)
+}
+
 fn is_pattern(name: &str) -> bool {
     name.starts_with('!') || name.contains(['*', '?'])
 }
@@ -220,7 +278,10 @@ impl Settings {
         for line in lines {
             match line.key.as_str() {
                 "host" => applies = host_matches(&line.args, name),
-                "match" => applies = false,
+                "match" => {
+                    let host_name = settings.first("hostname").and_then(|h| expand_host_name(h, name)).unwrap_or_else(|| name.to_string());
+                    applies = match_criteria(&line.args).is_some_and(|criteria| criteria.iter().all(|c| c.holds(name, &host_name)));
+                }
                 key if applies && (MULTIPLE.contains(&key) || !settings.values.iter().any(|(k, _)| k == key)) => {
                     settings.values.push((key.to_string(), line.args.clone()));
                 }
@@ -245,10 +306,29 @@ impl Settings {
 
 /// Where a name leads: its `HostName` (with `%h` for the name itself), port and user.
 fn address_of(settings: &Settings, name: &str) -> (String, u16, Option<String>) {
-    let address = settings.first("hostname").map(|h| h.replace("%h", name).replace("%%", "%")).unwrap_or_else(|| name.to_string());
+    let address = settings.first("hostname").and_then(|h| expand_host_name(h, name)).unwrap_or_else(|| name.to_string());
     let port = settings.first("port").and_then(|p| p.parse::<u16>().ok()).filter(|p| *p != 0).unwrap_or(22);
     let user = settings.first("user").filter(|u| !u.contains('%')).map(str::to_string);
     (address, port, user)
+}
+
+/// A `HostName` with its tokens replaced: `%h` is the name it is looked up by and `%%` a
+/// percent sign, read left to right. None if it has another token, which `ssh` doesn't take
+/// there either.
+fn expand_host_name(value: &str, name: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '%' => match chars.next()? {
+                'h' => out.push_str(name),
+                '%' => out.push('%'),
+                _ => return None,
+            },
+            c => out.push(c),
+        }
+    }
+    Some(out)
 }
 
 /// `[user@]host[:port]` or `ssh://[user@]host[:port]`, IPv6 addresses in brackets.
@@ -279,7 +359,7 @@ fn parse_jump(text: &str) -> Option<(Option<String>, String, Option<u16>)> {
 /// The Jump Hosts on the way to a host whose `ProxyJump` is `jumps`, each looked up in the
 /// file as `ssh -J` does. The first one's own `ProxyJump` comes before it; the later ones are
 /// reached through the one before them, which overrides theirs. None if one can't be read.
-fn route(lines: &[Line], jumps: &str, depth: usize) -> Option<Vec<JumpHost>> {
+fn route(lines: &[Line], jumps: &str, depth: usize, left: &mut Vec<LeftOut>) -> Option<Vec<JumpHost>> {
     if jumps.eq_ignore_ascii_case("none") {
         return Some(vec![]);
     }
@@ -291,17 +371,35 @@ fn route(lines: &[Line], jumps: &str, depth: usize) -> Option<Vec<JumpHost>> {
         let (user, name, port) = parse_jump(jump.trim())?;
         let settings = Settings::for_host(lines, &name);
         if let Some(before) = settings.first("proxyjump").filter(|_| i == 0) {
-            route.extend(self::route(lines, before, depth + 1)?);
+            route.extend(self::route(lines, before, depth + 1, left)?);
         }
         let (address, config_port, config_user) = address_of(&settings, &name);
+        // What signs in to the hop, or reaches it, but doesn't come over with it.
+        for hop in hop_left_out(&settings) {
+            let entry = LeftOut::new(format!("{} of jump host {name}", hop.setting), hop.detail);
+            if !left.contains(&entry) {
+                left.push(entry);
+            }
+        }
         route.push(JumpHost { address, port: port.unwrap_or(config_port), user: user.or(config_user), credential: None });
     }
     Some(route)
 }
 
+/// What of a Jump Host's own settings matters for signing in to it or reaching it, and
+/// doesn't come over: its keys, certificate, proxy command, and a host name or user with
+/// tokens.
+fn hop_left_out(settings: &Settings) -> Vec<LeftOut> {
+    const HOP: [&str; 6] = ["Private key", "Private keys", "Certificate", "Proxy command", "Host name", "User"];
+    left_out(settings).into_iter().filter(|l| HOP.contains(&l.setting.as_str())).collect()
+}
+
 /// `[bind_address:]port`, the bind address `None` when not given. IPv6 addresses are in
 /// brackets; `bind/port` is OpenSSH's other spelling.
 fn parse_listen(text: &str) -> Option<(Option<String>, u16)> {
+    if is_socket_path(text) {
+        return None;
+    }
     let (bind, port) = if let Some(rest) = text.strip_prefix('[') {
         let (bind, port) = rest.split_once("]:")?;
         (Some(bind), port)
@@ -314,8 +412,16 @@ fn parse_listen(text: &str) -> Option<(Option<String>, u16)> {
     Some((bind.map(str::to_string), port))
 }
 
+/// A Unix socket's path, which `ssh` tells from an address by its leading `/` or `~`.
+fn is_socket_path(text: &str) -> bool {
+    text.starts_with('/') || text.starts_with('~')
+}
+
 /// `host:port`, `[v6]:port` or `host/port`.
 fn parse_target(text: &str) -> Option<(String, u16)> {
+    if is_socket_path(text) {
+        return None;
+    }
     let (host, port) = if let Some(rest) = text.strip_prefix('[') {
         rest.split_once("]:")?
     } else {
@@ -404,6 +510,9 @@ fn left_out(settings: &Settings) -> Vec<LeftOut> {
     if let Some(interval) = settings.first("serveraliveinterval").filter(|v| *v != "0") {
         out.push(LeftOut::new("Keep-alive", format!("every {interval} s")));
     }
+    if let Some(host_name) = settings.first("hostname").filter(|h| expand_host_name(h, "").is_none()) {
+        out.push(LeftOut::new("Host name", host_name));
+    }
     if settings.first("user").is_some_and(|u| u.contains('%')) {
         out.push(LeftOut::new("User", settings.first("user").unwrap_or_default()));
     }
@@ -424,13 +533,19 @@ fn found(lines: &[Line]) -> Found {
         let mut left = left_out(&settings);
         let jump_hosts = match settings.first("proxyjump") {
             None => vec![],
-            Some(jumps) => match route(lines, jumps, 0) {
-                Some(route) => route,
-                None => {
-                    left.insert(0, LeftOut::new("Jump host", format!("ProxyJump {jumps}")));
-                    vec![]
+            Some(jumps) => {
+                let mut hops_left = vec![];
+                match route(lines, jumps, 0, &mut hops_left) {
+                    Some(route) => {
+                        left.splice(0..0, hops_left);
+                        route
+                    }
+                    None => {
+                        left.insert(0, LeftOut::new("Jump host", format!("ProxyJump {jumps}")));
+                        vec![]
+                    }
                 }
-            },
+            }
         };
         let (port_forwards, forwards_left) = forwards(&settings);
         left.extend(forwards_left);
@@ -445,11 +560,12 @@ fn found(lines: &[Line]) -> Found {
             ..Default::default()
         });
     }
-    let matches = lines.iter().filter(|l| l.key == "match").count();
-    if matches > 0 {
-        let blocks = if matches == 1 { "a Match block".to_string() } else { format!("{matches} Match blocks") };
+    let unchecked = lines.iter().filter(|l| l.key == "match" && match_criteria(&l.args).is_none()).count();
+    if unchecked > 0 {
+        let blocks = if unchecked == 1 { "a Match block".to_string() } else { format!("{unchecked} Match blocks") };
         notes.push(format!(
-            "The settings in {blocks} aren't imported: they depend on things only known while connecting."
+            "The settings in {blocks} aren't imported: they depend on more than the host's name, such as the user, \
+             a command or the network, which Komando can't check before connecting."
         ));
     }
     let groups = if hosts.is_empty() {
@@ -564,7 +680,9 @@ mod tests {
              RemoteForward 8022 localhost:22\n\
              RemoteForward 1080\n\
              DynamicForward localhost:1081\n\
-             LocalForward /tmp/sock db:5432\n",
+             LocalForward /tmp/sock db:5432\n\
+             LocalForward /run/5432 db:5432\n\
+             LocalForward 6000 /var/run/x.sock\n",
         );
         let web = host(&found, "web");
         assert_eq!(
@@ -582,6 +700,8 @@ mod tests {
             [
                 LeftOut::new("Listen address", "10.0.0.2 for 9000 → localhost:9000: only loopback for now"),
                 LeftOut::new("Port forwarding", "LocalForward /tmp/sock db:5432"),
+                LeftOut::new("Port forwarding", "LocalForward /run/5432 db:5432"),
+                LeftOut::new("Port forwarding", "LocalForward 6000 /var/run/x.sock"),
                 LeftOut::new("Port forwarding", "RemoteForward 1080 (a SOCKS proxy on the server)"),
             ]
         );
@@ -608,10 +728,52 @@ mod tests {
     }
 
     #[test]
-    fn match_blocks_are_noted_and_do_not_apply() {
-        let found = parse("Host web\n  HostName web.lan\nMatch host web\n  User root\n");
-        assert_eq!(host(&found, "web").user, None);
-        assert_eq!(found.notes, ["The settings in a Match block aren't imported: they depend on things only known while connecting."]);
+    fn match_blocks_on_the_name_apply_and_others_are_noted() {
+        let found = parse(
+            "Host web\n  HostName %h.lan\nHost db\n  HostName %h.lan\n\
+             Match host *.lan !originalhost db\n  User deploy\n\
+             Match originalhost db\n  Port 5433\n\
+             Match user root\n  Port 2222\n\
+             Match exec \"test -f /tmp/x\" host *.lan\n  User exec\n\
+             Match all\n  User fallback\n",
+        );
+        let web = host(&found, "web");
+        assert_eq!((web.user.as_deref(), web.port), (Some("deploy"), 22), "host matches the host name found so far");
+        let db = host(&found, "db");
+        assert_eq!((db.user.as_deref(), db.port), (Some("fallback"), 5433));
+        assert_eq!(
+            found.notes,
+            ["The settings in 2 Match blocks aren't imported: they depend on more than the host's name, such as the user, a \
+              command or the network, which Komando can't check before connecting."]
+        );
+    }
+
+    #[test]
+    fn host_names_expand_their_tokens_like_ssh() {
+        assert_eq!(expand_host_name("%h.atlas.lan", "web").as_deref(), Some("web.atlas.lan"));
+        assert_eq!(expand_host_name("%%h", "web").as_deref(), Some("%h"));
+        assert_eq!(expand_host_name("100%%", "web").as_deref(), Some("100%"));
+        assert_eq!(expand_host_name("%r.lan", "web"), None);
+        let found = parse("Host web\n  HostName %r.lan\n");
+        let web = host(&found, "web");
+        assert_eq!(web.address, "web", "not a made-up address");
+        assert_eq!(web.left_out, [LeftOut::new("Host name", "%r.lan")]);
+    }
+
+    #[test]
+    fn a_jump_hosts_own_key_and_proxy_are_listed_with_the_host_that_uses_it() {
+        let found = parse(
+            "Host bastion\n  HostName b.example.com\n  IdentityFile ~/.ssh/bastion_key\n  ProxyCommand corkscrew proxy 8080 %h %p\n\
+             Host db\n  ProxyJump bastion\n  IdentityFile ~/.ssh/db_key\n",
+        );
+        assert_eq!(
+            host(&found, "db").left_out,
+            [
+                LeftOut::new("Private key of jump host bastion", "bastion_key"),
+                LeftOut::new("Proxy command of jump host bastion", "corkscrew proxy 8080 %h %p"),
+                LeftOut::new("Private key", "db_key"),
+            ]
+        );
     }
 
     #[test]
@@ -622,8 +784,9 @@ mod tests {
         std::fs::write(dir.join("config.d/20-db"), "Host db\n  HostName 10.0.0.5\n").unwrap();
         std::fs::write(dir.join("config.d/10-web"), "Host web\n  HostName web.lan\n").unwrap();
         std::fs::write(dir.join("config.d/notes.txt.bak"), "Host ignored\n").unwrap();
+        std::fs::write(dir.join("config.d/.10-web.swp"), "Host swap\n").unwrap();
         std::fs::write(dir.join("extra"), "User from-extra\n").unwrap();
-        let config = "Host bastion\n  Include extra\n  Port 2200\nInclude config.d/??-*\nHost *\n  User everyone\n";
+        let config = "Host bastion\n  Include extra\n  Port 2200\nInclude config.d/??-* config.d/*web*\nHost *\n  User everyone\n";
         let mut lines = vec![];
         expand(config, &dir, None, 0, None, &mut lines);
         let found = found(&lines);
