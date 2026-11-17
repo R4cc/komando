@@ -48,6 +48,7 @@ mod open_tabs;
 mod settings;
 mod split;
 mod updates;
+mod vault_page;
 pub use settings::SettingsSection;
 use desktops::desktop_protocol;
 use nav::NavTarget;
@@ -358,6 +359,8 @@ enum ConfirmAction {
     DisconnectAll(ItemKey),
     /// Every Host's Command History (Settings → Security).
     DeleteAllHistory,
+    /// A saved password or key (Settings → Vault).
+    DeleteCredential(model::CredentialId),
 }
 
 /// What waits for the Vault: done once the master password is entered.
@@ -443,6 +446,9 @@ pub struct Workspace {
     /// A shell whose Remove button was clicked once, waiting for the second click.
     confirm_remove_shell: Option<(String, Instant)>,
     vault: Option<Vault>,
+    /// Settings → Vault: the Credentials whose secret is shown. Cleared when the Vault locks
+    /// or the page is left.
+    vault_revealed: HashSet<model::CredentialId>,
     /// A Vault file is on this PC (looked up when its state can change, not on every frame).
     /// With it locked, the sidebar shows the vault row.
     vault_exists: bool,
@@ -591,6 +597,7 @@ impl Workspace {
             shell_editor: None,
             confirm_remove_shell: None,
             vault: None,
+            vault_revealed: HashSet::new(),
             vault_exists: false,
             unlock: None,
             pending: vec![],
@@ -1170,6 +1177,7 @@ impl Workspace {
         if self.lock_after_use && !self.sessions.iter().any(|s| s.waiting_for_size) {
             self.lock_after_use = false;
             self.vault = None;
+            self.vault_revealed.clear();
             self.clear_remembered_unlock(cx);
             cx.notify();
         }
@@ -1177,6 +1185,7 @@ impl Workspace {
 
     fn lock_vault(&mut self, cx: &mut Context<Self>) {
         self.lock_after_use = false;
+        self.vault_revealed.clear();
         if self.vault.take().is_some() {
             self.vault_exists = true;
             self.show_toast("Vault locked. Open sessions stay connected.", cx);
@@ -2625,6 +2634,11 @@ impl Workspace {
                 self.focus_active(window, cx);
                 return;
             }
+            ConfirmAction::DeleteCredential(id) => {
+                self.delete_credential(id, cx);
+                self.focus_active(window, cx);
+                return;
+            }
         }
         // Persist before closing Sessions or removing sidebar state: a failed deletion
         // should leave the saved library and its running Sessions intact.
@@ -2651,7 +2665,10 @@ impl Workspace {
                 self.discard_sessions(|s| s.project_id.as_deref() == Some(id.as_str()), cx);
                 self.set_project_collapsed(&id, false, cx);
             }
-            ConfirmAction::DeleteAllHistory | ConfirmAction::Disconnect(_) | ConfirmAction::DisconnectAll(_) => {}
+            ConfirmAction::DeleteAllHistory
+            | ConfirmAction::DeleteCredential(_)
+            | ConfirmAction::Disconnect(_)
+            | ConfirmAction::DisconnectAll(_) => {}
         }
         self.focus_active(window, cx);
         cx.notify();

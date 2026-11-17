@@ -16,12 +16,13 @@ pub enum SettingsSection {
     Shells,
     Highlights,
     Import,
+    Vault,
     Security,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 10] = [
+    pub const ALL: [SettingsSection; 11] = [
         Self::Appearance,
         Self::Terminal,
         Self::MouseClipboard,
@@ -30,6 +31,7 @@ impl SettingsSection {
         Self::Shells,
         Self::Highlights,
         Self::Import,
+        Self::Vault,
         Self::Security,
         Self::About,
     ];
@@ -44,6 +46,7 @@ impl SettingsSection {
             Self::Shells => "Local shells",
             Self::Highlights => "Highlights",
             Self::Import => "Import",
+            Self::Vault => "Vault",
             Self::Security => "Security",
             Self::About => "About",
         }
@@ -59,6 +62,7 @@ impl SettingsSection {
             Self::Shells => "terminal",
             Self::Highlights => "highlighter",
             Self::Import => "import",
+            Self::Vault => "key-round",
             Self::Security => "shield",
             Self::About => "info",
         }
@@ -74,6 +78,7 @@ impl SettingsSection {
             Self::Shells => "The shells listed at the top of the sidebar.",
             Self::Highlights => "Rules apply top to bottom; the first match wins.",
             Self::Import => "Nothing changes until you confirm the review.",
+            Self::Vault => "Passwords and keys saved for your hosts, encrypted with your master password.",
             Self::Security => "",
             Self::About => "",
         }
@@ -150,6 +155,8 @@ impl FontWeightKind {
 impl Workspace {
     pub(super) fn open_settings(&mut self, section: SettingsSection, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_settings_controls(window, cx);
+        // Shown secrets don't stay on screen behind another page.
+        self.vault_revealed.clear();
         self.overlay = None;
         self.confirm_delete_set = None;
         self.page = Page::Settings(section);
@@ -159,6 +166,7 @@ impl Workspace {
 
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.page = Page::Sessions;
+        self.vault_revealed.clear();
         self.focus_active(window, cx);
         cx.notify();
     }
@@ -449,6 +457,7 @@ impl Workspace {
             SettingsSection::Shells => self.settings_shells(p, cx),
             SettingsSection::Highlights => self.settings_highlights(p, cx),
             SettingsSection::Import => self.settings_import(p, cx),
+            SettingsSection::Vault => self.settings_vault(p, cx),
             SettingsSection::Security => self.settings_security(p, cx),
             SettingsSection::About => self.settings_about(p, cx),
         }
@@ -1247,11 +1256,9 @@ impl Workspace {
                 setting_row(
                     p,
                     "Saved credentials",
-                    "",
-                    div()
-                        .text_size(px(13.))
-                        .text_color(p.text_muted)
-                        .child(saved.map(|n| format!("{n} saved")).unwrap_or_else(|| "Locked".into()))
+                    &saved.map(|n| crate::ui::widgets::plural(n, "item")).unwrap_or_else(|| "Locked.".into()),
+                    button("open-vault-page", "Show", ButtonKind::Secondary, p)
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_settings(SettingsSection::Vault, window, cx)))
                         .into_any_element(),
                 ),
                 setting_row(

@@ -986,6 +986,66 @@ impl Library {
                 .map(|p| usize::from(p.credential.as_deref() == Some(credential)) + jumps(&p.jump_hosts))
                 .sum::<usize>()
     }
+
+    /// What signs in with a Credential, for the Vault page: "web01", "web01 (RDP)",
+    /// "bastion (jump host for web01)", "Production (project)". Each once, in library order.
+    pub fn credential_uses(&self, credential: &str) -> Vec<String> {
+        let is = |c: Option<&CredentialId>| c.is_some_and(|c| c == credential);
+        let mut uses = Vec::new();
+        let mut push = |text: String| {
+            if !uses.contains(&text) {
+                uses.push(text);
+            }
+        };
+        for project in &self.projects {
+            if is(project.credential.as_ref()) {
+                push(format!("{} (project)", project.name));
+            }
+            for jump in project.jump_hosts.iter().filter(|j| is(j.credential.as_ref())) {
+                push(format!("{} (jump host for {})", jump.label(), project.name));
+            }
+        }
+        for host in &self.hosts {
+            if is(host.credential.own()) {
+                push(host.name.clone());
+            }
+            for (desktop, protocol) in [(&host.rdp, "RDP"), (&host.vnc, "VNC")] {
+                if desktop.as_ref().is_some_and(|d| is(d.credential.as_ref())) {
+                    push(format!("{} ({protocol})", host.name));
+                }
+            }
+            for jump in host.jump_hosts.iter().filter(|j| is(j.credential.as_ref())) {
+                push(format!("{} (jump host for {})", jump.label(), host.name));
+            }
+        }
+        uses
+    }
+
+    /// Drop every reference to a deleted Credential. A Host that had it as its own asks
+    /// instead of falling back to its Project's: that would send another password unasked.
+    /// Returns whether anything changed.
+    pub fn forget_credential(&mut self, credential: &str) -> bool {
+        let mut changed = false;
+        let mut clear = |c: &mut Option<CredentialId>| {
+            if c.as_deref() == Some(credential) {
+                *c = None;
+                changed = true;
+            }
+        };
+        for project in &mut self.projects {
+            clear(&mut project.credential);
+            project.jump_hosts.iter_mut().for_each(|j| clear(&mut j.credential));
+        }
+        for host in &mut self.hosts {
+            [&mut host.rdp, &mut host.vnc].into_iter().flatten().for_each(|d| clear(&mut d.credential));
+            host.jump_hosts.iter_mut().for_each(|j| clear(&mut j.credential));
+        }
+        for host in self.hosts.iter_mut().filter(|h| h.credential.own().is_some_and(|c| c == credential)) {
+            host.credential = Inherited::Off;
+            changed = true;
+        }
+        changed
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1579,6 +1639,35 @@ mod tests {
         // A Host that opened its RDP desktop opens its terminal once that desktop is removed.
         host.rdp = None;
         assert_eq!(host.opens_with(), Protocol::Ssh);
+    }
+
+    #[test]
+    fn a_deleted_credential_is_named_by_its_uses_and_then_forgotten_everywhere() {
+        let mut library = Library::default();
+        let mut project = Project::new("Production", "red", "letter");
+        project.credential = Some("c1".into());
+        project.jump_hosts.push(JumpHost { credential: Some("c1".into()), ..JumpHost::new("bastion") });
+        let mut web = Host::new("web01", "10.0.0.5");
+        web.credential = Inherited::Own("c1".into());
+        web.rdp = Some(Desktop { credential: Some("c1".into()), ..Desktop::new(Protocol::Rdp) });
+        let mut db = Host::new("db", "10.0.0.6");
+        db.credential = Inherited::Own("c2".into());
+        db.jump_hosts.push(JumpHost { credential: Some("c1".into()), ..JumpHost::new("edge") });
+        project.hosts = vec![web.id.clone(), db.id.clone()];
+        library.projects.push(project);
+        library.hosts.extend([web, db]);
+
+        assert_eq!(
+            library.credential_uses("c1"),
+            ["Production (project)", "bastion (jump host for Production)", "web01", "web01 (RDP)", "edge (jump host for db)"]
+        );
+        assert!(library.credential_uses("unused").is_empty());
+
+        assert!(library.forget_credential("c1"));
+        assert_eq!(library.credential_users("c1"), 0);
+        assert_eq!(library.hosts[0].credential, Inherited::Off, "web01 asks rather than using the project's");
+        assert_eq!(library.hosts[1].credential, Inherited::Own("c2".into()));
+        assert!(!library.forget_credential("c1"));
     }
 
     #[test]

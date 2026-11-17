@@ -362,5 +362,8 @@ mod tests {
         for icon in ["ellipsis", "text-cursor-input", "arrow-down-up", "list-tree", "folder-tree"] {
             assert!(super::Assets.load(&format!("icons/{icon}.svg")).unwrap().is_some(), "{icon}, used by the sidebar");
         }
+        for icon in ["key-round", "file-key", "eye", "eye-off", "copy", "trash", "lock"] {
+            assert!(super::Assets.load(&format!("icons/{icon}.svg")).unwrap().is_some(), "{icon}, used by Settings → Vault");
+        }
     }
 }

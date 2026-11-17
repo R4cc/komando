@@ -8,9 +8,10 @@ All notable changes to Komando are listed here. The format follows
 
 ### Added
 
-- Highlighting can be switched off: for everything under Settings → Highlights, or for a
-  single host or project with the new Highlight output switch in its form. Full-screen
-  programs such as vim and htop can now be highlighted too; that stays off by default.
+- A Vault page in Settings lists every saved password and key once the vault is unlocked,
+  with what signs in with each. Show reveals a password or key, Copy puts it on the
+  clipboard for 30 seconds, and Delete removes it; hosts that used it ask for a password
+  instead.
 - A Mouse & clipboard page in Settings, with the copy and paste switches that were under
   Terminal and new ones. Your PuTTY-style clipboard choice carries over. Copied text now
   leaves out spaces and blank lines at both ends; a switch turns this off. New settings:
