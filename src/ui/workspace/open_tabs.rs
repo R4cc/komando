@@ -4,44 +4,30 @@
 use super::*;
 use crate::model::{OpenTabs, SavedTab};
 
-impl Workspace {
-    /// The terminal tabs open now, in tab order. Remote Desktops aren't kept.
-    pub(super) fn current_tabs(&self) -> OpenTabs {
-        let mut tabs = OpenTabs::default();
-        for entry in &self.sessions {
-            if entry.view.terminal().is_none() {
-                continue;
-            }
-            let name = entry.name.as_ref().map(|n| n.to_string());
-            let tab = match (&entry.kind, &entry.item) {
-                (SessionKind::Ssh { .. }, ItemKey::Host { project, host }) => {
-                    SavedTab::Host { project: project.clone(), host: host.clone(), name }
-                }
-                (SessionKind::Local { .. }, ItemKey::Shell { project, name: shell }) => {
-                    SavedTab::Shell { project: project.clone(), shell: shell.clone(), name }
-                }
-                _ => continue,
-            };
-            if self.active == Some(entry.id) {
-                tabs.active = Some(tabs.tabs.len());
-            }
-            tabs.tabs.push(tab);
-        }
-        tabs
-    }
+/// The tabs last written for Restore tabs on start, and the `Sessions::revision` they were
+/// worked out at (`None`: not yet).
+pub(super) struct TabMemory {
+    written: OpenTabs,
+    revision: Option<u64>,
+}
 
+impl Workspace {
     /// Write the tabs when they changed since last written. Called on every frame while
-    /// Restore tabs on start is on, so every way a tab opens, closes or is renamed counts.
+    /// Restore tabs on start is on; the tabs are worked out again only when `Sessions` says
+    /// they may have changed.
     pub(super) fn remember_tabs(&mut self) {
-        let Some(saved) = &self.tab_memory else { return };
-        let now = self.current_tabs();
-        if *saved == now {
+        let Some(memory) = &self.tab_memory else { return };
+        let revision = self.sessions.revision();
+        if memory.revision == Some(revision) {
             return;
         }
-        if let Err(err) = now.save(&self.data_dir) {
+        let now = self.sessions.tabs();
+        if memory.written != now
+            && let Err(err) = now.save(&self.data_dir)
+        {
             log::warn!("Could not remember the open tabs: {err:#}");
         }
-        self.tab_memory = Some(now);
+        self.tab_memory = Some(TabMemory { written: now, revision: Some(revision) });
     }
 
     /// The Settings switch: on starts remembering from the tabs open now; off forgets them.
@@ -50,7 +36,7 @@ impl Workspace {
         self.save_settings(cx);
         if on {
             // Differs from any real set of tabs, so the next frame writes them.
-            self.tab_memory = Some(OpenTabs { tabs: vec![], active: Some(usize::MAX) });
+            self.tab_memory = Some(TabMemory { written: OpenTabs { tabs: vec![], active: Some(usize::MAX) }, revision: None });
         } else {
             self.tab_memory = None;
             if let Err(err) = OpenTabs::clear(&self.data_dir) {
@@ -88,22 +74,22 @@ impl Workspace {
             }
             // Not yet open when waiting for the Vault: that tab comes back without its name.
             if self.sessions.len() > before
-                && let Some(entry) = self.sessions.last_mut()
+                && let Some(id) = self.sessions.iter().last().map(|s| s.id())
             {
-                entry.name = name.clone().map(SharedString::from);
+                self.sessions.set_name(id, name.clone().map(SharedString::from));
                 if saved.active == Some(index) {
-                    active = Some(entry.id);
+                    active = Some(id);
                 }
             }
         }
-        if let Some(id) = active.or_else(|| self.sessions.first().map(|s| s.id)) {
+        if let Some(id) = active.or_else(|| self.sessions.iter().next().map(|s| s.id())) {
             self.activate(id, window, cx);
         }
         if missing > 0 {
             let tabs = crate::ui::widgets::plural(missing, "tab");
             self.show_toast(format!("{tabs} couldn't be reopened: the host or shell is no longer saved."), cx);
         }
-        self.tab_memory = Some(self.current_tabs());
+        self.tab_memory = Some(TabMemory { written: self.sessions.tabs(), revision: Some(self.sessions.revision()) });
         cx.notify();
     }
 }

@@ -13,6 +13,7 @@ use gpui::{AnyElement, Context, DismissEvent, Entity, FocusHandle, Focusable as 
 use gpui_component::menu::PopupMenu;
 use gpui_component::popover::Popover;
 
+use super::sessions::EndRequest;
 use super::{ItemKey, SidebarRow, Workspace};
 use crate::ui::widgets::MenuTrigger;
 
@@ -122,7 +123,7 @@ impl Workspace {
     pub(super) fn nav_session(&self, target: &NavTarget) -> Option<usize> {
         match target {
             NavTarget::Session(id) => Some(*id),
-            NavTarget::Item(key) => self.item_state(key).main.map(|s| s.id),
+            NavTarget::Item(key) => self.item_state(key).main.map(|s| s.id()),
             NavTarget::Project(_) | NavTarget::AddHost(_) => None,
         }
     }
@@ -142,7 +143,7 @@ impl Workspace {
                 Box::new(self.item_menu(&item, cx))
             }
             NavTarget::Session(id) => {
-                if !self.sessions.iter().any(|s| s.id == *id) {
+                if !self.sessions.contains(*id) {
                     return;
                 }
                 Box::new(self.session_menu(*id, cx))
@@ -242,7 +243,7 @@ impl Workspace {
         let mut out = vec![];
         let item = |out: &mut Vec<(NavTarget, usize)>, key: ItemKey, ix: usize| {
             let expanded = !self.collapsed_items.contains(&key);
-            let listed: Vec<usize> = if expanded { self.listed_sessions(&key).iter().map(|s| s.id).collect() } else { vec![] };
+            let listed: Vec<usize> = if expanded { self.sessions.listed(&key).iter().map(|s| s.id()).collect() } else { vec![] };
             out.push((NavTarget::Item(key), ix));
             out.extend(listed.into_iter().map(|id| (NavTarget::Session(id), ix)));
         };
@@ -283,7 +284,7 @@ impl Workspace {
 
     /// Where the cursor starts: on the active Session's row, else the first row.
     fn nav_home(&self, targets: &[(NavTarget, usize)]) -> Option<NavTarget> {
-        let active = self.active_entry().map(|e| (e.id, e.item.clone()));
+        let active = self.active_entry().map(|e| (e.id(), e.item().clone()));
         let on = |t: &NavTarget| match (t, &active) {
             (NavTarget::Session(id), Some((active, _))) => id == active,
             _ => false,
@@ -328,7 +329,7 @@ impl Workspace {
             self.nav.cursor = self.nav_home(&targets);
         }
         // Back on the row of the Session in use, which may have changed since.
-        if let Some(home) = self.nav_home(&targets).filter(|_| self.active.is_some()) {
+        if let Some(home) = self.nav_home(&targets).filter(|_| self.sessions.active().is_some()) {
             self.nav.cursor = Some(home);
         }
         self.nav.reveal = true;
@@ -374,7 +375,7 @@ impl Workspace {
         let Some((cursor, targets)) = self.nav_cursor() else { return };
         match &cursor {
             NavTarget::Project(id) if self.settings.collapsed_projects.contains(id) => self.set_project_collapsed(id, false, cx),
-            NavTarget::Item(key) if !self.listed_sessions(key).is_empty() && self.collapsed_items.contains(key) => {
+            NavTarget::Item(key) if !self.sessions.listed(key).is_empty() && self.collapsed_items.contains(key) => {
                 self.toggle_item_sessions(key, cx)
             }
             NavTarget::Project(_) | NavTarget::Item(_) => {
@@ -398,11 +399,11 @@ impl Workspace {
         let Some((cursor, _)) = self.nav_cursor() else { return };
         match cursor {
             NavTarget::Session(id) => {
-                if let Some(item) = self.sessions.iter().find(|s| s.id == id).map(|s| s.item.clone()) {
+                if let Some(item) = self.sessions.get(id).map(|s| s.item().clone()) {
                     self.nav_move_to(NavTarget::Item(item), cx);
                 }
             }
-            NavTarget::Item(key) if !self.listed_sessions(&key).is_empty() && !self.collapsed_items.contains(&key) => {
+            NavTarget::Item(key) if !self.sessions.listed(&key).is_empty() && !self.collapsed_items.contains(&key) => {
                 self.toggle_item_sessions(&key, cx)
             }
             NavTarget::Item(ItemKey::Host { project, .. } | ItemKey::Shell { project: Some(project), .. })
@@ -428,14 +429,14 @@ impl Workspace {
                 }
             }
             NavTarget::Session(id) => {
-                let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
+                let Some(entry) = self.sessions.get(id) else { return };
                 if another {
-                    if let Some(item) = self.item_for_key(&entry.item.clone()) {
+                    if let Some(item) = self.item_for_key(entry.item()) {
                         self.activate_item(item, true, window, cx);
                     }
                     return;
                 }
-                let reconnect = !entry.is_live() && entry.window.is_none();
+                let reconnect = !entry.is_live() && !entry.own_window();
                 self.activate(id, window, cx);
                 if reconnect {
                     self.reconnect(id, window, cx);
@@ -462,8 +463,8 @@ impl Workspace {
             NavTarget::Item(ItemKey::Host { project, host }) => self.open_edit_host(project, host, window, cx),
             NavTarget::Session(id) => {
                 if let Some(super::SessionKind::Ssh { host_id } | super::SessionKind::Desktop { host_id, .. }) =
-                    self.sessions.iter().find(|s| s.id == id).map(|s| s.kind.clone())
-                    && let Some(project) = self.sessions.iter().find(|s| s.id == id).and_then(|s| s.project_id.clone())
+                    self.sessions.get(id).map(|s| s.kind().clone())
+                    && let Some(project) = self.sessions.get(id).and_then(|s| s.project_id().map(str::to_string))
                 {
                     self.open_edit_host(project, host_id, window, cx);
                 }
@@ -483,7 +484,7 @@ impl Workspace {
     fn nav_delete_inner(&mut self, host: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some((cursor, _)) = self.nav_cursor() else { return };
         if !host && let Some(id) = self.nav_session(&cursor) {
-            self.request_close(id, window, cx);
+            self.end_session(id, EndRequest::Close, window, cx);
             // Stay in the sidebar, which closing would have left.
             if !self.modal_open(cx) {
                 window.focus(&self.nav.focus, cx);
@@ -494,7 +495,7 @@ impl Workspace {
             NavTarget::Project(id) if !host => self.confirm_delete_project(id, cx),
             NavTarget::Item(ItemKey::Host { host, .. }) => self.confirm_delete_host(host, cx),
             NavTarget::Session(id) => {
-                let host = self.sessions.iter().find(|s| s.id == id).and_then(|s| match &s.kind {
+                let host = self.sessions.get(id).and_then(|s| match s.kind() {
                     super::SessionKind::Ssh { host_id } | super::SessionKind::Desktop { host_id, .. } => Some(host_id.clone()),
                     super::SessionKind::Local { .. } => None,
                 });

@@ -5,8 +5,10 @@
 //! beside the Session you were in. Dragged onto another Project's group in the sidebar, a
 //! Host moves to that Project; dragged up or down within its own Project, it changes place
 //! there, a blue line showing where it would go.
+//!
+//! What a drop puts where, and how a split behaves as Sessions come and go, is decided in
+//! `sessions.rs`; this file draws it and carries it out.
 
-use std::collections::HashSet;
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
@@ -15,63 +17,10 @@ use gpui::{
     ease_out_quint, prelude::*, px,
 };
 
+use super::sessions::{Placed, Side};
 use super::{ItemKey, SidebarItem, SidebarRow, Workspace};
 use crate::theme::{AppPalette, Appearance, project_color};
 use crate::ui::widgets::{ISLAND_GAP, ISLAND_RADIUS, elevation, icon_el};
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Side {
-    Left,
-    Right,
-}
-
-impl Side {
-    fn opposite(self) -> Self {
-        match self {
-            Side::Left => Side::Right,
-            Side::Right => Side::Left,
-        }
-    }
-}
-
-/// Two Sessions side by side. It is remembered while another Session is shown and comes
-/// back when either of its two is activated again.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) struct Split {
-    pub left: usize,
-    pub right: usize,
-}
-
-impl Split {
-    /// `placed` on `side`, `other` on the other one.
-    fn new(side: Side, placed: usize, other: usize) -> Self {
-        match side {
-            Side::Left => Split { left: placed, right: other },
-            Side::Right => Split { left: other, right: placed },
-        }
-    }
-
-    pub fn contains(&self, id: usize) -> bool {
-        self.left == id || self.right == id
-    }
-
-    fn at(&self, side: Side) -> usize {
-        match side {
-            Side::Left => self.left,
-            Side::Right => self.right,
-        }
-    }
-
-    pub fn other(&self, id: usize) -> Option<usize> {
-        if self.left == id {
-            Some(self.right)
-        } else if self.right == id {
-            Some(self.left)
-        } else {
-            None
-        }
-    }
-}
 
 /// What is dragged from the sidebar: an item, or one of its Sessions (a row under an item
 /// that has several).
@@ -108,23 +57,6 @@ pub(super) enum DropTarget {
     /// new place among the Project's Hosts (see `Library::reorder_host`); the line is drawn
     /// along the top of sidebar row `row`, or along its bottom when `after`.
     Reorder { project: String, index: usize, row: usize, after: bool },
-}
-
-/// A split waiting for its new Session, which may first need the Vault unlocked.
-pub(super) struct PendingSplit {
-    item: ItemKey,
-    partner: usize,
-    side: Side,
-}
-
-/// How a drop on one half plays out.
-enum Placement {
-    /// The two Sessions of the split trade places.
-    Swap,
-    /// This Session goes there.
-    Existing(usize),
-    /// A new Session of the item goes there.
-    New,
 }
 
 /// The colour of every drop indicator: blue whatever the Theme's accent.
@@ -204,16 +136,10 @@ impl Workspace {
         }
     }
 
-    /// The split on screen: the remembered one, while one of its Sessions is active.
-    pub(super) fn shown_split(&self) -> Option<Split> {
-        let split = self.split?;
-        self.active.filter(|&id| split.contains(id)).map(|_| split)
-    }
-
     /// The payload for dragging a sidebar row.
     pub(super) fn dragged(&self, item: &SidebarItem, session: Option<usize>, color: Hsla) -> DraggedItem {
-        let label = match session.and_then(|id| self.sessions.iter().find(|s| s.id == id)) {
-            Some(s) => s.label.clone(),
+        let label = match session.and_then(|id| self.sessions.get(id)) {
+            Some(s) => s.label().clone(),
             None => item.label().to_string().into(),
         };
         DraggedItem { key: item.key(), session, label, icon: item.icon(), color }
@@ -230,7 +156,7 @@ impl Workspace {
             let native = ws.update(cx, |this, cx| {
                 this.drop_target = None;
                 this.native_drag = dragged.session
-                    .filter(|id| this.sessions.iter().any(|s| s.id == *id && s.view.desktop().is_some()))
+                    .filter(|id| this.sessions.get(*id).is_some_and(|s| s.ui.view.desktop().is_some()))
                     .and_then(|_| crate::platform::DragPreview::new(&dragged.label, window, cx.global::<Appearance>().app.dark));
                 this.native_drag.is_some()
             }).unwrap_or(false);
@@ -246,47 +172,6 @@ impl Workspace {
         }
     }
 
-    /// What dropping `key` (or its `session`) on `side` would do, or `None` when it would
-    /// change nothing (it is already there).
-    fn placement(&self, key: &ItemKey, session: Option<usize>, side: Side) -> Option<(Placement, usize)> {
-        let active = self.active?;
-        let shown = self.shown_split();
-        // The Session that stays on the other side.
-        let other = shown.map_or(active, |s| s.at(side.opposite()));
-        let here = shown.map(|s| s.at(side));
-        let item_of = |id: usize| self.sessions.iter().find(|s| s.id == id).map(|s| &s.item);
-        // Dragging the other half's Session (or its item) across swaps the two.
-        if shown.is_some() && (session == Some(other) || (session.is_none() && item_of(other) == Some(key))) {
-            return Some((Placement::Swap, other));
-        }
-        let placed = match session {
-            Some(id) if id == other => return None,
-            Some(id) => Placement::Existing(id),
-            // The item's Session last shown, unless that one stays on the other side: then
-            // another of its Sessions, or a new one (two shells on one server).
-            None => {
-                // Not a desktop in its own window: the split would show its placeholder.
-                let in_main = |id: usize| self.sessions.iter().any(|s| s.id == id && s.window.is_none());
-                let last = self.last_active.get(key).copied().filter(|&id| id != other && item_of(id) == Some(key) && in_main(id));
-                match last.or_else(|| self.sessions_of(key).map(|s| s.id).find(|&id| id != other && in_main(id))) {
-                    Some(id) => Placement::Existing(id),
-                    None => Placement::New,
-                }
-            }
-        };
-        if let Placement::Existing(id) = placed
-            && Some(id) == here
-        {
-            return None;
-        }
-        Some((placed, other))
-    }
-
-    /// Whether "Open in split view" would do anything for an item.
-    pub(super) fn placement_possible(&self, key: &ItemKey) -> bool {
-        self.placement(key, None, Side::Right).is_some()
-    }
-
     /// Show `key` (or its `session`) on `side` of the terminal area, beside what is shown.
     pub(super) fn open_in_split(
         &mut self,
@@ -296,50 +181,27 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((placement, other)) = self.placement(key, session, side) else { return };
-        match placement {
-            Placement::Swap => {
-                let Some(split) = self.shown_split() else { return };
-                self.split = Some(Split { left: split.right, right: split.left });
-                self.activate(other, window, cx);
-            }
-            Placement::Existing(id) => {
-                self.split = Some(Split::new(side, id, other));
+        let Some(placed) = self.sessions.place(key, session, side) else { return };
+        match placed {
+            Placed::Show(id) => self.activate(id, window, cx),
+            Placed::Existing(id) => {
                 self.activate(id, window, cx);
-                if self.sessions.iter().find(|s| s.id == id).is_some_and(|s| !s.is_live()) {
+                if self.sessions.get(id).is_some_and(|s| !s.is_live()) {
                     self.reconnect(id, window, cx);
                 }
             }
-            Placement::New => {
+            Placed::New(pending) => {
                 let Some(item) = self.item_for_key(key) else { return };
-                // Taken up by `add_session` once the Session exists (after the Vault, if
-                // the Host needs it).
-                self.pending_split = Some(PendingSplit { item: key.clone(), partner: other, side });
+                self.sessions.wait_for_split(pending);
                 self.activate_item(item, true, window, cx);
             }
         }
         cx.notify();
     }
 
-    /// A Session was just added for `item`: put it in the split it was opened for.
-    pub(super) fn take_pending_split(&mut self, item: &ItemKey, id: usize) {
-        let Some(pending) = self.pending_split.take_if(|p| p.item == *item) else { return };
-        if self.sessions.iter().any(|s| s.id == pending.partner) {
-            self.split = Some(Split::new(pending.side, id, pending.partner));
-        }
-    }
-
-    /// Forget the split once one of its Sessions is gone. Returns the one left, so it can
-    /// stay on screen.
-    pub(super) fn leave_split(&mut self, id: usize) -> Option<usize> {
-        let partner = self.split?.other(id)?;
-        self.split = None;
-        Some(partner)
-    }
-
     /// Back to one Session: the active one fills the terminal area again.
     pub(super) fn close_split(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.split = None;
+        self.sessions.close_split();
         self.focus_active(window, cx);
         cx.notify();
     }
@@ -363,11 +225,11 @@ impl Workspace {
         let dragged = event.drag(cx).clone();
         let target = if self.modal_open(cx) {
             None
-        } else if self.active.is_none() {
+        } else if self.sessions.active().is_none() {
             Some(DropTarget::Main)
         } else {
             let side = if position.x < event.bounds.center().x { Side::Left } else { Side::Right };
-            self.placement(&dragged.key, dragged.session, side).map(|_| DropTarget::Pane(side))
+            self.sessions.can_place(&dragged.key, dragged.session, side).then_some(DropTarget::Pane(side))
         };
         self.set_drop_target(target, cx);
     }
@@ -512,29 +374,7 @@ impl Workspace {
         }
         let old = ItemKey::Host { project: from.to_string(), host: host_id.to_string() };
         let new = ItemKey::Host { project: to.to_string(), host: host_id.to_string() };
-        // Already open in the new Project too (a Host in both): the moved Sessions take the
-        // next numbers there, terminals and desktops each counted on their own.
-        let taken_of = |terminal: bool| -> HashSet<usize> {
-            self.sessions_of(&new).filter(|s| s.view.terminal().is_some() == terminal).map(|s| s.number).collect()
-        };
-        let mut taken = [taken_of(false), taken_of(true)];
-        for s in self.sessions.iter_mut().filter(|s| s.item == old) {
-            s.item = new.clone();
-            s.project_id = Some(to.to_string());
-            let terminal = s.view.terminal().is_some();
-            let taken = &mut taken[usize::from(terminal)];
-            if !taken.insert(s.number) {
-                s.number = taken.iter().max().map_or(1, |n| n + 1);
-                taken.insert(s.number);
-                // A desktop's label names its protocol, not a number.
-                if terminal {
-                    s.label = if s.number == 1 { name.clone().into() } else { format!("{name} #{}", s.number).into() };
-                }
-            }
-        }
-        if let Some(id) = self.last_active.remove(&old) {
-            self.last_active.entry(new.clone()).or_insert(id);
-        }
+        self.sessions.move_item(&old, &new, &name, None);
         if self.collapsed_items.remove(&old) {
             self.collapsed_items.insert(new);
         }
@@ -629,22 +469,5 @@ impl Render for DragPreview {
                     .child(div().flex_shrink_0().child(icon_el(&self.icon, 14., self.color)))
                     .child(div().min_w_0().truncate().child(self.label.clone())),
             )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_split_knows_its_sides() {
-        let split = Split::new(Side::Left, 7, 3);
-        assert_eq!(split, Split { left: 7, right: 3 });
-        assert_eq!(Split::new(Side::Right, 7, 3), Split { left: 3, right: 7 });
-        assert_eq!(split.at(Side::Right), 3);
-        assert_eq!(split.other(7), Some(3));
-        assert_eq!(split.other(3), Some(7));
-        assert_eq!(split.other(9), None);
-        assert!(split.contains(3) && !split.contains(9));
     }
 }

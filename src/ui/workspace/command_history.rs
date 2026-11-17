@@ -77,8 +77,8 @@ impl Workspace {
         if !self.settings.command_history || history::is_ignored(line) {
             return;
         }
-        let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
-        let (SessionKind::Ssh { host_id }, Some(on)) = (&entry.kind, entry.history_on.clone()) else { return };
+        let Some(entry) = self.sessions.get(id) else { return };
+        let (SessionKind::Ssh { host_id }, Some(on)) = (entry.kind(), entry.ui.history_on.clone()) else { return };
         let host_id = host_id.clone();
         let item = history::Entry::new(at, on, line);
         if let Err(err) = history::append(&self.data_dir, &host_id, &item) {
