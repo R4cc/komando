@@ -1,16 +1,18 @@
 //! Real programs in a real pseudo-terminal, driven the way Komando drives them: the same
 //! terminal configuration, the same replies to the program's queries, and keys, mouse and
-//! wheel encoded by [`crate::keys`].
+//! wheel encoded by [`komando::keys`].
 //!
 //! They need the programs installed, so they are ignored by default. On a Linux development
 //! host run them with:
 //!
 //! ```text
-//! cargo test --lib compat -- --ignored --test-threads=1
+//! cargo test --test compat -- --ignored --test-threads=1
 //! ```
 //!
 //! A program that is not on the PATH is skipped with a note. `KOMANDO_COMPAT_PATH` is put in
 //! front of the PATH, for programs unpacked somewhere else.
+
+#![cfg(unix)]
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -24,9 +26,14 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::tty::{self, Shell};
 use futures::channel::mpsc;
 
-use crate::keys::{self, Mods, MouseAction, MouseButton, MouseMode};
-use crate::session::{EventProxy, GridSize, HopStep, InputSink, Prompt, SessionEvent, SharedTerm, new_term};
-use crate::theme::TerminalPalette;
+use komando::keys::{self, Mods, MouseAction, MouseButton, MouseMode};
+use komando::session::{EventProxy, GridSize, HopStep, InputSink, Prompt, SessionEvent, SharedTerm, new_term};
+use komando::theme::TerminalPalette;
+
+#[path = "support/delay_proxy.rs"]
+mod delay_proxy;
+
+use delay_proxy::DelayProxy;
 
 const NONE: Mods = Mods { ctrl: false, alt: false, shift: false };
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -157,7 +164,7 @@ impl Running {
             SessionEvent::Prompt(Prompt::HostKey { reply, .. }) => {
                 let _ = reply.send(true);
             }
-            SessionEvent::Status(crate::session::Status::Disconnected(_)) => self.ended = true,
+            SessionEvent::Status(komando::session::Status::Disconnected(_)) => self.ended = true,
             SessionEvent::Hop { index, step } => self.hops.push((index, step)),
             _ => {}
         }
@@ -432,8 +439,8 @@ impl LocalSshd {
     }
 
     /// Signing in to this server as the current user with the generated key.
-    fn hop(&self, name: &str, address: &str) -> crate::session::ssh::Hop {
-        crate::session::ssh::Hop {
+    fn hop(&self, name: &str, address: &str) -> komando::session::ssh::Hop {
+        komando::session::ssh::Hop {
             name: name.into(),
             address: address.into(),
             port: self.port,
@@ -441,17 +448,17 @@ impl LocalSshd {
                 let out = std::process::Command::new("whoami").output().unwrap();
                 String::from_utf8(out.stdout).unwrap().trim().to_string()
             })),
-            secret: Some(crate::vault::Secret::PrivateKey {
+            secret: Some(komando::vault::Secret::PrivateKey {
                 key: std::fs::read_to_string(self.dir.join("user")).unwrap(),
                 passphrase: None,
             }),
         }
     }
 
-    fn connect(&self, hops: Vec<crate::session::ssh::Hop>, size: GridSize) -> Running {
+    fn connect(&self, hops: Vec<komando::session::ssh::Hop>, size: GridSize) -> Running {
         let (term, proxy, events) = Running::new(size);
-        let target = crate::session::ssh::Target { hops, known_hosts: self.dir.join("known_hosts") };
-        let sink = crate::session::ssh::spawn(target, size, term.clone(), proxy.clone());
+        let target = komando::session::ssh::Target { hops, known_hosts: self.dir.join("known_hosts") };
+        let sink = komando::session::ssh::spawn(target, size, term.clone(), proxy.clone());
         Running { term, proxy, sink, events, size, ended: false, hops: vec![] }
     }
 }
@@ -515,7 +522,7 @@ fn compat_ssh_session_through_a_jump_host() {
 #[test]
 #[ignore]
 fn compat_sftp_on_the_sessions_connection() {
-    use crate::sftp::{self, ErrorKind, PARTIAL_SUFFIX, Progress};
+    use komando::sftp::{self, ErrorKind, PARTIAL_SUFFIX, Progress};
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
 
@@ -617,65 +624,6 @@ fn compat_sftp_on_the_sessions_connection() {
     r.wait("the session to end", |r| r.ended);
 }
 
-/// A TCP forwarder that delays every byte by `one_way` in each direction, like a distant
-/// server, and with `bytes_per_sec` caps each direction's bandwidth, like a slow link.
-/// Loopback has neither, which hides costs paid per round trip and queues that build up.
-struct DelayProxy {
-    port: u16,
-}
-
-impl DelayProxy {
-    fn start(target_port: u16, one_way: Duration, bytes_per_sec: Option<u64>) -> Self {
-        use std::net::{TcpListener, TcpStream};
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        fn pump(mut from: TcpStream, mut to: TcpStream, delay: Duration, rate: Option<u64>) {
-            use std::io::{Read, Write};
-            let (tx, rx) = std::sync::mpsc::channel::<(Instant, Vec<u8>)>();
-            std::thread::spawn(move || {
-                let mut buf = vec![0u8; 64 * 1024];
-                loop {
-                    match from.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            if tx.send((Instant::now() + delay, buf[..n].to_vec())).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
-            std::thread::spawn(move || {
-                let mut free_at = Instant::now();
-                while let Ok((mut at, bytes)) = rx.recv() {
-                    if let Some(rate) = rate {
-                        // The link sends one thing at a time, at `rate`.
-                        free_at = at.max(free_at) + Duration::from_secs_f64(bytes.len() as f64 / rate as f64);
-                        at = free_at;
-                    }
-                    if let Some(wait) = at.checked_duration_since(Instant::now()) {
-                        std::thread::sleep(wait);
-                    }
-                    if to.write_all(&bytes).is_err() {
-                        break;
-                    }
-                }
-                let _ = to.shutdown(std::net::Shutdown::Write);
-            });
-        }
-        std::thread::spawn(move || {
-            for client in listener.incoming().flatten() {
-                let server = TcpStream::connect(("127.0.0.1", target_port)).unwrap();
-                client.set_nodelay(true).unwrap();
-                server.set_nodelay(true).unwrap();
-                pump(client.try_clone().unwrap(), server.try_clone().unwrap(), one_way, bytes_per_sec);
-                pump(server, client, one_way, bytes_per_sec);
-            }
-        });
-        Self { port }
-    }
-}
-
 /// Deterministic bytes that don't compress, so SSH compression can't flatter the numbers.
 fn noise(len: usize, seed: u64) -> Vec<u8> {
     let mut x = seed | 1;
@@ -747,7 +695,7 @@ fn assert_same_tree(a: &std::path::Path, b: &std::path::Path) {
 #[test]
 #[ignore]
 fn compat_sftp_stress() {
-    use crate::sftp::{self, ErrorKind, PARTIAL_SUFFIX, Progress, Remote};
+    use komando::sftp::{self, ErrorKind, PARTIAL_SUFFIX, Progress, Remote};
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
@@ -969,8 +917,8 @@ fn compat_sftp_stress() {
 #[test]
 #[ignore]
 fn compat_many_projects_connections_and_downloads() {
-    use crate::model::{Host, Library, Project};
-    use crate::sftp::{self, Progress};
+    use komando::model::{Host, Library, Project};
+    use komando::sftp::{self, Progress};
     use std::sync::Arc;
 
     let sshd = LocalSshd::start("mixed-load", 7).expect("mixed load requires sshd and ssh-keygen");
@@ -1033,7 +981,7 @@ fn compat_many_projects_connections_and_downloads() {
     for r in &mut sessions {
         r.wait_text("mixed-load-done");
         let term = r.term.lock();
-        let text = crate::session::scrollback_text(&*term);
+        let text = komando::session::scrollback_text(&*term);
         assert!(text.contains("row-09999 café 日本語 ERROR"));
         assert_eq!(term.grid().history_size(), 1000, "bounded Scrollback filled under load");
         drop(term);

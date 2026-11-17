@@ -2,8 +2,6 @@
 //! Built for Windows 11 first; Linux and macOS builds ship too (see
 //! docs/adr/0014-linux-and-macos-builds.md).
 
-#[cfg(all(test, unix))]
-mod compat_tests;
 pub mod desktop;
 pub mod elevate;
 pub mod export;
@@ -24,8 +22,6 @@ pub mod session;
 pub mod sftp;
 pub mod share;
 pub mod theme;
-#[cfg(test)]
-mod throughput_tests;
 pub mod ui;
 pub mod update;
 pub mod vault;

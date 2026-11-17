@@ -116,7 +116,7 @@ russh task; AES-256-GCM costs ~8 ms.** The same factor applies on the sending si
 
 `research/c/bench/src/bin/e2e.rs`: a russh 0.65.1 (Komando's patched copy) server on a
 2-thread runtime prints the same 1 M coloured log lines (100.8 MB) in 64 KiB blocks, exactly
-as `LogServer` in `src/throughput_tests.rs` does; a russh client on Komando's runtime shape
+as `LogServer` in `tests/throughput.rs` does; a russh client on Komando's runtime shape
 (7 workers, 8 MiB SO_RCVBUF, NODELAY) receives them and either discards them or parses them
 into an alacritty 0.26 `Term` (177×42, 100 000 lines of Scrollback) under a `FairMutex`.
 Fixed window (no pacing). Machine quiet, three runs each, medians:

@@ -23,7 +23,7 @@ Sources (shallow clones, read-only), commits:
 
 ### The workload
 
-`log_line` (`src/throughput_tests.rs:29`) emits about 100 bytes per line: 5 SGR sequences
+`log_line` (`tests/support/log_line.rs:2`) emits about 100 bytes per line: 5 SGR sequences
 (`ESC[2m`, `ESC[0m`, `ESC[<c>m`, `ESC[0m`, `ESC[36m`, `ESC[0m`), about 73 printable ASCII
 characters in 6 runs, then `\r\n`. So per line the terminal does roughly: 6 `input_ascii` calls,
 6 CSI dispatches (`terminal_attribute`), one `carriage_return`, one `linefeed` → `scroll_up(1)`.

@@ -224,8 +224,9 @@ const RECEIVE_BUFFER: u32 = 8 * 1024 * 1024;
 
 /// For benchmarks that compare with how Komando used to connect: every channel at this fixed
 /// SSH window, no pacing, and the receive buffer set (`true`) or left to the operating system.
-#[cfg(test)]
-pub(crate) static FIXED_WINDOW: std::sync::Mutex<Option<(u32, bool)>> = std::sync::Mutex::new(None);
+/// Only `tests/throughput.rs` sets it; the app leaves it `None`.
+#[doc(hidden)]
+pub static FIXED_WINDOW: std::sync::Mutex<Option<(u32, bool)>> = std::sync::Mutex::new(None);
 
 /// How much a server may send on a channel before Komando acknowledges it: the SSH window.
 /// russh tops a channel's window up only once half of it is used, so about half of it is on
@@ -258,7 +259,6 @@ fn window_for(round_trip: Duration) -> u32 {
 /// channels and, on a Jump Host's connection, the tunnel onward get. The shell's channel has a
 /// paced window of its own instead (see `shell`).
 fn client_config(window: u32) -> Arc<client::Config> {
-    #[cfg(test)]
     let window = FIXED_WINDOW.lock().unwrap().map_or(window, |(window, _)| window);
     Arc::new(client::Config {
         inactivity_timeout: None,
@@ -289,10 +289,7 @@ async fn open_tcp(address: &str, port: u16) -> std::io::Result<tokio::net::TcpSt
     let mut last_error = None;
     for addr in tokio::net::lookup_host((address, port)).await? {
         let socket = if addr.is_ipv4() { tokio::net::TcpSocket::new_v4()? } else { tokio::net::TcpSocket::new_v6()? };
-        #[cfg(test)]
         let set_buffer = FIXED_WINDOW.lock().unwrap().is_none_or(|(_, set_buffer)| set_buffer);
-        #[cfg(not(test))]
-        let set_buffer = true;
         // A smaller buffer only costs speed, so a refusal is not an error.
         if set_buffer && let Err(err) = socket.set_recv_buffer_size(RECEIVE_BUFFER) {
             log::warn!("setting the TCP receive buffer: {err}");
@@ -631,10 +628,7 @@ async fn shell(
     // that still scrolls past after Ctrl+C. Opening the channel with it keeps the server from
     // sending the connection's large window's worth first.
     let mut pace = Pace::up_to(max_window);
-    #[cfg(test)]
     let paced = FIXED_WINDOW.lock().unwrap().is_none();
-    #[cfg(not(test))]
-    let paced = true;
     let mut channel =
         if paced { handle.channel_open_session_with_window(pace.window()).await? } else { handle.channel_open_session().await? };
     let window = paced.then(|| set_window(handle, channel.id(), pace.window()));
@@ -889,12 +883,12 @@ async fn sleep_until(deadline: Option<std::time::Instant>) {
 /// Sessions, including synchronized updates: while a program draws inside one, the grid is
 /// left alone and the UI is not woken, so it never shows a half-drawn screen.
 #[derive(Default)]
-pub(crate) struct Output {
+pub struct Output {
     parser: Processor,
 }
 
 impl Output {
-    pub(crate) fn feed(&mut self, term: &SharedTerm, proxy: &EventProxy, bytes: &[u8]) {
+    pub fn feed(&mut self, term: &SharedTerm, proxy: &EventProxy, bytes: &[u8]) {
         for chunk in bytes.chunks(PARSE_CHUNK) {
             self.parser.advance(&mut *term.lock(), chunk);
             if self.parser.sync_bytes_count() < chunk.len() {

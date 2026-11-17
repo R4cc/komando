@@ -489,7 +489,7 @@ pub fn resize<T: EventListener>(term: &mut Term<T>, size: GridSize) {
 /// Prepare a wider Scrollback off the UI thread without changing its size or contents.
 /// Each batch releases the lock so drawing and output can continue. Output may rotate new
 /// rows into an already visited part of the grid; `resize` handles those remaining rows.
-pub(crate) fn prepare_width<T>(term: &FairMutex<Term<T>>, from: usize, cols: usize, cancelled: &AtomicBool) -> bool {
+pub fn prepare_width<T>(term: &FairMutex<Term<T>>, from: usize, cols: usize, cancelled: &AtomicBool) -> bool {
     const BATCH: usize = 128;
     let mut done = 0;
     loop {

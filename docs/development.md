@@ -141,7 +141,7 @@ demo window with isolated fixture data, and check the resulting PNG before repla
 the sidebar (100 to 134 columns), with and without background allocation preparation:
 
 ```sh
-cargo test --lib throughput_sidebar_width_preparation -- --ignored --nocapture --test-threads=1
+cargo test --test throughput throughput_sidebar_width_preparation -- --ignored --nocapture --test-threads=1
 ```
 
 With at least 4,096 Scrollback rows, a wider layout prepares row allocations off the UI
@@ -164,7 +164,7 @@ The [three recorded runs](performance/2026-11-16/sidebar-width.log) include all 
 drag with 56,000 log rows:
 
 ```sh
-cargo test --lib throughput_sftp_divider_resize -- --ignored --nocapture --test-threads=1
+cargo test --test throughput throughput_sftp_divider_resize -- --ignored --nocapture --test-threads=1
 ```
 
 Narrowing a row with an empty tail now truncates it without allocating a temporary vector.
@@ -183,7 +183,7 @@ a 250 ms reflow could leave another second before the next requested width. Regr
 cover both the cooldown and preparation coalescing. The current grid continues repainting
 while a new column count waits; reflow itself is still synchronous.
 
-`src/throughput_tests.rs` measures how fast SSH output gets into the terminal: an SSH server in
+`tests/throughput.rs` measures how fast SSH output gets into the terminal: an SSH server in
 the test process prints 1,000,000 coloured log lines through the real Session path, while a
 stand-in for the UI copies the screen every frame. A second test feeds the same output straight
 into the parser, without SSH, and then the same lines with accented, Cyrillic and CJK messages. A third runs several busy Sessions at once while it types in a
@@ -216,7 +216,7 @@ run on this machine, so its processors are shared and each simulated link limits
 connection. They run on Windows too:
 
 ```sh
-cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1
+cargo test --release --test throughput -- --ignored --nocapture --test-threads=1
 ```
 
 `KOMANDO_THROUGHPUT_LINES` and `KOMANDO_THROUGHPUT_RUNS` change the size and the number of runs.
@@ -263,13 +263,13 @@ KOMANDO_DEMO_DIR=target/bench/data KOMANDO_DEMO_KEY=target/bench/client_ed25519 
 
 ### Terminal compatibility tests
 
-`src/compat_tests.rs` runs real programs (vim, htop, tmux, less, bash, and an SSH session against
+`tests/compat.rs` runs real programs (vim, htop, tmux, less, bash, and an SSH session against
 a throwaway local `sshd`) in a real pseudo-terminal with Komando's terminal settings, and drives
 them with Komando's own key, mouse and wheel encoding. They need those programs installed, so
 they are ignored by default:
 
 ```sh
-cargo test --lib compat -- --ignored --test-threads=1
+cargo test --test compat -- --ignored --test-threads=1
 ```
 
 A missing program is skipped with a note. Put programs unpacked elsewhere on
@@ -285,7 +285,7 @@ directly, through a proxy that adds latency (25 ms each way), and through one th
 the speed (1 MiB/s), and prints the timings. Every transferred byte is checked.
 
 ```sh
-TMPDIR=~/.cache/komando-stress cargo test --lib compat_sftp_stress -- --ignored --nocapture
+TMPDIR=~/.cache/komando-stress cargo test --test compat compat_sftp_stress -- --ignored --nocapture
 ```
 
 `KOMANDO_STRESS_MB` sets the large file's size (default 128), `KOMANDO_STRESS_LATENCY_MS` the
@@ -342,7 +342,7 @@ runs 32 simultaneous downloads into one folder. It checks every downloaded byte,
 filenames, bounded Scrollback, final output, and clean disconnection:
 
 ```sh
-cargo test --release --lib compat_many_projects_connections_and_downloads -- --ignored --nocapture
+cargo test --release --test compat compat_many_projects_connections_and_downloads -- --ignored --nocapture
 ```
 
 Three smaller workloads compare the former algorithm with the optimized production path

@@ -124,7 +124,7 @@ Automatically rerunning the user's command is not an acceptable generic resize s
 
 ## Existing test coverage and proposed verification
 
-**Observed coverage, not executed here:** the Unix compatibility harness resizes the grid, reports size, and backend in the same order as the UI. Tests cover Vim, htop, and tmux reacting to resize, plus Bash and a throwaway local SSH server reporting updated `stty size`. They are ignored by default and skip missing programs. They do not establish preservation of completed bordered tables, full-fidelity overflow storage, or Windows ConPTY behavior. [src/compat_tests.rs:1–13](../../src/compat_tests.rs#L1), [203–207](../../src/compat_tests.rs#L203), [259–267](../../src/compat_tests.rs#L259), [299–336](../../src/compat_tests.rs#L299), [372–384](../../src/compat_tests.rs#L372), [470–490](../../src/compat_tests.rs#L470); the module is Unix-only: [src/lib.rs:4–5](../../src/lib.rs#L4).
+**Observed coverage, not executed here:** the Unix compatibility harness resizes the grid, reports size, and backend in the same order as the UI. Tests cover Vim, htop, and tmux reacting to resize, plus Bash and a throwaway local SSH server reporting updated `stty size`. They are ignored by default and skip missing programs. They do not establish preservation of completed bordered tables, full-fidelity overflow storage, or Windows ConPTY behavior. [tests/compat.rs:1–13](../../tests/compat.rs#L1), [210–214](../../tests/compat.rs#L210), [266–274](../../tests/compat.rs#L266), [306–343](../../tests/compat.rs#L306), [379–391](../../tests/compat.rs#L379), [477–497](../../tests/compat.rs#L477); the file is Unix-only: [tests/compat.rs:15](../../tests/compat.rs#L15).
 
 Proposed tests, staged with the implementation:
 

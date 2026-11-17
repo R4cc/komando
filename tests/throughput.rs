@@ -6,7 +6,7 @@
 //! Ignored by default. Run it with an optimized build:
 //!
 //! ```text
-//! cargo test --release --lib throughput_ -- --ignored --nocapture --test-threads=1
+//! cargo test --release --test throughput -- --ignored --nocapture --test-threads=1
 //! ```
 //!
 //! `KOMANDO_THROUGHPUT_LINES` sets the number of lines (default 1,000,000) and
@@ -22,32 +22,16 @@ use russh::server::{self, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};
 use tokio::sync::Mutex;
 
-use crate::session::{EventProxy, GridSize, Prompt, SessionEvent, Status, new_term};
-use crate::theme::TerminalPalette;
+use komando::session::{EventProxy, GridSize, Prompt, SessionEvent, Status, new_term};
+use komando::theme::TerminalPalette;
 
-/// Log line `i`, about 96 bytes: a dim timestamp, a coloured level, a service and a message.
-fn log_line(i: u64, out: &mut Vec<u8>) {
-    use std::io::Write;
-    let (color, level) = match i % 16 {
-        0 => ("31", "ERROR"),
-        1 | 2 => ("33", "WARN "),
-        3 => ("35", "DEBUG"),
-        _ => ("32", "INFO "),
-    };
-    let services = ["api", "worker", "auth", "billing", "scheduler"];
-    let service = services[(i % 5) as usize];
-    let _ = write!(
-        out,
-        "\x1b[2m2026-11-13 {:02}:{:02}:{:02}.{:03}\x1b[0m \x1b[{color}m{level}\x1b[0m \x1b[36m{service:<9}\x1b[0m GET /api/items/{} {} in {}ms\r\n",
-        (i / 3_600_000) % 24,
-        (i / 60_000) % 60,
-        (i / 1000) % 60,
-        i % 1000,
-        i % 100_000,
-        if i.is_multiple_of(16) { 500 } else { 200 },
-        i % 997,
-    );
-}
+#[path = "support/delay_proxy.rs"]
+mod delay_proxy;
+#[path = "support/log_line.rs"]
+mod log_line;
+
+use delay_proxy::DelayProxy;
+use log_line::log_line;
 
 /// The last line's text as the terminal shows it.
 fn plain_line(i: u64) -> String {
@@ -452,19 +436,19 @@ struct Run {
 
 /// A Session's way to the benchmark servers listening on `ports`: Jump Hosts first, the server
 /// with the shell last, all on this machine. Each signs in as `user` with any password.
-fn bench_target(ports: &[u16], user: &str, known_hosts: &std::path::Path) -> crate::session::ssh::Target {
+fn bench_target(ports: &[u16], user: &str, known_hosts: &std::path::Path) -> komando::session::ssh::Target {
     let hops = ports
         .iter()
         .enumerate()
-        .map(|(index, &port)| crate::session::ssh::Hop {
+        .map(|(index, &port)| komando::session::ssh::Hop {
             name: if index + 1 == ports.len() { "bench".into() } else { format!("jump{}", index + 1) },
             address: "127.0.0.1".into(),
             port,
             user: Some(if index + 1 == ports.len() { user.into() } else { "jump".into() }),
-            secret: Some(crate::vault::Secret::Password { password: "bench".into() }),
+            secret: Some(komando::vault::Secret::Password { password: "bench".into() }),
         })
         .collect();
-    crate::session::ssh::Target { hops, known_hosts: known_hosts.to_path_buf() }
+    komando::session::ssh::Target { hops, known_hosts: known_hosts.to_path_buf() }
 }
 
 fn run_once(ports: &[u16], lines: u64, known_hosts: &std::path::Path, external: bool) -> Run {
@@ -476,7 +460,7 @@ fn run_once(ports: &[u16], lines: u64, known_hosts: &std::path::Path, external: 
     proxy.set_size(size);
     let term = new_term(size, 100_000, proxy.clone());
     let target = bench_target(ports, "bench", known_hosts);
-    let sink = crate::session::ssh::spawn(target, size, term.clone(), proxy.clone());
+    let sink = komando::session::ssh::spawn(target, size, term.clone(), proxy.clone());
 
     // The UI: answer prompts, and per Wakeup, wait for the next frame and copy the screen.
     let frame = Duration::from_micros(16_667);
@@ -588,7 +572,7 @@ fn throughput_parser_only() {
         let proxy = EventProxy::new(tx);
         let size = GridSize { cols: 177, rows: 42, cell_width: 9, cell_height: 17 };
         let term = new_term(size, scrollback, proxy.clone());
-        let mut output = crate::session::ssh::Output::default();
+        let mut output = komando::session::ssh::Output::default();
         let start = Instant::now();
         for chunk in &chunks {
             output.feed(&term, &proxy, chunk);
@@ -612,7 +596,7 @@ fn throughput_parser_only() {
         let proxy = EventProxy::new(tx);
         let size = GridSize { cols: 177, rows: 42, cell_width: 9, cell_height: 17 };
         let term = new_term(size, 10_000, proxy.clone());
-        let mut output = crate::session::ssh::Output::default();
+        let mut output = komando::session::ssh::Output::default();
         let start = Instant::now();
         for chunk in &chunks {
             output.feed(&term, &proxy, chunk);
@@ -625,9 +609,9 @@ fn throughput_parser_only() {
 
 /// A Session to the benchmark server as `user`, at the size of a 1600 x 1000 pixel window.
 struct Bench {
-    term: crate::session::SharedTerm,
+    term: komando::session::SharedTerm,
     proxy: EventProxy,
-    sink: crate::session::InputSink,
+    sink: komando::session::InputSink,
     events: futures::channel::mpsc::UnboundedReceiver<SessionEvent>,
 }
 
@@ -639,7 +623,7 @@ fn connect(ports: &[u16], user: &str, known_hosts: &std::path::Path) -> Bench {
     proxy.set_size(size);
     let term = new_term(size, 100_000, proxy.clone());
     let target = bench_target(ports, user, known_hosts);
-    let sink = crate::session::ssh::spawn(target, size, term.clone(), proxy.clone());
+    let sink = komando::session::ssh::spawn(target, size, term.clone(), proxy.clone());
     Bench { term, proxy, sink, events }
 }
 
@@ -825,66 +809,6 @@ fn flood_and_type(ports: &[u16], sessions: usize, lines: u64, known_hosts: &std:
     Flood { sessions, lines, bytes_each, total, each, idle, busy }
 }
 
-/// A TCP forwarder that delays every byte by `one_way` in each direction, like a distant
-/// server, and with `bytes_per_sec` caps each direction's bandwidth, like a slow link. What
-/// the link can't send yet waits in its queue, as in a router with plenty of buffer.
-/// (The same as the one in `compat_tests.rs`, which only builds on Linux.)
-struct DelayProxy {
-    port: u16,
-}
-
-impl DelayProxy {
-    fn start(target_port: u16, one_way: Duration, bytes_per_sec: Option<u64>) -> Self {
-        use std::net::{TcpListener, TcpStream};
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        fn pump(mut from: TcpStream, mut to: TcpStream, delay: Duration, rate: Option<u64>) {
-            use std::io::{Read, Write};
-            let (tx, rx) = std::sync::mpsc::channel::<(Instant, Vec<u8>)>();
-            std::thread::spawn(move || {
-                let mut buf = vec![0u8; 64 * 1024];
-                loop {
-                    match from.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            if tx.send((Instant::now() + delay, buf[..n].to_vec())).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
-            std::thread::spawn(move || {
-                let mut free_at = Instant::now();
-                while let Ok((mut at, bytes)) = rx.recv() {
-                    if let Some(rate) = rate {
-                        // The link sends one thing at a time, at `rate`.
-                        free_at = at.max(free_at) + Duration::from_secs_f64(bytes.len() as f64 / rate as f64);
-                        at = free_at;
-                    }
-                    if let Some(wait) = at.checked_duration_since(Instant::now()) {
-                        std::thread::sleep(wait);
-                    }
-                    if to.write_all(&bytes).is_err() {
-                        break;
-                    }
-                }
-                let _ = to.shutdown(std::net::Shutdown::Write);
-            });
-        }
-        std::thread::spawn(move || {
-            for client in listener.incoming().flatten() {
-                let server = TcpStream::connect(("127.0.0.1", target_port)).unwrap();
-                client.set_nodelay(true).unwrap();
-                server.set_nodelay(true).unwrap();
-                pump(client.try_clone().unwrap(), server.try_clone().unwrap(), one_way, bytes_per_sec);
-                pump(server, client, one_way, bytes_per_sec);
-            }
-        });
-        Self { port }
-    }
-}
-
 /// Type about 20 keys a second in `session` until `done`, from a moment after it starts:
 /// how long each took to show.
 fn type_until(session: &mut Bench, done: &std::sync::atomic::AtomicBool) -> Vec<Duration> {
@@ -974,8 +898,8 @@ fn throughput_typing_during_sftp_transfers() {
             let (remote, local, done) = (remote.clone(), local.clone(), done.clone());
             std::thread::spawn(move || {
                 let start = Instant::now();
-                let progress = crate::sftp::Progress::default();
-                let path = futures::executor::block_on(crate::sftp::spawn(async move {
+                let progress = komando::sftp::Progress::default();
+                let path = futures::executor::block_on(komando::sftp::spawn(async move {
                     remote.download("/big.bin", &local, &progress).await
                 }))
                 .expect("the download task ran")
@@ -993,9 +917,9 @@ fn throughput_typing_during_sftp_transfers() {
 
         // A folder of many small files, which download side by side.
         let start = Instant::now();
-        let folder = futures::executor::block_on(crate::sftp::spawn({
+        let folder = futures::executor::block_on(komando::sftp::spawn({
             let (remote, local) = (remote.clone(), local.clone());
-            async move { remote.download("/many", &local, &crate::sftp::Progress::default()).await }
+            async move { remote.download("/many", &local, &komando::sftp::Progress::default()).await }
         }))
         .expect("the download task ran")
         .expect("the folder downloaded");
@@ -1024,8 +948,8 @@ fn throughput_typing_during_sftp_transfers() {
             let (remote, source, done) = (remote.clone(), source.clone(), done.clone());
             std::thread::spawn(move || {
                 let start = Instant::now();
-                let progress = crate::sftp::Progress::default();
-                futures::executor::block_on(crate::sftp::spawn(async move {
+                let progress = komando::sftp::Progress::default();
+                futures::executor::block_on(komando::sftp::spawn(async move {
                     remote.upload(&source, "/up", "big.bin", false, &progress).await
                 }))
                 .expect("the upload task ran")
@@ -1047,9 +971,9 @@ fn throughput_typing_during_sftp_transfers() {
             std::fs::write(folder.join(format!("file{i:03}.log")), vec![b'x'; MANY_SIZE as usize]).unwrap();
         }
         let start = Instant::now();
-        futures::executor::block_on(crate::sftp::spawn({
+        futures::executor::block_on(komando::sftp::spawn({
             let (remote, folder) = (remote.clone(), folder.clone());
-            async move { remote.upload(&folder, "/up", "many", false, &crate::sftp::Progress::default()).await }
+            async move { remote.upload(&folder, "/up", "many", false, &komando::sftp::Progress::default()).await }
         }))
         .expect("the upload task ran")
         .expect("the folder uploaded");
@@ -1270,8 +1194,8 @@ fn throughput_through_jump_hosts_sftp() {
                 let (remote, local, done) = (remote.clone(), local.clone(), done.clone());
                 std::thread::spawn(move || {
                     let start = Instant::now();
-                    let progress = crate::sftp::Progress::default();
-                    let path = futures::executor::block_on(crate::sftp::spawn(async move {
+                    let progress = komando::sftp::Progress::default();
+                    let path = futures::executor::block_on(komando::sftp::spawn(async move {
                         remote.download("/big.bin", &local, &progress).await
                     }))
                     .expect("the download task ran")
@@ -1318,8 +1242,8 @@ fn throughput_lock_holders_with_full_scrollback() {
         let proxy = EventProxy::new(tx);
         let size = GridSize { cols: 177, rows: 42, cell_width: 9, cell_height: 17 };
         let term = new_term(size, scrollback, proxy.clone());
-        let mut output = crate::session::ssh::Output::default();
-        let mut marks = crate::marks::Marks::default();
+        let mut output = komando::session::ssh::Output::default();
+        let mut marks = komando::marks::Marks::default();
         let mut data = Vec::new();
         for i in 0..scrollback as u64 + 1_000 {
             if i % 1_000 == 0 {
@@ -1351,7 +1275,7 @@ fn throughput_lock_holders_with_full_scrollback() {
         term.lock().grid_mut()[newest.1][Column(0)].set_hyperlink(None);
         time("marks: newest one gone (rescan)", || marks.rows(&*term.lock()).len());
 
-        time("Copy output", || crate::session::scrollback_text(&*term.lock()).len());
+        time("Copy output", || komando::session::scrollback_text(&*term.lock()).len());
         let raw = time("  of which the text", || {
             let term = term.lock();
             let grid = term.grid();
@@ -1359,13 +1283,13 @@ fn throughput_lock_holders_with_full_scrollback() {
             let bottom = alacritty_terminal::index::Point::new(Line(grid.screen_lines() as i32 - 1), grid.last_column());
             term.bounds_to_string(top, bottom)
         });
-        time("  of which tidying it", || crate::session::tidy_export(&raw).len());
+        time("  of which tidying it", || komando::session::tidy_export(&raw).len());
 
         let resize = |label: &str, cols: u16, rows: u16| {
             time(label, || {
                 let mut term = term.lock();
-                crate::session::resize(&mut *term, GridSize { cols, rows, ..size });
-                crate::session::drop_blank_scrollback(&mut *term);
+                komando::session::resize(&mut *term, GridSize { cols, rows, ..size });
+                komando::session::drop_blank_scrollback(&mut *term);
             })
         };
         resize("resize: one row less", 177, 41);
@@ -1374,10 +1298,10 @@ fn throughput_lock_holders_with_full_scrollback() {
         resize("resize: one column wider", 177, 42);
         resize("resize: half as wide", 88, 42);
         resize("resize: back to full width", 177, 42);
-        time("compact rows (in stretches, off the UI)", || crate::session::compact_rows(&term, 177));
+        time("compact rows (in stretches, off the UI)", || komando::session::compact_rows(&term, 177));
         // Every row has to grow: wider than the rows have been.
         resize("resize: one column wider than ever", 178, 42);
-        time("compact rows (in stretches, off the UI)", || crate::session::compact_rows(&term, 178));
+        time("compact rows (in stretches, off the UI)", || komando::session::compact_rows(&term, 178));
     }
 }
 
@@ -1396,13 +1320,13 @@ fn throughput_sidebar_width_preparation() {
             for i in 0..history as u64 + 100 {
                 log_line(i, &mut data);
             }
-            crate::session::ssh::Output::default().feed(&term, &proxy, &data);
+            komando::session::ssh::Output::default().feed(&term, &proxy, &data);
             let start = Instant::now();
             let mut longest_lock = Duration::ZERO;
             if prepared {
                 let shared = term.clone();
                 let worker = std::thread::spawn(move || {
-                    crate::session::prepare_width(&shared, 100, 134, &std::sync::atomic::AtomicBool::new(false))
+                    komando::session::prepare_width(&shared, 100, 134, &std::sync::atomic::AtomicBool::new(false))
                 });
                 // The same lock used by drawing, held only long enough to inspect the grid.
                 while !worker.is_finished() {
@@ -1414,7 +1338,7 @@ fn throughput_sidebar_width_preparation() {
                 assert!(worker.join().unwrap());
             }
             let ui_start = Instant::now();
-            crate::session::resize(&mut *term.lock(), GridSize { cols: 134, ..size });
+            komando::session::resize(&mut *term.lock(), GridSize { cols: 134, ..size });
             let ui_time = ui_start.elapsed();
             eprintln!(
                 "sidebar width {history} rows prepared={prepared}: UI resize {:.2} ms, longest preparation lock {:.2} ms, total {:.2} ms",
@@ -1438,7 +1362,7 @@ fn throughput_sftp_divider_resize() {
     for i in 0..57_000 {
         log_line(i, &mut data);
     }
-    crate::session::ssh::Output::default().feed(&term, &proxy, &data);
+    komando::session::ssh::Output::default().feed(&term, &proxy, &data);
     for (label, widths) in [
         ("narrow blank margins", vec![176, 175, 174, 173, 172, 171, 170, 169]),
         ("narrow through text", vec![150, 130, 110, 90, 80, 70, 60]),
@@ -1447,7 +1371,7 @@ fn throughput_sftp_divider_resize() {
         let mut timings = Vec::new();
         for cols in widths {
             let start = Instant::now();
-            crate::session::resize(&mut *term.lock(), GridSize { cols, ..size });
+            komando::session::resize(&mut *term.lock(), GridSize { cols, ..size });
             timings.push(start.elapsed());
         }
         timings.sort();
@@ -1587,7 +1511,7 @@ fn throughput_scrollback_memory() {
     }
     for case in ["100000x177", "100000x350", "500000x177", "500000x350"] {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["throughput_tests::throughput_scrollback_memory", "--exact", "--ignored", "--nocapture", "--test-threads=1"])
+            .args(["throughput_scrollback_memory", "--exact", "--ignored", "--nocapture", "--test-threads=1"])
             .env("KOMANDO_THROUGHPUT_MEMORY", case)
             .stdout(std::process::Stdio::null())
             .status()
@@ -1612,7 +1536,7 @@ fn memory_case(scrollback: usize, cols: u16) {
     let (tx, _rx) = futures::channel::mpsc::unbounded();
     let proxy = EventProxy::new(tx);
     let term = new_term(size, scrollback, proxy.clone());
-    let mut output = crate::session::ssh::Output::default();
+    let mut output = komando::session::ssh::Output::default();
     let mut data = Vec::new();
     let start = Instant::now();
     let mut lines = 0;
@@ -1659,7 +1583,7 @@ fn memory_case(scrollback: usize, cols: u16) {
     // are compacted, as the app does once the width has settled.
     let wider = GridSize { cols: cols + 1, ..size };
     let start = Instant::now();
-    crate::session::resize(&mut *term.lock(), wider);
+    komando::session::resize(&mut *term.lock(), wider);
     let took = start.elapsed();
     eprintln!(
         "  one column wider: {:.1} ms, heap {:.1} MiB, process {}",
@@ -1668,7 +1592,7 @@ fn memory_case(scrollback: usize, cols: u16) {
         process()
     );
     let start = Instant::now();
-    crate::session::compact_rows(&term, wider.cols as usize);
+    komando::session::compact_rows(&term, wider.cols as usize);
     eprintln!(
         "    compacted in {:.0} ms: heap {:.1} MiB, process {}, settled {}",
         start.elapsed().as_secs_f64() * 1e3,
@@ -1680,7 +1604,7 @@ fn memory_case(scrollback: usize, cols: u16) {
     // Half as wide, as when a split opens: the rows keep their allocations until compacted.
     let half = GridSize { cols: cols / 2, ..size };
     let start = Instant::now();
-    crate::session::resize(&mut *term.lock(), half);
+    komando::session::resize(&mut *term.lock(), half);
     eprintln!(
         "  half as wide: {:.1} ms, heap {:.1} MiB, process {}",
         start.elapsed().as_secs_f64() * 1e3,
@@ -1688,7 +1612,7 @@ fn memory_case(scrollback: usize, cols: u16) {
         process()
     );
     let start = Instant::now();
-    crate::session::compact_rows(&term, half.cols as usize);
+    komando::session::compact_rows(&term, half.cols as usize);
     eprintln!(
         "    compacted in {:.0} ms: heap {:.1} MiB, process {}, settled {}",
         start.elapsed().as_secs_f64() * 1e3,
@@ -1893,11 +1817,11 @@ fn throughput_ctrl_c_during_a_flood() {
         for _ in 0..runs {
             // Each setting in turn, so load from elsewhere on the machine hits them alike.
             for ((_, fixed), results) in settings.iter().zip(&mut results) {
-                *crate::session::ssh::FIXED_WINDOW.lock().unwrap() = *fixed;
+                *komando::session::ssh::FIXED_WINDOW.lock().unwrap() = *fixed;
                 results.push(ctrl_c_once(port, &known_hosts));
             }
         }
-        *crate::session::ssh::FIXED_WINDOW.lock().unwrap() = None;
+        *komando::session::ssh::FIXED_WINDOW.lock().unwrap() = None;
         for ((name, _), runs) in settings.iter().zip(results) {
             let stats = |key: fn(&CtrlC) -> f64| {
                 let mut values: Vec<f64> = runs.iter().map(key).collect();
