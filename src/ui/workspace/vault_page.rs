@@ -1,7 +1,7 @@
 //! Settings → Vault: every saved password and key, what signs in with it, and ways to see,
 //! copy or delete it. Shown only while the Vault is unlocked.
 
-use super::settings::group;
+use super::settings::{group, settings_block};
 use super::*;
 use crate::model::CredentialId;
 use crate::vault::Secret;
@@ -36,14 +36,59 @@ impl Workspace {
         }
         items.sort_by_cached_key(|(_, c)| c.label.to_lowercase());
 
-        let rows = items
+        let mut sections = Vec::new();
+        let mut grouped = HashSet::new();
+        for project in &self.library.projects {
+            let rows: Vec<_> = self
+                .library
+                .project_credentials(project)
+                .into_iter()
+                .filter_map(|id| {
+                    let credential = vault.get(id)?;
+                    grouped.insert(id.as_str());
+                    let shown = self.vault_revealed.contains(id);
+                    let uses = self.library.credential_uses(id);
+                    Some(credential_row(
+                        id,
+                        &credential.label,
+                        &credential.secret,
+                        &uses,
+                        shown,
+                        p,
+                        cx,
+                    ))
+                })
+                .collect();
+            if !rows.is_empty() {
+                // Scope row/action ids: a shared Credential can appear in several Projects.
+                sections.push(
+                    div()
+                        .id(SharedString::from(format!("vault-project-{}", project.id)))
+                        .child(settings_block(&project.name, p, group(p, rows)))
+                        .into_any_element(),
+                );
+            }
+        }
+        let other_rows: Vec<_> = items
             .into_iter()
+            .filter(|(id, _)| !grouped.contains(id.as_str()))
             .map(|(id, credential)| {
                 let shown = self.vault_revealed.contains(id);
                 let uses = self.library.credential_uses(id);
-                credential_row(id, &credential.label, &credential.secret, &uses, shown, p, cx)
+                credential_row(
+                    id,
+                    &credential.label,
+                    &credential.secret,
+                    &uses,
+                    shown,
+                    p,
+                    cx,
+                )
             })
             .collect();
+        if !other_rows.is_empty() {
+            sections.push(settings_block("Other saved items", p, group(p, other_rows)));
+        }
 
         div()
             .flex()
@@ -76,7 +121,7 @@ impl Workspace {
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.lock_vault(cx))),
                     ),
             )
-            .child(group(p, rows))
+            .children(sections)
             .into_any_element()
     }
 

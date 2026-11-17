@@ -1021,6 +1021,36 @@ impl Library {
         uses
     }
 
+    /// A Project's Credentials in sidebar order: its defaults, then each Host's SSH,
+    /// Remote Desktop and Jump Host Credentials. Shared Credentials appear once per Project.
+    pub fn project_credentials<'a>(&'a self, project: &'a Project) -> Vec<&'a CredentialId> {
+        let mut credentials = Vec::new();
+        let mut push = |id| {
+            if !credentials.contains(&id) {
+                credentials.push(id);
+            }
+        };
+        project.credential.iter().for_each(&mut push);
+        project
+            .jump_hosts
+            .iter()
+            .filter_map(|jump| jump.credential.as_ref())
+            .for_each(&mut push);
+        for host in self.hosts_of(project) {
+            host.credential.own().into_iter().for_each(&mut push);
+            [&host.rdp, &host.vnc]
+                .into_iter()
+                .flatten()
+                .filter_map(|desktop| desktop.credential.as_ref())
+                .for_each(&mut push);
+            host.jump_hosts
+                .iter()
+                .filter_map(|jump| jump.credential.as_ref())
+                .for_each(&mut push);
+        }
+        credentials
+    }
+
     /// Drop every reference to a deleted Credential. A Host that had it as its own asks
     /// instead of falling back to its Project's: that would send another password unasked.
     /// Returns whether anything changed.

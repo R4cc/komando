@@ -6,6 +6,11 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Settings → Vault groups saved passwords and keys by project, matching the project and
+  host order in the sidebar. Other saved items appear below the projects.
+
 ## [0.7.4] - 2026-11-17
 
 ### Added
