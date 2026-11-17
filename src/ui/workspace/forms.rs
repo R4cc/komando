@@ -1444,10 +1444,12 @@ impl Workspace {
             None => ("New project".to_string(), "Create project"),
         };
         let color = project_color(&form.color);
+        // Its Hosts, to say on each page which of them take the setting and which set their own.
+        let hosts: Vec<&Host> = editing.map(|pr| self.library.hosts_of(pr).collect()).unwrap_or_default();
         let pane = match form.tab {
-            FormTab::SignIn => self.project_sign_in_pane(form, editing.is_some_and(|pr| pr.credential.is_some()), p, cx),
-            FormTab::JumpHosts => self.project_jump_pane(form, color, p, cx),
-            FormTab::Terminal => self.project_terminal_pane(form, p, cx),
+            FormTab::SignIn => self.project_sign_in_pane(form, editing.is_some_and(|pr| pr.credential.is_some()), &hosts, p, cx),
+            FormTab::JumpHosts => self.project_jump_pane(form, color, &hosts, p, cx),
+            FormTab::Terminal => self.project_terminal_pane(form, &hosts, p, cx),
             _ => self.project_general_pane(form, color, p, cx),
         };
         let tabs = FormTab::PROJECT.map(|tab| {
@@ -1458,13 +1460,17 @@ impl Workspace {
             };
             (tab, note)
         });
-        let subtitle = if editing.is_some() { "Its settings apply to all its hosts" } else { "A group of hosts that belong together" };
+        let subtitle = match (editing, hosts.len()) {
+            (None, _) => "A group of hosts that belong together".to_string(),
+            (Some(_), 0) => "Project with no hosts yet".to_string(),
+            (Some(_), n) => format!("Project with {}", crate::ui::widgets::plural(n, "host")),
+        };
         let frame = FormFrame {
             id: "pf",
             icon: &form.icon,
             color,
             title,
-            subtitle: subtitle.into(),
+            subtitle,
             tabs: &tabs,
             current: form.tab,
             project: true,
@@ -1513,15 +1519,16 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(px(18.))
-            .child(form_field("Name", None, Input::new(&form.name).into_any_element(), p))
+            .child(form_field("Name", Some("As the sidebar shows it."), Input::new(&form.name).into_any_element(), p))
             .child(div().flex().flex_col().gap(px(8.)).child(field_label("Color", p)).child(swatches))
             .child(div().pt(px(6.)).flex().flex_col().gap(px(8.)).child(field_label("Icon", p)).child(icons))
             .into_any_element()
     }
 
     /// Sign-in for the Project's Hosts: its default user and the Project Credential.
-    fn project_sign_in_pane(&self, form: &ProjectForm, has_saved: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let mut options = vec![("None", SignIn::Ask)];
+    fn project_sign_in_pane(&self, form: &ProjectForm, has_saved: bool, hosts: &[&Host], p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        // "Ask", as the host form calls a sign-in without a saved key or password.
+        let mut options = vec![("Ask", SignIn::Ask)];
         if has_saved {
             options.push(("Saved", SignIn::Saved));
         }
@@ -1543,38 +1550,50 @@ impl Workspace {
         group(
             p,
             vec![
-                stacked("User", "Empty: asked when you connect.", p).child(Input::new(&form.default_user)).into_any_element(),
+                stacked("User", "Empty: asked when you connect.", p)
+                    .child(Input::new(&form.default_user))
+                    .children(reach_note(hosts, |h| matches!(h.user, Inherited::Project), p))
+                    .into_any_element(),
                 stacked("Key or password", hint, p)
                     .child(div().flex().child(choice))
                     .when(form.sign_in == SignIn::KeyFile, |el| el.child(key_file_row(&form.key_path, "pf", p, cx)))
+                    .children(reach_note(hosts, |h| matches!(h.credential, Inherited::Project), p))
                     .into_any_element(),
             ],
         )
     }
 
-    fn project_jump_pane(&self, form: &ProjectForm, color: Hsla, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn project_jump_pane(&self, form: &ProjectForm, color: Hsla, hosts: &[&Host], p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let hops = typed_hops(&form.jumps, cx);
         let hint = if hops.is_empty() {
             "Its hosts connect directly from this PC, unless they add jump hosts of their own."
         } else {
             "Its hosts are reached through these, left to right, unless a host switches them off. A host can add its own after them."
         };
-        let end = Hop { icon: "server".into(), label: "Its hosts".into(), note: None };
+        let label = if hosts.is_empty() { "Its hosts".to_string() } else { crate::ui::widgets::plural(hosts.len(), "host") };
+        let end = Hop { icon: form.icon.clone(), label, note: None };
+        let list = div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(self.jump_list("pf", &form.jumps, p, cx))
+            .when(!form.jumps.is_empty(), |el| el.children(reach_note(hosts, |h| h.use_project_jump_hosts, p)));
         div()
             .flex()
             .flex_col()
             .gap(px(20.))
             .child(route_preview(hops, end, color, hint, p))
-            .child(settings_block("Jump hosts", p, self.jump_list("pf", &form.jumps, p, cx)))
+            .child(settings_block("Jump hosts", p, list.into_any_element()))
             .into_any_element()
     }
 
-    fn project_terminal_pane(&self, form: &ProjectForm, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn project_terminal_pane(&self, form: &ProjectForm, hosts: &[&Host], p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let commands = div()
             .flex()
             .flex_col()
             .gap(px(12.))
             .child(self.command_list("pf-cmd", &form.commands, p, cx))
+            .when(!form.commands.is_empty(), |el| el.children(reach_note(hosts, |h| h.run_project_commands, p)))
             .child(hint_text(COMMANDS_HINT.into(), p));
         let highlight = highlight_row("pf-highlight", form.highlight, HIGHLIGHT_HINT, p, cx, |this| {
             if let Some(form) = this.project_form() {
@@ -1686,6 +1705,38 @@ fn highlight_row(
         cx.notify();
     }));
     setting_row(p, "Highlight output", hint, toggle.into_any_element())
+}
+
+/// Which of a Project's Hosts take one of its settings and which set their own, as a line
+/// under the setting. Nothing for a Project without Hosts (a new one).
+fn reach_note(hosts: &[&Host], uses: impl Fn(&Host) -> bool, p: AppPalette) -> Option<AnyElement> {
+    let total = hosts.len();
+    let own: Vec<&str> = hosts.iter().filter(|h| !uses(h)).map(|h| h.name.as_str()).collect();
+    let text = match (total, own.len()) {
+        (0, _) => return None,
+        (1, 0) => "Its host uses this.".to_string(),
+        (1, _) => format!("{} sets its own instead.", own[0]),
+        (_, 0) => format!("All {total} of its hosts use this."),
+        (_, n) if n == total => format!("None of its {total} hosts use this: each sets its own."),
+        (_, n) => format!("{} of {total} hosts use this. Set their own: {}.", total - n, name_list(&own)),
+    };
+    Some(
+        div()
+            .flex()
+            .items_start()
+            .gap(px(8.))
+            .child(div().pt(px(2.)).flex_shrink_0().child(icon_el("users", 13., p.text_faint)))
+            .child(div().flex_1().min_w_0().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(text))
+            .into_any_element(),
+    )
+}
+
+/// Up to three names, then how many more.
+fn name_list(names: &[&str]) -> String {
+    match names.len() {
+        0..=3 => names.join(", "),
+        n => format!("{} and {} more", names[..3].join(", "), n - 3),
+    }
 }
 
 /// One stop on the way to a Host, as the jump host page draws it.
@@ -2128,7 +2179,7 @@ fn decode_utf16(bytes: &[u8], unit: fn([u8; 2]) -> u16) -> Result<String, &'stat
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_key_text, expand_home};
+    use super::{decode_key_text, expand_home, name_list};
     use std::path::{Path, PathBuf};
 
     const KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n";
@@ -2171,6 +2222,13 @@ mod tests {
     #[test]
     fn rejects_odd_length_utf16() {
         assert!(decode_key_text(&[0xFF, 0xFE, 0x41]).is_err());
+    }
+
+    #[test]
+    fn lists_up_to_three_names() {
+        assert_eq!(name_list(&["web-01"]), "web-01");
+        assert_eq!(name_list(&["a", "b", "c"]), "a, b, c");
+        assert_eq!(name_list(&["a", "b", "c", "d", "e"]), "a, b, c and 2 more");
     }
 
     #[test]
