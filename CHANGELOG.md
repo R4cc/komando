@@ -6,6 +6,26 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Ctrl+Tab no longer gets stuck on a remote desktop that is open in its own window.
+- Closing the active session no longer leaves the main window empty when the host's other
+  session is a remote desktop in its own window. Opening a host in split view no longer puts
+  that desktop's placeholder beside your terminal.
+- Disconnect in a remote desktop's own window keeps the desktop so you can reconnect it, as
+  in the main window, instead of closing it.
+- Pasting text that uses only carriage returns as line breaks now asks first when
+  Confirm multi-line paste is on, like any other multi-line paste.
+- Pasting into the terminal search bar uses the first line with text, so a copied selection
+  that starts with a blank line no longer pastes nothing.
+- Moving several files in the file browser says how many moved before one failed.
+- Opening a socket, pipe, device or broken link in the file browser says it can't be
+  downloaded, instead of doing nothing.
+- If `settings.toml` can't be read, Komando keeps it as `settings.toml.broken-…` instead of
+  replacing it with defaults the next time a setting changes.
+- Import from MobaXterm uses the settings file that lists sessions when MobaXterm left an
+  empty one in Documents.
+
 ## [0.7.5] - 2026-11-17
 
 ### Added

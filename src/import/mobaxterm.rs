@@ -52,7 +52,10 @@ pub fn config_candidates() -> Vec<PathBuf> {
 
 /// MobaXterm's settings on this PC, if they are in one of the usual places and list sessions.
 pub fn find_config() -> Option<PathBuf> {
-    config_candidates().into_iter().find(|path| path.is_file())
+    let files: Vec<PathBuf> = config_candidates().into_iter().filter(|path| path.is_file()).collect();
+    // MobaXterm creates an empty file in Documents on install; the sessions may be elsewhere.
+    let with_sessions = files.iter().find(|path| read(path).is_ok_and(|found| found.host_count() > 0)).cloned();
+    with_sessions.or_else(|| files.into_iter().next())
 }
 
 /// Read `MobaXterm.ini` or an exported `.mxtsessions` file.

@@ -799,6 +799,11 @@ impl FileBrowser {
         let source = cx.entity().downgrade();
         let host = self.host_label.clone();
         let dir = transfers::download_dir();
+        // Sockets, pipes, devices and broken links have nothing to download.
+        let special: Vec<&str> = entries.iter().filter(|e| !e.locked() && e.kind == Kind::Other).map(|e| e.name.as_str()).collect();
+        if !special.is_empty() && locked.is_empty() {
+            self.notify_error(format!("{} isn't a file or folder, so it can't be downloaded.", list_names(&special)), cx);
+        }
         let wanted: Vec<Entry> = entries.into_iter().filter(|e| !e.locked() && e.kind != Kind::Other).collect();
         if wanted.is_empty() {
             return;
@@ -1109,23 +1114,30 @@ impl FileBrowser {
         if pairs.is_empty() {
             return;
         }
+        let total = pairs.len();
         self.run_op(
             "Moving…",
             move |r| {
                 Box::pin(async move {
+                    let mut done = 0;
                     for (from, to) in pairs {
-                        r.rename(&from, &to).await.map_err(|e| (sftp::file_name(&from).to_string(), e)).map_err(|(n, e)| {
-                            OpError::new(e.kind, explain(&format!("move {n}"), &e))
-                        })?;
+                        if let Err(err) = r.rename(&from, &to).await {
+                            return Ok((done, Some((sftp::file_name(&from).to_string(), err))));
+                        }
+                        done += 1;
                     }
-                    Ok(())
+                    Ok((done, None))
                 })
             },
             cx,
-            |this, result, cx| {
-                if let Err(err) = result {
-                    this.notify_error(err.message, cx);
+            // As with delete: say how many moved before one failed.
+            move |this, result: Result<(usize, Option<(String, OpError)>), OpError>, cx| match result {
+                Ok((_, None)) => {}
+                Ok((done, Some((name, err)))) => {
+                    let prefix = if done > 0 { format!("Moved {done} of {total}. ") } else { String::new() };
+                    this.notify_error(format!("{prefix}{}", explain(&format!("move {name}"), &err)), cx);
                 }
+                Err(err) => this.notify_error(explain("move", &err), cx),
             },
         );
     }

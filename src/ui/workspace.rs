@@ -2145,7 +2145,7 @@ impl Workspace {
             self.active = None;
             // The other half of a split fills the area; otherwise stay with the item and
             // show another of its Sessions, if it has one.
-            let next = partner.or_else(|| self.sessions_of(&entry.item).next().map(|s| s.id));
+            let next = partner.or_else(|| self.sessions_of(&entry.item).find(|s| s.window.is_none()).map(|s| s.id));
             if let Some(next) = next {
                 self.activate(next, window, cx);
             }
@@ -2321,7 +2321,9 @@ impl Workspace {
         let order: Vec<usize> = self
             .sidebar_items()
             .iter()
-            .flat_map(|item| self.sessions_of(&item.key()).map(|s| s.id).collect::<Vec<_>>())
+            // A desktop in its own window isn't shown here: activating it only raises that
+            // window, so the cycle would stop on it.
+            .flat_map(|item| self.sessions_of(&item.key()).filter(|s| s.window.is_none()).map(|s| s.id).collect::<Vec<_>>())
             .collect();
         if order.is_empty() {
             return;

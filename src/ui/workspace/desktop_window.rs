@@ -118,7 +118,11 @@ impl Render for DesktopWindow {
             .child(div().w(px(1.)).h(px(14.)).mx(px(4.)).bg(p.border))
             .child(
                 strip_action("desktop-close", "unplug", if live { "Disconnect" } else { "Close session" }, true, p).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _, cx| this.on_workspace(cx, move |ws, window, cx| ws.close_session(id, window, cx)),
+                    move |this, _: &ClickEvent, _, cx| {
+                        this.on_workspace(cx, move |ws, window, cx| {
+                            if live { ws.request_disconnect(id, window, cx) } else { ws.close_session(id, window, cx) }
+                        })
+                    },
                 )),
             )
             .child(div().w(px(12.)).h(px(16.)).mr(px(6.)).border_r_1().border_color(p.border))

@@ -163,10 +163,10 @@ impl TerminalView {
         self.search.as_ref().is_some_and(|bar| bar.input.read(cx).focus_handle(cx).is_focused(window))
     }
 
-    /// Paste into the search field (Ctrl+Shift+V there), its first line only.
+    /// Paste into the search field (Ctrl+Shift+V there), its first line with text only.
     pub(super) fn paste_into_search(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(bar) = &self.search else { return };
-        let line = text.lines().next().unwrap_or_default().to_string();
+        let line = text.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().to_string();
         bar.input.update(cx, |state, cx| state.insert(line, window, cx));
     }
 

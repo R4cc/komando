@@ -1366,11 +1366,21 @@ impl Settings {
     pub const FILE: &'static str = "settings.toml";
 
     pub fn load(dir: &Path) -> Self {
-        fs::read_to_string(dir.join(Self::FILE))
-            .ok()
-            .and_then(|text| toml::from_str::<Self>(&text).ok())
-            .map(Self::migrated)
-            .unwrap_or_default()
+        let path = dir.join(Self::FILE);
+        let Ok(text) = fs::read_to_string(&path) else { return Self::default() };
+        match toml::from_str::<Self>(&text) {
+            Ok(settings) => settings.migrated(),
+            Err(err) => {
+                // Move the unreadable file aside: the next save would otherwise replace it
+                // with the defaults, losing every setting the user made.
+                let aside = path.with_extension(format!("toml.broken-{}", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+                match fs::rename(&path, &aside) {
+                    Ok(()) => log::error!("Couldn't read {} ({err}); kept it as {}", path.display(), aside.display()),
+                    Err(_) => log::error!("Couldn't read {}: {err}", path.display()),
+                }
+                Self::default()
+            }
+        }
     }
 
     /// Settings saved by older versions, in today's terms.
@@ -1668,6 +1678,18 @@ mod tests {
         settings.sidebar_width = 410.;
         let saved = toml::to_string(&settings).unwrap();
         assert_eq!(toml::from_str::<Settings>(&saved).unwrap().sidebar_width, 410.);
+    }
+
+    #[test]
+    fn unreadable_settings_are_kept_aside_rather_than_overwritten() {
+        let dir = std::env::temp_dir().join(format!("komando-settings-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(Settings::FILE), "font_size = \"huge\"").unwrap();
+        assert_eq!(Settings::load(&dir), Settings::default());
+        assert!(!dir.join(Settings::FILE).exists(), "the next save must not overwrite it");
+        let kept: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        assert!(kept.iter().any(|name| name.starts_with("settings.toml.broken-")), "{kept:?}");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

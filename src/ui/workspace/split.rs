@@ -265,8 +265,10 @@ impl Workspace {
             // The item's Session last shown, unless that one stays on the other side: then
             // another of its Sessions, or a new one (two shells on one server).
             None => {
-                let last = self.last_active.get(key).copied().filter(|&id| id != other && item_of(id) == Some(key));
-                match last.or_else(|| self.sessions_of(key).map(|s| s.id).find(|&id| id != other)) {
+                // Not a desktop in its own window: the split would show its placeholder.
+                let in_main = |id: usize| self.sessions.iter().any(|s| s.id == id && s.window.is_none());
+                let last = self.last_active.get(key).copied().filter(|&id| id != other && item_of(id) == Some(key) && in_main(id));
+                match last.or_else(|| self.sessions_of(key).map(|s| s.id).find(|&id| id != other && in_main(id))) {
                     Some(id) => Placement::Existing(id),
                     None => Placement::New,
                 }

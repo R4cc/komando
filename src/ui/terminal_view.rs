@@ -1202,7 +1202,7 @@ impl TerminalView {
             return;
         }
         let text = if self.pointer.paste_single_line { one_line(&text) } else { text };
-        let lines = text.trim_end_matches(['\r', '\n']).lines().count();
+        let lines = pasted_lines(&text);
         if self.pointer.confirm_multiline_paste && lines > 1 {
             self.prompt = Some(ActivePrompt::ConfirmPaste { text, lines });
             cx.notify();
@@ -3918,6 +3918,12 @@ impl Render for TerminalView {
 }
 
 /// Pasted text as one line: each line break, of any kind, becomes a space.
+/// How many lines a paste sends, counted as the shell will see them: `paste_bytes` sends a
+/// bare CR as Enter too, not only LF and CRLF.
+fn pasted_lines(text: &str) -> usize {
+    text.trim_end_matches(['\r', '\n']).replace("\r\n", "\n").split(['\r', '\n']).count()
+}
+
 fn one_line(text: &str) -> String {
     text.trim_end_matches(['\r', '\n']).replace("\r\n", " ").replace(['\r', '\n'], " ")
 }
@@ -3935,6 +3941,16 @@ mod tests {
         assert_eq!(one_line("cd /srv\r\nls -la\nexit\r\n"), "cd /srv ls -la exit");
         assert_eq!(one_line("a\rb"), "a b");
         assert_eq!(one_line("single"), "single");
+    }
+
+    #[test]
+    fn a_paste_counts_every_line_break_the_shell_will_see() {
+        use super::pasted_lines;
+        assert_eq!(pasted_lines("ls\n"), 1);
+        assert_eq!(pasted_lines("ls\r\npwd\r\n"), 2);
+        // A bare CR is Enter to the shell, so it must trigger the multi-line question.
+        assert_eq!(pasted_lines("ls\rrm -rf build"), 2);
+        assert_eq!(pasted_lines(""), 1);
     }
     use crate::highlight::Highlighter;
     use crate::session::ssh::Output;
