@@ -62,14 +62,14 @@ impl SettingsSection {
 
     fn description(self) -> &'static str {
         match self {
-            Self::Appearance => "Pick a theme and terminal colors for dark and light mode, and how the window looks.",
-            Self::Terminal => "Font, scrollback and clipboard behaviour for every session.",
-            Self::FileBrowser => "The SFTP file browser beside SSH sessions.",
-            Self::RemoteDesktop => "RDP and VNC desktops of your hosts. Each host sets up its own in its form, under Remote desktop.",
-            Self::Shells => "The shells on this PC listed at the top of the sidebar. Hide the ones you don't use, remove them, or add your own, such as WSL or Git Bash.",
-            Self::Highlights => "Colour matching text in terminal output. Rules apply top to bottom; the first match wins.",
-            Self::Import => "Bring your hosts over from another SSH client. Nothing changes until you confirm the review.",
-            Self::Security => "The vault that holds your passwords and keys, and the command history kept for each host.",
+            Self::Appearance => "",
+            Self::Terminal => "",
+            Self::FileBrowser => "",
+            Self::RemoteDesktop => "Each host sets up its own desktop in its form.",
+            Self::Shells => "The shells listed at the top of the sidebar.",
+            Self::Highlights => "Rules apply top to bottom; the first match wins.",
+            Self::Import => "Nothing changes until you confirm the review.",
+            Self::Security => "",
             Self::About => "",
         }
     }
@@ -379,7 +379,9 @@ impl Workspace {
                                         .text_color(p.text)
                                         .child(section.label()),
                                 )
-                                .child(div().text_size(px(13.)).text_color(p.text_muted).child(section.description())),
+                                .when(!section.description().is_empty(), |el| {
+                                    el.child(div().text_size(px(13.)).text_color(p.text_muted).child(section.description()))
+                                }),
                         )
                     })
                     .child(body),
@@ -448,16 +450,6 @@ impl Workspace {
                 this.set_terminal_theme(theme, window, cx);
             },
         );
-        let mode_hint = match app {
-            AppThemeSetting::System => "Follows Windows, switching between the two modes below.",
-            AppThemeSetting::Dark => "Komando stays dark. Light mode keeps its colors for when you switch.",
-            AppThemeSetting::Light => "Komando stays light. Dark mode keeps its colors for when you switch.",
-        };
-        let term_hint = match term {
-            TerminalThemeSetting::Follow => "The terminal turns dark or light with the app.",
-            TerminalThemeSetting::Dark => "The terminal stays dark in both modes, with Dark mode's terminal colors.",
-            TerminalThemeSetting::Light => "The terminal stays light in both modes, with Light mode's terminal colors.",
-        };
         let modes = div()
             .flex()
             .flex_wrap()
@@ -495,16 +487,16 @@ impl Workspace {
                 .into_any_element()
         };
         let blur_hint = if crate::platform::SUPPORTS_BACKDROP {
-            "Windows 11 Mica: your desktop, blurred, shows through the window, even with other windows behind it."
+            "Lets the blurred desktop show through the window."
         } else {
-            "Windows 11 only. This build runs elsewhere, so the setting is saved but has no effect."
+            "Windows 11 only."
         };
         let slider = self.blur_slider.clone().map(|s| Slider::new(&s).into_any_element());
         let mut window_rows = vec![
             setting_row(
                 p,
                 "App icon",
-                "The icon in the taskbar and notification area. It stays the same whichever mode or theme you pick.",
+                "",
                 icon_choice,
             ),
             setting_row(
@@ -520,7 +512,7 @@ impl Workspace {
             window_rows.push(setting_row(
                 p,
                 "Blur intensity",
-                "How much of the blurred desktop shows through. The terminal always keeps more of its background.",
+                "",
                 div()
                     .w(px(260.))
                     .flex()
@@ -535,7 +527,7 @@ impl Workspace {
         let mut behaviour_rows = vec![setting_row(
             p,
             "Expand sidebar on hover",
-            "Keep the sidebar hidden and slide it out over the terminal while the pointer rests at the window's left edge. Ctrl+Shift+B still pins it open.",
+            "Slides out at the window's left edge. Ctrl+Shift+B pins it open.",
             switch("sidebar-auto-hide".into(), "Expand sidebar on hover", self.settings.sidebar_auto_hide, p)
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.settings.sidebar_auto_hide = !this.settings.sidebar_auto_hide;
@@ -551,7 +543,7 @@ impl Workspace {
             behaviour_rows.push(setting_row(
                 p,
                 "Minimize to tray",
-                "Show Komando in the notification area, and keep sessions running there when minimized or closed with X. Click the tray icon to restore; right-click to restart or exit.",
+                "Sessions keep running in the notification area when you minimize or close Komando.",
                 switch("minimize-to-tray".into(), "Minimize to tray", self.settings.minimize_to_tray, p)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.settings.minimize_to_tray = !this.settings.minimize_to_tray;
@@ -573,7 +565,7 @@ impl Workspace {
             .child(settings_block(
                 "Theme",
                 p,
-                group(p, vec![setting_row_below(p, "Mode", mode_hint, mode_choice), modes, setting_row(p, "Terminal", term_hint, term_choice)]),
+                group(p, vec![setting_row_below(p, "Mode", "", mode_choice), modes, setting_row(p, "Terminal", "", term_choice)]),
             ))
             .child(settings_block("Window", p, group(p, window_rows)))
             .child(settings_block("Behaviour", p, group(p, behaviour_rows)))
@@ -620,9 +612,9 @@ impl Workspace {
                 .line_height(px(17.))
                 .text_color(p.text_muted)
                 .child(if term_dark {
-                    "The terminal stays dark, with the colors picked under Dark mode."
+                    "Uses Dark mode's terminal colors."
                 } else {
-                    "The terminal stays light, with the colors picked under Light mode."
+                    "Uses Light mode's terminal colors."
                 })
                 .into_any_element()
         };
@@ -749,13 +741,13 @@ impl Workspace {
                 setting_row(
                     p,
                     "Font",
-                    "Leave empty to use the theme’s font, or enter a monospaced font. Press Enter to apply.",
+                    "Empty uses the theme’s font. Press Enter to apply.",
                     div().w(px(260.)).children(font_input).into_any_element(),
                 ),
                 setting_row(
                     p,
                     "Font size",
-                    "Applies to all sessions right away.",
+                    "",
                     div()
                         .w(px(260.))
                         .flex()
@@ -768,13 +760,13 @@ impl Workspace {
                 setting_row(
                     p,
                     "Cursor shape",
-                    "The default cursor. Terminal programs can request their own shape.",
+                    "",
                     cursor_choice,
                 ),
                 setting_row(
                     p,
                     "Blinking cursor",
-                    "Blink the cursor while typing. Terminal programs can request a steady cursor.",
+                    "",
                     switch("cursor-blink".into(), "Blinking cursor", cursor_blink, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.cursor_blink = !cursor_blink;
@@ -785,7 +777,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "Windows-style keyboard selection",
-                    "Ctrl+A selects a recognised command, then all output. Ctrl+Shift+A selects all output. Shift+arrows select text; Ctrl+Shift+Left/Right select words. Ctrl+Shift+Home/End select to the output edges. Esc clears. Replaces shell shortcuts outside full-screen programs.",
+                    "Select output with Shift+arrows and Ctrl+A, as in a text field. Replaces the shell's shortcuts for these keys.",
                     switch("windows-selection".into(), "Windows-style keyboard selection", windows_selection, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.windows_selection = !windows_selection;
@@ -796,13 +788,13 @@ impl Workspace {
                 setting_row(
                     p,
                     "Scrollback",
-                    "Lines each session keeps for scrolling, search and \"Copy output\". Applies to new sessions.",
+                    "Applies to new sessions.",
                     scrollback_choice,
                 ),
                 setting_row(
                     p,
                     "Confirm multi-line paste",
-                    "Ask before pasting more than one line, since each line may run as a command.",
+                    "Each line may run as a command.",
                     switch("paste-confirm".into(), "Confirm multi-line paste", paste, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.confirm_multiline_paste = !paste;
@@ -813,7 +805,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "PuTTY-style clipboard",
-                    "Selecting text copies it, right-click pastes. Ctrl+right-click opens the menu.",
+                    "Select to copy, right-click to paste. Ctrl+right-click opens the menu.",
                     switch("putty".into(), "PuTTY-style clipboard", putty, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.putty_clipboard = !putty;
@@ -824,7 +816,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "Command rail",
-                    "A short line at the left edge for each command you entered. Hover one to see the command, click to jump back to it.",
+                    "Marks each command at the left edge. Click one to jump back to it.",
                     switch("command-rail".into(), "Command rail", rail, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.command_rail = !rail;
@@ -835,7 +827,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "Minimap",
-                    "The output in miniature at the right edge, coloured like the text. Drag the slider to scroll, or click a spot to jump there.",
+                    "",
                     switch("minimap".into(), "Minimap", minimap, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.minimap = !minimap;
@@ -850,9 +842,9 @@ impl Workspace {
                     p,
                     "Minimap placement",
                     if placement == MinimapPlacement::Beside {
-                        "Beside output: always shown in a column of its own, so it never covers output. The terminal is a little narrower."
+                        "Takes its own column, so the terminal is a little narrower."
                     } else {
-                        "Over output: the terminal keeps its full width. Rest the pointer on the thin bar at the right edge, or click it, to open the minimap over the output."
+                        "Opens over the output when the pointer rests at the right edge."
                     },
                     placement_choice,
                 )
@@ -861,7 +853,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "Open after",
-                    "How long the pointer rests on the bar before the minimap opens. It stays open while the pointer is on it.",
+                    "",
                     delay_choice,
                 )
             }))
@@ -878,7 +870,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "\"Rename\" in the menu",
-                    "Show Rename when you right-click a file or folder. F2 renames either way.",
+                    "F2 renames either way.",
                     switch("sftp-menu-rename".into(), "Rename in the menu", rename, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.sftp_menu_rename = !rename;
@@ -889,7 +881,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "\"Copy to…\" in the menu",
-                    "Show Copy to… when you right-click files or folders, to copy them to another folder on the server.",
+                    "",
                     switch("sftp-menu-copy-to".into(), "Copy to in the menu", copy_to, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.sftp_menu_copy_to = !copy_to;
@@ -900,7 +892,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "\"Move to…\" in the menu",
-                    "Show Move to… when you right-click files or folders, to move them to another folder on the server.",
+                    "",
                     switch("sftp-menu-move-to".into(), "Move to in the menu", move_to, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.sftp_menu_move_to = !move_to;
@@ -923,7 +915,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "RDP: fit the desktop to the window",
-                    "Ask the server for a desktop the size of the pane, and again when it changes size. Off, the server picks the size and Komando scales it down to fit. Applies from the next connection.",
+                    "Applies from the next connection.",
                     switch("rdp-fit-desktop".into(), "Fit RDP desktops to the window", fit, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.rdp_fit_desktop = !fit;
@@ -935,7 +927,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "VNC: share the desktop",
-                    "Leave other viewers of a VNC desktop connected. Off asks the server to disconnect them. Applies from the next connection.",
+                    "Off disconnects other viewers. Applies from the next connection.",
                     switch("vnc-shared".into(), "Share VNC desktops", shared, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.vnc_shared = !shared;
@@ -948,9 +940,9 @@ impl Workspace {
                     p,
                     "Trusted RDP certificates",
                     &match trusted {
-                        0 => "None yet. Komando asks the first time it connects to an RDP server, as for an SSH host key.".to_string(),
-                        1 => "1 server. Forgetting it makes Komando ask again on the next connection.".to_string(),
-                        n => format!("{n} servers. Forgetting them makes Komando ask again on the next connections."),
+                        0 => "None yet.".to_string(),
+                        1 => "1 server.".to_string(),
+                        n => format!("{n} servers."),
                     },
                     button("rdp-forget-certificates", "Forget all", ButtonKind::Secondary, p)
                         .when(trusted == 0, |el| el.opacity(0.5))
@@ -993,14 +985,14 @@ impl Workspace {
         );
         let (state, action) = if self.vault.is_some() {
             (
-                "Unlocked. Saved passwords and keys are filled in automatically.",
+                "Unlocked.",
                 button("vault-lock", "Lock now", ButtonKind::Secondary, p)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.lock_vault(cx)))
                     .into_any_element(),
             )
         } else {
             (
-                "Locked. Connections that need a saved password ask you to unlock first.",
+                "Locked.",
                 button("vault-unlock", "Unlock", ButtonKind::Primary, p)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.show_unlock("Unlock to connect with your saved passwords and keys and see them here.", window, cx)))
                     .into_any_element(),
@@ -1017,13 +1009,13 @@ impl Workspace {
                 setting_row_below(
                     p,
                     "Auto-lock",
-                    "Timed unlocks survive restarts on your Windows account; time with Komando closed counts as inactivity. Until restart locks on exit. Open sessions stay connected.",
+                    "Locking doesn't close open sessions.",
                     auto_lock,
                 ),
                 setting_row(
                     p,
                     "Saved credentials",
-                    "Passwords and keys in the vault. Hosts and projects only refer to them.",
+                    "",
                     div()
                         .text_size(px(13.))
                         .text_color(p.text_muted)
@@ -1033,7 +1025,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "Trusted server keys",
-                    "Komando's own list of host keys you trusted on first connect.",
+                    "",
                     button("open-known-hosts", "Show file", ButtonKind::Secondary, p)
                         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.reveal_path(&known_hosts)))
                         .into_any_element(),
@@ -1041,7 +1033,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "Command history",
-                    "Keep the commands you enter in each host's sessions, with their time, on this PC: your own record of what you did there, whatever else happens on the server. Right-click a host to see it. A command typed after an extra space is left out, as bash does. Off: nothing is recorded.",
+                    "Kept per host on this PC. Right-click a host to see it. Commands typed after a space are skipped.",
                     switch("command-history".into(), "Command history", history, p)
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.settings.command_history = !history;
@@ -1053,9 +1045,9 @@ impl Workspace {
                     p,
                     "Saved command history",
                     match history_hosts {
-                        0 => "None kept on this PC.",
-                        1 => "Kept for 1 host on this PC, in plain text like a shell's history.",
-                        _ => "Kept on this PC, in plain text like a shell's history.",
+                        0 => "None.",
+                        1 => "1 host, in plain text like a shell's history.",
+                        _ => "Plain text, like a shell's history.",
                     },
                     div()
                         .flex()
@@ -1140,7 +1132,7 @@ impl Workspace {
                     setting_row(
                         p,
                         "Welcome tour",
-                        "The guide shown on the first start: essential settings, the vault, importing, the minimap and remote desktops.",
+                        "",
                         button("replay-tour", "Show again", ButtonKind::Secondary, p)
                             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.start_tour(window, cx)))
                             .into_any_element(),
@@ -2052,7 +2044,9 @@ fn setting_row_below(p: AppPalette, label: &str, hint: &str, control: AnyElement
                 .flex_col()
                 .gap(px(3.))
                 .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()))
-                .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(hint.to_string())),
+                .when(!hint.is_empty(), |el| {
+                    el.child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(hint.to_string()))
+                }),
         )
         .child(div().flex().child(control))
         .into_any_element()

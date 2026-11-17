@@ -40,6 +40,8 @@ All notable changes to Komando are listed here. The format follows
   and a badge shows which mode is in use. Mode and App icon are picked from pictures, the
   theme and terminal color menus show a miniature of each choice, and the window and
   sidebar settings have their own sections.
+- Settings pages are easier to scan: explanations that only repeated a setting's name are
+  gone, and the rest are shortened to what you need to know.
 
 ### Fixed
 
