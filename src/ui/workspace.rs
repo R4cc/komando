@@ -862,9 +862,38 @@ impl Workspace {
 
     // ---- highlights -------------------------------------------------------------------
 
+    /// Whether Highlight Rules colour the Sessions of `item`: not when its Host or Project
+    /// switched highlighting off.
+    fn highlights_item(&self, item: &ItemKey) -> bool {
+        let project_on = |id: &str| self.library.project(id).is_none_or(|p| p.highlight);
+        match item {
+            ItemKey::Host { project, host } => project_on(project) && self.library.host(host).is_none_or(|h| h.highlight),
+            ItemKey::Shell { project, .. } => project.as_deref().is_none_or(project_on),
+        }
+    }
+
+    /// After a Host or Project changed: turn each open terminal's highlighting on or off.
+    fn refresh_session_highlights(&mut self, cx: &mut Context<Self>) {
+        for entry in &self.sessions {
+            let on = self.highlights_item(&entry.item);
+            if let Some(view) = entry.view.terminal() {
+                view.update(cx, |v, cx| {
+                    if v.highlight != on {
+                        v.highlight = on;
+                        cx.notify();
+                    }
+                });
+            }
+        }
+    }
+
     fn apply_highlights(&mut self, cx: &mut Context<Self>) {
-        let compiled = Highlighter::from_sets(&self.highlights, &self.settings.disabled_highlight_sets);
+        let mut compiled = Highlighter::from_sets(&self.highlights, &self.settings.disabled_highlight_sets);
         self.highlight_skipped = compiled.skipped.clone();
+        compiled.full_screen = self.settings.highlight_full_screen;
+        if !self.settings.highlighting {
+            compiled = Highlighter::default();
+        }
         cx.set_global(ActiveHighlights(Arc::new(compiled)));
         cx.refresh_windows();
     }
@@ -1367,6 +1396,7 @@ impl Workspace {
         self.collapsed_items.remove(&item);
         let scrollback = self.settings.scrollback_lines;
         let pointer = self.settings.pointer.clone();
+        let highlight = self.highlights_item(&item);
         let windows_selection = self.settings.windows_selection;
         let cursor_shape = self.settings.cursor_shape;
         let cursor_blink = self.settings.cursor_blink;
@@ -1379,6 +1409,7 @@ impl Workspace {
         let view = cx.new(|cx| {
             let mut view = TerminalView::new(label.clone(), scrollback, window, cx);
             view.pointer = pointer;
+            view.highlight = highlight;
             view.windows_selection = windows_selection;
             view.set_cursor(cursor_shape, cursor_blink);
             view.command_rail = command_rail;

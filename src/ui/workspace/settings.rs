@@ -2011,10 +2011,42 @@ impl Workspace {
                         .map(|(text, why)| div().text_color(p.text_muted).truncate().child(format!("{text}: {why}"))),
                 )
         });
+        let (highlighting, full_screen) = (self.settings.highlighting, self.settings.highlight_full_screen);
+        let switches = group(
+            p,
+            std::iter::once(setting_row(
+                p,
+                "Highlight output",
+                "Hosts and projects can turn it off in their settings.",
+                switch("highlighting".into(), "Highlight output", highlighting, p)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.settings.highlighting = !highlighting;
+                        this.save_settings(cx);
+                        this.apply_highlights(cx);
+                    }))
+                    .into_any_element(),
+            ))
+            .chain(highlighting.then(|| {
+                setting_row(
+                    p,
+                    "Highlight full-screen programs",
+                    "Such as vim, htop and less. Off leaves their own colors alone.",
+                    switch("highlight-full-screen".into(), "Highlight full-screen programs", full_screen, p)
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.settings.highlight_full_screen = !full_screen;
+                            this.save_settings(cx);
+                            this.apply_highlights(cx);
+                        }))
+                        .into_any_element(),
+                )
+            }))
+            .collect(),
+        );
         div()
             .flex()
             .flex_col()
             .gap(px(14.))
+            .child(div().mb(px(14.)).child(switches))
             .child(
                 div()
                     .flex()

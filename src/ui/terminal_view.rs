@@ -250,6 +250,9 @@ pub struct TerminalView {
     startup: StartupCommands,
     /// Mouse and clipboard behaviour. Word separators take effect through `set_cursor`.
     pub pointer: crate::model::Pointer,
+    /// Highlight Rules colour this terminal's output: off when its Host or Project turned
+    /// highlighting off (the Settings switch empties the rules for every terminal instead).
+    pub highlight: bool,
     /// A plain click began on this link (`LinkClick::Click`): it opens on release, unless
     /// the press turned into a selection.
     link_press: Option<TermLink>,
@@ -527,6 +530,7 @@ impl TerminalView {
             startup: StartupCommands::default(),
             pointer: crate::model::Pointer::default(),
             link_press: None,
+            highlight: true,
             windows_selection: false,
             keyboard_selection: Default::default(),
             cursor_epoch: Instant::now(),
@@ -1266,6 +1270,16 @@ impl TerminalView {
     /// `grid_point` locks the terminal itself, so it has to run before the lock here is taken:
     /// `link_at(&*self.term.lock(), self.grid_point(..))` locked it twice on the UI thread, and
     /// the terminal's mutex isn't reentrant, so the window hung for good.
+    /// The rules colouring this terminal's output: none while its highlighting is off. The
+    /// empty set is shared, so the grid sees the same one from frame to frame.
+    fn highlighter(&self, cx: &App) -> Arc<highlight::Highlighter> {
+        static NONE: std::sync::LazyLock<Arc<highlight::Highlighter>> = std::sync::LazyLock::new(Default::default);
+        match cx.try_global::<ActiveHighlights>() {
+            Some(active) if self.highlight => active.0.clone(),
+            _ => NONE.clone(),
+        }
+    }
+
     /// Whether a click with these keys opens a link at once: the chosen key, and Ctrl (Cmd on
     /// macOS) when a plain click opens links, so programs that take the mouse still allow it.
     fn link_key_held(&self, m: &gpui::Modifiers) -> bool {
@@ -1387,9 +1401,9 @@ impl TerminalView {
     /// selecting everything, searching, and copying the whole output.
     fn context_menu(view: gpui::WeakEntity<Self>, focus: FocusHandle, menu: PopupMenu, cx: &mut App) -> PopupMenu {
         let Some(this) = view.upgrade() else { return menu };
-        let highlighter = cx.try_global::<ActiveHighlights>().map(|h| h.0.clone());
         let (selected, can_type, hit, link) = {
             let this = this.read(cx);
+            let highlighter = this.highlight.then(|| cx.try_global::<ActiveHighlights>().map(|h| h.0.clone())).flatten();
             let selected = this.term.lock().selection_to_string().is_some_and(|t| !t.is_empty());
             let hit = highlighter.zip(this.menu_point).and_then(|(h, at)| highlighted_at(&*this.term.lock(), &h, at));
             let link = this.menu_point.and_then(|at| link_at(&*this.term.lock(), at)).map(|l| l.url);
@@ -2989,8 +3003,9 @@ fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &
         let offset = view_offset(&*term);
         // The damage is for the terminal's own offset (see `view_offset`).
         all |= offset != content.display_offset;
-        // Highlight rules colour plain output; full-screen programs (vim, htop) are left alone.
-        let highlight = (!content.mode.contains(TermMode::ALT_SCREEN) && look.highlighter.rule_count() > 0)
+        // Highlight rules colour plain output; full-screen programs (vim, htop) only when asked.
+        let full_screen_ok = look.highlighter.full_screen || !content.mode.contains(TermMode::ALT_SCREEN);
+        let highlight = (full_screen_ok && look.highlighter.rule_count() > 0)
             .then(|| look.highlighter.clone());
         let now = LaidOutWith {
             family: font.family.clone(),
@@ -3385,7 +3400,7 @@ impl Render for TerminalView {
         let marked = self.marked.clone();
         let input_view = cx.entity();
         let input_focus = self.focus.clone();
-        let highlighter = cx.try_global::<ActiveHighlights>().map(|h| h.0.clone()).unwrap_or_default();
+        let highlighter = self.highlighter(cx);
         let (rail, flash_row) = crate::perf::time("command rail", || self.render_rail(cx));
         let (search_marks, minimap_marks) = crate::perf::time("search highlights", || self.search_view());
         // Beside the output it takes a column (and the right padding: it has its own); over the

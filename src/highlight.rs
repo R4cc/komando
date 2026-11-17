@@ -305,6 +305,8 @@ pub struct Highlighter {
     rules: Vec<Rule>,
     /// Rules that could not be used, with the reason (shown in the Highlights panel).
     pub skipped: Vec<(String, String)>,
+    /// Also colour full-screen programs (the alternate screen). Off, vim and htop are left alone.
+    pub full_screen: bool,
 }
 
 impl Highlighter {
@@ -368,7 +370,7 @@ impl Highlighter {
             }
             None => None,
         };
-        Self { set, rules, skipped }
+        Self { set, rules, skipped, full_screen: false }
     }
 
     pub fn from_sets(sets: &[HighlightSet], disabled_sets: &[String]) -> Self {

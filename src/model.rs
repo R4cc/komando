@@ -59,6 +59,9 @@ pub struct Project {
     /// Local Shells that belong to this Project (shown in its group, in its colour).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shells: Vec<LocalShell>,
+    /// Highlight Rules colour the output of its Hosts and Local Shells. Off overrides the Hosts.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub highlight: bool,
 }
 
 fn default_project_icon() -> String {
@@ -80,6 +83,7 @@ impl Project {
             startup_commands: vec![],
             hosts: vec![],
             shells: vec![],
+            highlight: true,
         }
     }
 }
@@ -196,6 +200,9 @@ pub struct Host {
     /// or one of its Remote Desktops (a Windows machine without SSH).
     #[serde(default, skip_serializing_if = "Protocol::is_ssh")]
     pub opens: Protocol,
+    /// Highlight Rules colour its terminal output, when its Project's are on too.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub highlight: bool,
 }
 
 /// How Komando reaches a Host: a terminal over SSH, or a Remote Desktop over RDP or VNC.
@@ -426,6 +433,7 @@ impl Host {
             rdp_enabled: true,
             vnc_enabled: true,
             opens: Protocol::Ssh,
+            highlight: true,
         }
     }
 }
@@ -1072,6 +1080,10 @@ pub struct Settings {
     pub minimap_delay_ms: u32,
     /// Highlight sets (by id) that are switched off.
     pub disabled_highlight_sets: Vec<String>,
+    /// Highlight Rules colour terminal output at all. Hosts and Projects can turn it off too.
+    pub highlighting: bool,
+    /// Highlight Rules also colour full-screen programs (the alternate screen: vim, htop).
+    pub highlight_full_screen: bool,
     /// Windows 11 Mica: the blurred desktop shows through Komando's background.
     pub background_blur: bool,
     /// Hide minimized windows in the Windows notification area.
@@ -1225,6 +1237,8 @@ impl Default for Settings {
             minimap_placement: MinimapPlacement::Beside,
             minimap_delay_ms: 300,
             disabled_highlight_sets: vec![],
+            highlighting: true,
+            highlight_full_screen: false,
             background_blur: false,
             minimize_to_tray: true,
             background_blur_intensity: 60,
@@ -1472,6 +1486,22 @@ mod tests {
     }
 
     #[test]
+    fn highlight_switches_default_on_and_are_only_written_when_off() {
+        let mut project = Project::new("Web", "blue", "folder");
+        let mut host = Host::new("web-01", "10.0.0.1");
+        assert!(project.highlight && host.highlight);
+        assert!(!toml::to_string(&project).unwrap().contains("highlight"));
+        assert!(!toml::to_string(&host).unwrap().contains("highlight"));
+        project.highlight = false;
+        host.highlight = false;
+        let project: Project = toml::from_str(&toml::to_string(&project).unwrap()).unwrap();
+        let host: Host = toml::from_str(&toml::to_string(&host).unwrap()).unwrap();
+        assert!(!project.highlight && !host.highlight);
+        let settings: Settings = toml::from_str("").unwrap();
+        assert!(settings.highlighting && !settings.highlight_full_screen);
+    }
+
+    #[test]
     fn pointer_settings_round_trip_flat_and_putty_clipboard_migrates() {
         let old: Settings = toml::from_str("putty_clipboard = true\nconfirm_multiline_paste = false").unwrap();
         let old = old.migrated();
@@ -1623,6 +1653,7 @@ mod tests {
             startup_commands: vec![],
             hosts: vec!["h1".into()],
             shells: vec![],
+            highlight: true,
         }
     }
 
@@ -1650,6 +1681,7 @@ mod tests {
             rdp_enabled: true,
             vnc_enabled: true,
             opens: Protocol::Ssh,
+            highlight: true,
         }
     }
 

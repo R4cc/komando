@@ -64,6 +64,8 @@ pub(super) struct HostForm {
     use_project_jumps: bool,
     jumps: Vec<JumpRow>,
     run_project_commands: bool,
+    /// Highlight Rules colour its output.
+    highlight: bool,
     /// Its Remote Desktops: RDP, then VNC.
     desktops: [DesktopRow; 2],
     /// Opened from an unconfigured desktop's menu entry: show just that protocol's settings.
@@ -105,6 +107,8 @@ pub(super) struct ProjectForm {
     key_path: Entity<InputState>,
     jumps: Vec<JumpRow>,
     commands: Vec<CommandRow>,
+    /// Highlight Rules colour the output of its hosts and shells.
+    highlight: bool,
     error: Option<String>,
 }
 
@@ -247,6 +251,7 @@ impl Workspace {
             use_project_jumps: h.use_project_jump_hosts,
             jumps,
             run_project_commands: h.run_project_commands,
+            highlight: h.highlight,
             desktops,
             desktop_setup: None,
             opens: h.opens_with(),
@@ -441,6 +446,7 @@ impl Workspace {
 
     fn submit_host_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.save_host_form(cx);
+        self.refresh_session_highlights(cx);
         self.finish_form(result, window, cx);
     }
 
@@ -479,8 +485,8 @@ impl Workspace {
         let jumps = read_jump_rows(&form.jumps, cx)?;
         let use_project_jumps = form.use_project_jumps;
         let startup_commands = read_command_rows(&form.commands, cx)?;
-        let (project_id, editing, sign_in, run_project_commands, icon) =
-            (form.project_id.clone(), form.editing.clone(), form.sign_in, form.run_project_commands, form.icon.clone());
+        let (project_id, editing, sign_in, run_project_commands, icon, highlight) =
+            (form.project_id.clone(), form.editing.clone(), form.sign_in, form.run_project_commands, form.icon.clone(), form.highlight);
         let desktop_entries = form.desktops.iter().map(|row| read_desktop_row(row, cx)).collect::<Result<Vec<_>, _>>()?;
         let opens = form.opens;
         let desktop_setup = form.desktop_setup;
@@ -507,6 +513,7 @@ impl Workspace {
         host.use_project_jump_hosts = use_project_jumps;
         host.startup_commands = startup_commands;
         host.run_project_commands = run_project_commands;
+        host.highlight = highlight;
         host.icon = Some(icon);
         let mut imported: Vec<CredentialId> = imported.into_iter().collect();
         // Desktop passwords that are replaced or forgotten leave the Vault once nothing uses them.
@@ -663,11 +670,24 @@ impl Workspace {
                 form.icon = name;
             }
         }));
+        let project_highlights = project.is_none_or(|pr| pr.highlight);
+        let output = form_section("Output", p).child(highlight_switch(
+            "hf-highlight",
+            form.highlight,
+            if project_highlights { "" } else { "Off for every host in this project. Turn it on in the project first." },
+            p,
+            cx,
+            |this| {
+                if let Some(form) = this.host_form() {
+                    form.highlight = !form.highlight;
+                }
+            },
+        ));
         // Two columns: who it is and how you sign in on the left, how it looks on the right.
         // The jump hosts and startup commands, a row of fields each, get the full width below.
         let body = form_body(
             wide,
-            vec![connection.into_any_element(), sign_in.into_any_element()],
+            vec![connection.into_any_element(), sign_in.into_any_element(), output.into_any_element()],
             vec![icon.into_any_element(), desktops.into_any_element()],
             vec![route.into_any_element(), commands.into_any_element()],
         );
@@ -1267,6 +1287,7 @@ impl Workspace {
             key_path,
             jumps,
             commands,
+            highlight: pr.highlight,
             error: None,
         }));
         cx.notify();
@@ -1274,6 +1295,7 @@ impl Workspace {
 
     fn submit_project_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.save_project_form(cx);
+        self.refresh_session_highlights(cx);
         self.finish_form(result, window, cx);
     }
 
@@ -1286,7 +1308,8 @@ impl Workspace {
         }
         let jumps = read_jump_rows(&form.jumps, cx)?;
         let startup_commands = read_command_rows(&form.commands, cx)?;
-        let (editing, color, icon, sign_in) = (form.editing.clone(), form.color.clone(), form.icon.clone(), form.sign_in);
+        let (editing, color, icon, sign_in, highlight) =
+            (form.editing.clone(), form.color.clone(), form.icon.clone(), form.sign_in, form.highlight);
 
         let mut project = editing
             .as_deref()
@@ -1309,6 +1332,7 @@ impl Workspace {
         project.icon = icon;
         project.default_user = (!default_user.is_empty()).then_some(default_user);
         project.startup_commands = startup_commands;
+        project.highlight = highlight;
         let before = std::mem::take(&mut project.jump_hosts);
 
         let result = self.commit_form(jumps, imported.into_iter().collect(), before, move |library, jumps| {
@@ -1389,7 +1413,12 @@ impl Workspace {
                     .child(div().flex().child(sign_in_choice))
                     .when(form.sign_in == SignIn::KeyFile, |el| el.child(key_file_row(&form.key_path, "pf", p, cx)))
                     .child(hint_text(sign_in_hint.into(), p)),
-            );
+            )
+            .child(highlight_switch("pf-highlight", form.highlight, "", p, cx, |this| {
+                if let Some(form) = this.project_form() {
+                    form.highlight = !form.highlight;
+                }
+            }));
         let jump_hint = if form.jumps.is_empty() {
             "Its hosts connect directly from this PC, unless they add jump hosts of their own."
         } else {
@@ -1483,6 +1512,34 @@ fn commands_preview(commands: &[String], p: AppPalette) -> AnyElement {
         .text_size(px(12.))
         .text_color(p.text_muted)
         .children(commands.iter().map(|c| div().truncate().child(c.clone())))
+        .into_any_element()
+}
+
+/// The "Highlight output" switch of a host or project form, with a hint below when given.
+fn highlight_switch(
+    id: &'static str,
+    on: bool,
+    hint: &'static str,
+    p: AppPalette,
+    cx: &mut Context<Workspace>,
+    flip: impl Fn(&mut Workspace) + 'static,
+) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(switch(id.into(), "Highlight output", on, p).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    flip(this);
+                    cx.notify();
+                })))
+                .child(div().text_size(px(12.5)).text_color(p.text).child("Highlight output")),
+        )
+        .when(!hint.is_empty(), |el| el.child(hint_text(hint.into(), p)))
         .into_any_element()
 }
 
