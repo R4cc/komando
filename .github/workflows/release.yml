@@ -45,7 +45,7 @@ jobs:
     env:
       TAG: ${{ inputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ env.TAG }}
 
@@ -72,7 +72,7 @@ jobs:
       TAG: ${{ inputs.tag }}
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ env.TAG }}
 
@@ -102,7 +102,7 @@ jobs:
 
       - name: Save build timings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-build-timings-${{ inputs.tag }}
           path: target/cargo-timings/*.html
@@ -126,7 +126,7 @@ jobs:
       # Load fontconfig when the app starts instead of linking it, like Wayland and Vulkan.
       RUST_FONTCONFIG_DLOPEN: "on"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ env.TAG }}
 
@@ -149,7 +149,7 @@ jobs:
 
       - name: Save build timings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-build-timings-${{ inputs.tag }}-linux
           path: target/cargo-timings/*.html
@@ -171,7 +171,7 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ env.TAG }}
 
@@ -196,7 +196,7 @@ jobs:
 
       - name: Save build timings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-build-timings-${{ inputs.tag }}-macos
           path: target/cargo-timings/*.html
