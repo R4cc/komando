@@ -2333,7 +2333,12 @@ impl TerminalView {
                 .flex()
                 .justify_center()
                 .child(
+                    // A long reason (a failed key exchange lists every algorithm) wraps within
+                    // the terminal's width, and past three lines ends in "…": the output above
+                    // has it in full.
                     div()
+                        .min_w_0()
+                        .max_w_full()
                         .flex()
                         .items_center()
                         .gap(px(10.))
@@ -2346,9 +2351,18 @@ impl TerminalView {
                         .shadow(crate::ui::widgets::elevation(p))
                         .font_family(p.font_family)
                         .text_size(px(13.))
-                        .child(div().size(px(8.)).rounded_full().bg(p.text_faint))
-                        .child(div().text_color(p.text).child(reason.clone()))
-                        .child(div().text_color(p.text_muted).child("Press Enter to reconnect")),
+                        .child(div().flex_shrink_0().size(px(8.)).rounded_full().bg(p.text_faint))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_shrink()
+                                .whitespace_normal()
+                                .line_clamp(3)
+                                .text_ellipsis()
+                                .text_color(p.text)
+                                .child(reason.clone()),
+                        )
+                        .child(div().flex_shrink_0().text_color(p.text_muted).child("Press Enter to reconnect")),
                 )
                 .into_any_element(),
         )

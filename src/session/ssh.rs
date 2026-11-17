@@ -299,22 +299,68 @@ fn client_config(window: u32) -> Arc<client::Config> {
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 4,
         window_size: window,
-        preferred: russh::Preferred { cipher: std::borrow::Cow::Borrowed(ciphers()), ..Default::default() },
+        preferred: russh::Preferred {
+            kex: std::borrow::Cow::Borrowed(KEX),
+            cipher: std::borrow::Cow::Borrowed(ciphers()),
+            mac: std::borrow::Cow::Borrowed(MACS),
+            ..Default::default()
+        },
         ..Default::default()
     })
 }
+
+/// The key exchanges to offer, best first: russh's defaults, then what network gear such as
+/// Cisco switches offers instead (NIST-curve ECDH, and Diffie-Hellman group 14 with SHA-1 on
+/// older firmware). The server picks the first of ours it also has, so a server with a modern
+/// key exchange still gets it, and the exchange hash protects the choice from tampering.
+const KEX: &[russh::kex::Name] = {
+    use russh::kex::*;
+    &[
+        MLKEM768X25519_SHA256,
+        CURVE25519,
+        CURVE25519_PRE_RFC_8731,
+        DH_GEX_SHA256,
+        DH_G18_SHA512,
+        DH_G17_SHA512,
+        DH_G16_SHA512,
+        DH_G15_SHA512,
+        DH_G14_SHA256,
+        ECDH_SHA2_NISTP256,
+        ECDH_SHA2_NISTP384,
+        ECDH_SHA2_NISTP521,
+        DH_G14_SHA1,
+        EXTENSION_SUPPORT_AS_CLIENT,
+        EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
+    ]
+};
+
+/// The MACs to offer, best first: russh's defaults, then HMAC-SHA1, the only one older Cisco
+/// firmware has. Only used with a cipher that isn't AEAD (CTR or CBC).
+const MACS: &[russh::mac::Name] = {
+    use russh::mac::*;
+    &[HMAC_SHA512_ETM, HMAC_SHA256_ETM, HMAC_SHA512, HMAC_SHA256, HMAC_SHA1_ETM, HMAC_SHA1]
+};
 
 /// The ciphers to offer, best first. russh puts ChaCha20-Poly1305 first, as OpenSSH does; with
 /// AES instructions in the CPU (every PC that runs Windows 11 has them), AES-GCM decrypts
 /// several times faster and is just as safe, so it goes first there. The server still picks
 /// ChaCha20 if it doesn't offer AES-GCM.
 fn ciphers() -> &'static [russh::cipher::Name] {
-    use russh::cipher::{AES_128_CTR, AES_128_GCM, AES_192_CTR, AES_256_CTR, AES_256_GCM, CHACHA20_POLY1305};
+    use russh::cipher::{
+        AES_128_CBC, AES_128_CTR, AES_128_GCM, AES_192_CBC, AES_192_CTR, AES_256_CBC, AES_256_CTR, AES_256_GCM,
+        CHACHA20_POLY1305,
+    };
     #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("aes") && std::arch::is_x86_feature_detected!("pclmulqdq") {
-        return &[AES_256_GCM, AES_128_GCM, CHACHA20_POLY1305, AES_256_CTR, AES_192_CTR, AES_128_CTR];
+        return &[
+            AES_256_GCM, AES_128_GCM, CHACHA20_POLY1305, AES_256_CTR, AES_192_CTR, AES_128_CTR,
+            AES_256_CBC, AES_192_CBC, AES_128_CBC,
+        ];
     }
-    &[CHACHA20_POLY1305, AES_256_GCM, AES_128_GCM, AES_256_CTR, AES_192_CTR, AES_128_CTR]
+    &[
+        CHACHA20_POLY1305, AES_256_GCM, AES_128_GCM, AES_256_CTR, AES_192_CTR, AES_128_CTR,
+        AES_256_CBC, AES_192_CBC, AES_128_CBC,
+    ]
 }
 
 /// A TCP connection to `address:port`, trying each address it resolves to in turn, with a

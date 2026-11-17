@@ -151,7 +151,7 @@ impl Workspace {
                 .role(gpui::Role::Button)
                 .aria_label(label)
                 .tab_index(if downloading { -1 } else { 0 })
-                .focus_visible(move |s| s.border_2().border_color(p.focus))
+                .focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus))
                 .relative()
                 .size(px(32.))
                 .flex_shrink_0()

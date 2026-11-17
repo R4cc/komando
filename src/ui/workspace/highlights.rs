@@ -488,7 +488,7 @@ fn swatch(id: SharedString, name: &'static str, colour: Option<Rgb8>, selected: 
         .rounded_full()
         .border_2()
         .border_color(if selected { p.text } else { gpui::transparent_black() })
-        .focus_visible(move |s| s.border_color(p.focus))
+        .focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus))
         .cursor_pointer()
         .child(
             div()

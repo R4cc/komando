@@ -108,7 +108,7 @@ fn button_shell(id: impl Into<ElementId>, kind: ButtonKind, p: AppPalette) -> (S
         .id(id)
         .role(gpui::Role::Button)
         .tab_index(0)
-        .focus_visible(move |s| s.border_2().border_color(p.focus))
+        .focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus))
         .h(px(32.))
         .px(px(14.))
         .flex()
@@ -154,7 +154,7 @@ pub fn labelled_checkbox(
         .rounded(p.corner(6.))
         .border_1()
         .border_color(gpui::transparent_black())
-        .focus_visible(move |s| s.border_color(p.focus))
+        .focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus))
         .cursor_pointer()
         .on_click(move |event, window, cx| match event {
             // Enter isn't a checkbox key; leave it alone.
@@ -184,7 +184,7 @@ pub fn icon_button(id: impl Into<ElementId>, icon: &str, p: AppPalette) -> State
         .role(gpui::Role::Button)
         .aria_label(icon.replace('-', " "))
         .tab_index(0)
-        .focus_visible(move |s| s.border_2().border_color(p.focus))
+        .focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus))
         .size(px(30.))
         .flex()
         .items_center()
@@ -206,7 +206,7 @@ pub fn close_button(id: impl Into<ElementId>, size: f32, p: AppPalette) -> State
         .group(group.clone())
         .role(gpui::Role::Button)
         .tab_index(0)
-        .focus_visible(move |s| s.border_2().border_color(p.focus))
+        .focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus))
         .size(px(size))
         .flex()
         .items_center()
@@ -579,6 +579,14 @@ pub fn island(p: AppPalette) -> gpui::Div {
 }
 
 /// Layered, low-opacity shadows for floating surfaces (dialogs, popovers).
+/// How a control shows keyboard focus: a 2px ring painted inside its edge. Widening the
+/// border instead would shrink the content box, so the label would shift as Tab moves.
+pub fn focus_outline(s: gpui::StyleRefinement, color: Hsla) -> gpui::StyleRefinement {
+    s.border_color(color).shadow(vec![BoxShadow {
+        color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(2.), inset: true,
+    }])
+}
+
 pub fn elevation(p: AppPalette) -> Vec<BoxShadow> {
     let s = p.shadow;
     if s.opacity <= 0. { return vec![]; }
