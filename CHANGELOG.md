@@ -6,6 +6,10 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The silver frame disappears when the window is maximized and follows the rounded corners on Windows.
+
 ## [0.8.0] - 2026-11-17
 
 ### Added

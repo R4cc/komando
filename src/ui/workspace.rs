@@ -810,7 +810,7 @@ impl Workspace {
             window.set_background_appearance(gpui::WindowBackgroundAppearance::Opaque);
         }
         let opaque = AppPalette::from_theme(self.theme_for(app_dark));
-        crate::platform::style_native_frame(
+        crate::platform::set_native_caption_color(
             window,
             (!backdrop_enabled).then(|| crate::theme::packed(opaque.canvas)),
         );
@@ -5675,6 +5675,7 @@ impl Render for Workspace {
                 .text_color(p.text)
                 .child(msg.clone())
         });
+        let frame = window_frame::render(p, window, cx);
         // Full screen, from a desktop's toolbar: the desktop alone, edge to edge. Presentation
         // mode's full screen keeps the title bar, with its way out.
         if window.is_fullscreen()
@@ -5722,7 +5723,7 @@ impl Render for Workspace {
             .children(self.main_menu.render())
             .children(self.forwards_menu.render())
             .children(toast)
-            .children(window_frame::render(p, window, cx))
+            .children(frame)
             .into_any_element()
     }
 }

@@ -66,34 +66,49 @@ pub fn set_window_dark_mode(window: &gpui::Window, dark: bool) {
 #[cfg(not(windows))]
 pub fn set_window_dark_mode(_window: &gpui::Window, _dark: bool) {}
 
-/// Let Komando paint the window border and match the native caption to the app canvas.
-/// `None` leaves the caption color to Windows when Mica is on.
+/// Match the native caption to the app canvas. Mica uses the default caption color.
 #[cfg(windows)]
-pub fn style_native_frame(window: &gpui::Window, caption: Option<u32>) {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use windows::Win32::Foundation::{COLORREF, HWND};
-    use windows::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_COLOR_DEFAULT, DWMWA_COLOR_NONE, DwmSetWindowAttribute};
+pub fn set_native_caption_color(window: &gpui::Window, caption: Option<u32>) {
+    use windows::Win32::Graphics::Dwm::{DWMWA_CAPTION_COLOR, DWMWA_COLOR_DEFAULT};
 
-    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
-    let RawWindowHandle::Win32(win32) = handle.as_raw() else { return };
-    let hwnd = HWND(win32.hwnd.get() as *mut core::ffi::c_void);
-    // COLORREF is 0x00bbggrr.
-    let colorref = |rgb: u32| COLORREF(((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff));
-    let caption = caption.map_or(COLORREF(DWMWA_COLOR_DEFAULT), colorref);
-    for (attribute, value) in [(DWMWA_BORDER_COLOR, COLORREF(DWMWA_COLOR_NONE)), (DWMWA_CAPTION_COLOR, caption)] {
-        unsafe {
-            let _ = DwmSetWindowAttribute(
-                hwnd,
-                attribute,
-                &value as *const COLORREF as *const core::ffi::c_void,
-                std::mem::size_of::<COLORREF>() as u32,
-            );
-        }
-    }
+    set_dwm_color(window, DWMWA_CAPTION_COLOR, caption, DWMWA_COLOR_DEFAULT);
 }
 
 #[cfg(not(windows))]
-pub fn style_native_frame(_window: &gpui::Window, _caption: Option<u32>) {}
+pub fn set_native_caption_color(_window: &gpui::Window, _caption: Option<u32>) {}
+
+/// Let DWM draw the hairline along the actual window shape, including the rounded corners.
+#[cfg(windows)]
+pub fn set_native_border_color(window: &gpui::Window, border: Option<u32>) {
+    use windows::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE};
+
+    set_dwm_color(window, DWMWA_BORDER_COLOR, border, DWMWA_COLOR_NONE);
+}
+
+#[cfg(windows)]
+fn set_dwm_color(
+    window: &gpui::Window,
+    attribute: windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE,
+    rgb: Option<u32>,
+    fallback: u32,
+) {
+    use windows::Win32::Foundation::{COLORREF, HWND};
+    use windows::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+
+    let Some(handle) = window_handle(window) else { return };
+    // COLORREF is 0x00bbggrr.
+    let value = COLORREF(rgb.map_or(fallback, |rgb| {
+        ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff)
+    }));
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            HWND(handle as *mut _),
+            attribute,
+            &value as *const COLORREF as *const core::ffi::c_void,
+            std::mem::size_of::<COLORREF>() as u32,
+        );
+    }
+}
 
 /// The window's Win32 handle, as a number so it can go to another thread (see
 /// `crate::elevate::open_shell_elevated`).

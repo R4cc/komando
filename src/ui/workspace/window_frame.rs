@@ -1,16 +1,14 @@
 use gpui::{
-    App, BorderStyle, Bounds, BoxShadow, Canvas, ContentMask, Hsla, Styled, Window, canvas,
-    outline, point, px, size,
+    App, Bounds, BoxShadow, Canvas, ContentMask, Hsla, Styled, Window, canvas, point, px, size,
 };
+#[cfg(not(windows))]
+use gpui::{BorderStyle, outline};
 
 use crate::theme::{AppPalette, hex};
 
 /// A paint-only frame so the title bar, resize edges, and sidebar still receive pointer input.
-pub(super) fn render(palette: AppPalette, window: &Window, cx: &App) -> Option<Canvas<()>> {
-    if window.is_fullscreen() {
-        return None;
-    }
-
+pub(super) fn render(palette: AppPalette, window: &mut Window, cx: &mut App) -> Option<Canvas<()>> {
+    let visible = !window.is_maximized() && !window.is_fullscreen();
     // Keep the frame near silver, with a little warmth or coolness from the app canvas.
     let (silver, line_alpha, glow_alpha) = if palette.dark {
         (0xdce0e5, 0.24, 0.16)
@@ -21,6 +19,34 @@ pub(super) fn render(palette: AppPalette, window: &Window, cx: &App) -> Option<C
         a: 0.10,
         ..palette.canvas
     });
+
+    #[cfg(windows)]
+    {
+        // DWM needs an opaque color. Blend against the canvas to match the translucent stroke.
+        let border = visible.then(|| {
+            let canvas = Hsla {
+                a: 1.,
+                ..palette.canvas
+            };
+            crate::theme::packed(canvas.blend(color.opacity(line_alpha)))
+        });
+        let applied = window.use_state(cx, |_, _| std::cell::Cell::new(None));
+        if applied.read(cx).replace(Some(border)) != Some(border) {
+            window.defer(cx, move |window, _| {
+                crate::platform::set_native_border_color(window, border)
+            });
+        }
+    }
+
+    if !visible {
+        return None;
+    }
+
+    // The compositor traces the hairline exactly. Use Windows' usual window radius for
+    // the much softer glow, which is painted inside the client area.
+    #[cfg(windows)]
+    let corners = gpui::Corners::all(px(8.));
+    #[cfg(not(windows))]
     let corners = gpui_component::window_corner_radii(window, cx);
 
     Some(
@@ -30,6 +56,7 @@ pub(super) fn render(palette: AppPalette, window: &Window, cx: &App) -> Option<C
                 let glow = BoxShadow::new(px(0.), px(0.), color.opacity(glow_alpha))
                     .blur_radius(px(3.))
                     .inset();
+                #[cfg(not(windows))]
                 let stroke = outline(bounds, color.opacity(line_alpha), BorderStyle::Solid)
                     .corner_radii(corners);
 
@@ -64,6 +91,7 @@ pub(super) fn render(palette: AppPalette, window: &Window, cx: &App) -> Option<C
                                 corners,
                                 std::slice::from_ref(&glow),
                             );
+                            #[cfg(not(windows))]
                             window.paint_quad(stroke.clone());
                         },
                     );
