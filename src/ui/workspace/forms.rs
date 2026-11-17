@@ -3,8 +3,8 @@
 //! Both edit the settings a Project hands down to its Hosts in the same way: the Project sets
 //! a default (user, Credential, Jump Hosts, Startup Commands), and in the host form each one
 //! is a choice between taking the Project's, setting the Host's own, or switching it off.
-//! Jump Hosts and Startup Commands add up instead: the Project's come first, then the Host's,
-//! and the host form has a switch to leave the Project's out.
+//! Jump Hosts, Port Forwards and Startup Commands add up instead: the Project's come first,
+//! then the Host's, and the host form has a switch to leave the Project's out.
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, App, ClickEvent, Context, Entity, FontWeight, Hsla, SharedString, Window, div, prelude::*, px};
@@ -13,7 +13,7 @@ use gpui_component::tooltip::Tooltip;
 
 use super::settings::{group, setting_row, settings_block};
 use super::{FIRST_PROJECT_COLOR, FIRST_PROJECT_NAME, Overlay, Workspace, form_field, icon_picker, kbd, segmented, switch};
-use crate::model::{CredentialId, Desktop, Host, Inherited, JumpHost, Library, Project, Protocol, StartupCommand};
+use crate::model::{CredentialId, Desktop, ForwardKind, Host, Inherited, JumpHost, Library, PortForward, Project, Protocol, StartupCommand};
 use crate::theme::{AppPalette, project_color};
 use crate::ui::widgets::{ButtonKind, badge, button, icon_button, icon_el, icon_text_button};
 use crate::vault::{Credential, Secret};
@@ -55,19 +55,21 @@ pub(super) enum FormTab {
     General,
     SignIn,
     JumpHosts,
+    Forwards,
     Terminal,
     RemoteDesktop,
 }
 
 impl FormTab {
-    const HOST: [FormTab; 5] = [Self::General, Self::SignIn, Self::JumpHosts, Self::Terminal, Self::RemoteDesktop];
-    const PROJECT: [FormTab; 4] = [Self::General, Self::SignIn, Self::JumpHosts, Self::Terminal];
+    const HOST: [FormTab; 6] = [Self::General, Self::SignIn, Self::JumpHosts, Self::Forwards, Self::Terminal, Self::RemoteDesktop];
+    const PROJECT: [FormTab; 5] = [Self::General, Self::SignIn, Self::JumpHosts, Self::Forwards, Self::Terminal];
 
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
             Self::SignIn => "Sign-in",
             Self::JumpHosts => "Jump hosts",
+            Self::Forwards => "Port forwards",
             Self::Terminal => "Terminal",
             Self::RemoteDesktop => "Remote desktop",
         }
@@ -78,6 +80,7 @@ impl FormTab {
             Self::General => "sliders-horizontal",
             Self::SignIn => "key-round",
             Self::JumpHosts => "waypoints",
+            Self::Forwards => "arrow-right-left",
             Self::Terminal => "square-terminal",
             Self::RemoteDesktop => "monitor",
         }
@@ -92,6 +95,8 @@ impl FormTab {
             (Self::SignIn, true) => "Defaults for its hosts. Each host can set its own instead.",
             (Self::JumpHosts, false) => "Hosts to sign in to on the way, such as a bastion.",
             (Self::JumpHosts, true) => "Every host in the project goes through these, unless it switches them off.",
+            (Self::Forwards, false) => "Ports carried through its SSH connection while a session is connected.",
+            (Self::Forwards, true) => "Every host in the project opens these, unless it leaves them out.",
             (Self::Terminal, false) => "What is typed when the shell opens, and how its output looks.",
             (Self::Terminal, true) => "What is typed into every host's shell, and how their output looks.",
             (Self::RemoteDesktop, _) => "RDP and VNC desktops, opened beside the host's terminal.",
@@ -123,6 +128,9 @@ pub(super) struct HostForm {
     /// Go through the Project's Jump Hosts first.
     use_project_jumps: bool,
     jumps: Vec<JumpRow>,
+    /// Open the Project's Port Forwards too.
+    use_project_forwards: bool,
+    forwards: Vec<ForwardRow>,
     run_project_commands: bool,
     /// Highlight Rules colour its output.
     highlight: bool,
@@ -168,6 +176,7 @@ pub(super) struct ProjectForm {
     sign_in: SignIn,
     key_path: Entity<InputState>,
     jumps: Vec<JumpRow>,
+    forwards: Vec<ForwardRow>,
     commands: Vec<CommandRow>,
     /// Highlight Rules colour the output of its hosts and shells.
     highlight: bool,
@@ -198,6 +207,88 @@ pub(super) struct JumpRow {
     /// The Credential it had when the form opened, kept unless replaced or removed.
     saved: Option<CredentialId>,
     remove_saved: bool,
+}
+
+/// One Port Forward in a form's list: which way, the port it listens on, where it goes.
+pub(super) struct ForwardRow {
+    /// Tells rows apart in element ids while rows are added and removed.
+    key: usize,
+    kind: ForwardKind,
+    port: Entity<InputState>,
+    /// Kept while the row is SOCKS, which has no address, for switching back.
+    to_host: Entity<InputState>,
+    to_port: Entity<InputState>,
+    open_to_network: bool,
+}
+
+/// The Port Forwards of a form's rows, after `inherited` (the Project's, in the host form).
+fn read_forward_rows(rows: &[ForwardRow], inherited: &[PortForward], cx: &App) -> Result<Vec<PortForward>, String> {
+    let text = |field: &Entity<InputState>| field.read(cx).value().trim().to_string();
+    let fields: Vec<ForwardFields> = rows
+        .iter()
+        .map(|row| ForwardFields {
+            kind: row.kind,
+            port: text(&row.port),
+            to_host: text(&row.to_host),
+            to_port: text(&row.to_port),
+            open_to_network: row.open_to_network,
+        })
+        .collect();
+    parse_forwards(&fields, inherited)
+}
+
+/// What one Port Forward row holds, as typed.
+struct ForwardFields {
+    kind: ForwardKind,
+    port: String,
+    to_host: String,
+    to_port: String,
+    open_to_network: bool,
+}
+
+/// Port Forwards from what was typed. Empty rows are skipped. An empty address is
+/// "localhost" (the host itself, for a Local forward), and an empty port the one it listens
+/// on. Two forwards can't listen on the same port in the same place, nor on one of
+/// `inherited`'s.
+fn parse_forwards(rows: &[ForwardFields], inherited: &[PortForward]) -> Result<Vec<PortForward>, String> {
+    let mut forwards: Vec<(usize, PortForward)> = vec![];
+    for (i, row) in rows.iter().enumerate() {
+        let n = i + 1;
+        let (port, to_host, to_port) = (row.port.trim(), row.to_host.trim(), row.to_port.trim());
+        let has_target = row.kind.has_target();
+        if port.is_empty() && (!has_target || (to_host.is_empty() && to_port.is_empty())) {
+            continue;
+        }
+        let Some(port) = Some(port).filter(|p| !p.is_empty()).and_then(parse_port) else {
+            return Err(format!("Type the port that port forward {n} listens on, from 1 to 65535."));
+        };
+        let forward = if has_target {
+            let to_port = if to_port.is_empty() { Some(port) } else { parse_port(to_port) };
+            let Some(to_port) = to_port else {
+                return Err(format!("The port that port forward {n} goes to is a number from 1 to 65535."));
+            };
+            // Typed as [fd00::5] from habit: the brackets aren't part of the address.
+            let to_host = to_host.trim_start_matches('[').trim_end_matches(']');
+            let to_host = if to_host.is_empty() { "localhost" } else { to_host };
+            PortForward { kind: row.kind, port, to_host: to_host.to_string(), to_port, open_to_network: row.open_to_network }
+        } else {
+            PortForward { open_to_network: row.open_to_network, ..PortForward::socks(port) }
+        };
+        let place = if forward.kind.listens_here() { "on this computer" } else { "on the host" };
+        let same = |other: &PortForward| other.port == forward.port && other.kind.listens_here() == forward.kind.listens_here();
+        if let Some(project) = inherited.iter().find(|other| same(other)) {
+            return Err(format!(
+                "Port forward {n} listens on port {port} {place}, as the project's \"{}\" does. Pick another port, or \
+                 leave out the project's forwards.",
+                project.label()
+            ));
+        }
+        if let Some((earlier, _)) = forwards.iter().find(|(_, other)| same(other)) {
+            return Err(format!("Port forwards {earlier} and {n} both listen on port {port} {place}. Pick another port for one of them."));
+        }
+        forwards.push((n, forward));
+    }
+    Ok(forwards.into_iter().map(|(_, forward)| forward).collect())
 }
 
 /// A Jump Host read from a form row, before its new password (if any) is in the Vault.
@@ -289,6 +380,7 @@ impl Workspace {
         let key_path = self.form_input(key_file_hint(), "", window, cx);
         let commands = h.startup_commands.iter().map(|c| self.command_row(Some(c), window, cx)).collect();
         let jumps = h.jump_hosts.iter().map(|j| self.jump_row(Some(j), window, cx)).collect();
+        let forwards = h.port_forwards.iter().map(|f| self.forward_row(Some(f), window, cx)).collect();
         name.update(cx, |f, cx| f.focus(window, cx));
         let sign_in = match h.credential {
             Inherited::Project => SignIn::Project,
@@ -314,6 +406,8 @@ impl Workspace {
             sign_in,
             use_project_jumps: h.use_project_jump_hosts,
             jumps,
+            use_project_forwards: h.use_project_forwards,
+            forwards,
             run_project_commands: h.run_project_commands,
             highlight: h.highlight,
             desktops,
@@ -571,6 +665,12 @@ impl Workspace {
         };
         let jumps = read_jump_rows(&form.jumps, cx).map_err(on_tab(FormTab::JumpHosts))?;
         let use_project_jumps = form.use_project_jumps;
+        let use_project_forwards = form.use_project_forwards;
+        let project_forwards = match self.library.project(&form.project_id) {
+            Some(project) if use_project_forwards => project.port_forwards.clone(),
+            _ => vec![],
+        };
+        let port_forwards = read_forward_rows(&form.forwards, &project_forwards, cx).map_err(on_tab(FormTab::Forwards))?;
         let startup_commands = read_command_rows(&form.commands, cx).map_err(on_tab(FormTab::Terminal))?;
         let (project_id, editing, sign_in, run_project_commands, icon, highlight) =
             (form.project_id.clone(), form.editing.clone(), form.sign_in, form.run_project_commands, form.icon.clone(), form.highlight);
@@ -599,6 +699,8 @@ impl Workspace {
         host.port = port;
         host.user = user;
         host.use_project_jump_hosts = use_project_jumps;
+        host.use_project_forwards = use_project_forwards;
+        host.port_forwards = port_forwards;
         host.startup_commands = startup_commands;
         host.run_project_commands = run_project_commands;
         host.highlight = highlight;
@@ -695,16 +797,19 @@ impl Workspace {
             FormTab::General => self.host_general_pane(form, color, p, cx),
             FormTab::SignIn => self.host_sign_in_pane(form, host, project, p, cx),
             FormTab::JumpHosts => self.host_jump_pane(form, project, color, p, cx),
+            FormTab::Forwards => self.host_forward_pane(form, project, p, cx),
             FormTab::Terminal => self.host_terminal_pane(form, project, p, cx),
             FormTab::RemoteDesktop => self.host_desktop_pane(form, p, cx),
         };
         // The rail says what each page holds, so it is found without opening every page.
         let project_jumps = if form.use_project_jumps { project.map_or(0, |pr| pr.jump_hosts.len()) } else { 0 };
         let project_commands = if form.run_project_commands { project.map_or(0, |pr| pr.startup_commands.len()) } else { 0 };
+        let project_forwards = if form.use_project_forwards { project.map_or(0, |pr| pr.port_forwards.len()) } else { 0 };
         let desktops: Vec<&str> = form.desktops.iter().filter(|row| row.on).map(|row| row.protocol.label()).collect();
         let tabs = FormTab::HOST.map(|tab| {
             let note = match tab {
                 FormTab::JumpHosts => count_note(project_jumps + form.jumps.len()),
+                FormTab::Forwards => count_note(project_forwards + form.forwards.len()),
                 FormTab::Terminal => count_note(project_commands + form.commands.len()),
                 FormTab::RemoteDesktop if desktops.len() == 1 => Some(desktops[0].to_string()),
                 FormTab::RemoteDesktop => count_note(desktops.len()),
@@ -1092,6 +1197,251 @@ impl Workspace {
             .into_any_element()
     }
 
+    // ---- port forwards (both forms) -----------------------------------------------------
+
+    /// Open the host form on its Port Forwards page (from the session strip's forwards menu).
+    pub(super) fn open_host_forwards(&mut self, project_id: String, host_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_edit_host(project_id, host_id, window, cx);
+        if let Some(form) = self.host_form() {
+            form.tab = FormTab::Forwards;
+        }
+    }
+
+    fn host_forward_pane(&self, form: &HostForm, project: Option<&Project>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let project_forwards = project.map(|pr| pr.port_forwards.clone()).unwrap_or_default();
+        let inherited = (!project_forwards.is_empty()).then(|| {
+            let hint = format!("Set in the project: {}.", project_forwards.iter().map(PortForward::label).collect::<Vec<_>>().join(", "));
+            group(
+                p,
+                vec![setting_row(
+                    p,
+                    "Open the project's forwards too",
+                    &hint,
+                    switch("hf-project-forwards".into(), "Open the project's forwards too", form.use_project_forwards, p)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            if let Some(form) = this.host_form() {
+                                form.use_project_forwards = !form.use_project_forwards;
+                                form.error = None;
+                            }
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                )],
+            )
+        });
+        let title = if project_forwards.is_empty() { "Port forwards" } else { "Its own" };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(20.))
+            .children(inherited)
+            .child(settings_block(title, p, self.forward_list("hf-fw", &form.forwards, p, cx)))
+            .into_any_element()
+    }
+
+    fn project_forward_pane(&self, form: &ProjectForm, hosts: &[&Host], p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let list = div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(self.forward_list("pf-fw", &form.forwards, p, cx))
+            .when(!form.forwards.is_empty(), |el| el.children(reach_note(hosts, |h| h.use_project_forwards, p)));
+        settings_block("Port forwards", p, list.into_any_element())
+    }
+
+    /// A form row for a Port Forward, empty (a Local one) or filled from a saved one.
+    fn forward_row(&mut self, forward: Option<&PortForward>, window: &mut Window, cx: &mut Context<Self>) -> ForwardRow {
+        let number = |n: u16| if n == 0 { String::new() } else { n.to_string() };
+        let port = self.form_input("5432", &forward.map_or(String::new(), |f| number(f.port)), window, cx);
+        let to_host = self.form_input("localhost", forward.map_or("", |f| f.to_host.as_str()), window, cx);
+        // A port that is the same as the one listened on stays empty: "same" says so.
+        let to_port = forward.filter(|f| f.to_port != f.port).map_or(String::new(), |f| number(f.to_port));
+        let to_port = self.form_input("same", &to_port, window, cx);
+        self.next_jump_row += 1;
+        ForwardRow {
+            key: self.next_jump_row,
+            kind: forward.map_or(ForwardKind::Local, |f| f.kind),
+            port,
+            to_host,
+            to_port,
+            open_to_network: forward.is_some_and(|f| f.open_to_network),
+        }
+    }
+
+    /// The open form's Port Forward rows.
+    fn forward_rows(&mut self) -> Option<&mut Vec<ForwardRow>> {
+        match self.overlay.as_mut() {
+            Some(Overlay::HostForm(form)) => Some(&mut form.forwards),
+            Some(Overlay::ProjectForm(form)) => Some(&mut form.forwards),
+            _ => None,
+        }
+    }
+
+    fn add_forward_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let row = self.forward_row(None, window, cx);
+        let port = row.port.clone();
+        if let Some(rows) = self.forward_rows() {
+            rows.push(row);
+            port.update(cx, |f, cx| f.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Change the row with `key`, if the form still has it.
+    fn update_forward_row(&mut self, key: usize, change: impl FnOnce(&mut ForwardRow)) {
+        if let Some(row) = self.forward_rows().and_then(|rows| rows.iter_mut().find(|r| r.key == key)) {
+            change(row);
+        }
+        match self.overlay.as_mut() {
+            Some(Overlay::HostForm(form)) => form.error = None,
+            Some(Overlay::ProjectForm(form)) => form.error = None,
+            _ => {}
+        }
+    }
+
+    /// The Port Forwards of a form, one row each: which way, the port it listens on, where it
+    /// goes, and whether other computers may connect. A SOCKS row has no address: the program
+    /// using it says where to go.
+    fn forward_list(&self, prefix: &'static str, rows: &[ForwardRow], p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_component::button::Button;
+        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        let (kind_width, port_width, actions_width) = (104., 72., 64.);
+        let column_label = |text: &'static str| div().text_size(px(11.5)).text_color(p.text_faint).child(text);
+        let header = div()
+            .flex()
+            .gap(px(8.))
+            .pl(px(22.))
+            .child(column_label("Type").w(px(kind_width)).flex_shrink_0())
+            .child(column_label("Listens on").w(px(port_width)).flex_shrink_0())
+            .child(div().w(px(14.)).flex_shrink_0())
+            .child(column_label("Goes to").flex_1().min_w_0())
+            .child(column_label("Port").w(px(port_width)).flex_shrink_0())
+            .child(div().w(px(actions_width)).flex_shrink_0());
+        let any = !rows.is_empty();
+        let ws = cx.entity().downgrade();
+        let rows = rows.iter().enumerate().map(|(i, row)| {
+            let (key, kind, n) = (row.key, row.kind, i + 1);
+            let ws = ws.clone();
+            let kind_picker = Button::new((prefix, 200 + key * 4))
+                .w_full()
+                .accessibility_label(format!("Type of port forward {n}: {}", kind.label()))
+                .bg(p.popover)
+                .text_color(p.popover_text)
+                .border_color(p.input)
+                .label(kind.label())
+                .dropdown_caret(true)
+                .dropdown_menu(move |mut menu, _, _| {
+                    for choice in ForwardKind::ALL {
+                        let ws = ws.clone();
+                        menu = menu.item(PopupMenuItem::new(choice.label()).checked(choice == kind).on_click(move |_, _, cx| {
+                            let _ = ws.update(cx, |this, cx| {
+                                this.update_forward_row(key, |row| row.kind = choice);
+                                cx.notify();
+                            });
+                        }));
+                    }
+                    menu
+                });
+            let target = if kind.has_target() {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div().flex_1().min_w_0().child(Input::new(&row.to_host)))
+                    .child(div().w(px(port_width)).flex_shrink_0().child(Input::new(&row.to_port)))
+            } else {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(32.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .rounded(p.corner(7.))
+                    .bg(p.hover)
+                    .text_size(px(12.))
+                    .text_color(p.text_muted)
+                    .child(div().truncate().child("Wherever each program asks"))
+            };
+            let open = row.open_to_network;
+            let (network_tip, network_label) = match (kind.listens_here(), open) {
+                (true, false) => ("Only this computer can connect. Click to open it to your network.", "Open to the network"),
+                (true, true) => ("Other computers on your network can connect. Click to allow only this computer.", "Open to the network"),
+                (false, false) => ("Only the host itself can connect. Click to open it to the host's network.", "Open to the network"),
+                (false, true) => (
+                    "Other computers on the host's network can connect, if its sshd allows it (GatewayPorts). Click to allow only the host.",
+                    "Open to the network",
+                ),
+            };
+            // Like `icon_button`, with the icon in the active colour while it is on.
+            let network = div()
+                .id((prefix, 201 + key * 4))
+                .role(gpui::Role::Button)
+                .tab_index(0)
+                .focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus))
+                .size(px(30.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(p.corner(7.))
+                .cursor_pointer()
+                .when(open, |el| el.bg(p.brand_soft))
+                .when(!open, |el| el.hover(move |s| s.bg(p.hover)))
+                .child(icon_el("globe", 16., if open { p.active_text } else { p.text_muted }))
+                .aria_label(format!("{network_label}: port forward {n}"))
+                .aria_toggled(if open { gpui::Toggled::True } else { gpui::Toggled::False })
+                .tooltip(move |window, cx| Tooltip::new(network_tip).build(window, cx))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.update_forward_row(key, |row| row.open_to_network = !row.open_to_network);
+                    cx.notify();
+                }));
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(div().w(px(14.)).flex_shrink_0().text_size(px(12.)).text_color(p.text_faint).child(format!("{n}")))
+                .child(div().w(px(kind_width)).flex_shrink_0().child(kind_picker))
+                .child(div().w(px(port_width)).flex_shrink_0().child(Input::new(&row.port)))
+                .child(div().w(px(14.)).flex_shrink_0().flex().justify_center().child(icon_el("arrow-right", 13., p.text_faint)))
+                .child(target)
+                .child(
+                    div()
+                        .w(px(actions_width))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(network)
+                        .child(
+                            icon_button((prefix, 202 + key * 4), "x", p)
+                                .aria_label(format!("Remove port forward {n}"))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    if let Some(rows) = this.forward_rows() {
+                                        rows.retain(|r| r.key != key);
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .when(any, |el| el.child(header).children(rows))
+            .child(
+                div().flex().child(
+                    icon_text_button((prefix, 99usize), "plus", "Add port forward", ButtonKind::Ghost, p)
+                        .px(px(10.))
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.add_forward_row(window, cx))),
+                ),
+            )
+            .child(div().pt(px(4.)).flex().flex_col().gap(px(6.)).children(FORWARDS_HINT.iter().map(|line| hint_text((*line).into(), p))))
+            .into_any_element()
+    }
+
     // ---- startup command list (both forms) -----------------------------------------------
 
     /// A form row for a Startup Command, empty or filled from a saved one.
@@ -1355,6 +1705,7 @@ impl Workspace {
         let key_path = self.form_input(key_file_hint(), "", window, cx);
         let commands = pr.startup_commands.iter().map(|c| self.command_row(Some(c), window, cx)).collect();
         let jumps = pr.jump_hosts.iter().map(|j| self.jump_row(Some(j), window, cx)).collect();
+        let forwards = pr.port_forwards.iter().map(|f| self.forward_row(Some(f), window, cx)).collect();
         name.update(cx, |f, cx| f.focus(window, cx));
         let icon_query = self.new_icon_query(window, cx);
         self.overlay = Some(Overlay::ProjectForm(ProjectForm {
@@ -1367,6 +1718,7 @@ impl Workspace {
             sign_in: if pr.credential.is_some() { SignIn::Saved } else { SignIn::Ask },
             key_path,
             jumps,
+            forwards,
             commands,
             highlight: pr.highlight,
             tab: FormTab::General,
@@ -1390,6 +1742,7 @@ impl Workspace {
             return Err(on_tab(FormTab::General)("Give the project a name.".into()));
         }
         let jumps = read_jump_rows(&form.jumps, cx).map_err(on_tab(FormTab::JumpHosts))?;
+        let port_forwards = read_forward_rows(&form.forwards, &[], cx).map_err(on_tab(FormTab::Forwards))?;
         let startup_commands = read_command_rows(&form.commands, cx).map_err(on_tab(FormTab::Terminal))?;
         let (editing, color, icon, sign_in, highlight) =
             (form.editing.clone(), form.color.clone(), form.icon.clone(), form.sign_in, form.highlight);
@@ -1415,6 +1768,7 @@ impl Workspace {
         project.icon = icon;
         project.default_user = (!default_user.is_empty()).then_some(default_user);
         project.startup_commands = startup_commands;
+        project.port_forwards = port_forwards;
         project.highlight = highlight;
         let before = std::mem::take(&mut project.jump_hosts);
 
@@ -1444,12 +1798,14 @@ impl Workspace {
         let pane = match form.tab {
             FormTab::SignIn => self.project_sign_in_pane(form, editing.is_some_and(|pr| pr.credential.is_some()), &hosts, p, cx),
             FormTab::JumpHosts => self.project_jump_pane(form, color, &hosts, p, cx),
+            FormTab::Forwards => self.project_forward_pane(form, &hosts, p, cx),
             FormTab::Terminal => self.project_terminal_pane(form, &hosts, p, cx),
             _ => self.project_general_pane(form, color, p, cx),
         };
         let tabs = FormTab::PROJECT.map(|tab| {
             let note = match tab {
                 FormTab::JumpHosts => count_note(form.jumps.len()),
+                FormTab::Forwards => count_note(form.forwards.len()),
                 FormTab::Terminal => count_note(form.commands.len()),
                 _ => None,
             };
@@ -1604,6 +1960,15 @@ impl Workspace {
             .into_any_element()
     }
 }
+
+/// Below a form's Port Forwards: what each type does, and who can use them.
+const FORWARDS_HINT: [&str; 4] = [
+    "Local: a port on this computer reaches an address from the host's side, such as a database only the host can see.",
+    "Remote: a port on the host reaches an address from this computer's side.",
+    "SOCKS: a proxy on this computer. Programs set to use it connect from the host.",
+    "Forwards open while a session of the host is connected. Only this computer (for Remote, the host) can use them, \
+     unless you open one to the network.",
+];
 
 /// Below a form's Startup Commands: when each is typed.
 const COMMANDS_HINT: &str = "Typed into the shell in turn, as if you typed them: each once the shell is quiet, or once \
@@ -2179,7 +2544,7 @@ fn decode_utf16(bytes: &[u8], unit: fn([u8; 2]) -> u16) -> Result<String, &'stat
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_key_text, expand_home, name_list};
+    use super::{ForwardFields, ForwardKind, PortForward, decode_key_text, expand_home, name_list, parse_forwards};
     use std::path::{Path, PathBuf};
 
     const KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n";
@@ -2238,5 +2603,42 @@ mod tests {
         assert_eq!(expand_home("~/.ssh/id", Some(home)), home.join(".ssh/id"));
         assert_eq!(expand_home(r"C:\keys\id", Some(home)), PathBuf::from(r"C:\keys\id"));
         assert_eq!(expand_home("~/id", None), PathBuf::from("~/id"));
+    }
+
+    fn row(kind: ForwardKind, port: &str, to_host: &str, to_port: &str) -> ForwardFields {
+        ForwardFields { kind, port: port.into(), to_host: to_host.into(), to_port: to_port.into(), open_to_network: false }
+    }
+
+    #[test]
+    fn port_forward_rows_fill_in_what_was_left_empty() {
+        let rows = [
+            row(ForwardKind::Local, "5432", "", ""),
+            row(ForwardKind::Remote, "8080", "[::1]", "3000"),
+            // A SOCKS row keeps an address typed before switching to it, and ignores it.
+            row(ForwardKind::Socks, "1080", "old.lan", "22"),
+            row(ForwardKind::Local, "", "", ""),
+        ];
+        assert_eq!(
+            parse_forwards(&rows, &[]).unwrap(),
+            [PortForward::local(5432, "localhost", 5432), PortForward::remote(8080, "::1", 3000), PortForward::socks(1080)]
+        );
+    }
+
+    #[test]
+    fn port_forward_rows_say_what_is_wrong() {
+        let err = |rows: &[ForwardFields], inherited: &[PortForward]| parse_forwards(rows, inherited).unwrap_err();
+        assert_eq!(err(&[row(ForwardKind::Local, "", "db", "5432")], &[]), "Type the port that port forward 1 listens on, from 1 to 65535.");
+        assert_eq!(err(&[row(ForwardKind::Local, "5432", "db", "x")], &[]), "The port that port forward 1 goes to is a number from 1 to 65535.");
+        assert_eq!(
+            err(&[row(ForwardKind::Local, "8080", "a", ""), row(ForwardKind::Socks, "8080", "", "")], &[]),
+            "Port forwards 1 and 2 both listen on port 8080 on this computer. Pick another port for one of them."
+        );
+        assert_eq!(
+            err(&[row(ForwardKind::Remote, "5432", "", "")], &[PortForward::remote(5432, "localhost", 5432)]),
+            "Port forward 1 listens on port 5432 on the host, as the project's \"Remote 5432 → localhost:5432\" does. Pick \
+             another port, or leave out the project's forwards."
+        );
+        // The same port on this computer and on the host is no clash.
+        assert!(parse_forwards(&[row(ForwardKind::Local, "8080", "", ""), row(ForwardKind::Remote, "8080", "", "")], &[]).is_ok());
     }
 }

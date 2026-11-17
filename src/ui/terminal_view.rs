@@ -188,6 +188,8 @@ pub enum TerminalEvent {
     Unhighlight { rule: highlight::RuleHit },
     /// Turn the minimap off in Settings (from its right-click menu).
     HideMinimap,
+    /// A Port Forward couldn't start; `why` says so in a sentence.
+    ForwardFailed { forward: crate::model::PortForward, why: String },
 }
 
 enum ActivePrompt {
@@ -223,6 +225,8 @@ pub struct TerminalView {
     base_title: SharedString,
     pub status: Status,
     pub latency: Vec<crate::session::latency::HopLatency>,
+    /// The Session's Port Forwards while it is connected, in order.
+    pub forwards: Vec<crate::session::forward::ForwardStatus>,
     term: SharedTerm,
     proxy: EventProxy,
     sink: Option<InputSink>,
@@ -527,6 +531,7 @@ impl TerminalView {
             title,
             status: Status::Connecting,
             latency: Vec::new(),
+            forwards: Vec::new(),
             term,
             proxy,
             sink: None,
@@ -737,6 +742,7 @@ impl TerminalView {
         if self.status != status {
             if status != Status::Connected {
                 self.latency.clear();
+                self.forwards.clear();
             }
             self.status = status;
             cx.emit(TerminalEvent::Changed);
@@ -796,6 +802,10 @@ impl TerminalView {
                     if status != Status::Connected {
                         self.latency.clear();
                     }
+                    // They start before the shell, while the Session still says Connecting.
+                    if matches!(status, Status::Disconnected(_)) {
+                        self.forwards.clear();
+                    }
                     self.status = status;
                     match &self.status {
                         Status::Disconnected(reason) => {
@@ -847,6 +857,21 @@ impl TerminalView {
                         }
                     }
                     cx.emit(TerminalEvent::Changed);
+                    cx.notify();
+                }
+            }
+            SessionEvent::Forward(status) => {
+                if !self.is_disconnected() {
+                    if let crate::session::forward::ForwardState::Failed(why) = &status.state {
+                        cx.emit(TerminalEvent::ForwardFailed { forward: status.forward.clone(), why: why.clone() });
+                    }
+                    match self.forwards.iter_mut().find(|f| f.index == status.index) {
+                        Some(known) => *known = status,
+                        None => {
+                            self.forwards.push(status);
+                            self.forwards.sort_by_key(|f| f.index);
+                        }
+                    }
                     cx.notify();
                 }
             }

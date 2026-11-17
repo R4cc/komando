@@ -15,7 +15,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value, json};
 
 use super::{Found, FoundGroup, FoundHost, LeftOut, join_and, key_file_name};
-use crate::model::StartupCommand;
+use crate::model::{ForwardKind, PortForward, StartupCommand};
 
 /// Why a configuration can't be read: Tabby's "Encrypt config file" is on. The import page
 /// tells it apart from other errors (`anyhow::Error::is::<Encrypted>`) to show how to fix it.
@@ -176,6 +176,8 @@ pub fn parse(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
             if port == 22 { format!("{user}{address}") } else { format!("{user}{address}:{port}") }
         });
         let mut left = left_out(&user_layers, &builtin, &profiles);
+        let (port_forwards, forwards_left) = forwarded_ports(options);
+        left.extend(forwards_left);
         let startup_commands = match login_script(&user_layers, &builtin) {
             Ok(commands) => commands,
             Err(not_imported) => {
@@ -192,6 +194,7 @@ pub fn parse(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
             user,
             icon: text_of(profile.get("icon")).and_then(|i| lucide_icon(i, is_icon)),
             startup_commands,
+            port_forwards: Some(port_forwards),
             left_out: left,
             ..Default::default()
         };
@@ -303,16 +306,6 @@ fn left_out(user: &Value, builtin: &Value, profiles: &[&Map<String, Value>]) -> 
             .unwrap_or(jump);
         out.push(LeftOut::new("Jump host", format!("via {name}")));
     }
-    if let Some(ports) = opt("forwardedPorts").and_then(Value::as_array) {
-        let shown: Vec<String> = ports.iter().take(2).filter_map(forward_label).collect();
-        let more = ports.len().saturating_sub(shown.len());
-        let detail = match (shown.is_empty(), more) {
-            (true, _) => plural(ports.len(), "port"),
-            (false, 0) => shown.join(", "),
-            (false, n) => format!("{} and {n} more", shown.join(", ")),
-        };
-        out.push(LeftOut::new("Port forwarding", detail));
-    }
     let keys: Vec<String> =
         opt("privateKeys").and_then(Value::as_array).into_iter().flatten().filter_map(|k| text_of(Some(k))).map(key_label).collect();
     if !keys.is_empty() {
@@ -372,18 +365,42 @@ fn left_out(user: &Value, builtin: &Value, profiles: &[&Map<String, Value>]) -> 
     out
 }
 
-/// "Local 8080 → db.lan:5432".
-fn forward_label(port: &Value) -> Option<String> {
-    let kind = text_of(port.get("type")).unwrap_or("Local");
-    let listen = number(port.get("port"))?;
-    match kind {
-        "Dynamic" => Some(format!("SOCKS on {listen}")),
-        _ => {
-            let target = text_of(port.get("targetAddress")).unwrap_or("?");
-            let target_port = number(port.get("targetPort")).map(|p| format!(":{p}")).unwrap_or_default();
-            Some(format!("{kind} {listen} → {target}{target_port}"))
-        }
+/// A profile's forwarded ports as Port Forwards, and what of them can't come over: one
+/// without a port or an address, or one listening on a specific address other than loopback
+/// (it comes over listening on loopback only, and the note says so).
+fn forwarded_ports(options: Option<&Value>) -> (Vec<PortForward>, Vec<LeftOut>) {
+    let (mut forwards, mut left) = (vec![], vec![]);
+    let ports = options.and_then(|o| o.get("forwardedPorts")).and_then(Value::as_array);
+    for entry in ports.into_iter().flatten() {
+        let port = |key: &str| number(entry.get(key)).and_then(|p| u16::try_from(p).ok()).filter(|p| *p != 0);
+        let kind = match text_of(entry.get("type")).unwrap_or("Local") {
+            "Remote" => ForwardKind::Remote,
+            "Dynamic" => ForwardKind::Socks,
+            _ => ForwardKind::Local,
+        };
+        let target = text_of(entry.get("targetAddress")).map(str::trim).filter(|t| !t.is_empty());
+        let forward = match (port("port"), kind, target, port("targetPort")) {
+            (Some(listen), ForwardKind::Socks, _, _) => PortForward::socks(listen),
+            (Some(listen), _, Some(target), Some(to_port)) => {
+                PortForward { kind, port: listen, to_host: target.to_string(), to_port, open_to_network: false }
+            }
+            _ => {
+                left.push(LeftOut::new("Port forwarding", "one without a port or an address"));
+                continue;
+            }
+        };
+        let bind = text_of(entry.get("host")).map(str::trim).unwrap_or("");
+        let forward = match bind {
+            "" | "127.0.0.1" | "localhost" | "::1" => forward,
+            "0.0.0.0" | "*" | "::" => PortForward { open_to_network: true, ..forward },
+            address => {
+                left.push(LeftOut::new("Listen address", format!("{address} for {}: only loopback for now", forward.label())));
+                forward
+            }
+        };
+        forwards.push(forward);
     }
+    (forwards, left)
 }
 
 /// A private key's file name; Tabby lists them as `file://` paths or vault references.
@@ -688,9 +705,9 @@ profileDefaults:
             [
                 LeftOut::new("Jump host", "via bastion"),
                 LeftOut::new("Login script", "1 step, types a password"),
-                LeftOut::new("Port forwarding", "Local 8080 → db.lan:5432"),
             ]
         );
+        assert_eq!(web.port_forwards, Some(vec![PortForward::local(8080, "db.lan", 5432)]));
         // Defaults written out (x11: false, the default term) and Tabby-only settings
         // (clearServiceMessagesOnConnect, disableDynamicTitle) are not listed.
         let bastion = &found.groups[0].hosts[0];

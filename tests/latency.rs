@@ -115,7 +115,7 @@ fn ssh_latency_is_reported_directly_and_through_a_jump_host() {
                 secret: None,
             })
             .collect();
-        let sink = ssh::spawn(Target { hops, known_hosts: dir.join("known_hosts") }, size, term.clone(), proxy);
+        let sink = ssh::spawn(Target { hops, known_hosts: dir.join("known_hosts"), forwards: vec![] }, size, term.clone(), proxy);
         let mut samples: Vec<Option<HopLatency>> = vec![None; names.len()];
         let mut connected = false;
         while !connected || samples.iter().any(Option::is_none) {

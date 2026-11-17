@@ -51,6 +51,8 @@ pub struct Target {
     pub hops: Vec<Hop>,
     /// Komando's own trusted Host Keys.
     pub known_hosts: PathBuf,
+    /// Port Forwards opened on the last hop's connection once every hop has signed in.
+    pub forwards: Vec<crate::model::PortForward>,
 }
 
 /// One Host on the way.
@@ -452,10 +454,32 @@ pub(crate) struct Client {
     hop: usize,
     /// Paused while the Host Key question waits for an answer.
     clock: ConnectClock,
+    /// The Remote forwards this connection asked the server for. Empty on Jump Hosts.
+    remote_forwards: super::forward::RemoteForwards,
 }
 
 impl client::Handler for Client {
     type Error = anyhow::Error;
+
+    /// A connection to a Remote forward's port on the server: carried to its address here.
+    /// One for a port Komando didn't ask for is refused.
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        _connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        if self.remote_forwards.accept(connected_port, Box::new(channel.into_stream())) {
+            reply.accept().await;
+        } else {
+            reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
+        }
+        Ok(())
+    }
 
     async fn check_server_key(&mut self, server_key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
         let key: &PublicKey = match server_key {
@@ -614,6 +638,7 @@ async fn run(
     let mut sudo = None;
     // The Host's connection window: the most its shell's paced window grows to.
     let mut host_window = WINDOW;
+    let remote_forwards = super::forward::RemoteForwards::default();
     for (index, hop) in target.hops.iter().enumerate() {
         proxy.send(SessionEvent::Hop { index, step: HopStep::Reaching });
         match index {
@@ -629,6 +654,7 @@ async fn run(
             log: log.clone(),
             hop: index,
             clock: clock.clone(),
+            remote_forwards: if index + 1 == target.hops.len() { remote_forwards.clone() } else { Default::default() },
         };
         let timed_out = || anyhow!("Timed out connecting to {}:{}.", hop.address, hop.port);
         let is_jump = index + 1 < target.hops.len();
@@ -712,7 +738,10 @@ async fn run(
             }
         }, move |latency| proxy.send(SessionEvent::Latency(latency))));
     }
+    // Dropped with the Session, which closes every listener and connection.
+    let forwards = start_forwards(handle, &target.forwards, &remote_forwards, &proxy);
     let result = shell(handle, &mut size, &term, &proxy, &log, &mut commands, sudo, host_window).await;
+    drop(forwards);
     monitors.shutdown().await;
     // Always end the connection with the terminal, so SFTP channels opened on it end too.
     let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
@@ -878,6 +907,47 @@ async fn shell(
         }
     };
     Ok(reason)
+}
+
+/// Start the Session's Port Forwards on the Host's connection (see `forward`).
+fn start_forwards(
+    handle: &Arc<Handle<Client>>,
+    forwards: &[crate::model::PortForward],
+    remote: &super::forward::RemoteForwards,
+    proxy: &EventProxy,
+) -> tokio::task::JoinSet<()> {
+    use super::forward::{BoxTunnel, Listen, OpenError, Opener};
+    let open: Opener = {
+        let handle = handle.clone();
+        Arc::new(move |host: String, port: u16, from: std::net::SocketAddr| {
+            let handle = handle.clone();
+            Box::pin(async move {
+                match handle.channel_open_direct_tcpip(host, u32::from(port), from.ip().to_string(), u32::from(from.port())).await {
+                    Ok(channel) => Ok(Box::new(channel.into_stream()) as BoxTunnel),
+                    Err(russh::Error::ChannelOpenFailure(russh::ChannelOpenFailure::AdministrativelyProhibited)) => {
+                        Err(OpenError::Prohibited)
+                    }
+                    Err(russh::Error::ChannelOpenFailure(russh::ChannelOpenFailure::ConnectFailed)) => Err(OpenError::Unreachable),
+                    Err(err) => Err(OpenError::Other(err.to_string())),
+                }
+            })
+        })
+    };
+    let listen: Listen = {
+        let handle = handle.clone();
+        Arc::new(move |address: String, port: u32| {
+            let handle = handle.clone();
+            Box::pin(async move {
+                match handle.tcpip_forward(address, port).await {
+                    Ok(_) => Ok(()),
+                    Err(russh::Error::RequestDenied) => Err(super::forward::remote_refused(port as u16)),
+                    Err(err) => Err(format!("Couldn't ask the server to listen on port {port}: {err}")),
+                }
+            })
+        })
+    };
+    let proxy = proxy.clone();
+    super::forward::start(forwards, open, listen, remote, Arc::new(move |status| proxy.send(SessionEvent::Forward(status))))
 }
 
 /// A tunnel to `port` on the Host itself, over the Session's connection. The channel is

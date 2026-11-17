@@ -53,6 +53,9 @@ pub struct Project {
     /// Startup Commands typed into every Host's shell, before the Host's own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub startup_commands: Vec<StartupCommand>,
+    /// Port Forwards every Host's SSH Session opens, before the Host's own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub port_forwards: Vec<PortForward>,
     /// Hosts in this Project, in sidebar order. A Host may appear in several Projects.
     #[serde(default)]
     pub hosts: Vec<HostId>,
@@ -81,6 +84,7 @@ impl Project {
             jump_hosts: vec![],
             legacy_jump_host: None,
             startup_commands: vec![],
+            port_forwards: vec![],
             hosts: vec![],
             shells: vec![],
             highlight: true,
@@ -205,6 +209,12 @@ pub struct Host {
     /// Type the Project's Startup Commands before the Host's own.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub run_project_commands: bool,
+    /// The Host's own Port Forwards, opened after the Project's (see `use_project_forwards`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub port_forwards: Vec<PortForward>,
+    /// Open the Project's Port Forwards too.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub use_project_forwards: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -461,6 +471,8 @@ impl Host {
             legacy_jump_host: Inherited::Project,
             startup_commands: vec![],
             run_project_commands: true,
+            port_forwards: vec![],
+            use_project_forwards: true,
             color: None,
             icon: None,
             rdp: None,
@@ -595,6 +607,104 @@ impl<'de> Deserialize<'de> for StartupCommand {
     }
 }
 
+/// What a Port Forward carries, and which way.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ForwardKind {
+    /// A port on this computer reaches an address from the Host's side (`ssh -L`).
+    #[default]
+    Local,
+    /// A port on the Host reaches an address from this computer's side (`ssh -R`).
+    Remote,
+    /// A SOCKS5 proxy on this computer whose connections leave from the Host (`ssh -D`).
+    Socks,
+}
+
+impl ForwardKind {
+    pub const ALL: [ForwardKind; 3] = [ForwardKind::Local, ForwardKind::Remote, ForwardKind::Socks];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ForwardKind::Local => "Local",
+            ForwardKind::Remote => "Remote",
+            ForwardKind::Socks => "SOCKS",
+        }
+    }
+
+    /// Whether it sends its connections to an address of its own (SOCKS asks each program).
+    pub fn has_target(self) -> bool {
+        self != ForwardKind::Socks
+    }
+
+    /// Whether it listens on this computer, rather than on the Host.
+    pub fn listens_here(self) -> bool {
+        self != ForwardKind::Remote
+    }
+}
+
+/// A Port Forward: connections to a port carried through a Host's SSH connection, for as long
+/// as its SSH Session is connected.
+///
+/// It listens on loopback only (this computer, or the Host for a Remote forward), unless
+/// `open_to_network` lets other machines on that network connect to it too.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortForward {
+    #[serde(default)]
+    pub kind: ForwardKind,
+    /// The port it listens on: on this computer, or on the Host for a Remote forward.
+    pub port: u16,
+    /// Where its connections go: resolved on the Host for a Local forward, on this computer
+    /// for a Remote one. Empty for SOCKS, whose programs say where.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub to_host: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub to_port: u16,
+    /// Listen on every network interface, not only loopback.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub open_to_network: bool,
+}
+
+impl PortForward {
+    pub fn local(port: u16, to_host: impl Into<String>, to_port: u16) -> Self {
+        Self { kind: ForwardKind::Local, port, to_host: to_host.into(), to_port, open_to_network: false }
+    }
+
+    pub fn remote(port: u16, to_host: impl Into<String>, to_port: u16) -> Self {
+        Self { kind: ForwardKind::Remote, port, to_host: to_host.into(), to_port, open_to_network: false }
+    }
+
+    pub fn socks(port: u16) -> Self {
+        Self { kind: ForwardKind::Socks, port, to_host: String::new(), to_port: 0, open_to_network: false }
+    }
+
+    /// Where it sends connections, `host:port` (IPv6 addresses in brackets).
+    pub fn target(&self) -> String {
+        if self.to_host.contains(':') {
+            format!("[{}]:{}", self.to_host, self.to_port)
+        } else {
+            format!("{}:{}", self.to_host, self.to_port)
+        }
+    }
+
+    /// What it does, short: "5432 → db.internal:5432", "Remote 8080 → localhost:3000",
+    /// "SOCKS on 1080".
+    pub fn label(&self) -> String {
+        match self.kind {
+            ForwardKind::Local => format!("{} → {}", self.port, self.target()),
+            ForwardKind::Remote => format!("Remote {} → {}", self.port, self.target()),
+            ForwardKind::Socks => format!("SOCKS on {}", self.port),
+        }
+    }
+}
+
+fn is_zero(value: &u16) -> bool {
+    *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Where a Jump Host on a Host's way is saved: the n-th of a Project's or of a Host's own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JumpOwner {
@@ -697,6 +807,8 @@ pub struct ResolvedHost {
     pub jump_hosts: Vec<RouteJump>,
     /// The Project's Startup Commands (unless the Host skips them), then the Host's own.
     pub startup_commands: Vec<StartupCommand>,
+    /// The Project's Port Forwards (unless the Host leaves them out), then the Host's own.
+    pub port_forwards: Vec<PortForward>,
     pub color: String,
     pub icon: String,
 }
@@ -728,6 +840,8 @@ pub fn resolve(host: &Host, project: &Project) -> ResolvedHost {
         host.jump_hosts.iter().enumerate().map(|(i, jump)| RouteJump { owner: JumpOwner::Host(host.id.clone(), i), jump: jump.clone() });
     let mut startup_commands = if host.run_project_commands { project.startup_commands.clone() } else { vec![] };
     startup_commands.extend(host.startup_commands.iter().cloned());
+    let mut port_forwards = if host.use_project_forwards { project.port_forwards.clone() } else { vec![] };
+    port_forwards.extend(host.port_forwards.iter().cloned());
     ResolvedHost {
         host_id: host.id.clone(),
         project_id: project.id.clone(),
@@ -739,6 +853,7 @@ pub fn resolve(host: &Host, project: &Project) -> ResolvedHost {
         credential_source,
         jump_hosts: project_jumps.chain(own_jumps).collect(),
         startup_commands,
+        port_forwards,
         color: host.color.clone().unwrap_or_else(|| project.color.clone()),
         icon: host.icon.clone().unwrap_or_else(|| "server".into()),
     }
@@ -1860,6 +1975,7 @@ mod tests {
             jump_hosts: vec![],
             legacy_jump_host: None,
             startup_commands: vec![],
+            port_forwards: vec![],
             hosts: vec!["h1".into()],
             shells: vec![],
             highlight: true,
@@ -1883,6 +1999,8 @@ mod tests {
             legacy_jump_host: Inherited::Project,
             startup_commands: vec![],
             run_project_commands: true,
+            port_forwards: vec![],
+            use_project_forwards: true,
             color: color.map(Into::into),
             icon: None,
             rdp: None,
@@ -2059,6 +2177,49 @@ mod tests {
         lib.projects[0].jump_hosts = vec![jump("bastion.lan")];
         assert_eq!(jump_addresses(&lib, "web"), ["inner.lan"]);
         assert_eq!(jump_addresses(&lib, "db"), ["bastion.lan"]);
+    }
+
+    #[test]
+    fn port_forwards_open_the_projects_first_unless_a_host_leaves_them_out() {
+        let mut web = named("web");
+        web.port_forwards = vec![PortForward::socks(1080)];
+        let mut db = named("db");
+        db.use_project_forwards = false;
+        db.port_forwards = vec![PortForward::local(5432, "localhost", 5432)];
+        let mut lib = library(vec![web, db]);
+        lib.projects[0].port_forwards = vec![PortForward::local(8080, "intranet.lan", 80)];
+        let forwards = |host: &str| lib.resolve("p1", host).unwrap().port_forwards;
+        assert_eq!(forwards("web"), [PortForward::local(8080, "intranet.lan", 80), PortForward::socks(1080)]);
+        assert_eq!(forwards("db"), [PortForward::local(5432, "localhost", 5432)]);
+    }
+
+    #[test]
+    fn port_forwards_round_trip_and_leave_defaults_out() {
+        let mut web = named("web");
+        web.port_forwards = vec![
+            PortForward::local(5432, "db.internal", 5432),
+            PortForward { open_to_network: true, ..PortForward::remote(8080, "localhost", 3000) },
+            PortForward::socks(1080),
+        ];
+        web.use_project_forwards = false;
+        let lib = library(vec![web]);
+        let text = toml::to_string(&lib).unwrap();
+        assert!(text.contains("use_project_forwards = false"), "{text}");
+        let socks = text.split("[[hosts.port_forwards]]").nth(3).unwrap();
+        assert!(!socks.contains("to_host") && !socks.contains("to_port") && !socks.contains("open_to_network"), "{socks}");
+        let back: Library = toml::from_str(&text).unwrap();
+        assert_eq!(back, lib);
+        // Files from before Port Forwards read as a Host without any that takes the Project's.
+        let old: Library = toml::from_str("[[hosts]]\nid = \"h\"\nname = \"h\"\naddress = \"h.lan\"\n").unwrap();
+        assert!(old.hosts[0].port_forwards.is_empty() && old.hosts[0].use_project_forwards);
+    }
+
+    #[test]
+    fn port_forward_labels_say_which_way_they_go() {
+        assert_eq!(PortForward::local(5432, "db.internal", 5432).label(), "5432 → db.internal:5432");
+        assert_eq!(PortForward::remote(8080, "localhost", 3000).label(), "Remote 8080 → localhost:3000");
+        assert_eq!(PortForward::socks(1080).label(), "SOCKS on 1080");
+        assert_eq!(PortForward::local(8443, "fd00::5", 443).target(), "[fd00::5]:443");
     }
 
     #[test]

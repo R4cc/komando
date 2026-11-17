@@ -5,6 +5,7 @@
 //! is told "something changed" at most once until it has rendered, so a flood of output
 //! costs one repaint per frame, not one per chunk.
 
+pub mod forward;
 pub(crate) mod ledbat;
 pub mod latency;
 pub mod local;
@@ -40,6 +41,8 @@ pub enum SessionEvent {
     Status(Status),
     /// A hop's smoothed SSH round trip and whether its latest reply is overdue.
     Latency(latency::HopLatency),
+    /// A Port Forward started, failed, or its connections changed.
+    Forward(forward::ForwardStatus),
     Prompt(Prompt),
     /// Progress on the way to the Host: `index` is the hop (Jump Hosts first, the Host last).
     Hop { index: usize, step: HopStep },

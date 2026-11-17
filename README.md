@@ -29,7 +29,7 @@ Your servers, files and remote desktops organized into projects.
   whether you're typing into staging or production.
 - **Additional features**
   - SSH, SFTP, RDP and VNC, a key vault and log highlighting.
-  - Startup commands, jump hosts, sudo without retyping.
+  - Startup commands, jump hosts, port forwarding, sudo without retyping.
 
 ## Download
 
@@ -96,6 +96,10 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 - **Jump hosts.** Reach servers that sit behind others. Komando shows each hop while connecting.
 - **Share a project.** Send a teammate a `.komando` file with its hosts, users and jump hosts,
   never its passwords or keys.
+- **Port forwarding.** Local, remote and SOCKS forwards open with the host's session, set once
+  for a project or per host. The session's top bar shows each one and why one failed; click a
+  local one to copy its address. Forwards listen on this computer only unless you open them to
+  the network.
 - **Startup commands.** `cd /srv/app`, `sudo -i` or `tmux attach` typed for you once the shell is ready.
   A command can wait for text first, such as the root prompt after `sudo -i`.
 - **Several sessions per host**, and **reconnect in place** with your output kept. Ctrl+click a

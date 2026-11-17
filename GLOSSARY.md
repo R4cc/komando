@@ -19,15 +19,15 @@ not a Host. A Host can be reached through several Jump Hosts, signed in to one a
 _Avoid_: Bastion, proxy, ProxyJump, gateway
 
 **Project Default**:
-A setting a Project gives its Hosts: user, Project Credential, Jump Hosts, Startup Commands.
-Each Host takes it, sets its own, or switches it off. Jump Hosts and Startup Commands add up
-instead: a Host goes through the Project's Jump Hosts first (unless it switches them off), then
+A setting a Project gives its Hosts: user, Project Credential, Jump Hosts, Port Forwards,
+Startup Commands. Each Host takes it, sets its own, or switches it off. Jump Hosts, Port
+Forwards and Startup Commands add up instead: a Host goes through the Project's Jump Hosts first (unless it switches them off), then
 its own.
 _Avoid_: Inherited setting, project setting
 
 **Project File**:
-A `.komando` file made by "Share project…": a Project with its Hosts, their users, Jump Hosts
-and Startup Commands, and no Credential. Importing it on another PC adds the Project there.
+A `.komando` file made by "Share project…": a Project with its Hosts, their users, Jump Hosts,
+Port Forwards and Startup Commands, and no Credential. Importing it on another PC adds the Project there.
 _Avoid_: Export, backup, profile
 
 **Host Key**:
@@ -60,6 +60,14 @@ Project's run first, then the Host's own. Each is typed once the shell goes quie
 has a **Wait for** text, once that text appears after the previous one (a root prompt after
 `sudo -i`). One never answers a password question: Komando stops there for the user.
 _Avoid_: Init script, login script, RemoteCommand, expect/send
+
+**Port Forward**:
+Connections to a port carried through a Host's SSH Session while it is connected. **Local**: a
+port on this computer reaches an address from the Host's side. **Remote**: a port on the Host
+reaches an address from this computer's side. **SOCKS**: a SOCKS5 proxy on this computer whose
+connections leave from the Host. Each listens on loopback only unless it is opened to the
+network. A Project's open first, then the Host's own.
+_Avoid_: Tunnel (that is a Remote Desktop's route through SSH), port mapping, -L/-R/-D
 
 **Scrollback**:
 All output a Session has received and still holds, from its first line to its current screen.

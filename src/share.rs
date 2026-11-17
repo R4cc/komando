@@ -11,7 +11,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::import::{Found, FoundGroup, FoundHost};
-use crate::model::{Host, Inherited, JumpHost, Library, Project, StartupCommand, resolve};
+use crate::model::{Host, Inherited, JumpHost, Library, PortForward, Project, StartupCommand, resolve};
 
 /// The file name extension of a Project File.
 pub const EXTENSION: &str = "komando";
@@ -44,6 +44,8 @@ struct SharedProject {
     startup_commands: Vec<StartupCommand>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     jump_hosts: Vec<SharedJump>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    port_forwards: Vec<PortForward>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -67,6 +69,10 @@ struct SharedHost {
     icon: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     jump_hosts: Vec<SharedJump>,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    use_project_forwards: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    port_forwards: Vec<PortForward>,
 }
 
 /// A Jump Host without its password: asked when connecting, like any Jump Host without one.
@@ -108,7 +114,7 @@ fn shareable(commands: &[StartupCommand]) -> Vec<StartupCommand> {
 }
 
 /// What a Project File of `project` holds: the Project's name, look and defaults, and its
-/// Hosts with their addresses, users, Jump Hosts and Startup Commands. No Credential, and no
+/// Hosts with their addresses, users, Jump Hosts, Startup Commands and Port Forwards. No Credential, and no
 /// Local Shells (they are this PC's programs). None if the Project isn't in the Library.
 pub fn write(library: &Library, project_id: &str) -> Option<String> {
     let project = library.project(project_id)?;
@@ -121,6 +127,7 @@ pub fn write(library: &Library, project_id: &str) -> Option<String> {
             default_user: project.default_user.clone(),
             startup_commands: shareable(&project.startup_commands),
             jump_hosts: project.jump_hosts.iter().map(SharedJump::from_jump).collect(),
+            port_forwards: project.port_forwards.clone(),
         },
         hosts: library
             .hosts_of(project)
@@ -135,6 +142,8 @@ pub fn write(library: &Library, project_id: &str) -> Option<String> {
                 color: host.color.clone(),
                 icon: host.icon.clone(),
                 jump_hosts: host.jump_hosts.iter().map(SharedJump::from_jump).collect(),
+                use_project_forwards: host.use_project_forwards,
+                port_forwards: host.port_forwards.clone(),
             })
             .collect(),
     };
@@ -174,6 +183,7 @@ pub fn read(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
     project.default_user = shared.default_user.clone().filter(|u| !u.trim().is_empty());
     project.jump_hosts = shared.jump_hosts.iter().map(SharedJump::to_jump).filter(|j| !j.address.is_empty()).collect();
     project.startup_commands = shareable(&shared.startup_commands);
+    project.port_forwards = shared.port_forwards.iter().filter(|f| usable(f)).cloned().collect();
 
     let mut notes = vec![];
     let mut hosts = vec![];
@@ -192,6 +202,8 @@ pub fn read(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
         host.run_project_commands = shared_host.run_project_commands;
         host.startup_commands = shareable(&shared_host.startup_commands);
         host.jump_hosts = shared_host.jump_hosts.iter().map(SharedJump::to_jump).filter(|j| !j.address.is_empty()).collect();
+        host.use_project_forwards = shared_host.use_project_forwards;
+        host.port_forwards = shared_host.port_forwards.iter().filter(|f| usable(f)).cloned().collect();
         let resolved = resolve(&host, &project);
         hosts.push(FoundHost {
             name: host.name,
@@ -202,6 +214,7 @@ pub fn read(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
             color: shared_host.color.clone(),
             jump_hosts: Some(resolved.jump_hosts.into_iter().map(|r| r.jump).collect()),
             startup_commands: Some(resolved.startup_commands),
+            port_forwards: Some(resolved.port_forwards),
             left_out: vec![],
             ..Default::default()
         });
@@ -218,10 +231,17 @@ pub fn read(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
             default_user: project.default_user,
             jump_hosts: project.jump_hosts,
             startup_commands: project.startup_commands,
+            port_forwards: project.port_forwards,
             hosts,
         }],
         notes,
     })
+}
+
+/// Whether a Port Forward from a file can open: a port to listen on, and an address unless
+/// it is SOCKS. A hand-edited file may have neither.
+fn usable(forward: &PortForward) -> bool {
+    forward.port != 0 && (!forward.kind.has_target() || (!forward.to_host.trim().is_empty() && forward.to_port != 0))
 }
 
 /// Read a Project File from disk.
@@ -301,6 +321,27 @@ mod tests {
         assert_eq!(db.jump_hosts.as_deref(), Some(&[jump("db-gw.lan", None, None)][..]));
         assert_eq!(db.startup_commands.as_deref(), Some(&["sudo -iu postgres".into(), StartupCommand::after("$ ", "psql")][..]));
         assert_eq!((db.color.as_deref(), db.icon.as_deref()), (Some("green"), Some("database")));
+    }
+
+    #[test]
+    fn port_forwards_travel_with_a_shared_project() {
+        let mut lib = library();
+        lib.projects[0].port_forwards = vec![PortForward::socks(1080)];
+        let db = lib.hosts.iter_mut().find(|h| h.name == "db").unwrap();
+        db.use_project_forwards = false;
+        db.port_forwards = vec![PortForward::local(5432, "localhost", 5432)];
+        let text = write(&lib, &lib.projects[0].id).unwrap();
+        let found = read(&text, &any_icon).unwrap();
+        let [group] = found.groups.as_slice() else { panic!("one group") };
+        assert_eq!(group.port_forwards, [PortForward::socks(1080)]);
+        let [web, db] = group.hosts.as_slice() else { panic!("two hosts") };
+        assert_eq!(web.port_forwards.as_deref(), Some(&[PortForward::socks(1080)][..]));
+        assert_eq!(db.port_forwards.as_deref(), Some(&[PortForward::local(5432, "localhost", 5432)][..]));
+
+        // One a hand-edited file can't open is left out.
+        let broken = text.replace("[[project.port_forwards]]\nkind = \"socks\"\nport = 1080", "[[project.port_forwards]]\nkind = \"local\"\nport = 1080");
+        assert_ne!(broken, text);
+        assert!(read(&broken, &any_icon).unwrap().groups[0].port_forwards.is_empty());
     }
 
     #[test]

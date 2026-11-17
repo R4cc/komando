@@ -6,6 +6,21 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Port forwarding. A host or project form's new Port forwards page sets Local forwards (a port
+  on this computer reaches an address from the server's side), Remote forwards (a port on the
+  server reaches an address from this computer's side) and SOCKS proxies. They open while the
+  host's SSH session is connected. A project's forwards open for each of its hosts, unless a
+  host turns them off.
+- The top bar shows a connected session's port forwards: whether each is listening, how many
+  connections it carries and why one failed. Click a local forward or SOCKS proxy to copy its
+  address.
+- Forwards listen only on this computer (for a Remote forward, only on the server) unless you
+  open one to the network.
+- Shared project files carry port forwards, and Settings → Import brings Tabby's forwarded
+  ports over instead of leaving them behind.
+
 ### Changed
 
 - While an SSH session connects and for its first five seconds, the connection bars play a

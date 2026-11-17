@@ -148,7 +148,7 @@ fn sign_in(name: &str, port: u16, secret: Option<Secret>, answers: &[(&str, bool
         user: Some("alice".into()),
         secret,
     };
-    let target = komando::session::ssh::Target { hops: vec![hop], known_hosts: dir.join("known_hosts") };
+    let target = komando::session::ssh::Target { hops: vec![hop], known_hosts: dir.join("known_hosts"), forwards: vec![] };
     let sink = komando::session::ssh::spawn(target, size, term, proxy);
     let mut outcome = Outcome { asked: vec![], signed_in: false, remembered: None, ended: None };
     let mut answers = answers.iter();

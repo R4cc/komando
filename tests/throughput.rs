@@ -448,7 +448,7 @@ fn bench_target(ports: &[u16], user: &str, known_hosts: &std::path::Path) -> kom
             secret: Some(komando::vault::Secret::Password { password: "bench".into() }),
         })
         .collect();
-    komando::session::ssh::Target { hops, known_hosts: known_hosts.to_path_buf() }
+    komando::session::ssh::Target { hops, known_hosts: known_hosts.to_path_buf(), forwards: vec![] }
 }
 
 fn run_once(ports: &[u16], lines: u64, known_hosts: &std::path::Path, external: bool) -> Run {

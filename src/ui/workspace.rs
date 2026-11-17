@@ -39,6 +39,7 @@ mod command_history;
 mod desktop_window;
 mod desktops;
 mod forms;
+mod forwards;
 mod highlights;
 mod import;
 mod main_menu;
@@ -466,6 +467,8 @@ pub struct Workspace {
     presentation_slider: Option<Entity<SliderState>>,
     /// The menu behind the title bar's ☰ button.
     main_menu: crate::ui::popup::Popup,
+    /// The active Session's Port Forwards, out of the session strip.
+    forwards_menu: crate::ui::popup::Popup,
     /// Presentation mode is on, with what to put back when it ends.
     presentation: Option<main_menu::Presentation>,
     font_input: Option<Entity<InputState>>,
@@ -622,6 +625,7 @@ impl Workspace {
             font_slider: None,
             presentation_slider: None,
             main_menu: Default::default(),
+            forwards_menu: Default::default(),
             presentation: None,
             font_input: None,
             word_separators_input: None,
@@ -1476,6 +1480,7 @@ impl Workspace {
                     this.apply_terminal_settings(cx);
                     this.show_toast("Minimap hidden. Turn it back on in Settings → Terminal.", cx);
                 }
+                TerminalEvent::ForwardFailed { forward, why } => this.forward_failed(id, forward, why, cx),
                 TerminalEvent::StartupStopped { waited_for } => this.show_toast_for(
                     format!("Startup commands stopped: \"{}\" didn't appear within a minute.", waited_for.trim()),
                     Duration::from_secs(8),
@@ -1640,7 +1645,7 @@ impl Workspace {
                     port: host.port,
                     user: host.user,
                 });
-                let target = ssh::Target { hops, known_hosts: self.data_dir.join("known_hosts") };
+                let target = ssh::Target { hops, known_hosts: self.data_dir.join("known_hosts"), forwards: host.port_forwards };
                 Some(ssh::spawn(target, size, term, proxy))
             }
             SessionKind::Desktop { .. } => return,
@@ -4372,6 +4377,7 @@ impl Workspace {
             }
         };
         let desktop_buttons = self.desktop_strip_buttons(entry, p, cx);
+        let forwards_button = self.forwards_strip_button(entry, p, cx);
         let (status_text, status_color) = match entry.status() {
             Status::Connecting => ("Connecting", p.warning),
             Status::Connected => ("Connected", p.success),
@@ -4439,6 +4445,7 @@ impl Workspace {
                 )
                 // The empty middle stays draggable: only the controls above catch the mouse.
                 .child(div().flex_1())
+                .children(forwards_button)
                 .when(is_ssh, |el| {
                     el.child(
                         div()
@@ -5722,6 +5729,7 @@ impl Render for Workspace {
             .children(self.render_overlay(f32::from(window.bounds().size.width) >= WIDE_FORM_MIN_WINDOW, p, cx))
             .children(self.render_prompt_modal(p, cx))
             .children(self.main_menu.render())
+            .children(self.forwards_menu.render())
             .children(toast)
             .into_any_element()
     }

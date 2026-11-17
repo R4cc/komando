@@ -2,12 +2,13 @@
 //!
 //! An importer (`tabby`, `mobaxterm`, or `crate::share` for a Project File) reads the files
 //! into `Found`: groups of hosts with what Komando takes over (name, address, protocol, port, user, icon,
-//! and from MobaXterm or a Project File also Jump Hosts and Startup Commands) and the settings
+//! from MobaXterm or a Project File also Jump Hosts and Startup Commands, and from Tabby or a
+//! Project File Port Forwards) and the settings
 //! it leaves behind. `plan` then matches that against the Library: which Project each group goes
 //! into and which hosts are already there. `apply` adds the hosts the user picked. Secrets
 //! never come over (see docs/adr/0008-importing-from-tabby.md).
 
-use crate::model::{Desktop, Host, Inherited, JumpHost, Library, Project, ProjectId, Protocol, StartupCommand, resolve};
+use crate::model::{Desktop, Host, Inherited, JumpHost, Library, PortForward, Project, ProjectId, Protocol, StartupCommand, resolve};
 use crate::theme::PROJECT_COLORS;
 
 pub mod mobaxterm;
@@ -37,9 +38,10 @@ pub struct FoundGroup {
     pub default_user: Option<String>,
     /// A new Project's color; the next unused preset when None.
     pub color: Option<String>,
-    /// A new Project's Jump Hosts and Startup Commands.
+    /// A new Project's Jump Hosts, Startup Commands and Port Forwards.
     pub jump_hosts: Vec<JumpHost>,
     pub startup_commands: Vec<StartupCommand>,
+    pub port_forwards: Vec<PortForward>,
     pub hosts: Vec<FoundHost>,
 }
 
@@ -60,6 +62,8 @@ pub struct FoundHost {
     pub jump_hosts: Option<Vec<JumpHost>>,
     /// Every Startup Command the host runs, the Project's included. None: not known.
     pub startup_commands: Option<Vec<StartupCommand>>,
+    /// Every Port Forward the host opens, the Project's included. None: not known.
+    pub port_forwards: Option<Vec<PortForward>>,
     /// Settings the user set in the other client that Komando does not take over.
     pub left_out: Vec<LeftOut>,
 }
@@ -260,11 +264,12 @@ pub struct Applied {
 
 /// Add the picked hosts (`picked[group][host]`) to the Library. Each group goes into the
 /// Project `plan` chose, or a new one at the end of the sidebar; a new Project takes the
-/// group's user, Jump Hosts and Startup Commands as its defaults, and its color or the next
+/// group's user, Jump Hosts, Startup Commands and Port Forwards as its defaults, and its color or the next
 /// preset color not yet used. A host whose user is its Project's default user takes it from
 /// the Project; otherwise it gets its own, and one without a user in a group with one is
 /// asked for it. Desktop sessions instead configure a Remote Desktop with its own port and
-/// account, opening that protocol by default and leaving SSH sign-in unset. A host with known Jump Hosts and Startup Commands
+/// account, opening that protocol by default and leaving SSH sign-in unset. A host with known Jump Hosts, Startup Commands
+/// or Port Forwards
 /// takes the Project's when they start its own list and gets the rest as its own; otherwise
 /// it switches the Project's off and gets the whole list, so it reaches its machine the same
 /// way in a Project with other defaults. No Credential is ever set, and none is inherited: in
@@ -304,6 +309,7 @@ pub fn apply(found: &Found, plan: &Plan, picked: &[Vec<bool>], library: &mut Lib
                 project.default_user = group.default_user.clone().filter(|u| !u.is_empty());
                 project.jump_hosts = group.jump_hosts.iter().map(without_credential).collect();
                 project.startup_commands = group.startup_commands.clone();
+                project.port_forwards = group.port_forwards.clone();
                 extended.push(project.id.clone());
                 library.projects.push(project);
                 applied.new_projects += 1;
@@ -314,6 +320,7 @@ pub fn apply(found: &Found, plan: &Plan, picked: &[Vec<bool>], library: &mut Lib
         let project_has_credential = library.projects[index].credential.is_some();
         let project_jumps: Vec<JumpHost> = library.projects[index].jump_hosts.iter().map(without_credential).collect();
         let project_commands = library.projects[index].startup_commands.clone();
+        let project_forwards = library.projects[index].port_forwards.clone();
         for found in chosen {
             let mut host = Host::new(found.name.trim(), found.address.trim());
             if found.protocol.is_ssh() {
@@ -351,6 +358,9 @@ pub fn apply(found: &Found, plan: &Plan, picked: &[Vec<bool>], library: &mut Lib
             }
             if let Some(commands) = &found.startup_commands {
                 (host.run_project_commands, host.startup_commands) = split_off_project(commands, &project_commands);
+            }
+            if let Some(forwards) = found.port_forwards.as_ref().filter(|_| found.protocol.is_ssh()) {
+                (host.use_project_forwards, host.port_forwards) = split_off_project(forwards, &project_forwards);
             }
             library.projects[index].hosts.push(host.id.clone());
             library.hosts.push(host);
@@ -675,6 +685,27 @@ mod tests {
             let route: Vec<JumpHost> = resolved.jump_hosts.into_iter().map(|r| r.jump).collect();
             assert_eq!(Some(route), found.groups[0].hosts.iter().find(|h| h.name == name).unwrap().jump_hosts, "{name}");
         }
+    }
+
+    #[test]
+    fn imported_port_forwards_take_the_projects_when_they_start_with_them() {
+        let socks = PortForward::socks(1080);
+        let db = PortForward::local(5432, "localhost", 5432);
+        let mut first = found_host("web", "web.lan", None);
+        first.port_forwards = Some(vec![socks.clone(), db.clone()]);
+        let mut second = found_host("lab", "lab.lan", None);
+        second.port_forwards = Some(vec![db.clone()]);
+        let mut hermes = group("Hermes", None, vec![first, second]);
+        hermes.port_forwards = vec![socks.clone()];
+        let found = Found { groups: vec![hermes], notes: vec![] };
+        let mut lib = Library::default();
+        apply(&found, &super::plan(&found, &lib), &all(&found), &mut lib);
+        assert_eq!(lib.projects[0].port_forwards, [socks]);
+        let host = |name: &str| lib.hosts.iter().find(|h| h.name == name).unwrap();
+        assert!(host("web").use_project_forwards);
+        assert_eq!(host("web").port_forwards, std::slice::from_ref(&db));
+        assert!(!host("lab").use_project_forwards, "it has no SOCKS proxy");
+        assert_eq!(host("lab").port_forwards, [db]);
     }
 
     #[test]
