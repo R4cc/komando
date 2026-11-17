@@ -581,7 +581,11 @@ mod tests {
                 });
                 workspace
             }).unwrap();
-            cx.quit();
+            // Quit after the headless event loop starts; an earlier quit is reset on entry.
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(std::time::Duration::from_millis(10)).await;
+                cx.update(|cx| cx.quit());
+            }).detach();
         });
         std::fs::remove_dir_all(dir).unwrap();
     }

@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-11-17
+
 ### Added
 
 - Komando now runs on Linux and macOS too. Each release has a Linux download (a `.tar.gz`
@@ -1680,7 +1682,9 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/R4cc/komando/compare/v0.7.3...v0.7.4
+[0.7.3]: https://github.com/R4cc/komando/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/R4cc/komando/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/R4cc/komando/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/R4cc/komando/compare/v0.6.6...v0.7.0
