@@ -41,10 +41,12 @@ use crate::session::{
     Answer, EventProxy, GridSize, InputSink, Prompt, Remembered, SessionEvent, SharedTerm, Status, new_term,
     scrollback_text,
 };
+use crate::model::{LinkClick, RightClick};
 use crate::theme::{Appearance, rgb_to_hsla};
 use crate::ui::box_drawing::{self, Prim};
 use crate::ui::widgets::{button, caps_lock_indicator, password_input, ButtonKind};
 
+mod rich_copy;
 mod search;
 mod selection;
 #[cfg(all(test, target_os = "linux"))]
@@ -246,9 +248,11 @@ pub struct TerminalView {
     /// While connecting through Jump Hosts: the route page.
     route: Option<ConnectRoute>,
     startup: StartupCommands,
-    pub confirm_multiline_paste: bool,
-    /// PuTTY-style: selecting copies, right-click pastes.
-    pub putty_clipboard: bool,
+    /// Mouse and clipboard behaviour. Word separators take effect through `set_cursor`.
+    pub pointer: crate::model::Pointer,
+    /// A plain click began on this link (`LinkClick::Click`): it opens on release, unless
+    /// the press turned into a selection.
+    link_press: Option<TermLink>,
     pub windows_selection: bool,
     keyboard_selection: selection::KeyboardSelection,
     cursor_epoch: Instant,
@@ -521,8 +525,8 @@ impl TerminalView {
             focus_reported: None,
             route: None,
             startup: StartupCommands::default(),
-            confirm_multiline_paste: true,
-            putty_clipboard: false,
+            pointer: crate::model::Pointer::default(),
+            link_press: None,
             windows_selection: false,
             keyboard_selection: Default::default(),
             cursor_epoch: Instant::now(),
@@ -1135,9 +1139,27 @@ impl TerminalView {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = self.term.lock().selection_to_string() {
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
-        }
+        self.copy_selection(cx);
+    }
+
+    /// Put the selection on the clipboard, trimmed and with its colors as the settings say.
+    /// Returns whether there was anything to copy.
+    fn copy_selection(&mut self, cx: &mut Context<Self>) -> bool {
+        let (text, html) = {
+            let term = self.term.lock();
+            let Some(text) = term.selection_to_string() else { return false };
+            let text = if self.pointer.trim_copied { text.trim().to_string() } else { text };
+            if text.is_empty() {
+                return false;
+            }
+            let html = self.pointer.copy_formatting.then(|| {
+                let appearance = cx.global::<Appearance>();
+                rich_copy::selection_html(&term, &appearance.term, &appearance.font_family, appearance.font_size, self.pointer.trim_copied)
+            });
+            (text, html.flatten())
+        };
+        rich_copy::write_clipboard(text, html, cx);
+        true
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
@@ -1162,8 +1184,9 @@ impl TerminalView {
         if self.prompt.is_some() {
             return;
         }
+        let text = if self.pointer.paste_single_line { one_line(&text) } else { text };
         let lines = text.trim_end_matches(['\r', '\n']).lines().count();
-        if self.confirm_multiline_paste && lines > 1 {
+        if self.pointer.confirm_multiline_paste && lines > 1 {
             self.prompt = Some(ActivePrompt::ConfirmPaste { text, lines });
             cx.notify();
         } else {
@@ -1172,7 +1195,7 @@ impl TerminalView {
     }
 
     fn paste_text(&mut self, text: &str) {
-        let bracketed = self.term.lock().mode().contains(TermMode::BRACKETED_PASTE);
+        let bracketed = self.pointer.bracketed_paste && self.term.lock().mode().contains(TermMode::BRACKETED_PASTE);
         self.scroll_to_bottom();
         self.write(keys::paste_bytes(text, bracketed));
     }
@@ -1243,6 +1266,15 @@ impl TerminalView {
     /// `grid_point` locks the terminal itself, so it has to run before the lock here is taken:
     /// `link_at(&*self.term.lock(), self.grid_point(..))` locked it twice on the UI thread, and
     /// the terminal's mutex isn't reentrant, so the window hung for good.
+    /// Whether a click with these keys opens a link at once: the chosen key, and Ctrl (Cmd on
+    /// macOS) when a plain click opens links, so programs that take the mouse still allow it.
+    fn link_key_held(&self, m: &gpui::Modifiers) -> bool {
+        match self.pointer.link_click {
+            LinkClick::Ctrl | LinkClick::Click => m.control || m.platform,
+            LinkClick::Alt => m.alt,
+        }
+    }
+
     fn link_under(&self, position: gpui::Point<Pixels>) -> Option<TermLink> {
         let at = self.grid_point(position).0;
         link_at(&*self.term.lock(), at)
@@ -1291,9 +1323,11 @@ impl TerminalView {
             return;
         }
         window.focus(&self.focus, cx);
-        // Ctrl+click (Cmd+click on macOS) opens a link, even in a program that took the mouse.
+        // The link key and click (Ctrl+click by default) open a link, even in a program that
+        // took the mouse.
+        self.link_press = None;
         if event.button == MouseButton::Left
-            && (event.modifiers.control || event.modifiers.platform)
+            && self.link_key_held(&event.modifiers)
             && let Some(link) = self.link_under(event.position)
         {
             cx.open_url(&link.url);
@@ -1315,6 +1349,10 @@ impl TerminalView {
         }
         match event.button {
             MouseButton::Left => {
+                // A plain click opens a link on release, if it didn't select anything.
+                if self.pointer.link_click == LinkClick::Click && event.click_count == 1 && !event.modifiers.modified() {
+                    self.link_press = self.link_under(event.position);
+                }
                 let (pt, side) = self.grid_point(event.position);
                 let kind = match event.click_count {
                     2 => SelectionType::Semantic,
@@ -1326,8 +1364,18 @@ impl TerminalView {
                 self.drag_at = Some(event.position);
                 cx.notify();
             }
-            // PuTTY-style: right-click pastes; with Ctrl or Shift it opens the menu, as in PuTTY.
-            MouseButton::Right if self.putty_clipboard && !event.modifiers.control && !event.modifiers.shift => {
+            // A right-click that pastes (or copies); with Ctrl or Shift it opens the menu, as in PuTTY.
+            MouseButton::Right if self.pointer.right_click != RightClick::Menu && !event.modifiers.control && !event.modifiers.shift => {
+                cx.stop_propagation();
+                let copied = self.pointer.right_click == RightClick::CopyOrPaste && self.copy_selection(cx);
+                if copied {
+                    self.term.lock().selection = None;
+                    cx.notify();
+                } else {
+                    self.paste(&Paste, window, cx);
+                }
+            }
+            MouseButton::Middle if self.pointer.middle_click_paste => {
                 cx.stop_propagation();
                 self.paste(&Paste, window, cx);
             }
@@ -1415,6 +1463,7 @@ impl TerminalView {
 
     pub fn set_cursor(&mut self, shape: crate::model::TerminalCursor, blinking: bool) {
         let mut config = crate::session::terminal_config(self.scrollback);
+        config.semantic_escape_chars = format!("{}\t", self.pointer.word_separators);
         config.default_cursor_style = alacritty_terminal::vte::ansi::CursorStyle {
             shape: match shape {
                 crate::model::TerminalCursor::Line => CursorShape::Beam,
@@ -1695,14 +1744,20 @@ impl TerminalView {
         }
         self.selecting = false;
         self.drag_at = None;
-        let mut term = self.term.lock();
-        if term.selection.as_ref().is_some_and(|s| s.is_empty()) {
-            term.selection = None;
-        }
-        if self.putty_clipboard
-            && let Some(text) = term.selection_to_string().filter(|t| !t.is_empty())
+        let selected = {
+            let mut term = self.term.lock();
+            if term.selection.as_ref().is_some_and(|s| s.is_empty()) {
+                term.selection = None;
+            }
+            term.selection.is_some()
+        };
+        if let Some(link) = self.link_press.take()
+            && !selected
+            && self.link_under(event.position).as_ref() == Some(&link)
         {
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            cx.open_url(&link.url);
+        } else if self.pointer.copy_on_select && selected {
+            self.copy_selection(cx);
         }
         cx.notify();
     }
@@ -3307,7 +3362,7 @@ impl Render for TerminalView {
             }
             None => vec![],
         };
-        let link_pointer = self.hover_link.is_some() && (window.modifiers().control || window.modifiers().platform);
+        let link_pointer = self.hover_link.is_some() && self.link_key_held(&window.modifiers());
         let watch_ctrl = self.hover_link.is_some();
 
         let term = self.term.clone();
@@ -3717,12 +3772,25 @@ impl Render for TerminalView {
     }
 }
 
+/// Pasted text as one line: each line break, of any kind, becomes a space.
+fn one_line(text: &str) -> String {
+    text.trim_end_matches(['\r', '\n']).replace("\r\n", " ").replace(['\r', '\n'], " ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Activity, CachedGlyph, GlyphCache, GridCache, GridFont, GridLook, INLINE_CLUSTER, RowTextMetrics, Shaper,
         asks_for_secret, layout_grid,
     };
+
+    #[test]
+    fn pasting_as_one_line_turns_every_line_break_into_a_space() {
+        use super::one_line;
+        assert_eq!(one_line("cd /srv\r\nls -la\nexit\r\n"), "cd /srv ls -la exit");
+        assert_eq!(one_line("a\rb"), "a b");
+        assert_eq!(one_line("single"), "single");
+    }
     use crate::highlight::Highlighter;
     use crate::session::ssh::Output;
     use crate::session::{EventProxy, GridSize, SharedTerm, new_term};

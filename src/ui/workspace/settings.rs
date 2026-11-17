@@ -10,6 +10,7 @@ use crate::model::{AppIcon, MinimapPlacement};
 pub enum SettingsSection {
     Appearance,
     Terminal,
+    MouseClipboard,
     FileBrowser,
     RemoteDesktop,
     Shells,
@@ -20,9 +21,10 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [SettingsSection; 9] = [
+    pub const ALL: [SettingsSection; 10] = [
         Self::Appearance,
         Self::Terminal,
+        Self::MouseClipboard,
         Self::FileBrowser,
         Self::RemoteDesktop,
         Self::Shells,
@@ -36,6 +38,7 @@ impl SettingsSection {
         match self {
             Self::Appearance => "Appearance",
             Self::Terminal => "Terminal",
+            Self::MouseClipboard => "Mouse & clipboard",
             Self::FileBrowser => "File browser",
             Self::RemoteDesktop => "Remote desktop",
             Self::Shells => "Local shells",
@@ -50,6 +53,7 @@ impl SettingsSection {
         match self {
             Self::Appearance => "palette",
             Self::Terminal => "square-terminal",
+            Self::MouseClipboard => "mouse-pointer-click",
             Self::FileBrowser => "folder-open",
             Self::RemoteDesktop => "monitor",
             Self::Shells => "terminal",
@@ -64,6 +68,7 @@ impl SettingsSection {
         match self {
             Self::Appearance => "",
             Self::Terminal => "",
+            Self::MouseClipboard => "",
             Self::FileBrowser => "",
             Self::RemoteDesktop => "Each host sets up its own desktop in its form.",
             Self::Shells => "The shells listed at the top of the sidebar.",
@@ -213,6 +218,29 @@ impl Workspace {
             let icon_query = self.new_icon_query(window, cx);
             self.shell_editor = Some(ShellEditor { name, program, args, icon: None, icon_query, editing: None, error: None });
         }
+        if self.word_separators_input.is_none() {
+            let value = self.settings.pointer.word_separators.clone();
+            let input = cx.new(|cx| InputState::new(window, cx).default_value(value));
+            let sub = cx.subscribe_in(&input, window, |this, input, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    let value = input.read(cx).value().to_string();
+                    // Empty brings the defaults back, in the field too.
+                    let value = if value.is_empty() {
+                        let default = crate::model::DEFAULT_WORD_SEPARATORS.to_string();
+                        input.update(cx, |input, cx| input.set_value(default.clone(), window, cx));
+                        default
+                    } else {
+                        value
+                    };
+                    if value != this.settings.pointer.word_separators {
+                        this.settings.pointer.word_separators = value;
+                        this.apply_terminal_settings(cx);
+                    }
+                }
+            });
+            self._subscriptions.push(sub);
+            self.word_separators_input = Some(input);
+        }
         if self.font_input.is_none() {
             let family = self.settings.font_family.clone();
             let input = cx.new(|cx| InputState::new(window, cx).default_value(family).placeholder("Theme default"));
@@ -305,7 +333,7 @@ impl Workspace {
 
     /// Push terminal behaviour settings into every open session.
     pub(super) fn apply_terminal_settings(&mut self, cx: &mut Context<Self>) {
-        let (paste, putty) = (self.settings.confirm_multiline_paste, self.settings.putty_clipboard);
+        let pointer = self.settings.pointer.clone();
         let windows_selection = self.settings.windows_selection;
         let cursor_shape = self.settings.cursor_shape;
         let cursor_blink = self.settings.cursor_blink;
@@ -318,8 +346,7 @@ impl Workspace {
             let ssh = matches!(entry.kind, SessionKind::Ssh { .. });
             let Some(view) = entry.view.terminal() else { continue };
             view.update(cx, |v, cx| {
-                v.confirm_multiline_paste = paste;
-                v.putty_clipboard = putty;
+                v.pointer = pointer.clone();
                 v.windows_selection = windows_selection;
                 v.set_cursor(cursor_shape, cursor_blink);
                 v.command_rail = rail;
@@ -416,6 +443,7 @@ impl Workspace {
         match section {
             SettingsSection::Appearance => self.settings_appearance(p, cx),
             SettingsSection::Terminal => self.settings_terminal(p, cx),
+            SettingsSection::MouseClipboard => self.settings_mouse_clipboard(p, cx),
             SettingsSection::FileBrowser => self.settings_file_browser(p, cx),
             SettingsSection::RemoteDesktop => self.settings_remote_desktop(p, cx),
             SettingsSection::Shells => self.settings_shells(p, cx),
@@ -774,8 +802,6 @@ impl Workspace {
 
     fn settings_terminal(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let scrollback = self.settings.scrollback_lines;
-        let paste = self.settings.confirm_multiline_paste;
-        let putty = self.settings.putty_clipboard;
         let windows_selection = self.settings.windows_selection;
         let cursor_blink = self.settings.cursor_blink;
         use crate::model::TerminalCursor;
@@ -901,28 +927,6 @@ impl Workspace {
                 ),
                 setting_row(
                     p,
-                    "Confirm multi-line paste",
-                    "Each line may run as a command.",
-                    switch("paste-confirm".into(), "Confirm multi-line paste", paste, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.confirm_multiline_paste = !paste;
-                            this.apply_terminal_settings(cx);
-                        }))
-                        .into_any_element(),
-                ),
-                setting_row(
-                    p,
-                    "PuTTY-style clipboard",
-                    "Select to copy, right-click to paste. Ctrl+right-click opens the menu.",
-                    switch("putty".into(), "PuTTY-style clipboard", putty, p)
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.settings.putty_clipboard = !putty;
-                            this.apply_terminal_settings(cx);
-                        }))
-                        .into_any_element(),
-                ),
-                setting_row(
-                    p,
                     "Command rail",
                     "Marks each command at the left edge. Click one to jump back to it.",
                     switch("command-rail".into(), "Command rail", rail, p)
@@ -967,6 +971,126 @@ impl Workspace {
             }))
             .collect(),
         )
+    }
+
+    fn settings_mouse_clipboard(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        use crate::model::{LinkClick, RightClick};
+        let pointer = &self.settings.pointer;
+        // A switch row that flips one of the pointer settings.
+        let toggle = |id: &'static str, label: &'static str, hint: &'static str, on: bool, flip: fn(&mut crate::model::Pointer), cx: &mut Context<Self>| {
+            setting_row(
+                p,
+                label,
+                hint,
+                switch(id.into(), label, on, p)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        flip(&mut this.settings.pointer);
+                        this.apply_terminal_settings(cx);
+                    }))
+                    .into_any_element(),
+            )
+        };
+        const RIGHT_CLICKS: [(RightClick, &str); 3] =
+            [(RightClick::Menu, "Menu"), (RightClick::Paste, "Paste"), (RightClick::CopyOrPaste, "Copy or paste")];
+        const LINK_CLICKS: [(LinkClick, &str); 3] =
+            [(LinkClick::Ctrl, "Ctrl+click"), (LinkClick::Alt, "Alt+click"), (LinkClick::Click, "Click")];
+        let right_click = segmented(
+            "right-click",
+            &RIGHT_CLICKS.map(|(value, label)| (label, value == pointer.right_click)),
+            p,
+            cx,
+            |this, i, _, cx| {
+                this.settings.pointer.right_click = RIGHT_CLICKS[i].0;
+                this.apply_terminal_settings(cx);
+            },
+        );
+        let link_click = segmented(
+            "link-click",
+            &LINK_CLICKS.map(|(value, label)| (label, value == pointer.link_click)),
+            p,
+            cx,
+            |this, i, _, cx| {
+                this.settings.pointer.link_click = LINK_CLICKS[i].0;
+                this.apply_terminal_settings(cx);
+            },
+        );
+        let right_click_hint = match pointer.right_click {
+            RightClick::Menu => "",
+            RightClick::Paste => "Ctrl+right-click opens the menu.",
+            RightClick::CopyOrPaste => "Copies the selection if there is one, otherwise pastes. Ctrl+right-click opens the menu.",
+        };
+        let link_hint = match pointer.link_click {
+            LinkClick::Click => "Dragging over a link still selects it. Ctrl+click also works in programs that use the mouse.",
+            _ => "",
+        };
+        let separators = self.word_separators_input.clone().map(|i| Input::new(&i).font_family(p.mono_family).into_any_element());
+        let mouse = group(
+            p,
+            vec![
+                setting_row(p, "Right-click", right_click_hint, right_click),
+                toggle("middle-click-paste", "Middle-click pastes", "", pointer.middle_click_paste, |s| s.middle_click_paste = !s.middle_click_paste, cx),
+                setting_row(
+                    p,
+                    "Word boundaries",
+                    "A double-click selects up to these characters. Leave empty for the defaults.",
+                    div().w(px(220.)).children(separators).into_any_element(),
+                ),
+                setting_row(p, "Open links with", link_hint, link_click),
+            ],
+        );
+        let clipboard = group(
+            p,
+            vec![
+                toggle("copy-on-select", "Copy when selecting", "", pointer.copy_on_select, |s| s.copy_on_select = !s.copy_on_select, cx),
+                toggle(
+                    "copy-formatting",
+                    "Copy colors and styles",
+                    "Pasting into documents, mail or chat keeps the terminal's look. Plain-text programs get the text.",
+                    pointer.copy_formatting,
+                    |s| s.copy_formatting = !s.copy_formatting,
+                    cx,
+                ),
+                toggle(
+                    "trim-copied",
+                    "Trim copied text",
+                    "Leaves out spaces and blank lines at the start and end.",
+                    pointer.trim_copied,
+                    |s| s.trim_copied = !s.trim_copied,
+                    cx,
+                ),
+                toggle(
+                    "paste-confirm",
+                    "Confirm multi-line paste",
+                    "Each line may run as a command.",
+                    pointer.confirm_multiline_paste,
+                    |s| s.confirm_multiline_paste = !s.confirm_multiline_paste,
+                    cx,
+                ),
+                toggle(
+                    "paste-single-line",
+                    "Paste as one line",
+                    "Line breaks in pasted text become spaces.",
+                    pointer.paste_single_line,
+                    |s| s.paste_single_line = !s.paste_single_line,
+                    cx,
+                ),
+                toggle(
+                    "bracketed-paste",
+                    "Bracketed paste",
+                    "Shells that support it treat a paste as text, so nothing runs until you press Enter.",
+                    pointer.bracketed_paste,
+                    |s| s.bracketed_paste = !s.bracketed_paste,
+                    cx,
+                ),
+            ],
+        );
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(28.))
+            .child(settings_block("Mouse", p, mouse))
+            .child(settings_block("Clipboard", p, clipboard))
+            .into_any_element()
     }
 
     fn settings_file_browser(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {

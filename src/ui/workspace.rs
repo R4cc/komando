@@ -434,6 +434,8 @@ pub struct Workspace {
     blur_slider: Option<Entity<SliderState>>,
     font_slider: Option<Entity<SliderState>>,
     font_input: Option<Entity<InputState>>,
+    /// Settings → Mouse & clipboard: the characters that end a double-clicked word.
+    word_separators_input: Option<Entity<InputState>>,
     /// Settings → Terminal: the regular and bold font weight fields.
     weight_inputs: Option<[Entity<InputState>; 2]>,
     /// Settings → Local shells: the form that adds a shell or edits one.
@@ -584,6 +586,7 @@ impl Workspace {
             blur_slider: None,
             font_slider: None,
             font_input: None,
+            word_separators_input: None,
             weight_inputs: None,
             shell_editor: None,
             confirm_remove_shell: None,
@@ -1363,8 +1366,7 @@ impl Workspace {
         // A new Session shows under its item even if the item's Sessions were folded away.
         self.collapsed_items.remove(&item);
         let scrollback = self.settings.scrollback_lines;
-        let confirm_paste = self.settings.confirm_multiline_paste;
-        let putty = self.settings.putty_clipboard;
+        let pointer = self.settings.pointer.clone();
         let windows_selection = self.settings.windows_selection;
         let cursor_shape = self.settings.cursor_shape;
         let cursor_blink = self.settings.cursor_blink;
@@ -1376,8 +1378,7 @@ impl Workspace {
         let minimap_delay = std::time::Duration::from_millis(self.settings.minimap_delay_ms.into());
         let view = cx.new(|cx| {
             let mut view = TerminalView::new(label.clone(), scrollback, window, cx);
-            view.confirm_multiline_paste = confirm_paste;
-            view.putty_clipboard = putty;
+            view.pointer = pointer;
             view.windows_selection = windows_selection;
             view.set_cursor(cursor_shape, cursor_blink);
             view.command_rail = command_rail;

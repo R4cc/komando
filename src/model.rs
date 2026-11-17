@@ -1049,14 +1049,17 @@ pub struct Settings {
     /// The master password popover's "Stay unlocked": on, the Vault stays unlocked for
     /// `auto_lock_minutes`; off, it locks again once what asked for it has used it.
     pub stay_unlocked: bool,
-    /// PuTTY-style: selecting copies, right-click pastes.
+    /// The old single PuTTY-style clipboard switch, now `copy_on_select` with a right-click
+    /// that pastes. Read once by `load` and never written.
+    #[serde(skip_serializing)]
     pub putty_clipboard: bool,
+    /// What the mouse and the clipboard do in the terminal.
+    #[serde(flatten)]
+    pub pointer: Pointer,
     /// Local keyboard selection instead of the shell's Ctrl+A and Shift navigation.
     pub windows_selection: bool,
     pub cursor_shape: TerminalCursor,
     pub cursor_blink: bool,
-    /// Ask before pasting more than one line.
-    pub confirm_multiline_paste: bool,
     /// Show the command rail: a mark at the terminal's left edge for each line entered.
     pub command_rail: bool,
     /// Keep the Command History: each Host's entered commands, with their time, on this PC.
@@ -1105,6 +1108,85 @@ pub struct Settings {
     pub restore_tabs: bool,
 }
 
+/// What a right-click in the terminal does. With Ctrl or Shift held it always opens the menu.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum RightClick {
+    #[default]
+    Menu,
+    Paste,
+    /// Copies the selection when there is one, otherwise pastes (as in Windows Terminal).
+    CopyOrPaste,
+}
+
+/// What opens a link in the terminal's output.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum LinkClick {
+    #[default]
+    Ctrl,
+    Alt,
+    /// A plain click that doesn't drag. Ctrl+click still opens one, also in programs that
+    /// take the mouse.
+    Click,
+}
+
+/// Characters that end a word when double-clicking, besides tabs (see `Pointer::word_separators`).
+pub const DEFAULT_WORD_SEPARATORS: &str = ",│`|:\"' ()[]{}<>";
+
+/// The terminal's mouse and clipboard behaviour (Settings → Mouse & clipboard).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Pointer {
+    pub right_click: RightClick,
+    /// A middle-click pastes the clipboard, unless a program took the mouse.
+    pub middle_click_paste: bool,
+    /// Double-click selection stops at these characters. A tab always ends a word too.
+    pub word_separators: String,
+    pub link_click: LinkClick,
+    /// Selecting text copies it.
+    pub copy_on_select: bool,
+    /// Copies of a selection also carry its colors and styles as HTML, for documents and mail.
+    pub copy_formatting: bool,
+    /// Copies of a selection leave out whitespace and line breaks at both ends.
+    pub trim_copied: bool,
+    /// Ask before pasting more than one line.
+    pub confirm_multiline_paste: bool,
+    /// Pasted line breaks become spaces, so a paste is one line.
+    pub paste_single_line: bool,
+    /// Mark pastes for programs that ask (bracketed paste), so the shell doesn't run them.
+    pub bracketed_paste: bool,
+}
+
+impl Default for Pointer {
+    fn default() -> Self {
+        Self {
+            right_click: RightClick::Menu,
+            middle_click_paste: false,
+            word_separators: DEFAULT_WORD_SEPARATORS.into(),
+            link_click: LinkClick::Ctrl,
+            copy_on_select: false,
+            copy_formatting: false,
+            trim_copied: true,
+            confirm_multiline_paste: true,
+            paste_single_line: false,
+            bracketed_paste: true,
+        }
+    }
+}
+
+impl Pointer {
+    /// PuTTY's habits: selecting copies and a right-click pastes.
+    pub fn putty_style(&self) -> bool {
+        self.copy_on_select && self.right_click == RightClick::Paste
+    }
+
+    pub fn set_putty_style(&mut self, on: bool) {
+        self.copy_on_select = on;
+        self.right_click = if on { RightClick::Paste } else { RightClick::Menu };
+    }
+}
+
 /// The cursor used unless a terminal program requests its own style.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -1133,10 +1215,10 @@ impl Default for Settings {
             auto_lock_minutes: 0,
             stay_unlocked: true,
             putty_clipboard: false,
+            pointer: Pointer::default(),
             windows_selection: false,
             cursor_shape: TerminalCursor::Line,
             cursor_blink: true,
-            confirm_multiline_paste: true,
             command_rail: true,
             command_history: true,
             minimap: true,
@@ -1169,8 +1251,17 @@ impl Settings {
     pub fn load(dir: &Path) -> Self {
         fs::read_to_string(dir.join(Self::FILE))
             .ok()
-            .and_then(|text| toml::from_str(&text).ok())
+            .and_then(|text| toml::from_str::<Self>(&text).ok())
+            .map(Self::migrated)
             .unwrap_or_default()
+    }
+
+    /// Settings saved by older versions, in today's terms.
+    fn migrated(mut self) -> Self {
+        if std::mem::take(&mut self.putty_clipboard) {
+            self.pointer.set_putty_style(true);
+        }
+        self
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
@@ -1378,6 +1469,28 @@ mod tests {
         assert!(!relaunched.collapsed_projects.contains("production"));
         assert!(relaunched.collapsed_projects.contains("staging"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn pointer_settings_round_trip_flat_and_putty_clipboard_migrates() {
+        let old: Settings = toml::from_str("putty_clipboard = true\nconfirm_multiline_paste = false").unwrap();
+        let old = old.migrated();
+        assert!(old.pointer.putty_style());
+        assert!(!old.pointer.confirm_multiline_paste);
+        let text = toml::to_string_pretty(&old).unwrap();
+        assert!(!text.contains("putty_clipboard"), "{text}");
+        assert!(text.contains("right_click = \"paste\""), "{text}");
+        let mut settings = Settings::default();
+        settings.pointer.link_click = LinkClick::Click;
+        settings.pointer.word_separators = " ,".into();
+        settings.pointer.right_click = RightClick::CopyOrPaste;
+        let dir = std::env::temp_dir().join(format!("komando-pointer-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        settings.save(&dir).unwrap();
+        assert_eq!(Settings::load(&dir), settings);
+        std::fs::remove_dir_all(dir).unwrap();
+        let fresh: Settings = toml::from_str("").unwrap();
+        assert_eq!(fresh.pointer, Pointer::default());
     }
 
     #[test]

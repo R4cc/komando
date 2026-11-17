@@ -8,6 +8,17 @@ All notable changes to Komando are listed here. The format follows
 
 ### Added
 
+- A Mouse & clipboard page in Settings, with the copy and paste switches that were under
+  Terminal and new ones. Your PuTTY-style clipboard choice carries over. Copied text now
+  leaves out spaces and blank lines at both ends; a switch turns this off. New settings:
+  - What a right-click does: open the menu, paste, or copy a selection and otherwise paste.
+  - Paste with a middle-click.
+  - Which characters end a word when you double-click.
+  - Open links with Ctrl+click, Alt+click or a plain click.
+  - Copy text with its colors, so it keeps the terminal's look when pasted into documents,
+    mail or chat.
+  - Paste text as one line.
+  - Turn bracketed paste off for programs that show stray characters around pasted text.
 - Restore tabs on start (Settings → Appearance → Behaviour): Komando reopens the terminal
   tabs that were open when it closed, with the names you gave them. Hosts that sign in with
   a saved password wait for the vault to be unlocked. Remote desktops aren't reopened.

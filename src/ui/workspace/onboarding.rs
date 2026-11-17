@@ -311,8 +311,8 @@ impl Workspace {
             },
         );
         let history = s.command_history;
-        let putty = s.putty_clipboard;
-        let paste = s.confirm_multiline_paste;
+        let putty = s.pointer.putty_style();
+        let paste = s.pointer.confirm_multiline_paste;
         let tray = s.minimize_to_tray;
         let updates = s.check_for_updates;
         let rows = vec![
@@ -336,7 +336,7 @@ impl Workspace {
                 "As in PuTTY: selecting text copies it, a right-click pastes. Off, use Ctrl+Shift+C and Ctrl+Shift+V.",
                 switch("tour-putty".into(), "Copy on select, paste on right-click", putty, p)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.settings.putty_clipboard = !putty;
+                        this.settings.pointer.set_putty_style(!putty);
                         this.apply_terminal_settings(cx);
                     }))
                     .into_any_element(),
@@ -348,7 +348,7 @@ impl Workspace {
                 "A pasted block runs line by line on the server. Komando shows it to you first.",
                 switch("tour-paste".into(), "Ask before pasting several lines", paste, p)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.settings.confirm_multiline_paste = !paste;
+                        this.settings.pointer.confirm_multiline_paste = !paste;
                         this.apply_terminal_settings(cx);
                     }))
                     .into_any_element(),
