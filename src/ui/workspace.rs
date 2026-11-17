@@ -857,7 +857,7 @@ impl Workspace {
         let t = if backdrop_enabled { self.settings.background_blur_intensity as f32 / 100. } else { 0. };
         cx.set_global(Appearance {
             app: AppPalette::from_theme(self.theme_for(app_dark)).translucent(t),
-            term: TerminalPalette::for_mode(term_dark, self.terminal_colors_for(term_dark), self.theme_for(term_dark)).translucent(t),
+            term: TerminalPalette::for_mode(term_dark, self.terminal_colors_for(term_dark), self.theme_for(term_dark)).translucent(t, app_dark),
             font_family: if self.settings.font_family.trim().is_empty() { self.theme_for(term_dark).font_mono.into() } else { self.settings.font_family.clone().into() },
             font_size: self.terminal_font_size(),
             font_weight: font_weight(self.settings.font_weight),

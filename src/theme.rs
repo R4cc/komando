@@ -375,8 +375,13 @@ impl TerminalPalette {
     /// At full intensity the terminal lets most of the backdrop through, as the backdrop
     /// is blurred and tinted enough to keep text readable. Its pane paints this background
     /// once; nothing inside the pane repeats it, or the layers would add up to opaque.
-    pub fn translucent(mut self, t: f32) -> Self {
-        self.background_alpha = 1. - 0.7 * t.clamp(0., 1.);
+    ///
+    /// The backdrop takes the app's light or dark tint (`backdrop_dark`). A terminal of the
+    /// other tone stays opaque: a dark background over a light backdrop washes out to gray
+    /// and its light text becomes unreadable (and the reverse).
+    pub fn translucent(mut self, t: f32, backdrop_dark: bool) -> Self {
+        let t = if self.dark == backdrop_dark { t.clamp(0., 1.) } else { 0. };
+        self.background_alpha = 1. - 0.7 * t;
         self
     }
 
@@ -723,6 +728,14 @@ mod tests {
                 assert!(c >= 3., "{} {}: ANSI 0 and {white} are {c:.2}:1", t.name, t.dark);
             }
         }
+    }
+
+    #[test]
+    fn terminal_of_the_other_tone_stays_opaque_over_the_backdrop() {
+        assert!(TerminalPalette::dark().translucent(1., true).background_alpha < 1.);
+        assert!(TerminalPalette::light().translucent(1., false).background_alpha < 1.);
+        assert_eq!(TerminalPalette::dark().translucent(1., false).background_alpha, 1.);
+        assert_eq!(TerminalPalette::light().translucent(1., true).background_alpha, 1.);
     }
 
     #[test]

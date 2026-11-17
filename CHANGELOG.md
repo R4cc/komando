@@ -8,6 +8,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Fixed
 
+- With background blur on, a dark terminal in light mode (Terminal: Always dark) or a light
+  terminal in dark mode no longer looks washed-out gray. It stays solid instead of letting
+  the backdrop through.
 - Ctrl+Tab no longer gets stuck on a remote desktop that is open in its own window.
 - Closing the active session no longer leaves the main window empty when the host's other
   session is a remote desktop in its own window. Opening a host in split view no longer puts
