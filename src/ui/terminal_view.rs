@@ -186,6 +186,8 @@ pub enum TerminalEvent {
     Entered { line: String, at: chrono::DateTime<chrono::Local> },
     /// Turn off the highlight rule that coloured a word (from the right-click menu).
     Unhighlight { rule: highlight::RuleHit },
+    /// Turn the minimap off in Settings (from its right-click menu).
+    HideMinimap,
 }
 
 enum ActivePrompt {
@@ -276,6 +278,10 @@ pub struct TerminalView {
     marks: Marks,
     /// Where the last right-click landed, for the menu it opens.
     menu_point: Option<GridPoint>,
+    /// The minimap heard this right-click before the terminal did (it sits inside it).
+    pub(crate) minimap_right_press: bool,
+    /// The open right-click menu is the minimap's: it offers Hide minimap.
+    menu_on_minimap: bool,
     /// The link under the pointer, underlined; Ctrl+click opens it.
     hover_link: Option<TermLink>,
     hovered_mark: Option<u64>,
@@ -544,6 +550,8 @@ impl TerminalView {
             grid_cache: Rc::new(RefCell::new(GridCache::default())),
             marks: Marks::default(),
             menu_point: None,
+            minimap_right_press: false,
+            menu_on_minimap: false,
             hover_link: None,
             hovered_mark: None,
             flash: None,
@@ -1337,6 +1345,14 @@ impl TerminalView {
             return;
         }
         window.focus(&self.focus, cx);
+        // A right-click on the minimap is never the program's or a paste: it opens the menu.
+        if event.button == MouseButton::Right {
+            self.menu_on_minimap = std::mem::take(&mut self.minimap_right_press);
+            if self.menu_on_minimap {
+                self.menu_point = None;
+                return;
+            }
+        }
         // The link key and click (Ctrl+click by default) open a link, even in a program that
         // took the mouse.
         self.link_press = None;
@@ -1408,6 +1424,12 @@ impl TerminalView {
             let hit = highlighter.zip(this.menu_point).and_then(|(h, at)| highlighted_at(&*this.term.lock(), &h, at));
             let link = this.menu_point.and_then(|at| link_at(&*this.term.lock(), at)).map(|l| l.url);
             (selected, this.sink.is_some() && !this.is_disconnected(), hit, link)
+        };
+        let menu = if this.read(cx).menu_on_minimap {
+            menu.item(crate::ui::popup::item("Hide minimap", "eye-off", &view, |_, _, cx| cx.emit(TerminalEvent::HideMinimap)))
+                .separator()
+        } else {
+            menu
         };
         let icon = |name: &str| Icon::empty().path(format!("icons/{name}.svg"));
         let run = |label: &str, icon_name: &str, f: fn(&mut Self, &mut Window, &mut Context<Self>)| {

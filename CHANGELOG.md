@@ -6,6 +6,18 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Right-click the minimap to hide it. Settings → Terminal turns it back on.
+
+### Changed
+
+- The bar above the terminal no longer has Command history, Copy output and Copy as .txt
+  buttons. Right-click the terminal to copy its output, or right-click a host for its
+  command history.
+- Hosts sit further in under their project in the sidebar, and the highlight on the open
+  host starts inside the project's, so it's clearer which project a host belongs to.
+
 ## [0.7.1] - 2026-11-17
 
 ### Added

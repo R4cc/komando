@@ -1498,6 +1498,11 @@ impl Workspace {
             }
             TerminalEvent::Entered { line, at } => this.record_command(id, line, *at, cx),
             TerminalEvent::Unhighlight { rule } => this.unhighlight(rule, cx),
+            TerminalEvent::HideMinimap => {
+                this.settings.minimap = false;
+                this.apply_terminal_settings(cx);
+                this.show_toast("Minimap hidden. Turn it back on in Settings → Terminal.", cx);
+            }
             TerminalEvent::StartupStopped { waited_for } => this.show_toast_for(
                 format!("Startup commands stopped: \"{}\" didn't appear within a minute.", waited_for.trim()),
                 Duration::from_secs(8),

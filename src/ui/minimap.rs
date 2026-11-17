@@ -898,6 +898,8 @@ fn controls(el: Stateful<gpui::Div>, state: Rc<MinimapState>, cx: &mut Context<T
                 }
             }),
         )
+        // A right-click opens the terminal's menu, led by Hide minimap (see `context_menu`).
+        .on_mouse_down(MouseButton::Right, cx.listener(|this, _: &MouseDownEvent, _, _| this.minimap_right_press = true))
         .on_mouse_up(
             MouseButton::Left,
             cx.listener(|this, _: &MouseUpEvent, window, cx| {
@@ -1058,6 +1060,7 @@ fn handle(
                 }
             }),
         )
+        .on_mouse_down(MouseButton::Right, cx.listener(|this, _: &MouseDownEvent, _, _| this.minimap_right_press = true))
         .child(thumb)
         .children(ticks)
         .into_any_element()
