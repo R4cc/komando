@@ -741,7 +741,8 @@ mod tests {
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
             stream.write_all(body).unwrap();
         });
-        let digest = format!("sha256:{:x}", Sha256::digest(body));
+        let hex: String = Sha256::digest(body).iter().map(|b| format!("{b:02x}")).collect();
+        let digest = format!("sha256:{hex}");
         (Asset { name: "installer.msi".into(), browser_download_url: url, size: body.len() as u64, digest: Some(digest) }, server)
     }
 
