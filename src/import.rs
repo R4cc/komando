@@ -1,9 +1,9 @@
 //! Importing Hosts from other remote-access clients.
 //!
-//! An importer (`tabby`, `mobaxterm`, or `crate::share` for a Project File) reads the files
-//! into `Found`: groups of hosts with what Komando takes over (name, address, protocol, port, user, icon,
-//! from MobaXterm or a Project File also Jump Hosts and Startup Commands, and from Tabby or a
-//! Project File Port Forwards) and the settings
+//! An importer (`tabby`, `mobaxterm`, `openssh`, or `crate::share` for a Project File) reads
+//! the files into `Found`: groups of hosts with what Komando takes over (name, address,
+//! protocol, port, user and icon, and where the file has them Jump Hosts, Startup Commands and
+//! Port Forwards) and the settings
 //! it leaves behind. `plan` then matches that against the Library: which Project each group goes
 //! into and which hosts are already there. `apply` adds the hosts the user picked. Secrets
 //! never come over (see docs/adr/0008-importing-from-tabby.md).
@@ -12,6 +12,7 @@ use crate::model::{Desktop, Host, Inherited, JumpHost, Library, PortForward, Pro
 use crate::theme::PROJECT_COLORS;
 
 pub mod mobaxterm;
+pub mod openssh;
 pub mod tabby;
 
 /// What an importer read: groups of hosts (each becomes a Project) and notes about what it

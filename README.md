@@ -79,7 +79,8 @@ password or key, it asks you to choose a master password for the vault. Your dat
 machine: `%APPDATA%\Komando` on Windows, `~/.config/Komando` (or `$XDG_CONFIG_HOME/Komando`) on
 Linux and `~/Library/Application Support/Komando` on macOS.
 
-**Coming from Tabby or MobaXterm?** Settings → Import brings your SSH profiles and sessions over.
+**Coming from Tabby, MobaXterm or plain `ssh`?** Settings → Import brings your SSH profiles and
+sessions over, or the hosts in your `~/.ssh/config` with their ProxyJump routes and forwards.
 The experimental MobaXterm importer also brings over direct RDP and VNC sessions; desktop
 sessions using an SSH gateway are left out with an explanation. Passwords stay in MobaXterm.
 

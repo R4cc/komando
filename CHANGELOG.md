@@ -20,6 +20,12 @@ All notable changes to Komando are listed here. The format follows
   open one to the network.
 - Shared project files carry port forwards, and Settings → Import brings Tabby's forwarded
   ports over instead of leaving them behind.
+- Settings → Import → SSH config brings over the hosts in `~/.ssh/config` and the files it
+  includes. Each comes with its address, port and user, ProxyJump as jump hosts, and
+  LocalForward, RemoteForward and DynamicForward as port forwards, as `ssh` would use them,
+  `Host *` defaults included. Keys, ProxyCommand, agent forwarding and Match blocks stay in the
+  file, and the review lists them per host.
+- The import review lists the port forwards each host brings over.
 
 ### Changed
 

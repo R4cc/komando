@@ -1,7 +1,7 @@
-//! Settings → Import: bring Hosts over from Tabby or MobaXterm, or from a Project File someone
-//! shared.
+//! Settings → Import: bring Hosts over from Tabby, MobaXterm or the SSH config, or from a
+//! Project File someone shared.
 //!
-//! Three steps on the page itself: find the file (Tabby's or MobaXterm's settings automatically,
+//! Three steps on the page itself: find the file (another client's settings automatically,
 //! or the user picks it), pick the groups and hosts to bring over, then review what comes over and
 //! what doesn't before anything is saved. Reading and matching live in `crate::import` and
 //! `crate::share`.
@@ -13,8 +13,8 @@ use gpui::Toggled;
 
 use super::settings::group;
 use super::*;
-use crate::import::{self, Applied, Duplicate, Found, FoundGroup, FoundHost, Plan, Target, mobaxterm, tabby};
-use crate::model::{JumpHost, StartupCommand};
+use crate::import::{self, Applied, Duplicate, Found, FoundGroup, FoundHost, Plan, Target, mobaxterm, openssh, tabby};
+use crate::model::{JumpHost, PortForward, StartupCommand};
 use crate::share;
 
 /// Groups start folded when the import has more hosts than this, so the list stays short.
@@ -43,6 +43,8 @@ pub(super) enum ImportFlow {
 pub(super) enum Source {
     Tabby,
     MobaXterm,
+    /// OpenSSH's `~/.ssh/config`.
+    OpenSsh,
     /// A Project File made with "Share project…".
     ProjectFile,
 }
@@ -53,6 +55,7 @@ impl Source {
         match self {
             Source::Tabby => "Tabby",
             Source::MobaXterm => "MobaXterm",
+            Source::OpenSsh => "your SSH config",
             Source::ProjectFile => "the project file",
         }
     }
@@ -127,7 +130,18 @@ impl Workspace {
         }
     }
 
-    /// Ask for the file to import from: Tabby's or MobaXterm's settings, or a Project File.
+    /// "Import from SSH config": read `~/.ssh/config`, or ask for the file.
+    fn start_openssh_import(&mut self, cx: &mut Context<Self>) {
+        match openssh::find_config() {
+            Some(path) => self.load_client(Source::OpenSsh, path, cx),
+            None => {
+                self.import = ImportFlow::NotFound(Source::OpenSsh);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Ask for the file to import from: another client's settings, or a Project File.
     fn choose_import_file(&mut self, from: Source, window: &mut Window, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
@@ -140,7 +154,7 @@ impl Workspace {
             let Some(path) = paths.into_iter().next() else { return };
             let _ = this.update(cx, |this, cx| match from {
                 Source::ProjectFile => this.load_project_file(path, cx),
-                Source::MobaXterm => this.load_client(from, path, cx),
+                Source::MobaXterm | Source::OpenSsh => this.load_client(from, path, cx),
                 Source::Tabby => match tabby::config_in(&path) {
                     Ok(config) => this.load_client(from, config, cx),
                     Err(err) => {
@@ -169,10 +183,14 @@ impl Workspace {
         ImportFlow::Pick(Selection { from, source, found, plan, picked, open })
     }
 
-    /// Read another client's settings: Tabby's or MobaXterm's.
+    /// Read another client's settings: Tabby's, MobaXterm's or OpenSSH's.
     fn load_client(&mut self, from: Source, path: PathBuf, cx: &mut Context<Self>) {
         let (read, none) = match from {
             Source::MobaXterm => (mobaxterm::read(&path), "There are no importable SSH, RDP or VNC sessions in this file."),
+            Source::OpenSsh => (
+                openssh::read(&path),
+                "There are no hosts to import in this file. Komando imports Host blocks that name a host, not only patterns such as Host *.",
+            ),
             _ => (tabby::read(&path, &is_icon), "There are no SSH profiles in this file."),
         };
         self.import = match read {
@@ -259,7 +277,7 @@ impl Workspace {
         let plan = import::plan(&selection.found, &library);
         let applied = import::apply(&selection.found, &plan, &selection.picked, &mut library);
         let from = match selection.from {
-            Source::Tabby | Source::MobaXterm => selection.from.name().to_string(),
+            Source::Tabby | Source::MobaXterm | Source::OpenSsh => selection.from.name().to_string(),
             Source::ProjectFile => selection.found.groups.first().map(|g| g.name.clone()).unwrap_or_default(),
         };
         if let Err(err) = self.commit_library(library) {
@@ -345,13 +363,37 @@ impl Workspace {
                     .gap(px(3.))
                     .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child("Tabby"))
                     .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(
-                        "Copies your SSH profiles' names, host names, ports, users, icons and login scripts (as startup \
-                         commands). Profile groups become projects. Passwords and jump hosts stay in Tabby.",
+                        "Copies your SSH profiles' names, host names, ports, users, icons, forwarded ports and login \
+                         scripts (as startup commands). Profile groups become projects. Passwords and jump hosts stay in Tabby.",
                     )),
             )
             .child(
                 button("import-tabby", "Import from Tabby", ButtonKind::Primary, p)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start_tabby_import(cx))),
+            )
+            .into_any_element();
+        let ssh_row = div()
+            .flex()
+            .items_center()
+            .gap(px(14.))
+            .child(badge("square-terminal", p.brand, 36.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child("SSH config"))
+                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(
+                        "Reads ~/.ssh/config and the files it includes. Each Host block with a host name comes over with its \
+                         address, port, user, ProxyJump (as jump hosts) and forwards, as ssh would use them: Host * and other \
+                         patterns fill in what a host leaves out. Keys stay in their files.",
+                    )),
+            )
+            .child(
+                button("import-openssh", "Import from SSH config", ButtonKind::Secondary, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start_openssh_import(cx))),
             )
             .into_any_element();
         let moba_row = div()
@@ -401,7 +443,7 @@ impl Workspace {
                     .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child("Komando project"))
                     .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(format!(
                         "A .{} file someone made with \"Share project…\". Brings over its hosts with their addresses, \
-                         users, jump hosts and startup commands. Passwords and keys are never in it.",
+                         users, jump hosts, port forwards and startup commands. Passwords and keys are never in it.",
                         share::EXTENSION
                     ))),
             )
@@ -415,7 +457,7 @@ impl Workspace {
             .flex_col()
             .gap(px(16.))
             .children(problem)
-            .child(group(p, vec![row, moba_row, project_row]))
+            .child(group(p, vec![row, ssh_row, moba_row, project_row]))
             .into_any_element()
     }
 
@@ -430,6 +472,19 @@ impl Workspace {
                 p,
             )
         };
+        if from == Source::OpenSsh {
+            let place = openssh::ssh_dir().map(|dir| dir.join("config").display().to_string()).unwrap_or_else(|| "~/.ssh/config".into());
+            return notice(
+                "search-x",
+                p.warning,
+                "Komando couldn't find an SSH config on this PC.",
+                &format!("ssh reads its hosts from {place}, and there's no file there. If yours is somewhere else, choose it."),
+                button("import-choose", "Choose SSH config file…", ButtonKind::Secondary, p)
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_import_file(Source::OpenSsh, window, cx)))
+                    .into_any_element(),
+                p,
+            );
+        }
         if from == Source::MobaXterm {
             let body = if cfg!(windows) {
                 "An installed MobaXterm keeps them in MobaXterm.ini in Documents\\MobaXterm or %APPDATA%\\MobaXterm; a \
@@ -470,6 +525,7 @@ impl Workspace {
         let title = match from {
             Source::Tabby => "Couldn't import from Tabby",
             Source::MobaXterm => "Couldn't import from MobaXterm",
+            Source::OpenSsh => "Couldn't import from your SSH config",
             Source::ProjectFile => "Couldn't import the project file",
         };
         problem_card(
@@ -620,6 +676,7 @@ impl Workspace {
                 .aria_label(match selection.from {
                     Source::Tabby => format!("Profile group: {}", found.name),
                     Source::MobaXterm => format!("Session folder: {}", found.name),
+                    Source::OpenSsh => found.name.clone(),
                     Source::ProjectFile => format!("Project: {}", found.name),
                 })
                 .aria_expanded(open)
@@ -874,6 +931,10 @@ impl Workspace {
                     "Passwords and keys. Komando asks for the password the first time you connect and can save it in its vault; \
                      a key file can be added in the host's settings."
                 }
+                Source::OpenSsh => {
+                    "Keys: they stay in their files. Add one in the host's settings, or Komando asks for the password the first \
+                     time you connect and can save it in its vault."
+                }
                 Source::ProjectFile => {
                     "Passwords and keys: a shared project never holds them. Komando asks for each password, the jump hosts' \
                      included, the first time you connect and can save it in its vault; a key file can be added in the host's \
@@ -901,12 +962,12 @@ impl Workspace {
                     .gap(px(4.))
                     .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Review the import"))
                     .child(div().text_size(px(12.5)).text_color(p.text_muted).child(match selection.from {
-                        Source::Tabby | Source::MobaXterm => format!(
+                        Source::Tabby | Source::MobaXterm | Source::OpenSsh => format!(
                             "{summary} Settings marked with an X were set in {} and don't come over.",
                             selection.from.name()
                         ),
                         Source::ProjectFile => {
-                            format!("{summary} Each host keeps the user, jump hosts and startup commands it has in the shared project.")
+                            format!("{summary} Each host keeps the user, jump hosts, port forwards and startup commands it has in the shared project.")
                         }
                     })),
             )
@@ -980,22 +1041,32 @@ impl Workspace {
     }
 }
 
-/// What a host brings over besides its address and user, for the review: its Jump Hosts and
-/// Startup Commands, when the file says.
+/// What a host brings over besides its address and user, for the review: its Jump Hosts,
+/// Port Forwards and Startup Commands, when the file says.
 fn comes_over(host: &FoundHost) -> Vec<(String, String)> {
-    routes_and_commands(host.jump_hosts.as_deref(), host.startup_commands.as_deref())
+    routes_and_commands(host.jump_hosts.as_deref(), host.port_forwards.as_deref(), host.startup_commands.as_deref())
 }
 
-/// A new project's Jump Hosts and Startup Commands from the file, for the review.
+/// A new project's Jump Hosts, Port Forwards and Startup Commands from the file, for the review.
 fn project_defaults(group: &FoundGroup) -> Vec<(String, String)> {
-    routes_and_commands(Some(&group.jump_hosts), Some(&group.startup_commands))
+    routes_and_commands(Some(&group.jump_hosts), Some(&group.port_forwards), Some(&group.startup_commands))
 }
 
-fn routes_and_commands(jumps: Option<&[JumpHost]>, commands: Option<&[StartupCommand]>) -> Vec<(String, String)> {
+fn routes_and_commands(
+    jumps: Option<&[JumpHost]>,
+    forwards: Option<&[PortForward]>,
+    commands: Option<&[StartupCommand]>,
+) -> Vec<(String, String)> {
     let mut over = vec![];
     if let Some(jumps) = jumps.filter(|j| !j.is_empty()) {
         let label = if jumps.len() == 1 { "Jump host" } else { "Jump hosts" };
         over.push((label.to_string(), jumps.iter().map(JumpHost::label).collect::<Vec<_>>().join(" → ")));
+    }
+    // One per line, with who can connect: a forward open to the network is worth seeing.
+    if let Some(forwards) = forwards.filter(|f| !f.is_empty()) {
+        let label = if forwards.len() == 1 { "Port forward" } else { "Port forwards" };
+        let line = |f: &PortForward| if f.open_to_network { format!("{}, open to the network", f.label()) } else { f.label() };
+        over.push((label.to_string(), forwards.iter().map(line).collect::<Vec<_>>().join("\n")));
     }
     // Each command in full, one per line: they run on connect, so nothing may hide in an
     // ellipsis.
@@ -1123,7 +1194,7 @@ mod tests {
         for (fa, lucide) in tabby::ICON_MAP {
             assert!(is_icon(lucide), "{fa} maps to {lucide}, which isn't bundled");
         }
-        for icon in ["import", "search-x", "circle-alert", "file-text", "check", "minus", "x", "info", "folder-input", "share-2", "lock-keyhole"] {
+        for icon in ["import", "square-terminal", "search-x", "circle-alert", "file-text", "check", "minus", "x", "info", "folder-input", "share-2", "lock-keyhole"] {
             assert!(is_icon(icon), "{icon}");
         }
     }
