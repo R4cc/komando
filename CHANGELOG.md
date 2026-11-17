@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-17
+
 ### Added
 
 - Right-click the minimap to hide it. Settings → Terminal turns it back on.
@@ -23,6 +25,10 @@ All notable changes to Komando are listed here. The format follows
   When something can't be saved, the form opens the page with the field to fix.
 - The project form says, under its default user, key or password, jump hosts and startup
   commands, how many of its hosts use them and which hosts set their own.
+
+### Fixed
+
+- The theme settings in Settings → Appearance line up with the rest of the page.
 
 ## [0.7.1] - 2026-11-17
 
@@ -1633,7 +1639,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/R4cc/komando/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/R4cc/komando/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/R4cc/komando/compare/v0.6.6...v0.7.0
 [0.6.6]: https://github.com/R4cc/komando/compare/v0.6.5...v0.6.6
