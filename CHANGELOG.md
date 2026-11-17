@@ -6,8 +6,23 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-11-17
+
+### Added
+
+- Hovering a sidebar row with one session turns its status dot into ×, which closes the
+  session. A middle-click on a session's row in the sidebar closes it too. Choose which of
+  these work in Settings → Appearance → Close from the sidebar.
+
+### Changed
+
+- Rename session… starts with the session's current name filled in, ready to edit.
+
 ### Fixed
 
+- When an SSH session disconnects after you signed in, the terminal now says so below the
+  last prompt, with "Press Enter to reconnect", and the cursor goes away. A full-screen
+  program that was open, such as an editor, no longer stays on screen.
 - With background blur on, a dark terminal in light mode (Terminal: Always dark) or a light
   terminal in dark mode no longer looks washed-out gray. It stays solid instead of letting
   the backdrop through.
@@ -1731,7 +1746,9 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.7.4...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.7.6...HEAD
+[0.7.6]: https://github.com/R4cc/komando/compare/v0.7.5...v0.7.6
+[0.7.5]: https://github.com/R4cc/komando/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/R4cc/komando/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/R4cc/komando/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/R4cc/komando/compare/v0.7.1...v0.7.2

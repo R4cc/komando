@@ -1,6 +1,6 @@
 [package]
 name = "komando"
-version = "0.7.5"
+version = "0.7.6"
 edition = "2024"
 description = "A fast terminal for system engineers who SSH into Linux machines."
 license-file = "LICENSE"
@@ -30,7 +30,7 @@ futures = "0.3"
 log = "0.4"
 rustc-hash = "2"
 chrono = "0.4"
-base64 = "0.22"
+base64 = "0.23"
 sha2 = "0.10"
 ureq = { version = "2", default-features = false, features = ["tls", "proxy-from-env"] }
 serde-saphyr = { version = "1.3", default-features = false, features = ["deserialize"] }
