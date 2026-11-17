@@ -17,6 +17,10 @@ All notable changes to Komando are listed here. The format follows
   command history.
 - Hosts sit further in under their project in the sidebar, and the highlight on the open
   host starts inside the project's, so it's clearer which project a host belongs to.
+- The host and project forms are split into pages: General, Sign-in, Jump hosts, Terminal
+  and, for hosts, Remote desktop. The list on the left shows how many jump hosts and
+  startup commands are set, and the Jump hosts page shows the way from this PC to the host.
+  When something can't be saved, the form opens the page with the field to fix.
 
 ## [0.7.1] - 2026-11-17
 

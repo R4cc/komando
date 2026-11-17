@@ -7,10 +7,12 @@
 //! and the host form has a switch to leave the Project's out.
 
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, App, ClickEvent, Context, Entity, FontWeight, SharedString, Window, div, prelude::*, px};
+use gpui::{AnyElement, App, ClickEvent, Context, Entity, FontWeight, Hsla, SharedString, Window, div, prelude::*, px};
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::tooltip::Tooltip;
 
-use super::{FIRST_PROJECT_COLOR, FIRST_PROJECT_NAME, Overlay, Workspace, form_field, form_section, icon_picker, segmented, switch};
+use super::settings::{group, setting_row, settings_block};
+use super::{FIRST_PROJECT_COLOR, FIRST_PROJECT_NAME, Overlay, Workspace, form_field, icon_picker, kbd, segmented, switch};
 use crate::model::{CredentialId, Desktop, Host, Inherited, JumpHost, Library, Project, Protocol, StartupCommand};
 use crate::theme::{AppPalette, project_color};
 use crate::ui::widgets::{ButtonKind, badge, button, icon_button, icon_el, icon_text_button};
@@ -47,6 +49,64 @@ pub(super) enum SignIn {
     Ask,
 }
 
+/// A page of the host or project form, picked in the form's side rail.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum FormTab {
+    General,
+    SignIn,
+    JumpHosts,
+    Terminal,
+    RemoteDesktop,
+}
+
+impl FormTab {
+    const HOST: [FormTab; 5] = [Self::General, Self::SignIn, Self::JumpHosts, Self::Terminal, Self::RemoteDesktop];
+    const PROJECT: [FormTab; 4] = [Self::General, Self::SignIn, Self::JumpHosts, Self::Terminal];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::SignIn => "Sign-in",
+            Self::JumpHosts => "Jump hosts",
+            Self::Terminal => "Terminal",
+            Self::RemoteDesktop => "Remote desktop",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::General => "sliders-horizontal",
+            Self::SignIn => "key-round",
+            Self::JumpHosts => "waypoints",
+            Self::Terminal => "square-terminal",
+            Self::RemoteDesktop => "monitor",
+        }
+    }
+
+    /// The line under the page's title, for a project's form or a host's.
+    fn about(self, project: bool) -> &'static str {
+        match (self, project) {
+            (Self::General, false) => "Its name in the sidebar, where to reach it, and its icon.",
+            (Self::General, true) => "Its name, color and icon in the sidebar.",
+            (Self::SignIn, false) => "Who Komando signs in as, and with which key or password.",
+            (Self::SignIn, true) => "Defaults for its hosts. Each host can set its own instead.",
+            (Self::JumpHosts, false) => "Hosts to sign in to on the way, such as a bastion.",
+            (Self::JumpHosts, true) => "Every host in the project goes through these, unless it switches them off.",
+            (Self::Terminal, false) => "What is typed when the shell opens, and how its output looks.",
+            (Self::Terminal, true) => "What is typed into every host's shell, and how their output looks.",
+            (Self::RemoteDesktop, _) => "RDP and VNC desktops, opened beside the host's terminal.",
+        }
+    }
+}
+
+/// A form's complaint, with the page to show it on (`None`: stay on the current one).
+type FormError = (Option<FormTab>, String);
+
+/// Attach a form's complaint to the page that has the field at fault.
+fn on_tab(tab: FormTab) -> impl FnOnce(String) -> FormError {
+    move |message| (Some(tab), message)
+}
+
 /// Add a Host to a Project, or edit one.
 pub(super) struct HostForm {
     project_id: String,
@@ -74,6 +134,8 @@ pub(super) struct HostForm {
     opens: Protocol,
     icon: String,
     icon_query: Entity<InputState>,
+    /// The page shown.
+    tab: FormTab,
     error: Option<String>,
 }
 
@@ -109,6 +171,8 @@ pub(super) struct ProjectForm {
     commands: Vec<CommandRow>,
     /// Highlight Rules colour the output of its hosts and shells.
     highlight: bool,
+    /// The page shown.
+    tab: FormTab,
     error: Option<String>,
 }
 
@@ -219,7 +283,7 @@ impl Workspace {
         let h = host.clone().unwrap_or_else(|| Host::new("", ""));
         let port = if h.port == 22 { String::new() } else { h.port.to_string() };
         let name = self.form_input("", &h.name, window, cx);
-        let address = self.form_input("", &h.address, window, cx);
+        let address = self.form_input("host name or IP", &h.address, window, cx);
         let port = self.form_input("22", &port, window, cx);
         let user = self.form_input("", h.user.own().map_or("", |u| u.as_str()), window, cx);
         let key_path = self.form_input(r"C:\Users\you\.ssh\id_ed25519", "", window, cx);
@@ -257,6 +321,7 @@ impl Workspace {
             opens: h.opens_with(),
             icon: h.icon.unwrap_or_else(|| "server".into()),
             icon_query,
+            tab: FormTab::General,
             error: None,
         }));
         cx.notify();
@@ -269,15 +334,15 @@ impl Workspace {
         let sub = cx.subscribe_in(&field, window, |this, _, event: &InputEvent, window, cx| match event {
             InputEvent::PressEnter { .. } => this.submit_form(window, cx),
             // Typing answers the complaint: it goes until the next Save says otherwise.
+            // The form shows what is typed elsewhere too (the jump host route, the rail's counts).
             InputEvent::Change => {
                 let error = match &mut this.overlay {
                     Some(Overlay::HostForm(form)) => &mut form.error,
                     Some(Overlay::ProjectForm(form)) => &mut form.error,
                     _ => return,
                 };
-                if error.take().is_some() {
-                    cx.notify();
-                }
+                error.take();
+                cx.notify();
             }
             _ => {}
         });
@@ -447,7 +512,20 @@ impl Workspace {
     fn submit_host_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.save_host_form(cx);
         self.refresh_session_highlights(cx);
+        let result = self.show_failed_tab(result);
         self.finish_form(result, window, cx);
+    }
+
+    /// Turn to the page with the field a complaint is about, so it is in view beside it.
+    fn show_failed_tab(&mut self, result: Result<(), FormError>) -> Result<(), String> {
+        result.map_err(|(tab, message)| {
+            match (tab, self.overlay.as_mut()) {
+                (Some(tab), Some(Overlay::HostForm(form))) => form.tab = tab,
+                (Some(tab), Some(Overlay::ProjectForm(form))) => form.tab = tab,
+                _ => {}
+            }
+            message
+        })
     }
 
     /// Show `message` on the open host or project form.
@@ -467,27 +545,28 @@ impl Workspace {
         }
     }
 
-    fn save_host_form(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+    fn save_host_form(&mut self, cx: &mut Context<Self>) -> Result<(), FormError> {
         let Some(Overlay::HostForm(form)) = self.overlay.as_ref() else { return Ok(()) };
         let text = |field: &Entity<InputState>| field.read(cx).value().trim().to_string();
         let (name, address, port, user, key_path) =
             (text(&form.name), text(&form.address), text(&form.port), text(&form.user), text(&form.key_path));
         if name.is_empty() || address.is_empty() {
-            return Err("Give the host a name and an address.".into());
+            return Err(on_tab(FormTab::General)("Give the host a name and an address.".into()));
         }
-        let Some(port) = parse_port(&port) else { return Err("The port is a number from 1 to 65535.".into()) };
+        let Some(port) = parse_port(&port) else { return Err(on_tab(FormTab::General)("The port is a number from 1 to 65535.".into())) };
         let user = match form.user_source {
             Source::Project => Inherited::Project,
             Source::Off => Inherited::Off,
-            Source::Own if user.is_empty() => return Err("Type a user name, or take the project's.".into()),
+            Source::Own if user.is_empty() => return Err(on_tab(FormTab::SignIn)("Type a user name, or take the project's.".into())),
             Source::Own => Inherited::Own(user),
         };
-        let jumps = read_jump_rows(&form.jumps, cx)?;
+        let jumps = read_jump_rows(&form.jumps, cx).map_err(on_tab(FormTab::JumpHosts))?;
         let use_project_jumps = form.use_project_jumps;
-        let startup_commands = read_command_rows(&form.commands, cx)?;
+        let startup_commands = read_command_rows(&form.commands, cx).map_err(on_tab(FormTab::Terminal))?;
         let (project_id, editing, sign_in, run_project_commands, icon, highlight) =
             (form.project_id.clone(), form.editing.clone(), form.sign_in, form.run_project_commands, form.icon.clone(), form.highlight);
-        let desktop_entries = form.desktops.iter().map(|row| read_desktop_row(row, cx)).collect::<Result<Vec<_>, _>>()?;
+        let desktop_entries =
+            form.desktops.iter().map(|row| read_desktop_row(row, cx)).collect::<Result<Vec<_>, _>>().map_err(on_tab(FormTab::RemoteDesktop))?;
         let opens = form.opens;
         let desktop_setup = form.desktop_setup;
         let desktop_enabled = form.desktops.each_ref().map(|row| row.on);
@@ -501,7 +580,7 @@ impl Workspace {
             SignIn::Saved => host.credential.clone(),
             SignIn::Ask => Inherited::Off,
             SignIn::KeyFile => {
-                let id = self.import_key(format!("{name} key"), &key_path)?;
+                let id = self.import_key(format!("{name} key"), &key_path).map_err(on_tab(FormTab::SignIn))?;
                 imported = Some(id.clone());
                 Inherited::Own(id)
             }
@@ -551,7 +630,7 @@ impl Workspace {
                             }
                             Err(err) => {
                                 self.forget_added(imported);
-                                return Err(err);
+                                return Err(on_tab(FormTab::RemoteDesktop)(err));
                             }
                         }
                     }
@@ -588,7 +667,7 @@ impl Workspace {
         if result.is_ok() {
             self.forget_unused_credentials(old_desktop_credentials.into_iter().chain(old_credential));
         }
-        result
+        result.map_err(|message| (None, message))
     }
 
     pub(super) fn render_host_form(&self, form: &HostForm, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -596,22 +675,20 @@ impl Workspace {
         // No project yet (the first connection, from the start screen): the host goes into a
         // new one, created when it is saved.
         let project_name = project.map(|pr| pr.name.clone()).unwrap_or_else(|| FIRST_PROJECT_NAME.into());
-        let project_icon = project.map(|pr| pr.icon.clone()).unwrap_or_else(|| "folder".into());
         let color = project_color(project.map(|pr| pr.color.as_str()).unwrap_or(FIRST_PROJECT_COLOR));
         let host = form.editing.as_deref().and_then(|id| self.library.host(id));
         if let Some((index, row)) = form.desktop_setup.and_then(|protocol| form.desktops.iter().enumerate().find(|(_, row)| row.protocol == protocol)) {
-            let protocol = row.protocol;
             let host_name = host.map(|h| h.name.as_str()).unwrap_or("");
-            return form_shell(
-                "host-form-body",
-                false,
+            return single_dialog(
+                "host-setup",
+                "Remote desktop",
                 form_header(
                     badge("monitor", color, 34.).into_any_element(),
-                    format!("Set up {}", protocol.label()),
+                    format!("Set up {}", row.protocol.label()),
                     format!("{host_name} · {project_name}"),
                     p,
                 ),
-                self.desktop_row_view(index, row, p, cx),
+                self.desktop_card(index, row, p, cx),
                 form_footer("hf", "Save", form.error.as_deref(), p, cx),
             );
         }
@@ -619,87 +696,70 @@ impl Workspace {
             Some(h) => format!("Edit {}", h.name),
             None => "Add host".to_string(),
         };
+        let pane = match form.tab {
+            FormTab::General => self.host_general_pane(form, color, p, cx),
+            FormTab::SignIn => self.host_sign_in_pane(form, host, project, p, cx),
+            FormTab::JumpHosts => self.host_jump_pane(form, project, color, p, cx),
+            FormTab::Terminal => self.host_terminal_pane(form, project, p, cx),
+            FormTab::RemoteDesktop => self.host_desktop_pane(form, p, cx),
+        };
+        // The rail says what each page holds, so it is found without opening every page.
+        let project_jumps = if form.use_project_jumps { project.map_or(0, |pr| pr.jump_hosts.len()) } else { 0 };
+        let project_commands = if form.run_project_commands { project.map_or(0, |pr| pr.startup_commands.len()) } else { 0 };
+        let desktops: Vec<&str> = form.desktops.iter().filter(|row| row.on).map(|row| row.protocol.label()).collect();
+        let tabs = FormTab::HOST.map(|tab| {
+            let note = match tab {
+                FormTab::JumpHosts => count_note(project_jumps + form.jumps.len()),
+                FormTab::Terminal => count_note(project_commands + form.commands.len()),
+                FormTab::RemoteDesktop if desktops.len() == 1 => Some(desktops[0].to_string()),
+                FormTab::RemoteDesktop => count_note(desktops.len()),
+                _ => None,
+            };
+            (tab, note)
+        });
+        let frame = FormFrame {
+            id: "hf",
+            icon: &form.icon,
+            color,
+            title,
+            subtitle: format!("Host in {project_name}"),
+            tabs: &tabs,
+            current: form.tab,
+            project: false,
+        };
+        let ok_label = if form.editing.is_some() { "Save" } else { "Add host" };
+        let footer = form_footer("hf", ok_label, form.error.as_deref(), p, cx);
+        form_dialog(frame, wide, pane, footer, p, cx, |this, tab| {
+            if let Some(form) = this.host_form() {
+                form.tab = tab;
+            }
+        })
+    }
 
-        let connection = form_section("Connection", p)
-            .child(form_field("Name", None, Input::new(&form.name).into_any_element(), p))
+    fn host_general_pane(&self, form: &HostForm, color: Hsla, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let icons = icon_picker(&form.icon_query, &form.icon, color, p, cx, |this, name| {
+            if let Some(form) = this.host_form() {
+                form.icon = name;
+            }
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(18.))
+            .child(form_field("Name", Some("As the sidebar shows it."), Input::new(&form.name).into_any_element(), p))
             .child(
                 div()
                     .flex()
                     .gap(px(10.))
                     .child(div().flex_1().min_w_0().child(form_field("Address", None, Input::new(&form.address).into_any_element(), p)))
                     .child(div().w(px(92.)).flex_shrink_0().child(form_field("Port", None, Input::new(&form.port).into_any_element(), p))),
-            );
+            )
+            .child(div().pt(px(6.)).flex().flex_col().gap(px(8.)).child(field_label("Icon", p)).child(icons))
+            .into_any_element()
+    }
 
-        let sign_in = form_section("Sign-in", p)
-            .child(self.host_user_field(form, project, p, cx))
-            .child(self.host_credential_field(form, host, project, p, cx));
-
-        let route = form_section("Jump hosts", p).child(self.host_jump_field(form, project, wide, p, cx));
-        let desktops = form_section("Remote desktop", p).child(self.host_desktop_field(form, p, cx));
-
-        let project_commands = project.map(|pr| pr.startup_commands.clone()).unwrap_or_default();
-        let commands = form_section("Startup commands", p)
-            .when(!project_commands.is_empty(), |el| {
-                el.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .child(
-                            switch("hf-project-commands".into(), "Run the project's commands first", form.run_project_commands, p).on_click(cx.listener(
-                                |this, _: &ClickEvent, _, cx| {
-                                    if let Some(form) = this.host_form() {
-                                        form.run_project_commands = !form.run_project_commands;
-                                    }
-                                    cx.notify();
-                                },
-                            )),
-                        )
-                        .child(div().text_size(px(12.5)).text_color(p.text).child("Run the project's commands first")),
-                )
-                .when(form.run_project_commands, |el| {
-                    el.child(commands_preview(&project_commands.iter().map(StartupCommand::label).collect::<Vec<_>>(), p))
-                })
-            })
-            .child(self.command_list("hf-cmd", &form.commands, wide, p, cx))
-            .child(hint_text(COMMANDS_HINT.into(), p));
-
-        let selected = form.icon.clone();
-        let icon = form_section("Icon", p).child(icon_picker(&form.icon_query, &selected, color, p, cx, |this, name| {
-            if let Some(form) = this.host_form() {
-                form.icon = name;
-            }
-        }));
-        let project_highlights = project.is_none_or(|pr| pr.highlight);
-        let output = form_section("Output", p).child(highlight_switch(
-            "hf-highlight",
-            form.highlight,
-            if project_highlights { "" } else { "Off for every host in this project. Turn it on in the project first." },
-            p,
-            cx,
-            |this| {
-                if let Some(form) = this.host_form() {
-                    form.highlight = !form.highlight;
-                }
-            },
-        ));
-        // Two columns: who it is and how you sign in on the left, how it looks on the right.
-        // The jump hosts and startup commands, a row of fields each, get the full width below.
-        let body = form_body(
-            wide,
-            vec![connection.into_any_element(), sign_in.into_any_element(), output.into_any_element()],
-            vec![icon.into_any_element(), desktops.into_any_element()],
-            vec![route.into_any_element(), commands.into_any_element()],
-        );
-
-        let ok_label = if form.editing.is_some() { "Save" } else { "Add host" };
-        form_shell(
-            "host-form-body",
-            wide,
-            form_header(badge(&project_icon, color, 34.).into_any_element(), title, format!("Host in {project_name}"), p),
-            body,
-            form_footer("hf", ok_label, form.error.as_deref(), p, cx),
-        )
+    fn host_sign_in_pane(&self, form: &HostForm, host: Option<&Host>, project: Option<&Project>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        group(p, vec![self.host_user_field(form, project, p, cx), self.host_credential_field(form, host, project, p, cx)])
     }
 
     fn host_user_field(&self, form: &HostForm, project: Option<&Project>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -708,17 +768,12 @@ impl Workspace {
         let hint = match (form.user_source, project.and_then(|pr| pr.default_user.as_deref())) {
             (Source::Project, Some(user)) => format!("Signs in as {user}, the project's default user."),
             (Source::Project, None) => "The project sets no user, so it is asked when you connect.".to_string(),
-            (Source::Own, _) => String::new(),
+            (Source::Own, _) => "Signs in as the user typed here.".to_string(),
             (Source::Off, _) => "Asked each time you connect.".to_string(),
         };
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(field_label("User", p))
+        stacked("User", &hint, p)
             .child(div().flex().child(choice))
             .when(form.user_source == Source::Own, |el| el.child(Input::new(&form.user)))
-            .when(!hint.is_empty(), |el| el.child(hint_text(hint, p)))
             .into_any_element()
     }
 
@@ -756,53 +811,116 @@ impl Workspace {
             SignIn::KeyFile => "The key is copied into the vault, encrypted. The file itself isn't needed afterwards.",
             SignIn::Ask => "A password is asked each time, even if the project has one saved. Komando offers to save it for this host.",
         };
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(field_label("Key or password", p))
+        stacked("Key or password", hint, p)
             .child(div().flex().child(choice))
             .when(form.sign_in == SignIn::KeyFile, |el| el.child(key_file_row(&form.key_path, "hf", p, cx)))
-            .child(hint_text(hint.to_string(), p))
             .into_any_element()
     }
 
-    fn host_jump_field(&self, form: &HostForm, project: Option<&Project>, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn host_jump_pane(&self, form: &HostForm, project: Option<&Project>, color: Hsla, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let project_jumps = project.map(|pr| pr.jump_hosts.clone()).unwrap_or_default();
         let through_project = form.use_project_jumps && !project_jumps.is_empty();
-        let own = form.jumps.len();
-        let hint = match (through_project, own) {
-            (false, 0) => "Connects directly from this PC.",
-            (true, 0) => "Komando signs in to the project's jump hosts in turn, then reaches this host from the last.",
-            (false, _) => "Komando signs in to each jump host in turn, top first, then reaches this host from the last.",
-            (true, _) => "Komando signs in to the project's jump hosts, then to these, then reaches this host from the last.",
+        let mut hops: Vec<Hop> = vec![];
+        if through_project {
+            hops.extend(project_jumps.iter().map(|jump| Hop { icon: "waypoints".into(), label: jump.label(), note: Some("project") }));
+        }
+        hops.extend(typed_hops(&form.jumps, cx));
+        let name = form.name.read(cx).value().trim().to_string();
+        let end = Hop { icon: form.icon.clone(), label: if name.is_empty() { "This host".into() } else { name }, note: None };
+        let hint = if hops.is_empty() {
+            "Connects directly from this PC."
+        } else {
+            "Komando signs in to each jump host in turn, left to right, then reaches the host from the last."
         };
+        let project_hint = format!("Set in the project: {}.", project_jumps.iter().map(JumpHost::label).collect::<Vec<_>>().join(", "));
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(px(20.))
+            .child(route_preview(hops, end, color, hint, p))
             .when(!project_jumps.is_empty(), |el| {
-                el.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .child(switch("hf-project-jumps".into(), "Go through the project's jump hosts first", form.use_project_jumps, p).on_click(
-                            cx.listener(|this, _: &ClickEvent, _, cx| {
+                el.child(group(
+                    p,
+                    vec![setting_row(
+                        p,
+                        "Start with the project's jump hosts",
+                        &project_hint,
+                        switch("hf-project-jumps".into(), "Start with the project's jump hosts", form.use_project_jumps, p)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 if let Some(form) = this.host_form() {
                                     form.use_project_jumps = !form.use_project_jumps;
                                 }
                                 cx.notify();
-                            }),
-                        ))
-                        .child(div().text_size(px(12.5)).text_color(p.text).child("Go through the project's jump hosts first")),
-                )
-                .when(form.use_project_jumps, |el| {
-                    el.child(commands_preview(&project_jumps.iter().map(JumpHost::label).collect::<Vec<_>>(), p))
-                })
+                            }))
+                            .into_any_element(),
+                    )],
+                ))
             })
-            .child(self.jump_list("hf", &form.jumps, wide, p, cx))
-            .child(hint_text(hint.into(), p))
+            .child(settings_block(
+                if project_jumps.is_empty() { "Jump hosts" } else { "Then its own" },
+                p,
+                self.jump_list("hf", &form.jumps, p, cx),
+            ))
+            .into_any_element()
+    }
+
+    fn host_terminal_pane(&self, form: &HostForm, project: Option<&Project>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let project_commands = project.map(|pr| pr.startup_commands.clone()).unwrap_or_default();
+        let inherited = (!project_commands.is_empty()).then(|| {
+            let hint = format!("{}, typed before this host's own.", crate::ui::widgets::plural(project_commands.len(), "command"));
+            group(
+                p,
+                vec![
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.))
+                        .child(setting_row(
+                            p,
+                            "Run the project's commands first",
+                            &hint,
+                            switch("hf-project-commands".into(), "Run the project's commands first", form.run_project_commands, p)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                    if let Some(form) = this.host_form() {
+                                        form.run_project_commands = !form.run_project_commands;
+                                    }
+                                    cx.notify();
+                                }))
+                                .into_any_element(),
+                        ))
+                        .when(form.run_project_commands, |el| {
+                            el.child(commands_preview(&project_commands.iter().map(StartupCommand::label).collect::<Vec<_>>(), p))
+                        })
+                        .into_any_element(),
+                ],
+            )
+        });
+        let commands = div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .children(inherited)
+            .child(self.command_list("hf-cmd", &form.commands, p, cx))
+            .child(hint_text(COMMANDS_HINT.into(), p));
+        let project_highlights = project.is_none_or(|pr| pr.highlight);
+        let highlight = highlight_row(
+            "hf-highlight",
+            form.highlight,
+            if project_highlights { HIGHLIGHT_HINT } else { "Off for every host in this project. Turn it on in the project first." },
+            p,
+            cx,
+            |this| {
+                if let Some(form) = this.host_form() {
+                    form.highlight = !form.highlight;
+                }
+            },
+        );
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(28.))
+            .child(settings_block("Startup commands", p, commands.into_any_element()))
+            .child(settings_block("Output", p, group(p, vec![highlight])))
             .into_any_element()
     }
 
@@ -860,11 +978,10 @@ impl Workspace {
         }
     }
 
-    /// The Jump Hosts of a form, one row each, with a button to add another.
-    /// In a narrow form the user and port fields shrink and the password button shows only
-    /// its icon, so the address keeps room.
-    fn jump_list(&self, prefix: &'static str, rows: &[JumpRow], wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let (user_width, port_width, actions_width) = if wide { (140., 72., 170.) } else { (96., 60., 70.) };
+    /// The Jump Hosts of a form, one row each, with a button to add another. The password
+    /// button shows only its icon (its name is in its tooltip), so the address keeps room.
+    fn jump_list(&self, prefix: &'static str, rows: &[JumpRow], p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let (user_width, port_width, actions_width) = (110., 64., 70.);
         let column_label = |text: &'static str| div().text_size(px(11.5)).text_color(p.text_faint).child(text);
         let header = div()
             .flex()
@@ -897,11 +1014,12 @@ impl Workspace {
                         .items_center()
                         .gap(px(4.))
                         .child(
-                            icon_text_button((prefix, 100 + key * 4), password_icon, if wide { password_label } else { "" }, ButtonKind::Secondary, p)
+                            icon_text_button((prefix, 100 + key * 4), password_icon, "", ButtonKind::Secondary, p)
                                 .flex_1()
                                 .px(px(10.))
-                                .when(!wide, |el| el.gap(px(0.)))
+                                .gap(px(0.))
                                 .aria_label(format!("{password_label} for jump host {}", i + 1))
+                                .tooltip(move |window, cx| Tooltip::new(password_label).build(window, cx))
                                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                     let mut focus = None;
                                     this.update_jump_row(key, |row| {
@@ -1023,8 +1141,8 @@ impl Workspace {
 
     /// The Startup Commands of a form, one row each (what it waits for, then the command),
     /// with a button to add another.
-    fn command_list(&self, prefix: &'static str, rows: &[CommandRow], wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let wait_width = if wide { 180. } else { 110. };
+    fn command_list(&self, prefix: &'static str, rows: &[CommandRow], p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let wait_width = 140.;
         let column_label = |text: &'static str| div().text_size(px(11.5)).text_color(p.text_faint).child(text);
         let actions_width = 84.;
         let header = div()
@@ -1133,62 +1251,44 @@ impl Workspace {
         }
     }
 
-    fn host_desktop_field(&self, form: &HostForm, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let rows = form.desktops.iter().enumerate().map(|(i, row)| self.desktop_row_view(i, row, p, cx)).collect::<Vec<_>>();
+    fn host_desktop_pane(&self, form: &HostForm, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let cards = form.desktops.iter().enumerate().map(|(i, row)| self.desktop_card(i, row, p, cx)).collect::<Vec<_>>();
         let offered: Vec<Protocol> = form.desktops.iter().filter(|row| row.on).map(|row| row.protocol).collect();
-        let opens = (!offered.is_empty()).then(|| {
+        let opens = if offered.is_empty() {
+            hint_text("Switch on RDP or VNC to open the host's desktop from its right-click or ⋯ menu.".into(), p)
+        } else {
             let choices: Vec<Protocol> = std::iter::once(Protocol::Ssh).chain(offered).collect();
             let labels: Vec<(&'static str, bool)> = choices
                 .iter()
                 .map(|protocol| (if protocol.is_ssh() { "Terminal" } else { protocol.label() }, *protocol == form.opens))
                 .collect();
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .child(field_label("A click on the host opens", p))
-                .child(segmented("hf-opens", &labels, p, cx, move |this, i, _, cx| {
-                    if let Some(form) = this.host_form() {
-                        form.opens = choices[i];
-                    }
-                    cx.notify();
-                }))
-                .into_any_element()
-        });
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .children(rows)
-            .children(opens)
-            .child(hint_text(
-                "Right-click the host or use its ⋯ menu to open RDP or VNC beside its terminal. Switch off a protocol to hide it from that menu.".into(),
-                p,
-            ))
-            .into_any_element()
+            let choice = segmented("hf-opens", &labels, p, cx, move |this, i, _, cx| {
+                if let Some(form) = this.host_form() {
+                    form.opens = choices[i];
+                }
+                cx.notify();
+            });
+            group(p, vec![setting_row(p, "A click on the host opens", "The others are in its right-click and ⋯ menu.", choice)])
+        };
+        div().flex().flex_col().gap(px(14.)).children(cards).child(div().pt(px(6.)).child(opens)).into_any_element()
     }
 
-    fn desktop_row_view(&self, index: usize, row: &DesktopRow, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    /// A Remote Desktop's card: switched on or off in its first row, its settings below.
+    fn desktop_card(&self, index: usize, row: &DesktopRow, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let protocol = row.protocol;
         let (name, about) = match protocol {
             Protocol::Rdp => ("RDP", "Windows Remote Desktop, xrdp"),
             _ => ("VNC", "Linux desktops, macOS screen sharing"),
         };
-        let header = div()
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .child(switch(format!("hf-desktop-{index}").into(), format!("Remote desktop over {name}"), row.on, p).on_click(cx.listener(
-                move |this, _: &ClickEvent, _, cx| {
-                    this.update_desktop_row(index, |row| row.on = !row.on);
-                    cx.notify();
-                },
-            )))
-            .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(name))
-            .child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.text_faint).child(about));
-        let card = div().flex().flex_col().gap(px(10.)).p(px(12.)).rounded(p.corner(10.)).border_1().border_color(p.border).child(header);
+        let toggle = switch(format!("hf-desktop-{index}").into(), format!("Remote desktop over {name}"), row.on, p).on_click(cx.listener(
+            move |this, _: &ClickEvent, _, cx| {
+                this.update_desktop_row(index, |row| row.on = !row.on);
+                cx.notify();
+            },
+        ));
+        let mut rows = vec![setting_row(p, name, about, toggle.into_any_element())];
         if !row.on {
-            return card.into_any_element();
+            return group(p, rows);
         }
         let password_hint = match (&row.saved, row.forget_saved) {
             (Some(_), false) => "Saved in your vault. Type a new one to replace it.",
@@ -1199,57 +1299,43 @@ impl Workspace {
             (Protocol::Vnc, false) => "Straight to the host's address. VNC sends the desktop unencrypted: prefer the SSH session.",
             (_, false) => "Straight to the host's address.",
         };
-        card.child(
-            div()
-                .flex()
-                .gap(px(10.))
-                .when(protocol == Protocol::Rdp, |el| {
-                    el.child(div().flex_1().min_w_0().child(form_field("User", None, Input::new(&row.user).into_any_element(), p)))
-                })
-                .child(div().w(px(92.)).flex_shrink_0().child(form_field("Port", None, Input::new(&row.port).into_any_element(), p))),
-        )
-        .when(protocol == Protocol::Rdp, |el| el.child(form_field("Domain", None, Input::new(&row.domain).into_any_element(), p)))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .child(field_label("Password", p))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .child(div().flex_1().min_w_0().child(crate::ui::widgets::password_input(&row.password, p)))
-                        .when(row.saved.is_some() && !row.forget_saved, |el| {
-                            el.child(
-                                button(("hf-desktop-forget", index), "Forget", ButtonKind::Ghost, p).on_click(cx.listener(
-                                    move |this, _: &ClickEvent, _, cx| {
-                                        this.update_desktop_row(index, |row| row.forget_saved = true);
-                                        cx.notify();
-                                    },
-                                )),
-                            )
-                        }),
-                )
-                .child(hint_text(password_hint.into(), p)),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .child(
-                    switch(format!("hf-desktop-ssh-{index}").into(), "Through the host's SSH session", row.through_ssh, p).on_click(
-                        cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.update_desktop_row(index, |row| row.through_ssh = !row.through_ssh);
-                            cx.notify();
-                        }),
-                    ),
-                )
-                .child(div().text_size(px(12.5)).text_color(p.text).child("Through the host's SSH session")),
-        )
-        .child(hint_text(ssh_hint.into(), p))
-        .into_any_element()
+        let account = div()
+            .flex()
+            .gap(px(10.))
+            .when(protocol == Protocol::Rdp, |el| {
+                el.child(div().flex_1().min_w_0().child(form_field("User", None, Input::new(&row.user).into_any_element(), p)))
+                    .child(div().flex_1().min_w_0().child(form_field("Domain", None, Input::new(&row.domain).into_any_element(), p)))
+            })
+            .child(div().w(px(92.)).flex_shrink_0().child(form_field("Port", None, Input::new(&row.port).into_any_element(), p)));
+        let password = div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(field_label("Password", p))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .child(div().flex_1().min_w_0().child(crate::ui::widgets::password_input(&row.password, p)))
+                    .when(row.saved.is_some() && !row.forget_saved, |el| {
+                        el.child(button(("hf-desktop-forget", index), "Forget", ButtonKind::Ghost, p).on_click(cx.listener(
+                            move |this, _: &ClickEvent, _, cx| {
+                                this.update_desktop_row(index, |row| row.forget_saved = true);
+                                cx.notify();
+                            },
+                        )))
+                    }),
+            )
+            .child(hint_text(password_hint.into(), p));
+        let through_ssh = switch(format!("hf-desktop-ssh-{index}").into(), "Through the host's SSH session", row.through_ssh, p).on_click(
+            cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.update_desktop_row(index, |row| row.through_ssh = !row.through_ssh);
+                cx.notify();
+            }),
+        );
+        rows.push(div().flex().flex_col().gap(px(14.)).child(account).child(password).into_any_element());
+        rows.push(setting_row(p, "Through the host's SSH session", ssh_hint, through_ssh.into_any_element()));
+        group(p, rows)
     }
 
     // ---- project form -------------------------------------------------------------------
@@ -1288,6 +1374,7 @@ impl Workspace {
             jumps,
             commands,
             highlight: pr.highlight,
+            tab: FormTab::General,
             error: None,
         }));
         cx.notify();
@@ -1296,18 +1383,19 @@ impl Workspace {
     fn submit_project_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.save_project_form(cx);
         self.refresh_session_highlights(cx);
+        let result = self.show_failed_tab(result);
         self.finish_form(result, window, cx);
     }
 
-    fn save_project_form(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+    fn save_project_form(&mut self, cx: &mut Context<Self>) -> Result<(), FormError> {
         let Some(Overlay::ProjectForm(form)) = self.overlay.as_ref() else { return Ok(()) };
         let text = |field: &Entity<InputState>| field.read(cx).value().trim().to_string();
         let (name, default_user, key_path) = (text(&form.name), text(&form.default_user), text(&form.key_path));
         if name.is_empty() {
-            return Err("Give the project a name.".into());
+            return Err(on_tab(FormTab::General)("Give the project a name.".into()));
         }
-        let jumps = read_jump_rows(&form.jumps, cx)?;
-        let startup_commands = read_command_rows(&form.commands, cx)?;
+        let jumps = read_jump_rows(&form.jumps, cx).map_err(on_tab(FormTab::JumpHosts))?;
+        let startup_commands = read_command_rows(&form.commands, cx).map_err(on_tab(FormTab::Terminal))?;
         let (editing, color, icon, sign_in, highlight) =
             (form.editing.clone(), form.color.clone(), form.icon.clone(), form.sign_in, form.highlight);
 
@@ -1321,7 +1409,7 @@ impl Workspace {
         project.credential = match sign_in {
             SignIn::Saved => project.credential.clone(),
             SignIn::KeyFile => {
-                let id = self.import_key(format!("{name} project key"), &key_path)?;
+                let id = self.import_key(format!("{name} project key"), &key_path).map_err(on_tab(FormTab::SignIn))?;
                 imported = Some(id.clone());
                 Some(id)
             }
@@ -1346,11 +1434,50 @@ impl Workspace {
         if result.is_ok() {
             self.forget_unused_credentials(old_credential);
         }
-        result
+        result.map_err(|message| (None, message))
     }
 
     pub(super) fn render_project_form(&self, form: &ProjectForm, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let (title, ok_label) = if form.editing.is_some() { ("Edit project", "Save") } else { ("New project", "Create project") };
+        let editing = form.editing.as_deref().and_then(|id| self.library.project(id));
+        let (title, ok_label) = match editing {
+            Some(pr) => (format!("Edit {}", pr.name), "Save"),
+            None => ("New project".to_string(), "Create project"),
+        };
+        let color = project_color(&form.color);
+        let pane = match form.tab {
+            FormTab::SignIn => self.project_sign_in_pane(form, editing.is_some_and(|pr| pr.credential.is_some()), p, cx),
+            FormTab::JumpHosts => self.project_jump_pane(form, color, p, cx),
+            FormTab::Terminal => self.project_terminal_pane(form, p, cx),
+            _ => self.project_general_pane(form, color, p, cx),
+        };
+        let tabs = FormTab::PROJECT.map(|tab| {
+            let note = match tab {
+                FormTab::JumpHosts => count_note(form.jumps.len()),
+                FormTab::Terminal => count_note(form.commands.len()),
+                _ => None,
+            };
+            (tab, note)
+        });
+        let subtitle = if editing.is_some() { "Its settings apply to all its hosts" } else { "A group of hosts that belong together" };
+        let frame = FormFrame {
+            id: "pf",
+            icon: &form.icon,
+            color,
+            title,
+            subtitle: subtitle.into(),
+            tabs: &tabs,
+            current: form.tab,
+            project: true,
+        };
+        let footer = form_footer("pf", ok_label, form.error.as_deref(), p, cx);
+        form_dialog(frame, wide, pane, footer, p, cx, |this, tab| {
+            if let Some(form) = this.project_form() {
+                form.tab = tab;
+            }
+        })
+    }
+
+    fn project_general_pane(&self, form: &ProjectForm, color: Hsla, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let current = form.color.clone();
         let swatches = div().flex().flex_wrap().gap(px(8.)).children(crate::theme::PROJECT_COLORS.iter().map(|(cname, _)| {
             let cname = cname.to_string();
@@ -1377,10 +1504,23 @@ impl Workspace {
                 }))
                 .child(div().size_full().rounded_full().bg(c))
         }));
-        let color = project_color(&current);
+        let icons = icon_picker(&form.icon_query, &form.icon, color, p, cx, |this, name| {
+            if let Some(form) = this.project_form() {
+                form.icon = name;
+            }
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(18.))
+            .child(form_field("Name", None, Input::new(&form.name).into_any_element(), p))
+            .child(div().flex().flex_col().gap(px(8.)).child(field_label("Color", p)).child(swatches))
+            .child(div().pt(px(6.)).flex().flex_col().gap(px(8.)).child(field_label("Icon", p)).child(icons))
+            .into_any_element()
+    }
 
-        // Sign-in for the Project's Hosts: the Project Credential.
-        let has_saved = form.editing.as_deref().and_then(|id| self.library.project(id)).is_some_and(|pr| pr.credential.is_some());
+    /// Sign-in for the Project's Hosts: its default user and the Project Credential.
+    fn project_sign_in_pane(&self, form: &ProjectForm, has_saved: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let mut options = vec![("None", SignIn::Ask)];
         if has_saved {
             options.push(("Saved", SignIn::Saved));
@@ -1388,75 +1528,66 @@ impl Workspace {
         options.push(("Key file", SignIn::KeyFile));
         let labels: Vec<(&'static str, bool)> = options.iter().map(|(l, s)| (*l, *s == form.sign_in)).collect();
         let picks: Vec<SignIn> = options.iter().map(|(_, s)| *s).collect();
-        let sign_in_choice = segmented("pf-sign-in", &labels, p, cx, move |this, i, _, cx| {
+        let choice = segmented("pf-sign-in", &labels, p, cx, move |this, i, _, cx| {
             if let Some(form) = this.project_form() {
                 form.sign_in = picks[i];
                 form.error = None;
             }
             cx.notify();
         });
-        let sign_in_hint = match form.sign_in {
+        let hint = match form.sign_in {
             SignIn::Saved => "Its hosts use the key or password saved for the project.",
             SignIn::KeyFile => "The key is copied into the vault, encrypted, and shared by the project's hosts.",
             _ => "Hosts ask for a password when you connect. Komando can save a typed one for each host.",
         };
-
-        let defaults = form_section("Defaults for its hosts", p)
-            .child(hint_text("Each host takes these unless it sets its own.".into(), p))
-            .child(form_field("User", Some("Empty: asked when you connect."), Input::new(&form.default_user).into_any_element(), p))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(field_label("Key or password", p))
-                    .child(div().flex().child(sign_in_choice))
+        group(
+            p,
+            vec![
+                stacked("User", "Empty: asked when you connect.", p).child(Input::new(&form.default_user)).into_any_element(),
+                stacked("Key or password", hint, p)
+                    .child(div().flex().child(choice))
                     .when(form.sign_in == SignIn::KeyFile, |el| el.child(key_file_row(&form.key_path, "pf", p, cx)))
-                    .child(hint_text(sign_in_hint.into(), p)),
-            )
-            .child(highlight_switch("pf-highlight", form.highlight, "", p, cx, |this| {
-                if let Some(form) = this.project_form() {
-                    form.highlight = !form.highlight;
-                }
-            }));
-        let jump_hint = if form.jumps.is_empty() {
+                    .into_any_element(),
+            ],
+        )
+    }
+
+    fn project_jump_pane(&self, form: &ProjectForm, color: Hsla, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let hops = typed_hops(&form.jumps, cx);
+        let hint = if hops.is_empty() {
             "Its hosts connect directly from this PC, unless they add jump hosts of their own."
         } else {
-            "Its hosts are reached through these, top first, unless a host switches them off. A host can add its own after them."
+            "Its hosts are reached through these, left to right, unless a host switches them off. A host can add its own after them."
         };
-        let jumps = form_section("Jump hosts", p).child(self.jump_list("pf", &form.jumps, wide, p, cx)).child(hint_text(jump_hint.into(), p));
-        let commands = form_section("Startup commands", p)
-            .child(hint_text("Typed into every host's shell, before the host's own.".into(), p))
-            .child(self.command_list("pf-cmd", &form.commands, wide, p, cx))
+        let end = Hop { icon: "server".into(), label: "Its hosts".into(), note: None };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(20.))
+            .child(route_preview(hops, end, color, hint, p))
+            .child(settings_block("Jump hosts", p, self.jump_list("pf", &form.jumps, p, cx)))
+            .into_any_element()
+    }
+
+    fn project_terminal_pane(&self, form: &ProjectForm, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let commands = div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(self.command_list("pf-cmd", &form.commands, p, cx))
             .child(hint_text(COMMANDS_HINT.into(), p));
-
-        let selected_icon = form.icon.clone();
-        let project = form_section("Project", p)
-            .child(form_field("Name", None, Input::new(&form.name).into_any_element(), p))
-            .child(field_label("Color", p))
-            .child(swatches);
-        let icon = form_section("Icon", p).child(icon_picker(&form.icon_query, &selected_icon, color, p, cx, |this, name| {
+        let highlight = highlight_row("pf-highlight", form.highlight, HIGHLIGHT_HINT, p, cx, |this| {
             if let Some(form) = this.project_form() {
-                form.icon = name;
+                form.highlight = !form.highlight;
             }
-        }));
-        // Two columns: the project itself on the left, what its hosts inherit on the right. The
-        // jump hosts and startup commands, a row of fields each, get the full width below.
-        let (left, right) = if wide {
-            (vec![project.into_any_element(), icon.into_any_element()], vec![defaults.into_any_element()])
-        } else {
-            (vec![project.into_any_element(), defaults.into_any_element(), icon.into_any_element()], vec![])
-        };
-        let body = form_body(wide, left, right, vec![jumps.into_any_element(), commands.into_any_element()]);
-
-        let subtitle = if form.editing.is_some() { "Its settings apply to all its hosts" } else { "A group of hosts that belong together" };
-        form_shell(
-            "project-form-body",
-            wide,
-            form_header(badge(&form.icon, color, 34.).into_any_element(), title.into(), subtitle.into(), p),
-            body,
-            form_footer("pf", ok_label, form.error.as_deref(), p, cx),
-        )
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(28.))
+            .child(settings_block("Startup commands", p, commands.into_any_element()))
+            .child(settings_block("Output", p, group(p, vec![highlight])))
+            .into_any_element()
     }
 }
 
@@ -1515,8 +1646,34 @@ fn commands_preview(commands: &[String], p: AppPalette) -> AnyElement {
         .into_any_element()
 }
 
-/// The "Highlight output" switch of a host or project form, with a hint below when given.
-fn highlight_switch(
+/// Under "Highlight output", while the Project lets its Hosts highlight.
+const HIGHLIGHT_HINT: &str = "Marks what your highlight rules match. The rules are in Settings → Highlights.";
+
+/// A count in the form's rail; nothing for none.
+fn count_note(n: usize) -> Option<String> {
+    (n > 0).then(|| n.to_string())
+}
+
+/// A setting's name and explanation, for a group's row whose controls go below them.
+fn stacked(label: &str, hint: &str, p: AppPalette) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()))
+                .when(!hint.is_empty(), |el| {
+                    el.child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(hint.to_string()))
+                }),
+        )
+}
+
+/// The "Highlight output" row of a host or project form.
+fn highlight_row(
     id: &'static str,
     on: bool,
     hint: &'static str,
@@ -1524,22 +1681,78 @@ fn highlight_switch(
     cx: &mut Context<Workspace>,
     flip: impl Fn(&mut Workspace) + 'static,
 ) -> AnyElement {
+    let toggle = switch(id.into(), "Highlight output", on, p).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+        flip(this);
+        cx.notify();
+    }));
+    setting_row(p, "Highlight output", hint, toggle.into_any_element())
+}
+
+/// One stop on the way to a Host, as the jump host page draws it.
+struct Hop {
+    icon: String,
+    label: String,
+    /// Where it comes from, when not from this form ("project").
+    note: Option<&'static str>,
+}
+
+/// The Jump Hosts typed into a form, as stops: the address typed, else its number.
+fn typed_hops(rows: &[JumpRow], cx: &App) -> Vec<Hop> {
+    rows.iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let address = row.address.read(cx).value().trim().to_string();
+            let user = row.user.read(cx).value().trim().to_string();
+            let label = match (user.is_empty(), address.is_empty()) {
+                (_, true) => format!("Jump host {}", i + 1),
+                (true, false) => address,
+                (false, false) => format!("{user}@{address}"),
+            };
+            Hop { icon: "waypoints".into(), label, note: None }
+        })
+        .collect()
+}
+
+/// The way from this PC to the Host, one chip per stop, so the order of the jump hosts reads
+/// at a glance. `end` is the Host itself, in its Project's color.
+fn route_preview(hops: Vec<Hop>, end: Hop, end_color: Hsla, hint: &str, p: AppPalette) -> AnyElement {
+    let chip = |hop: &Hop, color: Hsla| {
+        div()
+            .h(px(30.))
+            .max_w(px(220.))
+            .pl(px(5.))
+            .pr(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .rounded(p.corner(9.))
+            .bg(p.surface)
+            .border_1()
+            .border_color(p.border)
+            .child(badge(&hop.icon, color, 20.))
+            .child(div().min_w_0().truncate().text_size(px(12.5)).text_color(p.text).child(hop.label.clone()))
+            .when_some(hop.note, |el, note| el.child(div().flex_shrink_0().text_size(px(11.)).text_color(p.text_faint).child(note)))
+    };
+    let start = Hop { icon: "laptop".into(), label: "This PC".into(), note: None };
+    let mut stops = vec![chip(&start, p.text_muted)];
+    stops.extend(hops.iter().map(|hop| chip(hop, p.text_muted)));
+    stops.push(chip(&end, end_color));
+    let count = stops.len();
+    let path = div().flex().flex_wrap().items_center().gap(px(6.)).children(stops.into_iter().enumerate().flat_map(|(i, stop)| {
+        let arrow = (i + 1 < count).then(|| icon_el("chevron-right", 14., p.text_faint));
+        std::iter::once(stop.into_any_element()).chain(arrow)
+    }));
     div()
+        .p(px(14.))
         .flex()
         .flex_col()
-        .gap(px(6.))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .child(switch(id.into(), "Highlight output", on, p).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    flip(this);
-                    cx.notify();
-                })))
-                .child(div().text_size(px(12.5)).text_color(p.text).child("Highlight output")),
-        )
-        .when(!hint.is_empty(), |el| el.child(hint_text(hint.into(), p)))
+        .gap(px(10.))
+        .rounded(p.corner(12.))
+        .bg(p.muted)
+        .border_1()
+        .border_color(p.border)
+        .child(path)
+        .child(hint_text(hint.into(), p))
         .into_any_element()
 }
 
@@ -1566,7 +1779,7 @@ fn form_error(message: String, p: AppPalette) -> AnyElement {
         .text_size(px(12.5))
         .text_color(p.danger)
         .child(icon_el("circle-alert", 14., p.danger))
-        .child(message)
+        .child(div().flex_1().min_w_0().child(message))
         .into_any_element()
 }
 
@@ -1597,8 +1810,8 @@ fn form_footer(id: &'static str, ok_label: &'static str, error: Option<&str>, p:
     let actions = div()
         .flex()
         .items_center()
+        .justify_end()
         .gap(px(8.))
-        .child(div().flex_1().text_size(px(11.5)).text_color(p.text_faint).child("Enter to save · Esc to cancel"))
         .child(
             button((id, 1usize), "Cancel", ButtonKind::Ghost, p)
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx))),
@@ -1613,7 +1826,7 @@ fn form_footer(id: &'static str, ok_label: &'static str, error: Option<&str>, p:
         .py(px(14.))
         .flex()
         .flex_col()
-        .gap(px(8.))
+        .gap(px(10.))
         .border_t_1()
         .border_color(p.border)
         .children(error.map(|message| form_error(message.to_string(), p)))
@@ -1621,25 +1834,188 @@ fn form_footer(id: &'static str, ok_label: &'static str, error: Option<&str>, p:
         .into_any_element()
 }
 
-/// Width of a form laid out in two columns; one column is `NARROW_FORM_WIDTH`.
-pub(super) const WIDE_FORM_WIDTH: f32 = 880.;
-const NARROW_FORM_WIDTH: f32 = 520.;
+/// Width of the tabbed forms with their rail labelled; narrower windows get
+/// `NARROW_FORM_WIDTH` and a rail of icons.
+pub(super) const WIDE_FORM_WIDTH: f32 = 820.;
+const NARROW_FORM_WIDTH: f32 = 560.;
+/// The tabbed forms keep one height on every page, so switching pages doesn't make the
+/// dialog jump; a shorter window shrinks it and the page scrolls.
+const FORM_HEIGHT: f32 = 600.;
+const RAIL_WIDTH: f32 = 220.;
+const NARROW_RAIL_WIDTH: f32 = 60.;
 
-/// A form's sections: in two columns side by side when `wide`, else `left` then `right` in
-/// one; `full` after them at full width. Validation feedback lives in the fixed footer.
-fn form_body(wide: bool, left: Vec<AnyElement>, right: Vec<AnyElement>, full: Vec<AnyElement>) -> AnyElement {
-    let column = || div().flex().flex_col().gap(px(20.));
-    let sections = if wide {
+/// What a tabbed form's rail shows: what is being edited, and its pages.
+struct FormFrame<'a> {
+    /// Prefix of its element ids.
+    id: &'static str,
+    icon: &'a str,
+    color: Hsla,
+    title: String,
+    subtitle: String,
+    /// Each page with a short note (a count) beside its name.
+    tabs: &'a [(FormTab, Option<String>)],
+    current: FormTab,
+    /// A project's form rather than a host's.
+    project: bool,
+}
+
+/// A host or project form: a rail on the left with what is edited and its pages, the open
+/// page on the right with Save and Cancel below it.
+fn form_dialog(
+    frame: FormFrame,
+    wide: bool,
+    page: AnyElement,
+    footer: AnyElement,
+    p: AppPalette,
+    cx: &mut Context<Workspace>,
+    pick: impl Fn(&mut Workspace, FormTab) + Clone + 'static,
+) -> AnyElement {
+    // The rail is drawn like the sidebar and the Settings page's list.
+    let np = p.navigation();
+    let identity = if wide {
         div()
+            .px(px(6.))
+            .pt(px(6.))
+            .pb(px(18.))
             .flex()
-            .items_start()
-            .gap(px(28.))
-            .child(column().flex_1().min_w_0().children(left))
-            .child(column().flex_1().min_w_0().children(right))
+            .flex_col()
+            .gap(px(12.))
+            .child(badge(frame.icon, frame.color, 40.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(15.))
+                            .line_height(px(20.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(np.text)
+                            .child(frame.title.clone()),
+                    )
+                    .child(div().text_size(px(12.)).line_height(px(16.)).text_color(np.text_muted).child(frame.subtitle.clone())),
+            )
     } else {
-        column().children(left).children(right)
+        div().pt(px(4.)).pb(px(14.)).flex().justify_center().child(badge(frame.icon, frame.color, 32.))
     };
-    div().flex().flex_col().gap(px(20.)).child(sections).children(full).into_any_element()
+    let tabs = frame.tabs.iter().map(|(tab, note)| {
+        let (tab, note) = (*tab, note.clone());
+        let active = tab == frame.current;
+        let label = tab.label();
+        let pick = pick.clone();
+        div()
+            .id(SharedString::from(format!("{}-tab-{label}", frame.id)))
+            .role(gpui::Role::Tab)
+            .aria_label(label)
+            .aria_selected(active)
+            .tab_index(0)
+            .focus_visible(move |s| s.border_2().border_color(np.focus))
+            .h(px(36.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .rounded(np.corner(8.))
+            .cursor_pointer()
+            .text_size(px(13.))
+            .text_color(if active { np.active_text } else { np.text_muted })
+            .when(active, |el| el.bg(np.active).font_weight(FontWeight::MEDIUM))
+            .when(!active, |el| el.hover(|s| s.bg(np.hover).text_color(np.hover_text)))
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                pick(this, tab);
+                cx.notify();
+            }))
+            .child(icon_el(tab.icon(), 16., if active { np.active_text } else { np.text_faint }))
+            .when(wide, |el| {
+                el.child(div().flex_1().min_w_0().truncate().child(label)).children(note.map(|note| {
+                    div().flex_shrink_0().text_size(px(11.5)).text_color(if active { np.active_text } else { np.text_faint }).child(note)
+                }))
+            })
+            .when(!wide, |el| el.justify_center().tooltip(move |window, cx| Tooltip::new(label).build(window, cx)))
+    });
+    let keys = div()
+        .px(px(6.))
+        .pb(px(4.))
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .text_size(px(11.5))
+        .text_color(np.text_faint)
+        .child(div().flex().items_center().gap(px(8.)).child(kbd("Enter", np)).child("Save"))
+        .child(div().flex().items_center().gap(px(8.)).child(kbd("Esc", np)).child("Cancel"));
+    let rail = div()
+        .id(SharedString::from(format!("{}-pages", frame.id)))
+        .role(gpui::Role::TabList)
+        .aria_label(frame.title.clone())
+        .w(px(if wide { RAIL_WIDTH } else { NARROW_RAIL_WIDTH }))
+        .h_full()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .p(px(if wide { 12. } else { 8. }))
+        .bg(np.background)
+        // Inside the dialog's rounded border.
+        .rounded_tl(p.corner(13.))
+        .rounded_bl(p.corner(13.))
+        .border_r_1()
+        .border_color(p.border)
+        .child(identity)
+        .children(tabs)
+        .child(div().flex_1())
+        .when(wide, |el| el.child(keys));
+
+    let current = frame.current;
+    let header = div()
+        .flex_shrink_0()
+        .pl(px(24.))
+        // Room for the dialog's close button in the top-right corner.
+        .pr(px(56.))
+        .pt(px(22.))
+        .pb(px(18.))
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        // Without the rail's labels, say here what is edited.
+        .when(!wide, |el| el.child(div().text_size(px(12.)).text_color(p.text_faint).child(frame.title.clone())))
+        .child(div().text_size(px(17.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(current.label()))
+        .child(div().text_size(px(12.5)).line_height(px(18.)).text_color(p.text_muted).child(current.about(frame.project)));
+    let page = div()
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .flex()
+        .flex_col()
+        .child(header)
+        .child(
+            div()
+                // One per page, so each page opens scrolled to its top.
+                .id(SharedString::from(format!("{}-page-{}", frame.id, current.label())))
+                .role(gpui::Role::TabPanel)
+                .aria_label(current.label())
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .px(px(24.))
+                .pt(px(2.))
+                .pb(px(28.))
+                .child(page),
+        )
+        .child(footer);
+    div()
+        .id(SharedString::from(format!("{}-dialog", frame.id)))
+        .role(gpui::Role::Dialog)
+        .aria_label(frame.title)
+        .tab_group()
+        .w(px(if wide { WIDE_FORM_WIDTH } else { NARROW_FORM_WIDTH }))
+        .h(px(FORM_HEIGHT))
+        .flex_shrink(1.)
+        .min_h_0()
+        .flex()
+        .child(rail)
+        .child(page)
+        .into_any_element()
 }
 
 /// The Jump Hosts typed into a form, in order. Rows left completely empty are skipped.
@@ -1701,14 +2077,14 @@ fn parse_port(text: &str) -> Option<u16> {
     }
 }
 
-/// A form's layout: header and footer stay put, the middle scrolls.
-fn form_shell(id: &'static str, wide: bool, header: AnyElement, body: AnyElement, footer: AnyElement) -> AnyElement {
+/// A one-page form: header and footer stay put, the middle scrolls.
+fn single_dialog(id: &'static str, aria: &'static str, header: AnyElement, body: AnyElement, footer: AnyElement) -> AnyElement {
     div()
         .id(SharedString::from(format!("{id}-dialog")))
         .role(gpui::Role::Dialog)
-        .aria_label(if id == "host-form-body" { "Host" } else { "Project" })
+        .aria_label(aria)
         .tab_group()
-        .w(px(if wide { WIDE_FORM_WIDTH } else { NARROW_FORM_WIDTH }))
+        .w(px(NARROW_FORM_WIDTH))
         .flex_1()
         .min_h_0()
         .flex()

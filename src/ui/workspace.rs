@@ -94,6 +94,11 @@ const SIDEBAR_PEEK_SLACK: f32 = 32.;
 const SIDEBAR_PEEK_CLOSE_MS: u64 = 350;
 
 /// Leave a usable terminal beside the navigation, including at the minimum window size.
+/// Where a Host's icon sits in the sidebar, from the left of its row.
+const NESTED_INDENT: f32 = 28.;
+/// How far a Host row's highlight starts inside its Project row's.
+const NESTED_INSET: f32 = 14.;
+
 fn sidebar_width(preferred: f32, window_width: f32) -> f32 {
     let max = (window_width - ISLAND_GAP * 3. - 360.).clamp(200., 520.);
     let preferred = if preferred.is_finite() { preferred } else { SIDEBAR_WIDTH };
@@ -3199,7 +3204,8 @@ impl Workspace {
                         .relative()
                         .when(focused, |el| el.child(focus_ring(p.corner(8.), p)))
                         .h(px(32.))
-                        .pl(px(20.))
+                        .ml(px(NESTED_INSET))
+                        .pl(px(NESTED_INDENT - NESTED_INSET))
                         .flex()
                         .items_center()
                         .gap(px(10.))
@@ -3220,7 +3226,7 @@ impl Workspace {
                 let color = project_color(&project.color);
                 let item = SidebarItem::Host { project: Arc::new(project.clone()), host: Arc::new(host.clone()) };
                 div().flex().flex_col().gap(px(2.))
-                    .children(self.render_item(&item, color, 20., p, cx)).into_any_element()
+                    .children(self.render_item(&item, color, NESTED_INDENT, p, cx)).into_any_element()
             }
             SidebarRow::ProjectShell { project, shell, .. } => {
                 let Some(project) = self.library.projects.get(project) else { return div().into_any_element() };
@@ -3228,7 +3234,7 @@ impl Workspace {
                 let color = project_color(&project.color);
                 let item = SidebarItem::Shell { project: Some(Arc::new(project.clone())), shell: shell.clone() };
                 div().flex().flex_col().gap(px(2.))
-                    .children(self.render_item(&item, color, 20., p, cx)).into_any_element()
+                    .children(self.render_item(&item, color, NESTED_INDENT, p, cx)).into_any_element()
             }
         };
         // Every row of a Project's group takes a Host dropped on it (moved to that Project);
@@ -3911,7 +3917,9 @@ impl Workspace {
                 .text_size(px(13.))
                 .relative()
                 .h(px(34.))
-                .pl(px(indent))
+                // A nested row's highlight starts inside its Project's, so the tree reads as one.
+                .when(indent > 10., |el| el.ml(px(NESTED_INSET)))
+                .pl(px(if indent > 10. { indent - NESTED_INSET } else { indent }))
                 .pr(px(pad_right))
                 .flex()
                 .items_center()
@@ -4293,7 +4301,6 @@ impl Workspace {
                 entry.project_id.as_deref().map(|p| self.desktop_target(p, host_id, *protocol)).unwrap_or_default()
             }
         };
-        let is_terminal = entry.view.terminal().is_some();
         let desktop_buttons = self.desktop_strip_buttons(entry, p, cx);
         let (status_text, status_color) = match &entry.status {
             Status::Connecting => ("Connecting", p.warning),
@@ -4302,10 +4309,6 @@ impl Workspace {
         };
         let id = entry.id;
         let is_ssh = matches!(entry.kind, SessionKind::Ssh { .. });
-        let history_host = match &entry.kind {
-            SessionKind::Ssh { host_id } if self.settings.command_history => Some(host_id.clone()),
-            _ => None,
-        };
         let sftp_open = entry.sftp_open;
         let sftp_phase = if sftp_open { entry.sftp_busy.phase() } else { BusyPhase::Idle };
         // SFTP runs over the session's connection: until it is connected the button only looks
@@ -4415,22 +4418,6 @@ impl Workspace {
                     )
                 })
                 .children(desktop_buttons)
-                .when_some(history_host, |el, host_id| {
-                    el.child(
-                        strip_action("command-history", command_history::ICON, "Command history", false, p)
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_history(&host_id, window, cx))),
-                    )
-                })
-                .when(is_terminal, |el| {
-                    el.child(
-                        strip_action("copy-text", "copy", "Copy output", false, p)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_text(cx))),
-                    )
-                    .child(
-                        strip_action("copy-file", "file-text", "Copy as .txt", false, p)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_output_file(cx))),
-                    )
-                })
                 // Room between the session's actions and the window buttons.
                 .child(div().w(px(12.)).h(px(16.)).mr(px(6.)).border_r_1().border_color(p.border))
                 .into_any_element(),
@@ -5256,11 +5243,6 @@ fn form_card(p: AppPalette, title: &str, body: AnyElement, actions: Vec<AnyEleme
         .child(body)
         .child(div().flex().justify_end().gap(px(8.)).children(actions))
         .into_any_element()
-}
-
-/// A titled group of fields in a form.
-fn form_section(title: &str, p: AppPalette) -> gpui::Div {
-    div().flex().flex_col().gap(px(10.)).child(section_label(title, p))
 }
 
 /// A form field: label above the control, an optional hint below.

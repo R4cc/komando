@@ -2077,7 +2077,7 @@ pub(super) fn group(p: AppPalette, rows: Vec<AnyElement>) -> AnyElement {
 }
 
 /// A titled part of a settings page: a small heading over its group.
-fn settings_block(title: &str, p: AppPalette, content: AnyElement) -> AnyElement {
+pub(super) fn settings_block(title: &str, p: AppPalette, content: AnyElement) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -2297,7 +2297,7 @@ fn setting_row_below(p: AppPalette, label: &str, hint: &str, control: AnyElement
 }
 
 /// Label and explanation on the left, the control on the right.
-fn setting_row(p: AppPalette, label: &str, hint: &str, control: AnyElement) -> AnyElement {
+pub(super) fn setting_row(p: AppPalette, label: &str, hint: &str, control: AnyElement) -> AnyElement {
     div()
         .flex()
         .items_center()
