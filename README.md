@@ -3,7 +3,7 @@
 <img src="assets/logo-dark.png#gh-dark-mode-only" width="440" alt="Komando.">
 <img src="assets/logo.png#gh-light-mode-only" width="440" alt="Komando.">
 
-### SSH, SFTP and remote desktops for Windows 11, Linux and macOS. Built with Rust.
+### Fast and light SSH, SFTP and remote desktop client. Built with Rust.
 
 Your servers, files and remote desktops organized into projects.
 
@@ -32,10 +32,6 @@ Your servers, files and remote desktops organized into projects.
   - Startup commands, jump hosts, sudo without retyping.
 
 ## Download
-
-Komando is made for **Windows 11** (64-bit) and also runs on **Linux** (x86-64) and **macOS**
-(Apple Silicon). Some features are Windows-only for now, including one-click updates
-([which](docs/adr/0014-linux-and-macos-builds.md)).
 
 | | | |
 |---|---|---|
@@ -188,22 +184,9 @@ Komando is built in Rust for fast startup, low memory use and responsive SSH ses
 
 <p align="center"><sub>Komando, Windows Terminal + OpenSSH and Tabby on the same Windows 11 PC. Each metric uses its own scale. Windows Terminal figures are from 2026-11-13 with different settings; Komando and Tabby were measured on 2026-11-14. <a href="docs/benchmarks.md">Method and raw data.</a></sub></p>
 
-### Terminal throughput and rendering
-
-Measured on a Linux development machine, separately from the Windows results above:
-
-| Metric | Result |
-|---|---:|
-| A million coloured log lines over SSH | **1.30 s** |
-| Taking in coloured log lines, no Scrollback | **130 MB/s** |
-| Work per frame while typing | **9 µs** |
-| Work per frame while vim or htop redraws a few lines | **29 µs** |
-| Work per frame during a full-screen log flood | **385 µs** |
-| Work per frame, screen of 7,434 different characters | **0.37 ms** |
-
 ### On slow and distant connections
 
-Measured over simulated links:
+We have optimized throughput and input performance over simulated slow links:
 
 | Metric | Result |
 |---|---:|
@@ -211,10 +194,6 @@ Measured over simulated links:
 | Output after Ctrl+C during a flood, 100 Mbit/s, 50 ms | **0.1 s** |
 | Extra delay on each key while a file uploads, 10 Mbit/s, 30 ms | **25 ms** |
 | A million log lines from a Host 25 ms behind a Jump Host 25 ms away | **1.5 s** |
-
-Keys keep showing promptly during transfers: Komando paces how much
-output and file data it lets the server send ahead, from the delay it measures on the
-connection.
 
 ## Keyboard shortcuts
 
@@ -283,13 +262,6 @@ separately and survive.
 </details>
 
 <details>
-<summary><b>Does it run on Linux and macOS?</b></summary>
-<br>
-Yes. Every release has a Linux and a macOS build with the same SSH, SFTP and remote desktop
-features. Windows 11 is still where Komando is designed and tested first, and a few things are
-Windows-only for now: one-click updates, running a shell as administrator, WSL shells, staying
-unlocked across restarts, the blurred window background and the tray icon.
-</details>
 
 ## Building and contributing
 
