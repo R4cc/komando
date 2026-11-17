@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-17
+
 ### Added
 
 - The theme and terminal color menus in Settings → Appearance show each entry as you move
