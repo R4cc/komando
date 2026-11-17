@@ -695,7 +695,10 @@ impl Workspace {
             .child(settings_block(
                 "Theme",
                 p,
-                group(p, vec![setting_row_below(p, "Mode", "", mode_choice), modes, setting_row(p, "Terminal", "", term_choice)]),
+                group(p, std::iter::once(setting_row(p, "Mode", "", mode_choice))
+                    .chain(modes)
+                    .chain([setting_row(p, "Terminal", "", term_choice)])
+                    .collect()),
             ))
             .child(settings_block("Window", p, group(p, window_rows)))
             .child(settings_block("Behaviour", p, group(p, behaviour_rows)))
@@ -714,7 +717,7 @@ impl Workspace {
     /// The theme of one mode: a preview of the app and its terminal beside the Theme and
     /// Terminal Colors that make it. `other`: the mode Windows is not in right now, shown
     /// while following Windows (`system`), which offers to switch between the two.
-    fn mode_theme(&self, dark: bool, other: bool, system: bool, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn mode_theme(&self, dark: bool, other: bool, system: bool, p: AppPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let theme = self.theme_for(dark);
         // With the terminal kept dark or light, this mode's terminal has the other mode's
         // Terminal Colors, and they are picked here.
@@ -739,14 +742,6 @@ impl Workspace {
                 let _ = ws.update(cx, |this, cx| this.set_terminal_colors(term_dark, id, window, cx));
             },
         );
-        let field = |label: &'static str, control: AnyElement| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(p.text_muted).child(label))
-                .child(control)
-        };
         let colors_label = match (term_dark == dark, term_dark) {
             (true, _) => "Terminal colors",
             (false, true) => "Terminal colors (always dark)",
@@ -778,30 +773,13 @@ impl Workspace {
                     )),
                 )
             });
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(12.))
-            .child(header)
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(16.))
-                    .child(div().flex_1().flex_basis(px(260.)).min_w(px(240.)).child(mode_preview(app, term, font)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex_basis(px(260.))
-                            .min_w(px(260.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(12.))
-                            .child(field("Theme", theme_dropdown.into_any_element()))
-                            .child(field(colors_label, colors_dropdown.into_any_element())),
-                    ),
-            )
-            .into_any_element()
+        // Controls sit at the right edge like every other row's, at one width.
+        let control = |el: AnyElement| div().w(px(320.)).child(el).into_any_element();
+        vec![
+            div().flex().flex_col().gap(px(12.)).child(header).child(mode_preview(app, term, font)).into_any_element(),
+            setting_row(p, "Theme", "", control(theme_dropdown.into_any_element())),
+            setting_row(p, colors_label, "", control(colors_dropdown.into_any_element())),
+        ]
     }
 
     fn settings_terminal(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
