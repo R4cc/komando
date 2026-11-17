@@ -44,7 +44,7 @@ pub fn read(path: &Path) -> Result<Found> {
     let base = ssh_dir().unwrap_or_else(|| path.parent().map(Path::to_path_buf).unwrap_or_default());
     let home = dirs::home_dir();
     let mut lines = vec![];
-    expand(&text, &base, home.as_deref(), 0, &mut lines);
+    expand(&text, &base, home.as_deref(), 0, None, &mut lines);
     Ok(found(&lines))
 }
 
@@ -97,10 +97,11 @@ fn parse_line(raw: &str) -> Option<Line> {
 }
 
 /// The lines of `text` with every `Include` replaced by the lines of the files it names. A
-/// file a `Host` or `Match` line changes the block in hands it back afterwards, as in `ssh`:
-/// the block around the `Include` goes on after it.
-fn expand(text: &str, base: &Path, home: Option<&Path>, depth: usize, out: &mut Vec<Line>) {
-    let mut block: Option<Line> = None;
+/// file starts in the block its `Include` sits in (`outer`; `None` before any `Host` line, where
+/// lines apply to every host), and a `Host` or `Match` line in it changes the block only until
+/// the file ends, as in `ssh`: the block around the `Include` goes on after it.
+fn expand(text: &str, base: &Path, home: Option<&Path>, depth: usize, outer: Option<&Line>, out: &mut Vec<Line>) {
+    let mut block: Option<Line> = outer.cloned();
     for line in text.lines().filter_map(parse_line) {
         match line.key.as_str() {
             "host" | "match" => {
@@ -108,18 +109,21 @@ fn expand(text: &str, base: &Path, home: Option<&Path>, depth: usize, out: &mut 
                 out.push(line);
             }
             "include" if depth < MAX_DEPTH => {
+                let start = out.len();
                 for pattern in &line.args {
                     for file in include_files(pattern, base, home) {
                         if let Ok(text) = std::fs::read_to_string(&file) {
-                            expand(&text, base, home, depth + 1, out);
+                            expand(&text, base, home, depth + 1, block.as_ref(), out);
                         }
                     }
                 }
-                // Back to the block the Include sat in.
-                if let Some(block) = &block {
-                    out.push(block.clone());
-                } else if out.iter().any(|l| l.key == "host" || l.key == "match") {
-                    out.push(Line { key: "host".into(), args: vec!["*".into()] });
+                // Back to the block the Include sat in, if the included files left it.
+                let changed = out[start..].iter().any(|l| l.key == "host" || l.key == "match");
+                match &block {
+                    Some(block) if changed => out.push(block.clone()),
+                    // Before any Host line, settings apply to every host.
+                    None if changed => out.push(Line { key: "host".into(), args: vec!["*".into()] }),
+                    _ => {}
                 }
             }
             _ => out.push(line),
@@ -462,7 +466,7 @@ mod tests {
 
     fn parse(text: &str) -> Found {
         let mut lines = vec![];
-        expand(text, Path::new("/nonexistent"), None, 0, &mut lines);
+        expand(text, Path::new("/nonexistent"), None, 0, None, &mut lines);
         found(&lines)
     }
 
@@ -621,7 +625,7 @@ mod tests {
         std::fs::write(dir.join("extra"), "User from-extra\n").unwrap();
         let config = "Host bastion\n  Include extra\n  Port 2200\nInclude config.d/??-*\nHost *\n  User everyone\n";
         let mut lines = vec![];
-        expand(config, &dir, None, 0, &mut lines);
+        expand(config, &dir, None, 0, None, &mut lines);
         let found = found(&lines);
         let names: Vec<&str> = found.groups[0].hosts.iter().map(|h| h.name.as_str()).collect();
         assert_eq!(names, ["bastion", "web", "db"], "included files in name order");
@@ -651,6 +655,28 @@ mod tests {
         // Importing again finds both already there.
         let again = super::super::plan(&found, &library);
         assert!(again.groups[0].hosts.iter().all(|d| d.is_duplicate()));
+    }
+
+    #[test]
+    fn a_nested_include_keeps_its_settings_in_the_block_it_sits_in() {
+        let dir = std::env::temp_dir().join(format!("komando-ssh-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // inc1 sits in web's block and includes inc2 before its own line: that line is still web's.
+        std::fs::write(dir.join("inc1"), "Include inc2\nUser from-inc1\n").unwrap();
+        std::fs::write(dir.join("inc2"), "Port 2200\n").unwrap();
+        // A file that opens a block of its own hands web's block back when it ends.
+        std::fs::write(dir.join("inc3"), "Host other\n  HostName other.lan\n").unwrap();
+        let config = "Host web\n  Include inc1\n  Include inc3\n  HostName web.lan\nHost db\n  HostName 10.0.0.5\n";
+        let mut lines = vec![];
+        expand(config, &dir, None, 0, None, &mut lines);
+        let found = found(&lines);
+        let web = host(&found, "web");
+        assert_eq!((web.address.as_str(), web.port, web.user.as_deref()), ("web.lan", 2200, Some("from-inc1")));
+        let db = host(&found, "db");
+        assert_eq!((db.port, db.user.as_deref()), (22, None), "web's included settings don't reach db");
+        assert_eq!(host(&found, "other").address, "other.lan");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
