@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-11-17
+
 ### Added
 
 - A Disconnect button next to Reconnect in the title bar ends the connection and keeps the
