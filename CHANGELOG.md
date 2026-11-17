@@ -11,6 +11,8 @@ All notable changes to Komando are listed here. The format follows
 ### Added
 
 - Right-click the minimap to hide it. Settings → Terminal turns it back on.
+- A Reconnect button next to SFTP above the terminal starts a new connection for the
+  session in the same terminal, keeping the earlier output above it.
 
 ### Changed
 

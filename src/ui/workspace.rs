@@ -4410,6 +4410,12 @@ impl Workspace {
                             })
                             .child("SFTP"),
                     )
+                    // A new connection in the same terminal, the earlier output kept above: for a
+                    // session that dropped or hangs. A live one is closed first.
+                    .child(
+                        strip_action("session-reconnect", "refresh-cw", "Reconnect", false, p)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.reconnect(id, window, cx))),
+                    )
                 })
                 .when(self.shown_split().is_some(), |el| {
                     el.child(
