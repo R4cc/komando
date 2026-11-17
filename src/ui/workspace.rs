@@ -4622,6 +4622,9 @@ impl Workspace {
         }
         Some(
             island(p)
+                .when(matches!(&entry.ui.view, SessionView::Terminal(_)), |el| {
+                    el.border_color(p.border.blend(p.text.opacity(0.18)))
+                })
                 .id(("pane", id))
                 .relative()
                 .flex_1()

@@ -6,6 +6,10 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Terminal panes have a higher-contrast outline so their edges are easier to see.
+
 ### Fixed
 
 - The silver frame disappears when the window is maximized and follows the rounded corners on Windows.
