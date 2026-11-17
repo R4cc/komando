@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-17
+
 ### Added
 
 - Port forwarding. A host or project form's new Port forwards page sets Local forwards (a port
@@ -23,8 +25,9 @@ All notable changes to Komando are listed here. The format follows
 - Settings → Import → SSH config brings over the hosts in `~/.ssh/config` and the files it
   includes. Each comes with its address, port and user, ProxyJump as jump hosts, and
   LocalForward, RemoteForward and DynamicForward as port forwards, as `ssh` would use them,
-  `Host *` defaults included. Keys, ProxyCommand, agent forwarding and Match blocks stay in the
-  file, and the review lists them per host.
+  `Host *` defaults and Match blocks on the host's name included. Keys (a jump host's too),
+  ProxyCommand, agent forwarding and Match blocks on anything else stay in the file, and the
+  review lists them per host.
 - The import review lists the port forwards each host brings over.
 
 ### Changed
@@ -1880,7 +1883,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.7.9...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/R4cc/komando/compare/v0.7.9...v0.8.0
 [0.7.9]: https://github.com/R4cc/komando/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/R4cc/komando/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/R4cc/komando/compare/v0.7.6...v0.7.7
