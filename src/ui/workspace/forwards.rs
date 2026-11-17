@@ -3,7 +3,7 @@
 //! address, for pasting into the program that uses it.
 
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, ClickEvent, Context, FontWeight, Hsla, SharedString, Window, div, prelude::*, px};
+use gpui::{AnyElement, ClickEvent, Context, FontWeight, SharedString, Window, div, prelude::*, px};
 use gpui_component::menu::PopupMenuItem;
 use gpui_component::tooltip::Tooltip;
 
@@ -75,7 +75,7 @@ impl Workspace {
             return None;
         }
         let id = entry.id();
-        let open = self.forwards_menu.is_open();
+        let open = self.forwards_menu.is_open() && self.forwards_menu_session == Some(id);
         let trouble = forwards
             .iter()
             .any(|f| matches!(f.state, ForwardState::Failed(_) | ForwardState::Open { problem: Some(_), .. }));
@@ -123,11 +123,12 @@ impl Workspace {
     fn toggle_forwards_menu(&mut self, id: usize, event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.forwards_menu.is_open() {
             self.forwards_menu = Popup::default();
+            self.forwards_menu_session = None;
             cx.notify();
             return;
         }
         let Some(entry) = self.sessions.get(id) else { return };
-        let Some(view) = entry.ui.view.terminal() else { return };
+        let Some(view) = entry.ui.view.terminal().cloned() else { return };
         let forwards = view.read(cx).forwards.clone();
         let host = match (entry.project_id(), entry.kind()) {
             (Some(project), SessionKind::Ssh { host_id }) => Some((project.to_string(), host_id.clone())),
@@ -144,25 +145,32 @@ impl Workspace {
             ClickEvent::Keyboard(_) => gpui::point(at.x, at.y + px(4.)),
             _ => gpui::point(at.x - px(12.), at.y + px(14.)),
         };
+        // The rows read each forward from the Session's view as they draw, so a forward that
+        // starts, fails or takes a connection while the menu is open shows it at once.
+        let live = view.downgrade();
+        let rows: Vec<(usize, PortForward)> = forwards.iter().map(|f| (f.index, f.forward.clone())).collect();
         self.forwards_menu = Popup::open(position, |this: &mut Workspace| &mut this.forwards_menu, window, cx, move |mut menu, _, _| {
-            menu = menu.min_w(px(300.)).max_w(px(400.)).label(if forwards.len() == 1 { "Port forward" } else { "Port forwards" });
-            for status in &forwards {
-                let route = route_line(&status.forward, &host_name);
-                let (state, bad) = state_line(status);
-                let icon = match &status.state {
-                    ForwardState::Starting => "loader-circle",
-                    ForwardState::Failed(_) => "circle-alert",
-                    ForwardState::Open { problem: Some(_), .. } => "triangle-alert",
-                    ForwardState::Open { .. } => "arrow-right-left",
-                };
-                let icon_color: Hsla = match &status.state {
-                    ForwardState::Failed(_) => p.danger,
-                    ForwardState::Open { problem: Some(_), .. } => p.warning,
-                    ForwardState::Open { .. } => p.success,
-                    ForwardState::Starting => p.text_faint,
-                };
-                let state_color = if bad { icon_color } else { p.text_muted };
-                let item = PopupMenuItem::element(move |_, _| {
+            menu = menu.min_w(px(300.)).max_w(px(400.)).label(if rows.len() == 1 { "Port forward" } else { "Port forwards" });
+            for (index, forward) in &rows {
+                let index = *index;
+                let route = route_line(forward, &host_name);
+                let view = live.clone();
+                let item = PopupMenuItem::element(move |_, cx| {
+                    let status = view.upgrade().and_then(|v| v.read(cx).forwards.iter().find(|f| f.index == index).cloned());
+                    let (icon, icon_color, state, bad) = match &status {
+                        Some(status) => {
+                            let (state, bad) = state_line(status);
+                            let (icon, color) = match &status.state {
+                                ForwardState::Starting => ("loader-circle", p.text_faint),
+                                ForwardState::Failed(_) => ("circle-alert", p.danger),
+                                ForwardState::Open { problem: Some(_), .. } => ("triangle-alert", p.warning),
+                                ForwardState::Open { .. } => ("arrow-right-left", p.success),
+                            };
+                            (icon, color, state, bad)
+                        }
+                        None => ("unplug", p.text_faint, "Disconnected".to_string(), false),
+                    };
+                    let state_color = if bad { icon_color } else { p.text_muted };
                     div()
                         .py(px(3.))
                         .flex()
@@ -177,16 +185,23 @@ impl Workspace {
                                 .flex_col()
                                 .gap(px(2.))
                                 .child(div().text_size(px(13.)).text_color(p.text).child(route.clone()))
-                                .child(div().text_size(px(12.)).line_height(px(16.)).text_color(state_color).child(state.clone())),
+                                .child(div().text_size(px(12.)).line_height(px(16.)).text_color(state_color).child(state)),
                         )
                 });
-                let copy = copy_address(&status.forward).filter(|_| matches!(status.state, ForwardState::Open { .. }));
-                menu = menu.item(match copy {
+                menu = menu.item(match copy_address(forward) {
                     Some(address) => {
-                        let ws = ws.clone();
+                        let (ws, view) = (ws.clone(), live.clone());
                         item.on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(address.clone()));
-                            let _ = ws.update(cx, |this, cx| this.show_toast(format!("Copied {address}"), cx));
+                            let listening = view.upgrade().is_some_and(|v| {
+                                v.read(cx).forwards.iter().any(|f| f.index == index && matches!(f.state, ForwardState::Open { .. }))
+                            });
+                            let message = if listening {
+                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(address.clone()));
+                                format!("Copied {address}")
+                            } else {
+                                format!("Nothing to copy: {address} isn't listening.")
+                            };
+                            let _ = ws.update(cx, |this, cx| this.show_toast(message, cx));
                         })
                     }
                     None => item,
@@ -200,7 +215,34 @@ impl Workspace {
             }
             menu
         });
+        self.forwards_menu_session = Some(id);
         cx.notify();
+    }
+
+    /// Close the forwards menu once it no longer belongs on screen: its Session isn't the one
+    /// shown any more (switched, closed), or has no forwards left (disconnected). Called on
+    /// every frame, so no path that changes either can leave it behind. The keyboard goes
+    /// back to the Session when the menu had it.
+    pub(super) fn close_stale_forwards_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.forwards_menu.is_open() {
+            self.forwards_menu_session = None;
+            return;
+        }
+        let shown = self.active_entry().map(|entry| entry.id());
+        let has_forwards = |this: &Self| {
+            let entry = this.active_entry()?;
+            Some(!entry.ui.view.terminal()?.read(cx).forwards.is_empty())
+        };
+        let current = shown.is_some() && shown == self.forwards_menu_session && has_forwards(self) == Some(true);
+        if !current {
+            let had_focus = self.forwards_menu.contains_focus(window, cx);
+            self.forwards_menu = Popup::default();
+            self.forwards_menu_session = None;
+            if had_focus {
+                cx.defer_in(window, |this, window, cx| this.focus_active(window, cx));
+            }
+            cx.notify();
+        }
     }
 
     /// A Port Forward of Session `id` didn't start: say so where the user is looking.

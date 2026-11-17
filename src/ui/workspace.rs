@@ -469,6 +469,8 @@ pub struct Workspace {
     main_menu: crate::ui::popup::Popup,
     /// The active Session's Port Forwards, out of the session strip.
     forwards_menu: crate::ui::popup::Popup,
+    /// The Session whose forwards the menu shows.
+    forwards_menu_session: Option<usize>,
     /// Presentation mode is on, with what to put back when it ends.
     presentation: Option<main_menu::Presentation>,
     font_input: Option<Entity<InputState>>,
@@ -626,6 +628,7 @@ impl Workspace {
             presentation_slider: None,
             main_menu: Default::default(),
             forwards_menu: Default::default(),
+            forwards_menu_session: None,
             presentation: None,
             font_input: None,
             word_separators_input: None,
@@ -5537,6 +5540,7 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count("workspace render (frame)");
         self.remember_tabs();
+        self.close_stale_forwards_menu(window, cx);
         if !self.modal_open(cx) {
             self.nav.after_dialog.set(false);
         }

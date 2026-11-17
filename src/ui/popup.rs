@@ -36,6 +36,11 @@ impl Popup {
         self.menu.is_some()
     }
 
+    /// Whether the keyboard is in the open menu.
+    pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.menu.as_ref().is_some_and(|(menu, _)| menu.focus_handle(cx).contains_focused(window, cx))
+    }
+
     pub fn render(&self) -> Option<AnyElement> {
         let (menu, position) = self.menu.clone()?;
         Some(

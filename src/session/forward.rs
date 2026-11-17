@@ -289,6 +289,12 @@ fn describe_io(err: &std::io::Error) -> String {
 
 // ---- SOCKS5 (RFC 1928), CONNECT without authentication -------------------------------------
 
+/// How long a SOCKS client has to say where it wants to go. A program using the proxy says so
+/// at once; one that connects and stays silent would otherwise hold a socket and a task for as
+/// long as the Session runs, and enough of them run this computer out of sockets.
+const HANDSHAKE_TIMEOUT: std::time::Duration =
+    if cfg!(test) { std::time::Duration::from_millis(300) } else { std::time::Duration::from_secs(10) };
+
 /// Where a SOCKS client asked to connect.
 #[derive(Debug, PartialEq, Eq)]
 struct SocksRequest {
@@ -356,7 +362,11 @@ fn socks_reply(code: u8) -> [u8; 10] {
 
 /// One SOCKS client: read where it wants to go, open a channel there, then carry it.
 async fn socks(tracker: &Tracker, mut stream: TcpStream, from: SocketAddr, open: &Opener) {
-    let request = match socks_handshake(&mut stream).await {
+    let Ok(handshake) = tokio::time::timeout(HANDSHAKE_TIMEOUT, socks_handshake(&mut stream)).await else {
+        log::debug!("port forward {}: {from} said nothing in time, closed", tracker.forward.label());
+        return;
+    };
+    let request = match handshake {
         Ok(request) => request,
         Err(None) => return,
         Err(Some(refusal)) => {
@@ -535,6 +545,27 @@ mod tests {
         client.write_all(&request).await.unwrap();
         client.read_exact(&mut reply).await.unwrap();
         assert_eq!(reply, socks_reply(5));
+    }
+
+    #[tokio::test]
+    async fn a_silent_socks_client_is_closed_and_does_not_hold_its_connection() {
+        let port = free_port().await;
+        let (report, seen) = reports();
+        let _tasks = start(&[PortForward::socks(port)], direct(), no_listen(), &RemoteForwards::default(), report);
+        until(&seen, |s| matches!(s.state, ForwardState::Open { .. })).await;
+        // One that connects and says nothing, and one that stops halfway through its greeting.
+        let mut silent = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await.unwrap();
+        let mut halfway = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await.unwrap();
+        halfway.write_all(&[5, 2]).await.unwrap();
+        for stream in [&mut silent, &mut halfway] {
+            let mut byte = [0; 1];
+            let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte)).await.expect("closed in time");
+            assert!(matches!(read, Ok(0) | Err(_)), "closed without a reply: {read:?}");
+        }
+        // Neither counted as a connection, and the proxy still serves the next client.
+        assert!(seen.lock().unwrap().iter().all(|s| !matches!(s.state, ForwardState::Open { connections: 1.., .. })));
+        let mut next = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await.unwrap();
+        assert_eq!(greet(&mut next).await, [5, 0]);
     }
 
     #[tokio::test]
