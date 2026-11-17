@@ -46,6 +46,7 @@ pub mod nav;
 mod notifications;
 mod onboarding;
 mod open_tabs;
+mod sessions;
 mod settings;
 mod split;
 mod updates;
@@ -296,27 +297,14 @@ struct ItemState<'a> {
     active: bool,
 }
 
-struct SessionEntry {
-    id: usize,
-    item: ItemKey,
-    /// `None` for a standalone Local Shell.
-    project_id: Option<String>,
-    kind: SessionKind,
-    /// "web01", or "web01 #2" when the same Host is open twice.
-    label: SharedString,
-    /// Its number among the item's Sessions: one past the highest open when it was opened.
-    number: usize,
-    /// A name given with Rename session…, shown instead of the shell's title.
-    name: Option<SharedString>,
-    /// The terminal's title (set by the shell), copied here like `status`.
-    title: SharedString,
-    /// Output is streaming in (a command at work), copied here like `status`.
-    busy: bool,
+/// An open Session (see `sessions.rs`).
+type SessionEntry = sessions::Entry<SessionParts>;
+
+/// What only the UI needs of an open Session: the rest is kept by `Sessions`.
+struct SessionParts {
     view: SessionView,
-    /// The terminal's status, copied here when it changes. The sidebar reads this rather than
-    /// the terminal: reading a terminal while rendering makes gpui redraw the whole window on
-    /// every bit of output it gets, even when it isn't on screen.
-    status: Status,
+    /// The terminal's title (set by the shell), copied here like the status.
+    title: SharedString,
     /// The SFTP file browser beside the terminal (SSH Sessions). Kept while hidden, so it
     /// opens again where it was.
     browser: Option<Entity<FileBrowser>>,
@@ -329,39 +317,21 @@ struct SessionEntry {
     /// SSH: the Host's address as it connected (see `history::address_label`). Commands go
     /// into the history with it, even if the Host is edited while the Session is open.
     history_on: Option<String>,
-    /// A Remote Desktop dragged out into a window of its own: that window.
+    /// A Remote Desktop dragged out into a window of its own: that window. Set together with
+    /// `Sessions::set_own_window`.
     window: Option<gpui::AnyWindowHandle>,
     _subscription: Subscription,
     _browser_subscription: Option<Subscription>,
     _browser_observer: Option<Subscription>,
 }
 
-impl SessionEntry {
-    /// A Session just opened: connecting, titled with its label, without a file browser or a
-    /// window of its own.
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        id: usize,
-        item: ItemKey,
-        project_id: Option<String>,
-        kind: SessionKind,
-        label: SharedString,
-        number: usize,
-        view: SessionView,
-        subscription: Subscription,
-    ) -> Self {
+impl SessionParts {
+    /// A Session just opened: titled with its label, without a file browser or a window of
+    /// its own.
+    fn new(view: SessionView, label: &SharedString, subscription: Subscription) -> Self {
         Self {
-            id,
-            item,
-            project_id,
-            kind,
-            label: label.clone(),
-            number,
-            name: None,
-            title: label,
-            busy: false,
             view,
-            status: Status::Connecting,
+            title: label.clone(),
             browser: None,
             sftp_open: false,
             sftp_busy: Busy::default(),
@@ -372,10 +342,6 @@ impl SessionEntry {
             _browser_subscription: None,
             _browser_observer: None,
         }
-    }
-
-    fn is_live(&self) -> bool {
-        !matches!(self.status, Status::Disconnected(_))
     }
 }
 
@@ -529,7 +495,7 @@ pub struct Workspace {
     pending: Vec<Pending>,
     /// Unlocked with "Stay unlocked" off: lock again once what waited has used the Vault.
     lock_after_use: bool,
-    sessions: Vec<SessionEntry>,
+    sessions: sessions::Sessions<SessionParts>,
     active: Option<usize>,
     /// The terminal tabs last written for Restore tabs on start; `None` while they aren't
     /// kept (switched off, before the saved ones are reopened, or a window opened by tooling).
@@ -543,12 +509,8 @@ pub struct Workspace {
     /// A Remote Desktop's sidebar row held outside the window, to open in its own.
     tear_off: Option<desktop_window::TearOff>,
     native_drag: Option<crate::platform::DragPreview>,
-    /// The highest number given to each item's terminals (`true`) or desktops since it last
-    /// had none of them open (see `next_number`).
-    session_numbers: HashMap<(ItemKey, bool), usize>,
     /// The Session last shown for each item, so a click returns to it.
     last_active: std::collections::HashMap<ItemKey, usize>,
-    next_id: usize,
     /// The terminal pane's size, as last laid out. A new Session's shell starts at this size
     /// instead of a guess, so it isn't resized (and repainted) straight after it starts.
     pane_size: Option<session::GridSize>,
@@ -680,7 +642,7 @@ impl Workspace {
             unlock: None,
             pending: vec![],
             lock_after_use: false,
-            sessions: vec![],
+            sessions: Default::default(),
             active: None,
             tab_memory: None,
             split: None,
@@ -688,9 +650,7 @@ impl Workspace {
             drop_target: None,
             tear_off: None,
             native_drag: None,
-            session_numbers: HashMap::new(),
             last_active: Default::default(),
-            next_id: 1,
             pane_size: None,
             collapsed_items: HashSet::new(),
             overlay: None,
@@ -794,7 +754,7 @@ impl Workspace {
             }
         }
         if let Some(index) = startup.active
-            && let Some(id) = self.sessions.get(index).map(|s| s.id)
+            && let Some(id) = self.sessions.get(index).map(|s| s.id())
         {
             self.activate(id, window, cx);
         }
@@ -808,8 +768,8 @@ impl Workspace {
             cx.spawn_in(window, async move |this, cx| {
                 for _ in 0..100 {
                     let finished = this.update_in(cx, |this, window, cx| {
-                        let Some(entry) = this.sessions.iter().find(|entry| entry.id == id) else { return true };
-                        match entry.status {
+                        let Some(entry) = this.sessions.iter().find(|entry| entry.id() == id) else { return true };
+                        match entry.status() {
                             Status::Connected => { this.toggle_sftp(id, window, cx); true }
                             Status::Disconnected(_) => true,
                             Status::Connecting => false,
@@ -961,8 +921,8 @@ impl Workspace {
     /// After a Host or Project changed: turn each open terminal's highlighting on or off.
     fn refresh_session_highlights(&mut self, cx: &mut Context<Self>) {
         for entry in &self.sessions {
-            let on = self.highlights_item(&entry.item);
-            if let Some(view) = entry.view.terminal() {
+            let on = self.highlights_item(&entry.item());
+            if let Some(view) = entry.ui.view.terminal() {
                 view.update(cx, |v, cx| {
                     if v.highlight != on {
                         v.highlight = on;
@@ -1253,7 +1213,7 @@ impl Workspace {
     /// With "Stay unlocked" off, lock the Vault once what waited for it has read it: saving
     /// and imports do at once, a new Session when it starts (see `start_when_sized`).
     fn lock_if_used(&mut self, cx: &mut Context<Self>) {
-        if self.lock_after_use && !self.sessions.iter().any(|s| s.waiting_for_size) {
+        if self.lock_after_use && !self.sessions.iter().any(|s| s.ui.waiting_for_size) {
             self.lock_after_use = false;
             self.vault = None;
             self.vault_revealed.clear();
@@ -1353,7 +1313,7 @@ impl Workspace {
         let saved = self.library.standalone_shells();
         let mut orphans: Vec<LocalShell> = vec![];
         for s in &self.sessions {
-            if let (ItemKey::Shell { project: None, name }, SessionKind::Local { shell }) = (&s.item, &s.kind)
+            if let (ItemKey::Shell { project: None, name }, SessionKind::Local { shell }) = (&s.item(), &s.kind())
                 && !saved.iter().any(|saved| saved.name == *name)
                 && !orphans.iter().any(|o| o.name == *name)
             {
@@ -1386,9 +1346,9 @@ impl Workspace {
     /// terminal while it has only one. With several terminals every Session is listed.
     fn listed_sessions(&self, key: &ItemKey) -> Vec<&SessionEntry> {
         let all: Vec<&SessionEntry> = self.sessions_of(key).collect();
-        let terminals = all.iter().filter(|s| s.view.desktop().is_none()).count();
+        let terminals = all.iter().filter(|s| s.ui.view.desktop().is_none()).count();
         if terminals < all.len() && terminals <= 1 {
-            all.into_iter().filter(|s| s.view.desktop().is_some()).collect()
+            all.into_iter().filter(|s| s.ui.view.desktop().is_some()).collect()
         } else if all.len() > 1 {
             all
         } else {
@@ -1402,7 +1362,7 @@ impl Workspace {
         if listed.is_empty() {
             return None;
         }
-        self.sessions_of(key).find(|s| !listed.iter().any(|l| l.id == s.id)).map(|s| s.id)
+        self.sessions_of(key).find(|s| !listed.iter().any(|l| l.id() == s.id())).map(|s| s.id())
     }
 
     /// The Session a click on an item's row shows. Its menu uses the same target when
@@ -1410,36 +1370,20 @@ impl Workspace {
     fn item_session(&self, key: &ItemKey) -> Option<usize> {
         self.row_terminal(key)
             .or_else(|| self.last_active.get(key).copied())
-            .filter(|id| self.sessions.iter().any(|s| s.id == *id))
+            .filter(|id| self.sessions.contains(*id))
             // Prefer one shown here to a desktop in its own window.
-            .or_else(|| self.sessions_of(key).find(|s| s.window.is_none()).map(|s| s.id))
-            .or_else(|| self.sessions_of(key).next().map(|s| s.id))
-    }
-
-    /// The number a new terminal (or Remote Desktop) of an item gets: one past the highest
-    /// given to its kind since the item last had none open, so a number is never given to
-    /// another Session while the item has Sessions of that kind, and a desktop never makes the
-    /// second terminal "#3". Back to 1 once all of them are closed.
-    fn next_number(&mut self, key: &ItemKey, terminal: bool) -> usize {
-        let open = self.sessions_of(key).filter(|s| s.view.terminal().is_some() == terminal).map(|s| s.number).max();
-        let counter = (key.clone(), terminal);
-        let number = match open {
-            None => 1,
-            Some(highest) => highest.max(self.session_numbers.get(&counter).copied().unwrap_or(0)) + 1,
-        };
-        self.session_numbers.insert(counter, number);
-        number
+            .or_else(|| self.sessions_of(key).find(|s| !s.own_window()).map(|s| s.id()))
+            .or_else(|| self.sessions_of(key).next().map(|s| s.id()))
     }
 
     fn sessions_of(&self, key: &ItemKey) -> impl Iterator<Item = &SessionEntry> {
-        let key = key.clone();
-        self.sessions.iter().filter(move |s| s.item == key)
+        self.sessions.of(key)
     }
 
     /// Output already visible in either pane needs no extra moving indicator.
     fn background_busy(&self, session: &SessionEntry) -> bool {
-        session.busy && Some(session.id) != self.active
-            && !self.shown_split().is_some_and(|split| split.contains(session.id))
+        session.busy() && Some(session.id()) != self.active
+            && !self.shown_split().is_some_and(|split| split.contains(session.id()))
     }
 
     /// Clicking a sidebar item: show its Session (reconnecting it in place if it dropped,
@@ -1453,7 +1397,7 @@ impl Workspace {
             // The row is the Host's terminal while its desktops have rows of their own.
             if let Some(id) = self.item_session(&key) {
                 self.activate(id, window, cx);
-                let dropped = self.sessions.iter().find(|s| s.id == id).is_some_and(|s| !s.is_live());
+                let dropped = self.sessions.get(id).is_some_and(|s| !s.is_live());
                 if dropped {
                     self.reconnect(id, window, cx);
                 }
@@ -1473,14 +1417,11 @@ impl Workspace {
     fn add_session(
         &mut self,
         item: ItemKey,
-        project_id: Option<String>,
         kind: SessionKind,
         base_label: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<TerminalView> {
-        let number = self.next_number(&item, true);
-        let label: SharedString = if number == 1 { base_label.to_string().into() } else { format!("{base_label} #{number}").into() };
         // A new Session shows under its item even if the item's Sessions were folded away.
         self.collapsed_items.remove(&item);
         let scrollback = self.settings.scrollback_lines;
@@ -1496,130 +1437,133 @@ impl Workspace {
         let minimap = self.settings.minimap;
         let minimap_overlay = self.settings.minimap_placement == crate::model::MinimapPlacement::Over;
         let minimap_delay = std::time::Duration::from_millis(self.settings.minimap_delay_ms.into());
-        let view = cx.new(|cx| {
-            let mut view = TerminalView::new(label.clone(), scrollback, window, cx);
-            view.pointer = pointer;
-            view.highlight = highlight;
-            view.windows_selection = windows_selection;
-            view.option_as_meta = option_as_meta;
-            view.set_cursor(cursor_shape, cursor_blink);
-            view.command_rail = command_rail;
-            view.command_history = command_history;
-            view.minimap = minimap;
-            view.minimap_overlay = minimap_overlay;
-            view.minimap_delay = minimap_delay;
-            view
-        });
-        let id = self.next_id;
-        self.next_id += 1;
-        let sub = cx.subscribe_in(&view, window, move |this, view, event: &TerminalEvent, window, cx| match event {
-            TerminalEvent::Changed => {
-                let status = view.read(cx).status.clone();
-                // Remote Desktops waiting to go through this Session can connect now.
-                let connected = matches!(status, Status::Connected)
-                    && this.sessions.iter().find(|s| s.id == id).is_some_and(|s| s.status != Status::Connected);
-                if connected {
-                    cx.defer_in(window, move |this, window, cx| this.ssh_connected(id, window, cx));
-                }
-                if let Some(entry) = this.sessions.iter_mut().find(|s| s.id == id) {
-                    entry.title = view.read(cx).title.clone();
-                    entry.busy = view.read(cx).busy;
-                    let changed = entry.status != status;
-                    entry.status = status.clone();
-                    // The file browser follows its terminal's connection.
-                    if changed && let Some(browser) = entry.browser.clone() {
-                        match status {
-                            Status::Connected if entry.sftp_open => {
-                                let sink = view.read(cx).sink();
-                                browser.update(cx, |b, cx| b.connect(sink, cx));
-                            }
-                            Status::Disconnected(_) => browser.update(cx, |b, cx| b.disconnected(cx)),
-                            _ => {}
-                        }
-                    }
-                }
-                if let Some(entry) = this.sessions.iter().find(|s| s.id == id)
-                    && this.completion_watches.update(id, entry.busy, &entry.status)
-                {
-                    let label = entry.label.to_string();
-                    this.notify_output_done(id, &label, cx);
-                }
-                cx.notify();
-            }
-            TerminalEvent::Remember { hop, what } => match what {
-                session::Remembered::User(user) => this.save_user(id, *hop, user.clone(), cx),
-                session::Remembered::Password(password) => {
-                    if this.vault.is_some() {
-                        this.save_password(id, *hop, password.clone(), cx);
-                    } else {
-                        this.pending.push(Pending::Save { session: id, hop: *hop, password: password.clone() });
-                        let host = this.hop_target(id, *hop).map(|target| this.hop_name(&target));
-                        let reason = match host {
-                            Some(name) => format!("To remember the password for {name}, Komando saves it in your vault."),
-                            None => "To remember this password, Komando saves it in your vault.".to_string(),
-                        };
-                        this.show_unlock(reason, window, cx);
-                    }
-                }
-            },
-            TerminalEvent::Reconnect => this.reconnect(id, window, cx),
-            TerminalEvent::Sized => {
-                // A new Session opens alone and without a file browser: only a pane laid out
-                // like that has its size. Half a split would start the next one at half width.
-                let alone = !this.shown_split().is_some_and(|s| s.contains(id))
-                    && this.sessions.iter().find(|s| s.id == id).is_some_and(|s| !s.sftp_open);
-                if alone {
-                    this.pane_size = view.read(cx).measured_size().or(this.pane_size);
-                }
-                this.start_waiting(cx);
-            }
-            TerminalEvent::Entered { line, at } => this.record_command(id, line, *at, cx),
-            TerminalEvent::Unhighlight { rule } => this.unhighlight(rule, cx),
-            TerminalEvent::HideMinimap => {
-                this.settings.minimap = false;
-                this.apply_terminal_settings(cx);
-                this.show_toast("Minimap hidden. Turn it back on in Settings → Terminal.", cx);
-            }
-            TerminalEvent::StartupStopped { waited_for } => this.show_toast_for(
-                format!("Startup commands stopped: \"{}\" didn't appear within a minute.", waited_for.trim()),
-                Duration::from_secs(8),
-                cx,
-            ),
-            TerminalEvent::EditHost { hop } => match this.hop_target(id, *hop) {
-                Some(HopTarget::Jump(model::RouteJump { owner: model::JumpOwner::Project(project_id, _), .. })) => {
-                    this.open_edit_project(project_id, window, cx)
-                }
-                Some(HopTarget::Host { project_id, host_id }) => this.open_edit_host(project_id, host_id, window, cx),
-                // A Host's own Jump Host is edited in that Host's form.
-                Some(HopTarget::Jump(_)) => {
-                    let entry = this.sessions.iter().find(|s| s.id == id);
-                    if let Some((Some(project_id), SessionKind::Ssh { host_id })) = entry.map(|e| (e.project_id.clone(), e.kind.clone())) {
-                        this.open_edit_host(project_id, host_id, window, cx);
-                    }
-                }
-                None => {}
-            },
-        });
+        let project_id = match &item {
+            ItemKey::Host { project, .. } => Some(project.clone()),
+            ItemKey::Shell { project, .. } => project.clone(),
+        };
         if let Some(project_id) = &project_id {
             self.set_project_collapsed(project_id, false, cx);
         }
-        let entry = SessionEntry::new(id, item, project_id, kind, label, number, SessionView::Terminal(view.clone()), sub);
-        self.show_new_session(entry, window, cx);
-        view
+        let mut made = None;
+        let id = self.sessions.add(item.clone(), kind, base_label, |id, label| {
+            let view = cx.new(|cx| {
+                let mut view = TerminalView::new(label.clone(), scrollback, window, cx);
+                view.pointer = pointer;
+                view.highlight = highlight;
+                view.windows_selection = windows_selection;
+                view.option_as_meta = option_as_meta;
+                view.set_cursor(cursor_shape, cursor_blink);
+                view.command_rail = command_rail;
+                view.command_history = command_history;
+                view.minimap = minimap;
+                view.minimap_overlay = minimap_overlay;
+                view.minimap_delay = minimap_delay;
+                view
+            });
+            let sub = cx.subscribe_in(&view, window, move |this, view, event: &TerminalEvent, window, cx| match event {
+                TerminalEvent::Changed => {
+                    let status = view.read(cx).status.clone();
+                    // Remote Desktops waiting to go through this Session can connect now.
+                    let connected = matches!(status, Status::Connected)
+                        && this.sessions.get(id).is_some_and(|s| *s.status() != Status::Connected);
+                    if connected {
+                        cx.defer_in(window, move |this, window, cx| this.ssh_connected(id, window, cx));
+                    }
+                    this.sessions.set_busy(id, view.read(cx).busy);
+                    let changed = this.sessions.set_status(id, status.clone());
+                    if let Some(entry) = this.sessions.get_mut(id) {
+                        entry.ui.title = view.read(cx).title.clone();
+                        // The file browser follows its terminal's connection.
+                        if changed && let Some(browser) = entry.ui.browser.clone() {
+                            match status {
+                                Status::Connected if entry.ui.sftp_open => {
+                                    let sink = view.read(cx).sink();
+                                    browser.update(cx, |b, cx| b.connect(sink, cx));
+                                }
+                                Status::Disconnected(_) => browser.update(cx, |b, cx| b.disconnected(cx)),
+                                _ => {}
+                            }
+                        }
+                    }
+                    if let Some(entry) = this.sessions.get(id)
+                        && this.completion_watches.update(id, entry.busy(), entry.status())
+                    {
+                        let label = entry.label().to_string();
+                        this.notify_output_done(id, &label, cx);
+                    }
+                    cx.notify();
+                }
+                TerminalEvent::Remember { hop, what } => match what {
+                    session::Remembered::User(user) => this.save_user(id, *hop, user.clone(), cx),
+                    session::Remembered::Password(password) => {
+                        if this.vault.is_some() {
+                            this.save_password(id, *hop, password.clone(), cx);
+                        } else {
+                            this.pending.push(Pending::Save { session: id, hop: *hop, password: password.clone() });
+                            let host = this.hop_target(id, *hop).map(|target| this.hop_name(&target));
+                            let reason = match host {
+                                Some(name) => format!("To remember the password for {name}, Komando saves it in your vault."),
+                                None => "To remember this password, Komando saves it in your vault.".to_string(),
+                            };
+                            this.show_unlock(reason, window, cx);
+                        }
+                    }
+                },
+                TerminalEvent::Reconnect => this.reconnect(id, window, cx),
+                TerminalEvent::Sized => {
+                    // A new Session opens alone and without a file browser: only a pane laid out
+                    // like that has its size. Half a split would start the next one at half width.
+                    let alone = !this.shown_split().is_some_and(|s| s.contains(id))
+                        && this.sessions.get(id).is_some_and(|s| !s.ui.sftp_open);
+                    if alone {
+                        this.pane_size = view.read(cx).measured_size().or(this.pane_size);
+                    }
+                    this.start_waiting(cx);
+                }
+                TerminalEvent::Entered { line, at } => this.record_command(id, line, *at, cx),
+                TerminalEvent::Unhighlight { rule } => this.unhighlight(rule, cx),
+                TerminalEvent::HideMinimap => {
+                    this.settings.minimap = false;
+                    this.apply_terminal_settings(cx);
+                    this.show_toast("Minimap hidden. Turn it back on in Settings → Terminal.", cx);
+                }
+                TerminalEvent::StartupStopped { waited_for } => this.show_toast_for(
+                    format!("Startup commands stopped: \"{}\" didn't appear within a minute.", waited_for.trim()),
+                    Duration::from_secs(8),
+                    cx,
+                ),
+                TerminalEvent::EditHost { hop } => match this.hop_target(id, *hop) {
+                    Some(HopTarget::Jump(model::RouteJump { owner: model::JumpOwner::Project(project_id, _), .. })) => {
+                        this.open_edit_project(project_id, window, cx)
+                    }
+                    Some(HopTarget::Host { project_id, host_id }) => this.open_edit_host(project_id, host_id, window, cx),
+                    // A Host's own Jump Host is edited in that Host's form.
+                    Some(HopTarget::Jump(_)) => {
+                        let entry = this.sessions.get(id);
+                        if let Some((Some(project_id), SessionKind::Ssh { host_id })) = entry.map(|e| (e.project_id().map(str::to_string), e.kind().clone())) {
+                            this.open_edit_host(project_id, host_id, window, cx);
+                        }
+                    }
+                    None => {}
+                },
+            });
+            made = Some(view.clone());
+            SessionParts::new(SessionView::Terminal(view), label, sub)
+        });
+        self.show_new_session(&item, id, window, cx);
+        made.expect("Sessions::add builds the payload")
     }
 
-    /// Add a new Session to the list and switch to it, into the split waiting for it if any.
-    fn show_new_session(&mut self, entry: SessionEntry, window: &mut Window, cx: &mut Context<Self>) {
-        let (key, id) = (entry.item.clone(), entry.id);
-        self.sessions.push(entry);
-        self.take_pending_split(&key, id);
+    /// Switch to a Session just added, into the split waiting for it if any.
+    fn show_new_session(&mut self, item: &ItemKey, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.take_pending_split(item, id);
         self.activate(id, window, cx);
     }
 
     fn open_local(&mut self, project_id: Option<String>, shell: LocalShell, window: &mut Window, cx: &mut Context<Self>) {
         let item = ItemKey::Shell { project: project_id.clone(), name: shell.name.clone() };
         let kind = SessionKind::Local { shell: shell.clone() };
-        let view = self.add_session(item, project_id.clone(), kind.clone(), &shell.name, window, cx);
+        let view = self.add_session(item, kind.clone(), &shell.name, window, cx);
         self.start_when_sized(&view, cx);
     }
 
@@ -1643,7 +1587,7 @@ impl Workspace {
         let Some(resolved) = self.library.resolve(project_id, host_id) else { return };
         let item = ItemKey::Host { project: project_id.to_string(), host: host_id.to_string() };
         let kind = SessionKind::Ssh { host_id: host_id.to_string() };
-        let view = self.add_session(item, Some(project_id.to_string()), kind.clone(), &resolved.name, window, cx);
+        let view = self.add_session(item, kind.clone(), &resolved.name, window, cx);
         self.start_when_sized(&view, cx);
     }
 
@@ -1652,19 +1596,19 @@ impl Workspace {
     /// resized as soon as the pane appears repaints, and Windows' pseudo-console leaves blank
     /// lines above the prompt when it does.
     fn start_when_sized(&mut self, view: &Entity<TerminalView>, cx: &mut Context<Self>) {
-        let Some(entry) = self.sessions.iter_mut().find(|s| s.view.terminal() == Some(view)) else { return };
+        let Some(entry) = self.sessions.iter_mut().find(|s| s.ui.view.terminal() == Some(view)) else { return };
         // Opened into a split: it gets half the room, which the last pane laid out may not
         // have had. Wait for its own pane.
-        let in_split = self.split.is_some_and(|s| s.contains(entry.id));
+        let in_split = self.split.is_some_and(|s| s.contains(entry.id()));
         let size = view.read(cx).measured_size().or(self.pane_size.filter(|_| !in_split));
         match size {
             Some(size) => {
                 view.update(cx, |v, _| v.assume_size(size));
-                let (kind, project_id) = (entry.kind.clone(), entry.project_id.clone());
+                let (kind, project_id) = (entry.kind().clone(), entry.project_id().map(str::to_string));
                 self.start_backend(view, &kind, project_id.as_deref(), cx);
             }
             None => {
-                entry.waiting_for_size = true;
+                entry.ui.waiting_for_size = true;
                 // In case no pane gets laid out (the window is hidden): start at a guess.
                 cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(Duration::from_millis(500)).await;
@@ -1681,8 +1625,8 @@ impl Workspace {
             .sessions
             .iter_mut()
             .filter_map(|s| {
-                let view = s.view.terminal()?.clone();
-                std::mem::take(&mut s.waiting_for_size).then(|| (view, s.kind.clone(), s.project_id.clone()))
+                let view = s.ui.view.terminal()?.clone();
+                std::mem::take(&mut s.ui.waiting_for_size).then(|| (view, s.kind().clone(), s.project_id().map(str::to_string)))
             })
             .collect();
         for (view, kind, project_id) in waiting {
@@ -1738,8 +1682,8 @@ impl Workspace {
                     })
                     .collect();
                 let history_on = crate::history::address_label(&host.address, host.port);
-                if let Some(entry) = self.sessions.iter_mut().find(|s| s.view.terminal() == Some(view)) {
-                    entry.history_on = Some(history_on);
+                if let Some(entry) = self.sessions.iter_mut().find(|s| s.ui.view.terminal() == Some(view)) {
+                    entry.ui.history_on = Some(history_on);
                 }
                 let secret = |credential: Option<&str>| {
                     credential.and_then(|id| self.vault.as_ref()?.get(id)).map(|c| c.secret.clone())
@@ -1767,8 +1711,8 @@ impl Workspace {
     /// Start a new connection in the same terminal: the earlier output stays above.
     fn reconnect(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_completion_notification(id);
-        let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
-        let (view, kind, project_id) = (entry.view.clone(), entry.kind.clone(), entry.project_id.clone());
+        let Some(entry) = self.sessions.get(id) else { return };
+        let (view, kind, project_id) = (entry.ui.view.clone(), entry.kind().clone(), entry.project_id().map(str::to_string));
         let SessionView::Terminal(view) = view else {
             self.connect_desktop(id, window, cx);
             self.focus_active(window, cx);
@@ -1781,9 +1725,9 @@ impl Workspace {
 
     /// What one hop of a Session's way is: one of its Jump Hosts, or the Host at its end.
     fn hop_target(&self, session_id: usize, hop: usize) -> Option<HopTarget> {
-        let entry = self.sessions.iter().find(|s| s.id == session_id)?;
-        let SessionKind::Ssh { host_id } = &entry.kind else { return None };
-        let project_id = entry.project_id.as_deref()?;
+        let entry = self.sessions.get(session_id)?;
+        let SessionKind::Ssh { host_id } = entry.kind() else { return None };
+        let project_id = entry.project_id()?;
         let host = self.library.resolve(project_id, host_id)?;
         match host.jump_hosts.get(hop) {
             Some(jump) => Some(HopTarget::Jump(jump.clone())),
@@ -1802,14 +1746,14 @@ impl Workspace {
 
     fn activate(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         // A desktop in a window of its own: that window comes to the front.
-        if let Some(handle) = self.sessions.iter().find(|s| s.id == id).and_then(|s| s.window) {
+        if let Some(handle) = self.sessions.get(id).and_then(|s| s.ui.window) {
             let _ = handle.update(cx, |_, window, _| window.activate_window());
             cx.notify();
             return;
         }
         self.active = Some(id);
-        if let Some(entry) = self.sessions.iter().find(|s| s.id == id) {
-            self.last_active.insert(entry.item.clone(), id);
+        if let Some(entry) = self.sessions.get(id) {
+            self.last_active.insert(entry.item().clone(), id);
         }
         if matches!(self.page, Page::Settings(_)) {
             self.page = Page::Sessions;
@@ -1821,33 +1765,33 @@ impl Workspace {
     /// Browse files from the sidebar: show the Session with its file browser open.
     fn show_files(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.activate(id, window, cx);
-        if self.sessions.iter().any(|s| s.id == id && !s.sftp_open) {
+        if self.sessions.get(id).is_some_and(|s| !s.ui.sftp_open) {
             self.toggle_sftp(id, window, cx);
         }
     }
 
     /// Show or hide the SFTP file browser beside an SSH Session's terminal.
     fn toggle_sftp(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.sessions.iter().position(|s| s.id == id) else { return };
-        let SessionKind::Ssh { host_id } = self.sessions[index].kind.clone() else { return };
-        if self.sessions[index].sftp_open {
-            self.sessions[index].sftp_open = false;
+        let Some(entry) = self.sessions.get_mut(id) else { return };
+        let SessionKind::Ssh { host_id } = entry.kind().clone() else { return };
+        if entry.ui.sftp_open {
+            entry.ui.sftp_open = false;
             self.focus_active(window, cx);
             cx.notify();
             return;
         }
         // Not connected (yet): nothing to browse. The title bar's button says so.
-        if !matches!(self.sessions[index].status, Status::Connected) {
+        if !matches!(entry.status(), Status::Connected) {
             return;
         }
-        if self.sessions[index].browser.is_none() {
-            let entry = &self.sessions[index];
-            let (label, target) = match entry.project_id.as_deref().and_then(|p| self.library.resolve(p, &host_id)) {
+        if entry.ui.browser.is_none() {
+            let entry = &*entry;
+            let (label, target) = match entry.project_id().and_then(|p| self.library.resolve(p, &host_id)) {
                 Some(r) => {
                     let user = r.user.clone().map(|u| format!("{u}@")).unwrap_or_default();
                     (r.name.clone(), format!("{user}{}:{}", r.address, r.port))
                 }
-                None => (entry.label.to_string(), String::new()),
+                None => (entry.label().to_string(), String::new()),
             };
             let (favorites, transfers, show_hidden) = (self.favorites.clone(), self.transfers.clone(), self.settings.sftp_show_hidden);
             let extras = self.sftp_menu_extras();
@@ -1863,11 +1807,11 @@ impl Workspace {
                     this.save_settings(cx);
                 }
                 BrowserEvent::Retry => {
-                    let sink = this.sessions.iter().find(|s| s.id == id).and_then(|s| s.view.terminal()?.read(cx).sink());
+                    let sink = this.sessions.get(id).and_then(|s| s.ui.view.terminal()?.read(cx).sink());
                     browser.update(cx, |b, cx| b.connect(sink, cx));
                 }
                 BrowserEvent::JumpTo(dir) => {
-                    let Some(view) = this.sessions.iter().find(|s| s.id == id).and_then(|s| s.view.terminal().cloned()) else { return };
+                    let Some(view) = this.sessions.get(id).and_then(|s| s.ui.view.terminal().cloned()) else { return };
                     let line = file_browser::cd_command(dir);
                     if view.update(cx, |v, cx| v.run_line(&line, cx)) {
                         view.update(cx, |v, cx| v.focus_prompt(window, cx));
@@ -1878,22 +1822,23 @@ impl Workspace {
             });
             let observer = cx.observe(&browser, move |this, browser, cx| {
                 let busy = browser.read(cx).indicator();
-                let Some(entry) = this.sessions.iter_mut().find(|s| s.id == id) else { return };
-                if entry.sftp_busy != busy {
-                    entry.sftp_busy = busy;
+                let Some(entry) = this.sessions.get_mut(id) else { return };
+                if entry.ui.sftp_busy != busy {
+                    entry.ui.sftp_busy = busy;
                     busy.schedule_redraws(cx);
                     cx.notify();
                 }
             });
-            self.sessions[index].browser = Some(browser);
-            self.sessions[index]._browser_subscription = Some(sub);
-            self.sessions[index]._browser_observer = Some(observer);
+            let Some(entry) = self.sessions.get_mut(id) else { return };
+            entry.ui.browser = Some(browser);
+            entry.ui._browser_subscription = Some(sub);
+            entry.ui._browser_observer = Some(observer);
         }
-        let entry = &mut self.sessions[index];
-        entry.sftp_open = true;
-        let browser = entry.browser.clone().expect("browser");
-        if matches!(entry.status, Status::Connected) && !browser.read(cx).is_connected() {
-            let sink = entry.view.terminal().and_then(|v| v.read(cx).sink());
+        let Some(entry) = self.sessions.get_mut(id) else { return };
+        entry.ui.sftp_open = true;
+        let browser = entry.ui.browser.clone().expect("browser");
+        if matches!(entry.status(), Status::Connected) && !browser.read(cx).is_connected() {
+            let sink = entry.ui.view.terminal().and_then(|v| v.read(cx).sink());
             browser.update(cx, |b, cx| b.connect(sink, cx));
         }
         let handle = browser.read(cx).focus_handle(cx);
@@ -1982,7 +1927,7 @@ impl Workspace {
         }
         if let Some(entry) = self.active_entry() {
             // The open question's field if it has one, else the terminal or desktop.
-            match &entry.view {
+            match &entry.ui.view {
                 SessionView::Terminal(view) => view.update(cx, |view, cx| view.focus_prompt(window, cx)),
                 SessionView::Desktop(view) => view.update(cx, |view, cx| view.focus_prompt(window, cx)),
             }
@@ -2194,14 +2139,14 @@ impl Workspace {
     }
 
     fn active_entry(&self) -> Option<&SessionEntry> {
-        self.sessions.iter().find(|s| Some(s.id) == self.active)
+        self.sessions.iter().find(|s| Some(s.id()) == self.active)
     }
 
     /// Whether the active Session has a question open (a password, a host key…). It is a
     /// modal: nothing else in the window can be used, and no other dialog opens, until it is
     /// answered. The master password popover is not one: it leaves the window usable.
     fn prompt_open(&self, cx: &App) -> bool {
-        self.active_entry().is_some_and(|entry| entry.view.has_prompt(cx))
+        self.active_entry().is_some_and(|entry| entry.ui.view.has_prompt(cx))
     }
 
     /// Whether the keyboard is in the master password popover.
@@ -2220,7 +2165,7 @@ impl Workspace {
     /// keeps either kind of Session.
     fn close_session(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         let keep = self.settings.keep_disconnected_sessions
-            && self.sessions.iter().any(|s| s.id == id && s.is_live() && s.view.desktop().is_none());
+            && self.sessions.get(id).is_some_and(|s| s.is_live() && s.ui.view.desktop().is_none());
         if keep {
             self.disconnect_session(id, window, cx);
         } else {
@@ -2231,11 +2176,11 @@ impl Workspace {
     /// End a Session's connection but keep it, with its output, to reconnect or close later.
     fn disconnect_session(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_completion_notification(id);
-        let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
+        let Some(entry) = self.sessions.get(id) else { return };
         if !entry.is_live() {
             return;
         }
-        match entry.view.clone() {
+        match entry.ui.view.clone() {
             SessionView::Terminal(view) => view.update(cx, |v, cx| {
                 v.close();
                 v.set_status(Status::Disconnected("Session closed.".into()), cx);
@@ -2249,17 +2194,19 @@ impl Workspace {
     /// End a Session (if still connected) and take it out of the sidebar.
     fn remove_session(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_completion_notification(id);
-        let Some(index) = self.sessions.iter().position(|s| s.id == id) else { return };
+        if !self.sessions.contains(id) {
+            return;
+        }
         self.close_own_window(id, cx);
-        let entry = self.sessions.remove(index);
+        let Some(entry) = self.sessions.remove(id) else { return };
         self.last_active.retain(|_, v| *v != id);
-        entry.view.close(cx);
+        entry.ui.view.close(cx);
         let partner = self.leave_split(id);
         if self.active == Some(id) {
             self.active = None;
             // The other half of a split fills the area; otherwise stay with the item and
             // show another of its Sessions, if it has one.
-            let next = partner.or_else(|| self.sessions_of(&entry.item).find(|s| s.window.is_none()).map(|s| s.id));
+            let next = partner.or_else(|| self.sessions_of(entry.item()).find(|s| !s.own_window()).map(|s| s.id()));
             if let Some(next) = next {
                 self.activate(next, window, cx);
             }
@@ -2278,7 +2225,7 @@ impl Workspace {
     /// The title bar's and menus' Disconnect: end the connection, keeping the Session and its
     /// output. Asks first while a command is printing output, as × does.
     fn request_disconnect(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sessions.iter().any(|s| s.id == id && s.is_live()) {
+        if self.sessions.get(id).is_some_and(|s| s.is_live()) {
             self.ask_if_busy(id, false, window, cx);
         }
     }
@@ -2289,8 +2236,8 @@ impl Workspace {
         if self.modal_open(cx) {
             return;
         }
-        let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
-        if !(entry.is_live() && entry.busy) {
+        let Some(entry) = self.sessions.get(id) else { return };
+        if !(entry.is_live() && entry.busy()) {
             // A dropped Session has nothing left to disconnect: × closes it.
             if remove || !entry.is_live() {
                 self.close_session(id, window, cx);
@@ -2320,8 +2267,8 @@ impl Workspace {
     /// the remote side use the same keys (a browser's "close tab"), and ending a desktop can't
     /// be undone.
     fn request_close_by_key(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
-        if !(entry.is_live() && entry.view.desktop().is_some()) {
+        let Some(entry) = self.sessions.get(id) else { return };
+        if !(entry.is_live() && entry.ui.view.desktop().is_some()) {
             return self.request_close(id, window, cx);
         }
         let name = self.session_display_name(entry);
@@ -2339,7 +2286,7 @@ impl Workspace {
         if self.modal_open(cx) {
             return;
         }
-        let busy = self.sessions_of(key).filter(|s| s.is_live() && s.busy).count();
+        let busy = self.sessions_of(key).filter(|s| s.is_live() && s.busy()).count();
         if busy == 0 {
             self.close_item_sessions(key, window, cx);
             return;
@@ -2358,10 +2305,10 @@ impl Workspace {
     /// How the title bar names a Session: "web01", "web01 #2", "web01 #1" once the Host has
     /// another terminal, and the name it was given after a dot.
     fn session_display_name(&self, entry: &SessionEntry) -> SharedString {
-        let others = entry.view.terminal().is_some()
-            && self.sessions_of(&entry.item).any(|s| s.id != entry.id && s.view.terminal().is_some());
-        let base = if entry.number == 1 && others { format!("{} #1", entry.label) } else { entry.label.to_string() };
-        match &entry.name {
+        let others = entry.ui.view.terminal().is_some()
+            && self.sessions_of(entry.item()).any(|s| s.id() != entry.id() && s.ui.view.terminal().is_some());
+        let base = if entry.number() == 1 && others { format!("{} #1", entry.label()) } else { entry.label().to_string() };
+        match entry.name() {
             Some(name) => format!("{base} · {name}").into(),
             None => base.into(),
         }
@@ -2372,8 +2319,8 @@ impl Workspace {
         if self.modal_open(cx) {
             return;
         }
-        let Some(entry) = self.sessions.iter().find(|s| s.id == id) else { return };
-        let current = entry.name.as_ref().unwrap_or(&entry.label).to_string();
+        let Some(entry) = self.sessions.get(id) else { return };
+        let current = entry.name().unwrap_or(entry.label()).to_string();
         let name = cx.new(|cx| InputState::new(window, cx).default_value(current));
         let subscription = cx.subscribe_in(&name, window, move |this, _, event: &InputEvent, window, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
@@ -2388,12 +2335,13 @@ impl Workspace {
     fn save_session_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Overlay::RenameSession { id, name, .. }) = &self.overlay else { return };
         let (id, value) = (*id, name.read(cx).value().trim().to_string());
-        if let Some(entry) = self.sessions.iter_mut().find(|s| s.id == id) {
+        if let Some(entry) = self.sessions.get(id) {
             // The field starts with the host's name; keeping it means no name of its own.
-            let name: Option<SharedString> = (!value.is_empty() && value != entry.label.as_ref()).then(|| value.into());
-            entry.name = name.clone();
+            let name: Option<SharedString> = (!value.is_empty() && value != entry.label().as_ref()).then(|| value.into());
+            let view = entry.ui.view.clone();
+            self.sessions.set_name(id, name.clone());
             // A desktop in a window of its own shows it in that window's title.
-            if let SessionView::Desktop(view) = &entry.view {
+            if let SessionView::Desktop(view) = &view {
                 view.update(cx, |view, cx| {
                     view.session_name = name;
                     cx.notify();
@@ -2438,7 +2386,7 @@ impl Workspace {
             .iter()
             // A desktop in its own window isn't shown here: activating it only raises that
             // window, so the cycle would stop on it.
-            .flat_map(|item| self.sessions_of(&item.key()).filter(|s| s.window.is_none()).map(|s| s.id).collect::<Vec<_>>())
+            .flat_map(|item| self.sessions_of(&item.key()).filter(|s| !s.own_window()).map(|s| s.id()).collect::<Vec<_>>())
             .collect();
         if order.is_empty() {
             return;
@@ -2450,7 +2398,7 @@ impl Workspace {
 
     /// The item of the active Session, for "new session on this item".
     fn active_item(&self) -> Option<SidebarItem> {
-        self.item_for_key(&self.active_entry()?.item.clone())
+        self.item_for_key(&self.active_entry()?.item().clone())
     }
 
     /// The sidebar item a key stands for, if it is still there.
@@ -2585,7 +2533,7 @@ impl Workspace {
     }
 
     fn copy_output_text(&mut self, cx: &mut Context<Self>) {
-        let Some(view) = self.active_entry().and_then(|e| e.view.terminal()) else { return };
+        let Some(view) = self.active_entry().and_then(|e| e.ui.view.terminal()) else { return };
         let text = view.read(cx).output_text();
         let lines = text.lines().count();
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
@@ -2594,11 +2542,11 @@ impl Workspace {
 
     fn copy_output_file(&mut self, cx: &mut Context<Self>) {
         let Some(entry) = self.active_entry() else { return };
-        let Some(view) = entry.view.terminal() else { return };
+        let Some(view) = entry.ui.view.terminal() else { return };
         let text = view.read(cx).output_text();
         let name = format!(
             "{}_{}.txt",
-            sanitize(&entry.label),
+            sanitize(entry.label()),
             chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
         );
         match crate::export::write_and_copy_file(&name, &text) {
@@ -2856,12 +2804,12 @@ impl Workspace {
         match action {
             ConfirmAction::DeleteHost(id) => {
                 self.discard_sessions(
-                    |s| matches!(&s.kind, SessionKind::Ssh { host_id } | SessionKind::Desktop { host_id, .. } if *host_id == id),
+                    |s| matches!(s.kind(), SessionKind::Ssh { host_id } | SessionKind::Desktop { host_id, .. } if *host_id == id),
                     cx,
                 );
             }
             ConfirmAction::DeleteProject(id) => {
-                self.discard_sessions(|s| s.project_id.as_deref() == Some(id.as_str()), cx);
+                self.discard_sessions(|s| s.project_id() == Some(id.as_str()), cx);
                 self.set_project_collapsed(&id, false, cx);
             }
             ConfirmAction::DeleteAllHistory
@@ -2876,17 +2824,16 @@ impl Workspace {
 
     /// Close and drop every Session that matches, e.g. those of a deleted Host.
     fn discard_sessions(&mut self, matches: impl Fn(&SessionEntry) -> bool, cx: &mut Context<Self>) {
-        let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.sessions).into_iter().partition(|s| matches(s));
-        self.sessions = kept;
+        let gone = self.sessions.remove_where(matches);
         for entry in &gone {
-            self.cancel_completion_notification(entry.id);
-            if let Some(handle) = entry.window {
+            self.cancel_completion_notification(entry.id());
+            if let Some(handle) = entry.ui.window {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
             }
-            entry.view.close(cx);
-            self.last_active.retain(|_, v| *v != entry.id);
-            let partner = self.leave_split(entry.id).filter(|p| !gone.iter().any(|g| g.id == *p));
-            if self.active == Some(entry.id) {
+            entry.ui.view.close(cx);
+            self.last_active.retain(|_, v| *v != entry.id());
+            let partner = self.leave_split(entry.id()).filter(|p| !gone.iter().any(|g| g.id() == *p));
+            if self.active == Some(entry.id()) {
                 self.active = partner;
             }
         }
@@ -3298,11 +3245,11 @@ impl Workspace {
         // Each item's Sessions, found by borrowed ids: most items have none, and need no key.
         let mut counts: HashMap<(bool, Option<&str>, &str), (&ItemKey, usize)> = HashMap::new();
         for s in &self.sessions {
-            let id = match &s.item {
+            let id = match &s.item() {
                 ItemKey::Host { project, host } => (true, Some(project.as_str()), host.as_str()),
                 ItemKey::Shell { project, name } => (false, project.as_deref(), name.as_str()),
             };
-            counts.entry(id).or_insert((&s.item, 0)).1 += 1;
+            counts.entry(id).or_insert((&s.item(), 0)).1 += 1;
         }
         let nested = |id| counts.get(&id).map_or(0, |&(key, count)| self.nested_rows(key, count));
         let hosts = self.library.host_indices();
@@ -3482,14 +3429,14 @@ impl Workspace {
         let Some(project) = self.library.projects.get(index) else { return div().into_any_element() };
             let color = project_color(&project.color);
             let collapsed = self.settings.collapsed_projects.contains(&project.id);
-            let sessions: Vec<&SessionEntry> = self.sessions.iter().filter(|s| match &s.item {
+            let sessions: Vec<&SessionEntry> = self.sessions.iter().filter(|s| match s.item() {
                 ItemKey::Host { project: id, host } => id == &project.id && project.hosts.contains(host),
                 ItemKey::Shell { project: id, name } => id.as_ref() == Some(&project.id) && project.shells.iter().any(|sh| &sh.name == name),
             }).collect();
             let live = sessions.iter().filter(|s| s.is_live()).count();
             let busy = sessions.iter().any(|s| self.background_busy(s));
             // Folded away with the Session in use inside: the row says so.
-            let holds_active = collapsed && sessions.iter().any(|s| Some(s.id) == self.active);
+            let holds_active = collapsed && sessions.iter().any(|s| Some(s.id()) == self.active);
             let focused = self.nav_focus_on(&NavTarget::Project(project.id.clone()));
             let pid = project.id.clone();
             let pid_host = project.id.clone();
@@ -3849,18 +3796,18 @@ impl Workspace {
         let listed = self.listed_sessions(key);
         let grouped = !listed.is_empty();
         let expanded = grouped && !self.collapsed_items.contains(key);
-        let shown = self.last_active.get(key).copied().or_else(|| sessions.first().map(|s| s.id));
+        let shown = self.last_active.get(key).copied().or_else(|| sessions.first().map(|s| s.id()));
         // The Session the row itself is: its only one, or the terminal beside listed desktops.
         let main = if grouped {
-            sessions.iter().find(|s| !listed.iter().any(|l| l.id == s.id)).copied()
+            sessions.iter().find(|s| !listed.iter().any(|l| l.id() == s.id())).copied()
         } else {
-            shown.and_then(|id| sessions.iter().find(|s| s.id == id).copied()).or(sessions.first().copied())
+            shown.and_then(|id| sessions.iter().find(|s| s.id() == id).copied()).or(sessions.first().copied())
         };
-        let holds_active = sessions.iter().any(|s| Some(s.id) == self.active);
+        let holds_active = sessions.iter().any(|s| Some(s.id()) == self.active);
         // Shown in the other half of the split: lit, more faintly than the active row. A row
         // that is the Host's terminal is lit for that terminal alone.
         let split = self.shown_split();
-        let in_split = |s: &SessionEntry| Some(s.id) != self.active && split.is_some_and(|split| split.contains(s.id));
+        let in_split = |s: &SessionEntry| Some(s.id()) != self.active && split.is_some_and(|split| split.contains(s.id()));
         let beside = match main {
             Some(main) if grouped => in_split(main),
             _ => !holds_active && sessions.iter().any(|s| in_split(s)),
@@ -3868,7 +3815,7 @@ impl Workspace {
         // A group's state: live if any Session is, connecting if any is on the way. A row that
         // is the Host's terminal shows that terminal's.
         let status = if grouped && main.is_none() {
-            let any = |f: fn(&Status) -> bool| sessions.iter().any(|s| f(&s.status));
+            let any = |f: fn(&Status) -> bool| sessions.iter().any(|s| f(s.status()));
             Some(if any(|s| matches!(s, Status::Connected)) {
                 Status::Connected
             } else if any(|s| matches!(s, Status::Connecting)) {
@@ -3877,13 +3824,13 @@ impl Workspace {
                 Status::Disconnected(String::new())
             })
         } else {
-            main.map(|s| s.status.clone())
+            main.map(|s| s.status().clone())
         };
         let live = matches!(status, Some(Status::Connected | Status::Connecting));
         let busy = !holds_active && !beside
             && if grouped { sessions.iter().any(|s| self.background_busy(s)) } else { main.is_some_and(|s| self.background_busy(s)) };
         // With the Sessions listed below, the active one is marked there instead.
-        let active = main.is_some_and(|s| Some(s.id) == self.active) || (holds_active && !expanded);
+        let active = main.is_some_and(|s| Some(s.id()) == self.active) || (holds_active && !expanded);
         ItemState { sessions, listed, grouped, expanded, shown, main, beside, status, live, busy, active }
     }
 
@@ -3897,12 +3844,12 @@ impl Workspace {
         let key = item.key();
         let ItemState { sessions, grouped, expanded, shown, main, .. } = self.item_state(&key);
         let any_live = sessions.iter().any(|s| s.is_live());
-        let session_id = main.map(|s| s.id);
+        let session_id = main.map(|s| s.id());
         let sessions_live = main.is_some_and(|s| s.is_live());
-        let open_session = self.item_session(&key).and_then(|id| sessions.iter().find(|s| s.id == id));
+        let open_session = self.item_session(&key).and_then(|id| sessions.iter().find(|s| s.id() == id));
         let open_live = open_session.is_some_and(|s| s.is_live());
         let visible = self.page == Page::Sessions && open_session.is_some_and(|s| {
-            s.window.is_none() && (Some(s.id) == self.active || self.shown_split().is_some_and(|split| split.contains(s.id)))
+            !s.own_window() && (Some(s.id()) == self.active || self.shown_split().is_some_and(|split| split.contains(s.id())))
         });
         let sidebar_focus = self.nav.focus.clone();
         let ws = cx.entity().downgrade();
@@ -3915,15 +3862,15 @@ impl Workspace {
         let can_split = self.active.is_some() && self.placement_possible(&key);
         let history = self.settings.command_history;
         // × and Delete only disconnect a terminal; with the setting off they close it.
-        let keep_sessions = self.settings.keep_disconnected_sessions && main.is_some_and(|s| s.view.desktop().is_none());
-        let completion_ids: Vec<usize> = sessions.iter().map(|s| s.id).collect();
+        let keep_sessions = self.settings.keep_disconnected_sessions && main.is_some_and(|s| s.ui.view.desktop().is_none());
+        let completion_ids: Vec<usize> = sessions.iter().map(|s| s.id()).collect();
         // Its connected terminal, for Browse files: the row's own, else the last shown.
         let files_session = main
             .into_iter()
-            .chain(shown.and_then(|id| sessions.iter().find(|s| s.id == id).copied()))
+            .chain(shown.and_then(|id| sessions.iter().find(|s| s.id() == id).copied()))
             .chain(sessions.iter().copied())
-            .find(|s| matches!(s.kind, SessionKind::Ssh { .. }) && matches!(s.status, Status::Connected))
-            .map(|s| s.id);
+            .find(|s| matches!(s.kind(), SessionKind::Ssh { .. }) && matches!(s.status(), Status::Connected))
+            .map(|s| s.id());
         move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
             let item = menu_item_src.clone();
             let (open, another) = (item.clone(), item.clone());
@@ -4076,11 +4023,11 @@ impl Workspace {
         // The Session the row itself stands for closes from the row: its status dot turns into
         // × on hover, and a middle-click closes it, as Settings → Close from the sidebar says.
         let quick_close = self.settings.quick_close;
-        let row_session = main.filter(|_| show_status).map(|s| s.id);
+        let row_session = main.filter(|_| show_status).map(|s| s.id());
         let hover_close = row_session.filter(|_| quick_close.on_hover());
         let middle_close = row_session.filter(|_| quick_close.on_middle_click());
         let close_tip: SharedString = match main {
-            Some(s) if s.is_live() && self.settings.keep_disconnected_sessions && s.view.desktop().is_none() => "Disconnect".into(),
+            Some(s) if s.is_live() && self.settings.keep_disconnected_sessions && s.ui.view.desktop().is_none() => "Disconnect".into(),
             _ => "Close session".into(),
         };
         let show_count = grouped && !expanded;
@@ -4103,7 +4050,7 @@ impl Workspace {
             cx,
         );
         // A name given to the Session the row stands for, after the Host's.
-        let session_name = main.and_then(|s| s.name.clone());
+        let session_name = main.and_then(|s| s.name().clone());
         let label_color = if active { p.active_text } else if live { p.text } else { p.text_muted };
         let mut rows = vec![];
         rows.push(
@@ -4316,21 +4263,21 @@ impl Workspace {
         p: AppPalette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let id = session.id;
+        let id = session.id();
         let active = Some(id) == self.active;
         let focused = self.nav_focus_on(&NavTarget::Session(id));
         let beside = !active && self.shown_split().is_some_and(|s| s.contains(id));
         let dragged = self.dragged(item, Some(id), color);
         let live = session.is_live();
         let desktop = desktop_protocol(session);
-        let own_window = session.window.is_some();
+        let own_window = session.own_window();
         let title: SharedString = match desktop {
-            Some(_) => session.name.clone().unwrap_or_else(|| "Remote desktop".into()),
+            Some(_) => session.name().cloned().unwrap_or_else(|| "Remote desktop".into()),
             None => session_title(session),
         };
         let session_menu = self.session_menu(id, cx);
         // What the Session is: a Host's terminal or desktop by kind, a shell by its own icon.
-        let (icon, icon_size) = match (&session.kind, item) {
+        let (icon, icon_size) = match (session.kind(), item) {
             (SessionKind::Desktop { .. }, _) => ("monitor".to_string(), 13.),
             (_, SidebarItem::Host { .. }) => ("square-terminal".to_string(), 13.),
             (_, SidebarItem::Shell { .. }) => (item.icon(), 14.),
@@ -4343,7 +4290,7 @@ impl Workspace {
         // In a narrow sidebar the close button floats over the row's end on hover instead of
         // keeping a place of its own, which the title needs more.
         let compact = self.sidebar_compact;
-        let disconnects = live && self.settings.keep_disconnected_sessions && session.view.desktop().is_none();
+        let disconnects = live && self.settings.keep_disconnected_sessions && session.ui.view.desktop().is_none();
         let tip: SharedString = if disconnects { "Disconnect".into() } else { "Close session".into() };
         let close = close_button(SharedString::from(format!("close-{id}")), 22., p)
             .aria_label(tip.clone())
@@ -4386,7 +4333,7 @@ impl Workspace {
             })
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.activate(id, window, cx);
-                let dropped = this.sessions.iter().find(|s| s.id == id).is_some_and(|s| !s.is_live());
+                let dropped = this.sessions.get(id).is_some_and(|s| !s.is_live());
                 if dropped && !own_window {
                     this.reconnect(id, window, cx);
                 }
@@ -4416,14 +4363,14 @@ impl Workspace {
             // and it is what tells sessions apart once the title is cut short. The icon already
             // says terminal; a desktop's tag says which protocol.
             .when(desktop.is_none(), |el| {
-                el.child(div().flex_shrink_0().text_size(px(11.)).text_color(p.text_faint).child(format!("#{}", session.number)))
+                el.child(div().flex_shrink_0().text_size(px(11.)).text_color(p.text_faint).child(format!("#{}", session.number())))
             })
             .when_some(desktop, |el, protocol| el.child(protocol_tag(protocol.label(), p)))
             .child(
                 div()
                     .flex_shrink_0()
                     .id("session-status")
-                    .child(status_indicator(Some(&session.status), self.background_busy(session), p)),
+                    .child(status_indicator(Some(session.status()), self.background_busy(session), p)),
             )
             .map(|el| {
                 if compact {
@@ -4452,12 +4399,12 @@ impl Workspace {
     /// The menu of a Session's own row.
     fn session_menu(&self, id: usize, cx: &mut Context<Self>) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + Clone + 'static {
         let ws = cx.entity().downgrade();
-        let session = self.sessions.iter().find(|s| s.id == id);
+        let session = self.sessions.get(id);
         let dropped = session.is_some_and(|s| !s.is_live());
         let desktop = session.and_then(desktop_protocol);
-        let own_window = session.is_some_and(|s| s.window.is_some());
+        let own_window = session.is_some_and(|s| s.own_window());
         let keep = self.settings.keep_disconnected_sessions && desktop.is_none();
-        let files = session.is_some_and(|s| matches!(s.kind, SessionKind::Ssh { .. }) && matches!(s.status, Status::Connected));
+        let files = session.is_some_and(|s| matches!(s.kind(), SessionKind::Ssh { .. }) && matches!(s.status(), Status::Connected));
         let sidebar_focus = self.nav.focus.clone();
         move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
             let mut menu = menu.action_context(sidebar_focus.clone());
@@ -4528,7 +4475,7 @@ impl Workspace {
     /// Disconnect every live Session of an item; when none is live, close them all.
     fn close_item_sessions(&mut self, key: &ItemKey, window: &mut Window, cx: &mut Context<Self>) {
         let any_live = self.sessions_of(key).any(|s| s.is_live());
-        let ids: Vec<usize> = self.sessions_of(key).filter(|s| s.is_live() == any_live).map(|s| s.id).collect();
+        let ids: Vec<usize> = self.sessions_of(key).filter(|s| s.is_live() == any_live).map(|s| s.id()).collect();
         for id in ids {
             if any_live {
                 self.disconnect_session(id, window, cx);
@@ -4545,10 +4492,9 @@ impl Workspace {
         // Where you are typing: state, the session's name, then user@address and port. The
         // name is repeated from the sidebar, which may be scrolled away from the active host.
         let name = self.session_display_name(entry);
-        let target = match &entry.kind {
+        let target = match entry.kind() {
             SessionKind::Ssh { host_id } => entry
-                .project_id
-                .as_deref()
+                .project_id()
                 .and_then(|id| self.library.resolve(id, host_id))
                 .map(|r| {
                     let user = r.user.clone().map(|u| format!("{u}@")).unwrap_or_default();
@@ -4558,29 +4504,29 @@ impl Workspace {
             SessionKind::Local { shell } => format!("Local · {}", shell.program),
             SessionKind::Desktop { host_id, protocol } => {
                 // The label already names the protocol ("win-build · RDP").
-                entry.project_id.as_deref().map(|p| self.desktop_target(p, host_id, *protocol)).unwrap_or_default()
+                entry.project_id().map(|p| self.desktop_target(p, host_id, *protocol)).unwrap_or_default()
             }
         };
         let desktop_buttons = self.desktop_strip_buttons(entry, p, cx);
-        let (status_text, status_color) = match &entry.status {
+        let (status_text, status_color) = match entry.status() {
             Status::Connecting => ("Connecting", p.warning),
             Status::Connected => ("Connected", p.success),
             Status::Disconnected(_) => ("Disconnected", p.text_faint),
         };
-        let id = entry.id;
+        let id = entry.id();
         let live = entry.is_live();
-        let is_ssh = matches!(entry.kind, SessionKind::Ssh { .. });
+        let is_ssh = matches!(entry.kind(), SessionKind::Ssh { .. });
         let indicator = if is_ssh {
-            let hops = entry.view.terminal().map(|view| view.read(cx).latency.as_slice()).unwrap_or_default();
-            connection_indicator(&entry.status, hops, cx.reduce_motion(), p).into_any_element()
+            let hops = entry.ui.view.terminal().map(|view| view.read(cx).latency.as_slice()).unwrap_or_default();
+            connection_indicator(entry.status(), hops, cx.reduce_motion(), p).into_any_element()
         } else {
             status_dot(status_color).into_any_element()
         };
-        let sftp_open = entry.sftp_open;
-        let sftp_phase = if sftp_open { entry.sftp_busy.phase() } else { BusyPhase::Idle };
+        let sftp_open = entry.ui.sftp_open;
+        let sftp_phase = if sftp_open { entry.ui.sftp_busy.phase() } else { BusyPhase::Idle };
         // SFTP runs over the session's connection: until it is connected the button only looks
         // like one. An open browser can still be closed.
-        let sftp_ready = matches!(entry.status, Status::Connected);
+        let sftp_ready = matches!(entry.status(), Status::Connected);
         let sftp_enabled = sftp_ready || sftp_open;
         let sftp_color = if sftp_open {
             p.active_text
@@ -4590,7 +4536,7 @@ impl Workspace {
             p.text_faint.opacity(0.55)
         };
         let sftp_done = p.success;
-        let sftp_tip = match (&entry.status, sftp_open) {
+        let sftp_tip = match (entry.status(), sftp_open) {
             (_, true) => "Close file browser (Ctrl+Shift+E)",
             (Status::Connected, false) => "Browse files over SFTP (Ctrl+Shift+E)",
             (Status::Connecting, false) => "File browser: available once the session is connected",
@@ -4764,7 +4710,7 @@ impl Workspace {
                 }
                 div().flex_1().min_w_0().h_full().flex().children(panes).into_any_element()
             }
-            (Some(entry), None) => self.render_pane(entry.id, false, p, window, cx).unwrap_or_else(|| div().into_any_element()),
+            (Some(entry), None) => self.render_pane(entry.id(), false, p, window, cx).unwrap_or_else(|| div().into_any_element()),
         };
         div()
             .id("main-area")
@@ -4783,15 +4729,15 @@ impl Workspace {
     /// One Session's terminal, with its file browser when open. In a split, a press anywhere
     /// in it makes it the active one, and the other's Project colour edge fades.
     fn render_pane(&self, id: usize, in_split: bool, p: AppPalette, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let entry = self.sessions.iter().find(|s| s.id == id)?;
-        if entry.window.is_some() {
+        let entry = self.sessions.get(id)?;
+        if entry.own_window() {
             return Some(self.render_in_own_window(id, p, cx));
         }
         let focused = self.active == Some(id);
-        let project = entry.project_id.as_deref().and_then(|id| self.library.project(id));
+        let project = entry.project_id().and_then(|id| self.library.project(id));
         let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.brand);
         let term_bg = cx.global::<Appearance>().term.background_hsla();
-        let browser = entry.browser.clone().filter(|_| entry.sftp_open);
+        let browser = entry.ui.browser.clone().filter(|_| entry.ui.sftp_open);
         // The browser keeps at least 300px for the terminal when the pane is narrow.
         let window_width = f32::from(window.bounds().size.width);
         let area = window_width - ISLAND_GAP * 2.
@@ -4826,7 +4772,7 @@ impl Workspace {
                         this.resize_sftp(f32::from(event.event.position.x), event.bounds, cx);
                     }
                 }))
-                .child(div().flex_1().min_w_0().h_full().map(|el| match &entry.view {
+                .child(div().flex_1().min_w_0().h_full().map(|el| match &entry.ui.view {
                     SessionView::Terminal(view) => el.child(view.clone()),
                     SessionView::Desktop(view) => el.child(view.clone()),
                 }))
@@ -4986,7 +4932,7 @@ impl Workspace {
             return None;
         }
         // A Remote Desktop asks inside its own pane.
-        let view = self.active_entry()?.view.terminal()?.clone();
+        let view = self.active_entry()?.ui.view.terminal()?.clone();
         let card = view.update(cx, |view, cx| view.prompt_modal(cx))?;
         Some(
             div()
@@ -5240,11 +5186,11 @@ fn focus_ring(radius: gpui::Pixels, p: AppPalette) -> gpui::Div {
 /// shell set, unless that only repeats the item's name or is the program's path (as Windows
 /// shells set it); otherwise "Session".
 fn session_title(session: &SessionEntry) -> SharedString {
-    if let Some(name) = &session.name {
+    if let Some(name) = session.name() {
         return name.clone();
     }
-    let title = session.title.trim();
-    let useless = title.is_empty() || title == session.label.as_ref() || title.to_ascii_lowercase().ends_with(".exe");
+    let title = session.ui.title.trim();
+    let useless = title.is_empty() || title == session.label().as_ref() || title.to_ascii_lowercase().ends_with(".exe");
     // Its number shows beside it.
     if useless { "Session".into() } else { title.to_string().into() }
 }
@@ -5744,7 +5690,7 @@ impl Render for Workspace {
                     this.close_overlay(window, cx);
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.prompt_open(cx) {
-                    match this.active_entry().map(|e| e.view.clone()) {
+                    match this.active_entry().map(|e| e.ui.view.clone()) {
                         Some(SessionView::Terminal(view)) => view.update(cx, |view, cx| view.cancel_prompt(window, cx)),
                         Some(SessionView::Desktop(view)) => view.update(cx, |view, cx| view.cancel_prompt(window, cx)),
                         None => {}
@@ -5872,7 +5818,7 @@ impl Render for Workspace {
         if window.is_fullscreen()
             && self.presentation.is_none()
             && let Some(SessionView::Desktop(view)) =
-                self.active_entry().filter(|e| e.window.is_none() && matches!(self.page, Page::Sessions)).map(|e| e.view.clone())
+                self.active_entry().filter(|e| !e.own_window() && matches!(self.page, Page::Sessions)).map(|e| e.ui.view.clone())
         {
             return root.bg(p.background).child(view).children(self.render_prompt_modal(p, cx)).children(toast).into_any_element();
         }

@@ -376,8 +376,8 @@ impl Workspace {
         let minimap_overlay = self.settings.minimap_placement == MinimapPlacement::Over;
         let minimap_delay = std::time::Duration::from_millis(self.settings.minimap_delay_ms.into());
         for entry in &self.sessions {
-            let ssh = matches!(entry.kind, SessionKind::Ssh { .. });
-            let Some(view) = entry.view.terminal() else { continue };
+            let ssh = matches!(entry.kind(), SessionKind::Ssh { .. });
+            let Some(view) = entry.ui.view.terminal() else { continue };
             view.update(cx, |v, cx| {
                 v.pointer = pointer.clone();
                 v.windows_selection = windows_selection;
@@ -1375,7 +1375,7 @@ impl Workspace {
 
     fn apply_sftp_menu_settings(&mut self, cx: &mut Context<Self>) {
         let extras = self.sftp_menu_extras();
-        for browser in self.sessions.iter().filter_map(|s| s.browser.clone()) {
+        for browser in self.sessions.iter().filter_map(|s| s.ui.browser.clone()) {
             browser.update(cx, |b, _| b.menu_extras = extras);
         }
         self.save_settings(cx);
@@ -1662,10 +1662,7 @@ impl Workspace {
         // Open Sessions follow the change: they stay under the shell, and reconnect with it.
         if let (Some(old), Some(saved)) = (editing, saved) {
             let (old_key, new_key) = (ItemKey::Shell { project: None, name: old }, ItemKey::Shell { project: None, name });
-            for entry in self.sessions.iter_mut().filter(|s| s.item == old_key) {
-                entry.item = new_key.clone();
-                entry.kind = SessionKind::Local { shell: saved.clone() };
-            }
+            self.sessions.move_item(&old_key, &new_key, &saved.name, Some(SessionKind::Local { shell: saved.clone() }));
             if let Some(id) = self.last_active.remove(&old_key) {
                 self.last_active.insert(new_key.clone(), id);
             }

@@ -41,9 +41,9 @@ impl Workspace {
                                 .update_in(cx, |this, window, cx| {
                                     // A notification must never reconnect or select a different
                                     // Session when its original Session has been discarded.
-                                    if let Some(entry) = this.sessions.iter().find(|s| s.id == id) {
+                                    if let Some(entry) = this.sessions.get(id) {
                                         let (item, project) =
-                                            (entry.item.clone(), entry.project_id.clone());
+                                            (entry.item().clone(), entry.project_id().map(str::to_string));
                                         this.collapsed_items.remove(&item);
                                         if let Some(project) = project {
                                             this.set_project_collapsed(&project, false, cx);
@@ -110,7 +110,7 @@ pub(super) fn completion_menu(
     let busy = ids.iter().any(|id| {
         this.sessions
             .iter()
-            .any(|s| s.id == *id && s.busy && s.status == Status::Connected)
+            .any(|s| s.id() == *id && s.busy() && *s.status() == Status::Connected)
     });
     if !armed && !busy {
         return menu;
@@ -130,7 +130,7 @@ pub(super) fn completion_menu(
                 let busy = this
                     .sessions
                     .iter()
-                    .any(|s| s.id == id && s.busy && s.status == Status::Connected);
+                    .any(|s| s.id() == id && s.busy() && *s.status() == Status::Connected);
                 this.completion_watches.set(id, !armed && busy);
             }
             cx.notify();

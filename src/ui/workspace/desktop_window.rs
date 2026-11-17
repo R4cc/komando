@@ -166,7 +166,7 @@ impl Workspace {
             || position.x > size.width + margin
             || position.y > size.height + margin;
         let tear_off = session
-            .filter(|id| outside && self.sessions.iter().any(|s| s.id == *id && s.view.desktop().is_some() && s.window.is_none()))
+            .filter(|id| outside && self.sessions.get(*id).is_some_and(|s| s.ui.view.desktop().is_some() && !s.own_window()))
             .map(|session| TearOff { session, screen: window.bounds().origin + position });
         if self.tear_off != tear_off {
             if tear_off.is_some() {
@@ -191,14 +191,14 @@ impl Workspace {
     /// `origin` on screen (beside the main window's when `None`). One already in its own
     /// window comes to the front.
     pub(super) fn detach_desktop(&mut self, id: usize, origin: Option<Point<Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.sessions.iter().position(|s| s.id == id) else { return };
-        if let Some(handle) = self.sessions[index].window {
+        let Some(entry) = self.sessions.get(id) else { return };
+        if let Some(handle) = entry.ui.window {
             let _ = handle.update(cx, |_, window, _| window.activate_window());
             return;
         }
-        let SessionView::Desktop(view) = self.sessions[index].view.clone() else { return };
-        let item = self.sessions[index].item.clone();
-        let title: SharedString = format!("{} — Komando", self.sessions[index].label).into();
+        let SessionView::Desktop(view) = entry.ui.view.clone() else { return };
+        let item = entry.item().clone();
+        let title: SharedString = format!("{} — Komando", entry.label()).into();
         let pane = view.read(cx).pane_size().unwrap_or(size(px(1024.), px(640.)));
         let window_size = size(
             pane.width.max(px(560.)) + px(ISLAND_GAP * 2.),
@@ -235,7 +235,10 @@ impl Workspace {
             }
         };
         let _ = handle.update(cx, |_, new_window, _| self.style_window(new_window, dark));
-        self.sessions[index].window = Some(handle);
+        if let Some(entry) = self.sessions.get_mut(id) {
+            entry.ui.window = Some(handle);
+        }
+        self.sessions.set_own_window(id, true);
         // The main window shows something else: the other half of a split, or the Host's
         // terminal.
         let partner = self.leave_split(id);
@@ -244,7 +247,7 @@ impl Workspace {
         }
         if self.active == Some(id) {
             self.active = None;
-            let next = partner.or_else(|| self.sessions_of(&item).find(|s| s.window.is_none()).map(|s| s.id));
+            let next = partner.or_else(|| self.sessions_of(&item).find(|s| !s.own_window()).map(|s| s.id()));
             if let Some(next) = next {
                 self.activate(next, window, cx);
             }
@@ -254,11 +257,13 @@ impl Workspace {
 
     /// A desktop's own window closed: show the Session in the main window again.
     pub(super) fn reattach_desktop(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.sessions.iter_mut().find(|s| s.id == id) else { return };
-        if entry.window.take().is_none() {
+        let Some(entry) = self.sessions.get_mut(id) else { return };
+        if entry.ui.window.take().is_none() {
             return;
         }
-        let Some(view) = entry.view.desktop().cloned() else { return };
+        let view = entry.ui.view.desktop().cloned();
+        self.sessions.set_own_window(id, false);
+        let Some(view) = view else { return };
         view.update(cx, |v, cx| {
             v.detached = false;
             v.bind(window, cx);
@@ -270,20 +275,25 @@ impl Workspace {
 
     /// Close a Session's own window, if it has one (the Session is being discarded).
     pub(super) fn close_own_window(&self, id: usize, cx: &mut App) {
-        if let Some(handle) = self.sessions.iter().find(|s| s.id == id).and_then(|s| s.window) {
+        if let Some(handle) = self.sessions.get(id).and_then(|s| s.ui.window) {
             let _ = handle.update(cx, |_, window, _| window.remove_window());
         }
     }
 
     /// Close every desktop's own window: the main window is closing.
     pub(super) fn close_own_windows(&mut self, cx: &mut App) {
-        for handle in self.sessions.iter_mut().filter_map(|s| s.window.take()) {
-            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        let ids: Vec<usize> = self.sessions.iter().filter(|s| s.ui.window.is_some()).map(|s| s.id()).collect();
+        for id in ids {
+            let handle = self.sessions.get_mut(id).and_then(|s| s.ui.window.take());
+            self.sessions.set_own_window(id, false);
+            if let Some(handle) = handle {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+            }
         }
     }
 
     /// The desktops' own windows, to restyle them with the main one.
     pub(super) fn own_windows(&self) -> Vec<AnyWindowHandle> {
-        self.sessions.iter().filter_map(|s| s.window).collect()
+        self.sessions.iter().filter_map(|s| s.ui.window).collect()
     }
 }

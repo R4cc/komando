@@ -6,7 +6,6 @@
 //! Host moves to that Project; dragged up or down within its own Project, it changes place
 //! there, a blue line showing where it would go.
 
-use std::collections::HashSet;
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
@@ -212,8 +211,8 @@ impl Workspace {
 
     /// The payload for dragging a sidebar row.
     pub(super) fn dragged(&self, item: &SidebarItem, session: Option<usize>, color: Hsla) -> DraggedItem {
-        let label = match session.and_then(|id| self.sessions.iter().find(|s| s.id == id)) {
-            Some(s) => s.label.clone(),
+        let label = match session.and_then(|id| self.sessions.get(id)) {
+            Some(s) => s.label().clone(),
             None => item.label().to_string().into(),
         };
         DraggedItem { key: item.key(), session, label, icon: item.icon(), color }
@@ -230,7 +229,7 @@ impl Workspace {
             let native = ws.update(cx, |this, cx| {
                 this.drop_target = None;
                 this.native_drag = dragged.session
-                    .filter(|id| this.sessions.iter().any(|s| s.id == *id && s.view.desktop().is_some()))
+                    .filter(|id| this.sessions.get(*id).is_some_and(|s| s.ui.view.desktop().is_some()))
                     .and_then(|_| crate::platform::DragPreview::new(&dragged.label, window, cx.global::<Appearance>().app.dark));
                 this.native_drag.is_some()
             }).unwrap_or(false);
@@ -254,7 +253,7 @@ impl Workspace {
         // The Session that stays on the other side.
         let other = shown.map_or(active, |s| s.at(side.opposite()));
         let here = shown.map(|s| s.at(side));
-        let item_of = |id: usize| self.sessions.iter().find(|s| s.id == id).map(|s| &s.item);
+        let item_of = |id: usize| self.sessions.get(id).map(|s| s.item());
         // Dragging the other half's Session (or its item) across swaps the two.
         if shown.is_some() && (session == Some(other) || (session.is_none() && item_of(other) == Some(key))) {
             return Some((Placement::Swap, other));
@@ -266,9 +265,9 @@ impl Workspace {
             // another of its Sessions, or a new one (two shells on one server).
             None => {
                 // Not a desktop in its own window: the split would show its placeholder.
-                let in_main = |id: usize| self.sessions.iter().any(|s| s.id == id && s.window.is_none());
+                let in_main = |id: usize| self.sessions.get(id).is_some_and(|s| !s.own_window());
                 let last = self.last_active.get(key).copied().filter(|&id| id != other && item_of(id) == Some(key) && in_main(id));
-                match last.or_else(|| self.sessions_of(key).map(|s| s.id).find(|&id| id != other && in_main(id))) {
+                match last.or_else(|| self.sessions_of(key).map(|s| s.id()).find(|&id| id != other && in_main(id))) {
                     Some(id) => Placement::Existing(id),
                     None => Placement::New,
                 }
@@ -306,7 +305,7 @@ impl Workspace {
             Placement::Existing(id) => {
                 self.split = Some(Split::new(side, id, other));
                 self.activate(id, window, cx);
-                if self.sessions.iter().find(|s| s.id == id).is_some_and(|s| !s.is_live()) {
+                if self.sessions.get(id).is_some_and(|s| !s.is_live()) {
                     self.reconnect(id, window, cx);
                 }
             }
@@ -324,7 +323,7 @@ impl Workspace {
     /// A Session was just added for `item`: put it in the split it was opened for.
     pub(super) fn take_pending_split(&mut self, item: &ItemKey, id: usize) {
         let Some(pending) = self.pending_split.take_if(|p| p.item == *item) else { return };
-        if self.sessions.iter().any(|s| s.id == pending.partner) {
+        if self.sessions.contains(pending.partner) {
             self.split = Some(Split::new(pending.side, id, pending.partner));
         }
     }
@@ -512,26 +511,7 @@ impl Workspace {
         }
         let old = ItemKey::Host { project: from.to_string(), host: host_id.to_string() };
         let new = ItemKey::Host { project: to.to_string(), host: host_id.to_string() };
-        // Already open in the new Project too (a Host in both): the moved Sessions take the
-        // next numbers there, terminals and desktops each counted on their own.
-        let taken_of = |terminal: bool| -> HashSet<usize> {
-            self.sessions_of(&new).filter(|s| s.view.terminal().is_some() == terminal).map(|s| s.number).collect()
-        };
-        let mut taken = [taken_of(false), taken_of(true)];
-        for s in self.sessions.iter_mut().filter(|s| s.item == old) {
-            s.item = new.clone();
-            s.project_id = Some(to.to_string());
-            let terminal = s.view.terminal().is_some();
-            let taken = &mut taken[usize::from(terminal)];
-            if !taken.insert(s.number) {
-                s.number = taken.iter().max().map_or(1, |n| n + 1);
-                taken.insert(s.number);
-                // A desktop's label names its protocol, not a number.
-                if terminal {
-                    s.label = if s.number == 1 { name.clone().into() } else { format!("{name} #{}", s.number).into() };
-                }
-            }
-        }
+        self.sessions.move_item(&old, &new, &name, None);
         if let Some(id) = self.last_active.remove(&old) {
             self.last_active.entry(new.clone()).or_insert(id);
         }

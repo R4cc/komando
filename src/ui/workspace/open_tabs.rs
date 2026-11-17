@@ -9,11 +9,11 @@ impl Workspace {
     pub(super) fn current_tabs(&self) -> OpenTabs {
         let mut tabs = OpenTabs::default();
         for entry in &self.sessions {
-            if entry.view.terminal().is_none() {
+            if entry.ui.view.terminal().is_none() {
                 continue;
             }
-            let name = entry.name.as_ref().map(|n| n.to_string());
-            let tab = match (&entry.kind, &entry.item) {
+            let name = entry.name().as_ref().map(|n| n.to_string());
+            let tab = match (&entry.kind(), &entry.item()) {
                 (SessionKind::Ssh { .. }, ItemKey::Host { project, host }) => {
                     SavedTab::Host { project: project.clone(), host: host.clone(), name }
                 }
@@ -22,7 +22,7 @@ impl Workspace {
                 }
                 _ => continue,
             };
-            if self.active == Some(entry.id) {
+            if self.active == Some(entry.id()) {
                 tabs.active = Some(tabs.tabs.len());
             }
             tabs.tabs.push(tab);
@@ -88,15 +88,15 @@ impl Workspace {
             }
             // Not yet open when waiting for the Vault: that tab comes back without its name.
             if self.sessions.len() > before
-                && let Some(entry) = self.sessions.last_mut()
+                && let Some(id) = self.sessions.iter().last().map(|s| s.id())
             {
-                entry.name = name.clone().map(SharedString::from);
+                self.sessions.set_name(id, name.clone().map(SharedString::from));
                 if saved.active == Some(index) {
-                    active = Some(entry.id);
+                    active = Some(id);
                 }
             }
         }
-        if let Some(id) = active.or_else(|| self.sessions.first().map(|s| s.id)) {
+        if let Some(id) = active.or_else(|| self.sessions.iter().next().map(|s| s.id())) {
             self.activate(id, window, cx);
         }
         if missing > 0 {
