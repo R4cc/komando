@@ -209,7 +209,7 @@ impl Workspace {
             }
             if let Some((project_id, host_id)) = host.clone() {
                 let ws = ws.clone();
-                menu = menu.separator().item(super::menu_item("Edit port forwards…", "pencil", &ws, move |this, window, cx| {
+                menu = menu.separator().item(super::menu_item("Edit port forwards…", None, &ws, move |this, window, cx| {
                     this.open_host_forwards(project_id.clone(), host_id.clone(), window, cx)
                 }));
             }

@@ -17,3 +17,9 @@ list, then put the saved one back if the menu closes without a pick (see
 
 The handler runs from `Window::defer` after the menu has drawn, so it can restyle every window
 without updating the menu in the middle of its own render.
+
+## 2. Menu icons and checkmarks use a shared 14 px gutter
+
+The popup renderer uses a 14 px slot at the default text scale for its leading
+icons, checkmarks and placeholders. Rows with text alone share the same label
+alignment when a menu has a leading icon or checkmark.

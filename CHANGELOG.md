@@ -6,12 +6,17 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-17
+
 ### Changed
 
+- The main and context menus are easier to scan. Labels line up, and familiar icons stand out
+  on actions like Quick connect, Settings, Copy, Paste, and Delete.
 - Terminal panes have a higher-contrast outline so their edges are easier to see.
 
 ### Fixed
 
+- “Show hidden files” in the SFTP menu shows a checkmark when enabled.
 - The silver frame disappears when the window is maximized and follows the rounded corners on Windows.
 
 ## [0.8.0] - 2026-11-17

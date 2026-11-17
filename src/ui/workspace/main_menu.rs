@@ -116,9 +116,9 @@ impl Workspace {
             };
             let menu = menu
                 .min_w(px(260.))
-                .item(menu_item("Quick connect…", "search", &ws, |this, window, cx| this.open_picker(window, cx)).action(Box::new(QuickConnect)))
-                .item(menu_item("New project…", "folder-plus", &ws, |this, window, cx| this.open_new_project(window, cx)))
-                .item(menu_item("Import…", "import", &ws, |this, window, cx| this.open_settings(SettingsSection::Import, window, cx)))
+                .item(menu_item("Quick connect…", Some("search"), &ws, |this, window, cx| this.open_picker(window, cx)).action(Box::new(QuickConnect)))
+                .item(menu_item("New project…", None, &ws, |this, window, cx| this.open_new_project(window, cx)))
+                .item(menu_item("Import…", None, &ws, |this, window, cx| this.open_settings(SettingsSection::Import, window, cx)))
                 .separator()
                 .label("View")
                 .item(toggle("Sidebar", sidebar, |this, window, cx| this.toggle_sidebar(window, cx)).action(Box::new(ToggleSidebar)))
@@ -140,16 +140,16 @@ impl Workspace {
                 )
                 .separator();
             let menu = if vault_open {
-                menu.item(menu_item("Lock vault", "lock", &ws, |this, _, cx| this.lock_vault(cx)).action(Box::new(LockVault)))
+                menu.item(menu_item("Lock vault", Some("lock-keyhole"), &ws, |this, _, cx| this.lock_vault(cx)).action(Box::new(LockVault)))
             } else {
                 menu
             };
             menu.item(
-                menu_item("Settings", "settings", &ws, |this, window, cx| this.open_settings(SettingsSection::Appearance, window, cx))
+                menu_item("Settings", Some("settings"), &ws, |this, window, cx| this.open_settings(SettingsSection::Appearance, window, cx))
                     .action(Box::new(OpenSettings)),
             )
-            .item(menu_item("Welcome tour", "map", &ws, |this, window, cx| this.start_tour(window, cx)))
-            .item(menu_item("About Komando", "info", &ws, |this, window, cx| this.open_settings(SettingsSection::About, window, cx)))
+            .item(menu_item("Welcome tour", None, &ws, |this, window, cx| this.start_tour(window, cx)))
+            .item(menu_item("About Komando", None, &ws, |this, window, cx| this.open_settings(SettingsSection::About, window, cx)))
         });
         cx.notify();
     }

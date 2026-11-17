@@ -1568,20 +1568,20 @@ impl TerminalView {
             (selected, this.sink.is_some() && !this.is_disconnected(), hit, link)
         };
         let menu = if this.read(cx).menu_on_minimap {
-            menu.item(crate::ui::popup::item("Hide minimap", "eye-off", &view, |_, _, cx| cx.emit(TerminalEvent::HideMinimap)))
+            menu.item(crate::ui::popup::item("Hide minimap", None, &view, |_, _, cx| cx.emit(TerminalEvent::HideMinimap)))
                 .separator()
         } else {
             menu
         };
         let icon = |name: &str| Icon::empty().path(format!("icons/{name}.svg"));
-        let run = |label: &str, icon_name: &str, f: fn(&mut Self, &mut Window, &mut Context<Self>)| {
-            crate::ui::popup::item(label, icon_name, &view, f)
+        let run = |label: &str, f: fn(&mut Self, &mut Window, &mut Context<Self>)| {
+            crate::ui::popup::item(label, None, &view, f)
         };
         // A highlighted word was right-clicked: its rule can be turned off from here.
         let menu = match hit {
             Some(hit) => {
                 let label = format!("Unhighlight “{}”", ellipsize(&hit.matched, 32));
-                let item = crate::ui::popup::item(label, "eraser", &view, move |_, _, cx| {
+                let item = crate::ui::popup::item(label, None, &view, move |_, _, cx| {
                     cx.emit(TerminalEvent::Unhighlight { rule: hit.clone() })
                 });
                 menu.item(item).separator()
@@ -1592,8 +1592,8 @@ impl TerminalView {
         let menu = match link {
             Some(url) => {
                 let copy = url.clone();
-                menu.item(crate::ui::popup::item("Open link", "external-link", &view, move |_, _, cx| cx.open_url(&url)))
-                    .item(crate::ui::popup::item("Copy link", "link", &view, move |_, _, cx| {
+                menu.item(crate::ui::popup::item("Open link", Some("external-link"), &view, move |_, _, cx| cx.open_url(&url)))
+                    .item(crate::ui::popup::item("Copy link", None, &view, move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
                     }))
                     .separator()
@@ -1604,15 +1604,15 @@ impl TerminalView {
             .menu_with_icon_and_disabled("Copy", icon("copy"), Box::new(Copy), !selected)
             .menu_with_icon_and_disabled("Paste", icon("clipboard-paste"), Box::new(Paste), !can_type)
             .item(
-                run("Paste selection", "text-cursor-input", |this, _, cx| this.paste_selection(cx))
+                run("Paste selection", |this, _, cx| this.paste_selection(cx))
                     .disabled(!(selected && can_type)),
             )
             .separator()
-            .item(run("Select all", "scan-text", |this, _, cx| this.select_all(cx)))
+            .item(run("Select all", |this, _, cx| this.select_all(cx)))
             .menu_with_icon("Find in output…", icon("search"), Box::new(Find))
             .separator()
-            .menu_with_icon("Copy output", icon("copy"), Box::new(crate::ui::workspace::CopyOutputText))
-            .menu_with_icon("Copy as .txt", icon("file-text"), Box::new(crate::ui::workspace::CopyOutputFile))
+            .menu("Copy output", Box::new(crate::ui::workspace::CopyOutputText))
+            .menu("Copy as .txt", Box::new(crate::ui::workspace::CopyOutputFile))
     }
 
     /// Type the selected text into the shell, as if pasted.

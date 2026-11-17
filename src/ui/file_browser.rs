@@ -1799,8 +1799,8 @@ impl FileBrowser {
                         }
                         let view = view.clone();
                         this.popup = Popup::open(event.position(), |this: &mut Self| &mut this.popup, window, cx, move |menu, _, _| {
-                            menu.item(popup::item("Upload files…", "file-up", &view, |this, window, cx| this.pick_uploads(false, window, cx)))
-                                .item(popup::item("Upload folder…", "folder-up", &view, |this, window, cx| {
+                            menu.item(popup::item("Upload files…", None, &view, |this, window, cx| this.pick_uploads(false, window, cx)))
+                                .item(popup::item("Upload folder…", None, &view, |this, window, cx| {
                                     this.pick_uploads(true, window, cx)
                                 }))
                         });
@@ -2734,49 +2734,45 @@ fn entry_menu(
     let paths: Vec<String> = targets.iter().map(|e| e.path.clone()).collect();
     let readable = targets.iter().any(|e| !e.locked() && e.kind != Kind::Other);
     let can_change = dir_write != Allowed::No;
-    let item = |label: String, icon: &str, enabled: bool, run: Box<dyn Fn(&mut FileBrowser, &mut Window, &mut Context<FileBrowser>)>| {
+    let item = |label: String, icon: Option<&str>, enabled: bool, run: Box<dyn Fn(&mut FileBrowser, &mut Window, &mut Context<FileBrowser>)>| {
         popup::item(label, icon, view, move |this, window, cx| run(this, window, cx)).disabled(!enabled)
     };
 
     if single {
         let e = first.clone();
-        if first.is_dir() {
-            menu = menu.item(item("Open".into(), "folder-open", !first.locked(), Box::new(move |this, _, cx| this.open_entry(&e, cx))));
-        } else {
-            menu = menu.item(item("Open".into(), "external-link", !first.locked(), Box::new(move |this, _, cx| this.open_entry(&e, cx))));
-        }
+        menu = menu.item(item("Open".into(), None, !first.locked(), Box::new(move |this, _, cx| this.open_entry(&e, cx))));
     }
     let download_label = if single { "Download".to_string() } else { format!("Download {} items", targets.len()) };
     let t = targets.clone();
-    menu = menu.item(item(download_label, "download", readable, Box::new(move |this, _, cx| this.download(t.clone(), false, cx))));
+    menu = menu.item(item(download_label, Some("download"), readable, Box::new(move |this, _, cx| this.download(t.clone(), false, cx))));
     menu = menu.separator();
     if single && extras.rename {
         let path = first.path.clone();
-        menu = menu.item(item("Rename".into(), "pencil", can_change, Box::new(move |this, window, cx| this.start_rename(path.clone(), window, cx))));
+        menu = menu.item(item("Rename".into(), None, can_change, Box::new(move |this, window, cx| this.start_rename(path.clone(), window, cx))));
     }
     if extras.copy_to {
         let p = paths.clone();
-        menu = menu.item(item("Copy to…".into(), "copy-plus", readable, Box::new(move |this, window, cx| this.ask_copy_move(CopyOp::Copy, p.clone(), window, cx))));
+        menu = menu.item(item("Copy to…".into(), None, readable, Box::new(move |this, window, cx| this.ask_copy_move(CopyOp::Copy, p.clone(), window, cx))));
     }
     if extras.move_to {
         let p = paths.clone();
-        menu = menu.item(item("Move to…".into(), "folder-input", can_change, Box::new(move |this, window, cx| this.ask_copy_move(CopyOp::Move, p.clone(), window, cx))));
+        menu = menu.item(item("Move to…".into(), None, can_change, Box::new(move |this, window, cx| this.ask_copy_move(CopyOp::Move, p.clone(), window, cx))));
     }
     let (p3, p4) = (paths.clone(), paths.clone());
     menu = menu
-        .item(item(if single { "Delete".into() } else { format!("Delete {} items", targets.len()) }, "trash", can_change, Box::new(move |this, _, cx| this.ask_delete(p3.clone(), cx))))
+        .item(item(if single { "Delete".into() } else { format!("Delete {} items", targets.len()) }, Some("trash"), can_change, Box::new(move |this, _, cx| this.ask_delete(p3.clone(), cx))))
         .separator()
-        .item(item(if single { "Copy as path".into() } else { "Copy as paths".into() }, "clipboard-copy", true, Box::new(move |this, _, cx| this.copy_paths(p4.clone(), cx))));
+        .item(item(if single { "Copy as path".into() } else { "Copy as paths".into() }, None, true, Box::new(move |this, _, cx| this.copy_paths(p4.clone(), cx))));
     if single {
         let e = first.clone();
-        menu = menu.item(item("Jump to here".into(), "corner-down-right", !(first.is_dir() && first.locked()), Box::new(move |this, _, cx| this.jump_to(&e, cx))));
+        menu = menu.item(item("Jump to here".into(), None, !(first.is_dir() && first.locked()), Box::new(move |this, _, cx| this.jump_to(&e, cx))));
         if first.is_dir() {
             let (a, b) = (first.path.clone(), first.path.clone());
             let has_shared = favorites.items.iter().any(|f| f.path == first.path && f.host.is_none());
             let has_own = favorites.items.iter().any(|f| f.path == first.path && f.host.as_deref() == Some(host));
             menu = menu
-                .item(item("Add to favorites".into(), "star", !has_shared, Box::new(move |this, _, cx| this.add_favorite(a.clone(), false, cx))))
-                .item(item("Add to favorites for this host".into(), "server", !has_own, Box::new(move |this, _, cx| this.add_favorite(b.clone(), true, cx))));
+                .item(item("Add to favorites".into(), Some("star"), !has_shared, Box::new(move |this, _, cx| this.add_favorite(a.clone(), false, cx))))
+                .item(item("Add to favorites for this host".into(), None, !has_own, Box::new(move |this, _, cx| this.add_favorite(b.clone(), true, cx))));
         }
         if first.locked() {
             menu = menu.separator().item(PopupMenuItem::label(if first.is_dir() {
@@ -2795,19 +2791,19 @@ fn entry_menu(
 /// The menu for the folder itself (⋯ in the header, right-click on empty space).
 fn folder_menu(menu: PopupMenu, view: &WeakEntity<FileBrowser>, cwd: Option<String>, show_hidden: bool, connected: bool) -> PopupMenu {
     let mut menu = menu
-        .item(popup::item("New folder", "folder-plus", view, |this, window, cx| this.start_new_folder(window, cx)).disabled(!connected))
-        .item(popup::item("Upload files…", "file-up", view, |this, window, cx| this.pick_uploads(false, window, cx)).disabled(!connected))
-        .item(popup::item("Upload folder…", "folder-up", view, |this, window, cx| this.pick_uploads(true, window, cx)).disabled(!connected))
+        .item(popup::item("New folder", Some("folder-plus"), view, |this, window, cx| this.start_new_folder(window, cx)).disabled(!connected))
+        .item(popup::item("Upload files…", None, view, |this, window, cx| this.pick_uploads(false, window, cx)).disabled(!connected))
+        .item(popup::item("Upload folder…", None, view, |this, window, cx| this.pick_uploads(true, window, cx)).disabled(!connected))
         .separator()
-        .item(popup::item("Refresh", "refresh-cw", view, |this, _, cx| this.refresh(cx)).disabled(!connected))
-        .item(popup::item("Show hidden files", "eye", view, move |this, _, cx| this.set_show_hidden(!show_hidden, cx)).checked(show_hidden));
+        .item(popup::item("Refresh", Some("refresh-cw"), view, |this, _, cx| this.refresh(cx)).disabled(!connected))
+        .item(popup::item("Show hidden files", None, view, move |this, _, cx| this.set_show_hidden(!show_hidden, cx)).checked(show_hidden));
     if let Some(cwd) = cwd {
         let (a, b, c) = (cwd.clone(), cwd.clone(), cwd);
         menu = menu
             .separator()
-            .item(popup::item("Copy current path", "clipboard-copy", view, move |this, _, cx| this.copy_paths(vec![a.clone()], cx)))
-            .item(popup::item("Add to favorites", "star", view, move |this, _, cx| this.add_favorite(b.clone(), false, cx)))
-            .item(popup::item("Add to favorites for this host", "server", view, move |this, _, cx| this.add_favorite(c.clone(), true, cx)));
+            .item(popup::item("Copy current path", None, view, move |this, _, cx| this.copy_paths(vec![a.clone()], cx)))
+            .item(popup::item("Add to favorites", Some("star"), view, move |this, _, cx| this.add_favorite(b.clone(), false, cx)))
+            .item(popup::item("Add to favorites for this host", None, view, move |this, _, cx| this.add_favorite(c.clone(), true, cx)));
     }
     menu
 }

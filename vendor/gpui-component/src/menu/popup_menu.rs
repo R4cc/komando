@@ -1288,7 +1288,9 @@ impl PopupMenu {
             Icon::empty()
         };
 
-        Some(icon.xsmall())
+        // Komando: give menu icons a little more room. The placeholder and the
+        // visible glyphs share one width so labels stay aligned.
+        Some(icon.small())
     }
 
     /// Calculate the anchor corner and left offset for child submenu

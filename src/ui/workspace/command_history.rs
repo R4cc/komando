@@ -8,8 +8,6 @@ use gpui::{UniformListScrollHandle, uniform_list};
 use super::*;
 use crate::history::{self, Row};
 
-/// The icon of the history button and menu entry.
-pub(super) const ICON: &str = "clock-fading";
 const ROW_HEIGHT: f32 = 28.;
 /// Tallest the list grows before it scrolls.
 const LIST_MAX_HEIGHT: f32 = 448.;

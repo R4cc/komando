@@ -122,7 +122,7 @@ pub(super) fn completion_menu(
         } else {
             "Notify when done"
         },
-        if armed { "bell-off" } else { "bell" },
+        if armed { Some("bell-off") } else { Some("bell") },
         workspace,
         move |this, _, cx| {
             for &id in &ids {

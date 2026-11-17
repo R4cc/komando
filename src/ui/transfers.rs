@@ -545,21 +545,21 @@ impl Transfers {
                 this.popup = Popup::open(event.position(), |this: &mut Self| &mut this.popup, window, cx, move |mut menu, _, _| {
                     if let Some(local) = local {
                         let text = local.display().to_string();
-                        menu = menu.item(popup::item("Copy path", "clipboard-copy", &view, move |this, _, cx| {
+                        menu = menu.item(popup::item("Copy path", None, &view, move |this, _, cx| {
                             this.copy_text(text.clone(), cx)
                         }));
                     }
                     let server = format!("{host}:{remote_path}");
-                    menu = menu.item(popup::item("Copy server path", "server", &view, move |this, _, cx| {
+                    menu = menu.item(popup::item("Copy server path", None, &view, move |this, _, cx| {
                         this.copy_text(server.clone(), cx)
                     }));
                     if let Some(error) = error {
-                        menu = menu.item(popup::item("Copy error", "circle-alert", &view, move |this, _, cx| {
+                        menu = menu.item(popup::item("Copy error", None, &view, move |this, _, cx| {
                             this.copy_text(error.clone(), cx)
                         }));
                     }
                     if !active {
-                        menu = menu.separator().item(popup::item("Remove from list", "trash", &view, move |this, _, cx| {
+                        menu = menu.separator().item(popup::item("Remove from list", None, &view, move |this, _, cx| {
                             this.remove(id, cx)
                         }));
                     }

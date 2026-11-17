@@ -34,7 +34,18 @@
      pub fn build(
          window: &mut Window,
          cx: &mut App,
-@@ -1555,6 +1571,15 @@
+@@ -1272,7 +1288,9 @@
+             Icon::empty()
+         };
+
+-        Some(icon.xsmall())
++        // Komando: give menu icons a little more room. The placeholder and the
++        // visible glyphs share one width so labels stay aligned.
++        Some(icon.small())
+     }
+
+     /// Calculate the anchor corner and left offset for child submenu
+@@ -1555,6 +1573,15 @@
      fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
          self.update_submenu_menu_anchor(window, cx);
  

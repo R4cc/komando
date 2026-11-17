@@ -13,7 +13,6 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
-use gpui_component::Icon;
 use gpui_component::slider::{Slider, SliderEvent, SliderState};
 use gpui_component::tooltip::Tooltip;
 
@@ -27,6 +26,7 @@ use crate::model::Protocol;
 use crate::ui::connect_route::RouteCard;
 use crate::ui::desktop_view::DesktopView;
 use crate::ui::file_browser::{self, BrowserEvent, FavoriteStore, FileBrowser, MenuExtras};
+use crate::ui::popup::item as menu_item;
 use crate::ui::terminal_view::{TerminalEvent, TerminalView};
 use crate::ui::transfers::{Activity, Transfers, TransfersChanged};
 use crate::ui::widgets::{
@@ -3438,14 +3438,14 @@ impl Workspace {
         let collapsed = self.settings.collapsed_projects.contains(&id);
         move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
             let (a, b, c, d, e) = (id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
-            menu.item(menu_item("Add host…", "plus", &ws, move |this, window, cx| this.open_new_host(a.clone(), window, cx)))
-                .item(menu_item("Edit project…", "pencil", &ws, move |this, window, cx| this.open_edit_project(b.clone(), window, cx)))
-                .item(menu_item("Share project…", "share-2", &ws, move |this, window, cx| this.share_project(&e, window, cx)))
-                .item(menu_item(if collapsed { "Expand" } else { "Collapse" }, if collapsed { "chevron-down" } else { "chevron-right" }, &ws, move |this, _, cx| {
+            menu.item(menu_item("Add host…", Some("plus"), &ws, move |this, window, cx| this.open_new_host(a.clone(), window, cx)))
+                .item(menu_item("Edit project…", None, &ws, move |this, window, cx| this.open_edit_project(b.clone(), window, cx)))
+                .item(menu_item("Share project…", None, &ws, move |this, window, cx| this.share_project(&e, window, cx)))
+                .item(menu_item(if collapsed { "Expand" } else { "Collapse" }, None, &ws, move |this, _, cx| {
                     this.set_project_collapsed(&c, !collapsed, cx);
                 }))
                 .separator()
-                .item(menu_item("Delete project…", "trash", &ws, move |this, _, cx| this.confirm_delete_project(d.clone(), cx)))
+                .item(menu_item("Delete project…", Some("trash"), &ws, move |this, _, cx| this.confirm_delete_project(d.clone(), cx)))
         }
     }
 
@@ -3764,21 +3764,21 @@ impl Workspace {
             // the active Session and may belong to a different Host. Keep click handlers
             // bound to this menu's item regardless of the keyboard cursor's position.
             let mut menu = menu.action_context(sidebar_focus.clone()).item(
-                menu_item(new_label, "plus", &ws, move |this, window, cx| this.activate_item(another.clone(), true, window, cx))
+                menu_item(new_label, Some("plus"), &ws, move |this, window, cx| this.activate_item(another.clone(), true, window, cx))
                     .action(Box::new(nav::NavOpenAnother)),
             );
             if let Some(id) = files_session {
-                menu = menu.item(menu_item("Browse files", "folder-tree", &ws, move |this, window, cx| this.show_files(id, window, cx)));
+                menu = menu.item(menu_item("Browse files", Some("folder-open"), &ws, move |this, window, cx| this.show_files(id, window, cx)));
             }
             if can_split {
                 let split_key = menu_key.clone();
-                menu = menu.item(menu_item("Open in split view", "columns-2", &ws, move |this, window, cx| {
+                menu = menu.item(menu_item("Open in split view", None, &ws, move |this, window, cx| {
                     this.open_in_split(&split_key, None, Side::Right, window, cx)
                 }));
             }
             // A dropped Session still needs Connect, even with its retained output visible.
             if !open_live || !visible {
-                menu = menu.item(menu_item(if open_live { "Show session" } else { "Connect" }, "plug", &ws, move |this, window, cx| {
+                menu = menu.item(menu_item(if open_live { "Show session" } else { "Connect" }, None, &ws, move |this, window, cx| {
                     this.activate_item(open.clone(), false, window, cx)
                 }));
             }
@@ -3787,13 +3787,13 @@ impl Workspace {
                 menu = menu
                     .item(menu_item(
                         if expanded { "Collapse sessions" } else { "Expand sessions" },
-                        if expanded { "chevron-up" } else { "chevron-down" },
+                        None,
                         &ws,
                         move |this, _, cx| this.toggle_item_sessions(&fold, cx),
                     ))
                     .item(menu_item(
                         &if any_live { format!("Disconnect all {count}") } else { format!("Close all {count}") },
-                        if any_live { "unplug" } else { "x" },
+                        None,
                         &ws,
                         move |this, window, cx| this.end_item_sessions(&all, false, window, cx),
                     ));
@@ -3801,14 +3801,14 @@ impl Workspace {
             if let Some(id) = session_id {
                 let live = sessions_live;
                 menu = menu.item(
-                    menu_item("Rename session…", "text-cursor-input", &ws, move |this, window, cx| this.open_rename_session(id, window, cx))
+                    menu_item("Rename session…", None, &ws, move |this, window, cx| this.open_rename_session(id, window, cx))
                         .action(Box::new(nav::NavEdit)),
                 );
                 if live {
                     menu = live_session_items(menu, id, keep_sessions, &ws);
                 } else {
                     menu = menu.item(
-                        menu_item("Close session", "x", &ws, move |this, window, cx| this.end_session(id, EndRequest::CloseNow, window, cx))
+                        menu_item("Close session", None, &ws, move |this, window, cx| this.end_session(id, EndRequest::CloseNow, window, cx))
                             .action(Box::new(nav::NavDelete)),
                     );
                 }
@@ -3827,18 +3827,18 @@ impl Workspace {
                     // A Host that opens its desktop on a click offers its terminal here instead.
                     if !host.opens_with().is_ssh() {
                         let (pt, ht) = (project.id.clone(), host.id.clone());
-                        menu = menu.item(menu_item("Open terminal", "square-terminal", &ws, move |this, window, cx| {
+                        menu = menu.item(menu_item("Open terminal", None, &ws, move |this, window, cx| {
                             this.show_terminal_of(&pt, &ht, window, cx)
                         }));
                     }
                     for protocol in desktops {
                         let (pr, hr) = (project.id.clone(), host.id.clone());
                         menu = if host.desktop(protocol).is_some() {
-                            menu.item(menu_item(&format!("Open {}", protocol.label()), "monitor", &ws, move |this, window, cx| {
+                            menu.item(menu_item(format!("Open {}", protocol.label()), None, &ws, move |this, window, cx| {
                                 this.open_desktop(&pr, &hr, protocol, window, cx)
                             }))
                         } else {
-                            menu.item(menu_item(&format!("Set up {}…", protocol.label()), "monitor", &ws, move |this, window, cx| {
+                            menu.item(menu_item(format!("Set up {}…", protocol.label()), None, &ws, move |this, window, cx| {
                                 this.set_up_desktop(pr.clone(), hr.clone(), protocol, window, cx)
                             }))
                         };
@@ -3846,20 +3846,20 @@ impl Workspace {
                 }
                 menu = menu
                     .separator()
-                    .item(menu_item("Edit host…", "pencil", &ws, move |this, window, cx| this.open_edit_host(pa.clone(), ha.clone(), window, cx)))
-                    .item(menu_item("Duplicate host…", "copy-plus", &ws, move |this, window, cx| {
+                    .item(menu_item("Edit host…", None, &ws, move |this, window, cx| this.open_edit_host(pa.clone(), ha.clone(), window, cx)))
+                    .item(menu_item("Duplicate host…", None, &ws, move |this, window, cx| {
                         this.duplicate_host(pd.clone(), hd.clone(), window, cx)
                     }))
-                    .item(menu_item("Copy address", "copy", &ws, move |this, _, cx| this.copy_host_address(&pb, &hb, cx)));
+                    .item(menu_item("Copy address", None, &ws, move |this, _, cx| this.copy_host_address(&pb, &hb, cx)));
                 if history {
                     let hh = host.id.clone();
-                    menu = menu.item(menu_item("Command history…", command_history::ICON, &ws, move |this, window, cx| {
+                    menu = menu.item(menu_item("Command history…", None, &ws, move |this, window, cx| {
                         this.open_history(&hh, window, cx)
                     }));
                 }
                 menu = menu
                     .separator()
-                    .item(menu_item("Delete host…", "trash", &ws, move |this, _, cx| this.confirm_delete_host(hc.clone(), cx)));
+                    .item(menu_item("Delete host…", Some("trash"), &ws, move |this, _, cx| this.confirm_delete_host(hc.clone(), cx)));
             }
             // In an elevated window every Session is elevated already.
             // Windows only: elsewhere there is no administrator mode to start a shell in.
@@ -3868,7 +3868,7 @@ impl Workspace {
                 && !crate::elevate::is_elevated()
             {
                 let (project, name) = (project.as_ref().map(|p| p.id.clone()), shell.name.clone());
-                menu = menu.separator().item(menu_item("Run as administrator", "shield", &ws, move |this, window, cx| {
+                menu = menu.separator().item(menu_item("Run as administrator", None, &ws, move |this, window, cx| {
                     this.run_as_admin(project.clone(), name.clone(), window, cx)
                 }));
             }
@@ -4294,27 +4294,27 @@ impl Workspace {
         move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
             let mut menu = menu.action_context(sidebar_focus.clone());
             if files {
-                menu = menu.item(menu_item("Browse files", "folder-tree", &ws, move |this, window, cx| this.show_files(id, window, cx)));
+                menu = menu.item(menu_item("Browse files", Some("folder-open"), &ws, move |this, window, cx| this.show_files(id, window, cx)));
             }
             menu = menu.item(
-                menu_item("Rename session…", "text-cursor-input", &ws, move |this, window, cx| this.open_rename_session(id, window, cx))
+                menu_item("Rename session…", None, &ws, move |this, window, cx| this.open_rename_session(id, window, cx))
                     .action(Box::new(nav::NavEdit)),
             );
             menu = menu.separator();
             let mut menu = if dropped {
-                menu.item(menu_item("Reconnect", "refresh-cw", &ws, move |this, window, cx| {
+                menu.item(menu_item("Reconnect", Some("refresh-cw"), &ws, move |this, window, cx| {
                     this.activate(id, window, cx);
                     this.reconnect(id, window, cx);
                 }))
-                .item(menu_item("Close", "x", &ws, move |this, window, cx| this.end_session(id, EndRequest::CloseNow, window, cx)).action(Box::new(nav::NavDelete)))
+                .item(menu_item("Close", None, &ws, move |this, window, cx| this.end_session(id, EndRequest::CloseNow, window, cx)).action(Box::new(nav::NavDelete)))
             } else {
                 live_session_items(menu, id, keep, &ws)
             };
             if desktop.is_some() {
                 menu = menu.separator().item(if own_window {
-                    menu_item("Show its window", "app-window", &ws, move |this, window, cx| this.activate(id, window, cx))
+                    menu_item("Show its window", None, &ws, move |this, window, cx| this.activate(id, window, cx))
                 } else {
-                    menu_item("Open in its own window", "app-window", &ws, move |this, window, cx| {
+                    menu_item("Open in its own window", None, &ws, move |this, window, cx| {
                         this.detach_desktop(id, None, window, cx)
                     })
                 });
@@ -5345,12 +5345,12 @@ fn form_field(label: &str, hint: Option<&str>, control: AnyElement, p: AppPalett
 /// the Session, or with `keep` (a terminal, "Keep sessions after disconnecting" on) only
 /// disconnects it, so then there is no separate Close.
 fn live_session_items(menu: PopupMenu, id: usize, keep: bool, ws: &gpui::WeakEntity<Workspace>) -> PopupMenu {
-    let disconnect = menu_item("Disconnect", "unplug", ws, move |this, window, cx| this.end_session(id, EndRequest::Disconnect, window, cx));
+    let disconnect = menu_item("Disconnect", Some("unplug"), ws, move |this, window, cx| this.end_session(id, EndRequest::Disconnect, window, cx));
     if keep {
         return menu.item(disconnect.action(Box::new(nav::NavDelete)));
     }
     menu.item(disconnect)
-        .item(menu_item("Close session", "x", ws, move |this, window, cx| this.end_session(id, EndRequest::Close, window, cx)).action(Box::new(nav::NavDelete)))
+        .item(menu_item("Close session", None, ws, move |this, window, cx| this.end_session(id, EndRequest::Close, window, cx)).action(Box::new(nav::NavDelete)))
 }
 
 /// The rows of `old` that differ from `new`, past their shared start and end, and how many
@@ -5434,19 +5434,6 @@ fn window_controls(p: AppPalette, window: &Window) -> impl IntoElement {
             button("window-maximize", "window-maximize", WindowControlArea::Max, "Maximize")
         })
         .child(button("window-close", "window-close", WindowControlArea::Close, "Close"))
-}
-
-/// A context-menu entry that runs `run` on the Workspace.
-fn menu_item(
-    label: &str,
-    icon: &str,
-    ws: &gpui::WeakEntity<Workspace>,
-    run: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
-) -> PopupMenuItem {
-    let ws = ws.clone();
-    PopupMenuItem::new(label.to_string()).icon(Icon::empty().path(format!("icons/{icon}.svg"))).on_click(move |_, window, cx| {
-        let _ = ws.update(cx, |this, cx| run(this, window, cx));
-    })
 }
 
 /// Marks a window running with administrator rights, where every shell is elevated. Amber,

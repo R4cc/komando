@@ -51,17 +51,21 @@ impl Popup {
     }
 }
 
-/// A menu entry that runs `run` on a view.
+/// A menu entry that runs `run` on a view. Give familiar actions an icon when it
+/// helps them stand out among the surrounding labels.
 pub fn item<V: 'static>(
     label: impl Into<String>,
-    icon: &str,
+    icon: Option<&str>,
     view: &WeakEntity<V>,
     run: impl Fn(&mut V, &mut Window, &mut Context<V>) + 'static,
 ) -> PopupMenuItem {
     let view = view.clone();
-    PopupMenuItem::new(label.into()).icon(Icon::empty().path(format!("icons/{icon}.svg"))).on_click(
-        move |_, window, cx: &mut App| {
-            let _ = view.update(cx, |this, cx| run(this, window, cx));
-        },
-    )
+    let item = PopupMenuItem::new(label.into());
+    let item = match icon {
+        Some(icon) => item.icon(Icon::empty().path(format!("icons/{icon}.svg"))),
+        None => item,
+    };
+    item.on_click(move |_, window, cx: &mut App| {
+        let _ = view.update(cx, |this, cx| run(this, window, cx));
+    })
 }
