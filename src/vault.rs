@@ -131,14 +131,12 @@ impl Vault {
 
     fn decrypt(path: PathBuf, file: VaultFile, salt: [u8; 16], key: Zeroizing<[u8; 32]>) -> Result<Self> {
         let nonce = B64.decode(&file.nonce)?;
-        if nonce.len() != 24 {
-            bail!("the vault file is damaged (nonce)");
-        }
+        let nonce = XNonce::try_from(nonce.as_slice()).map_err(|_| anyhow!("the vault file is damaged (nonce)"))?;
         let ciphertext = B64.decode(&file.ciphertext)?;
-        let cipher = XChaCha20Poly1305::new(key.as_ref().into());
+        let cipher = XChaCha20Poly1305::new(&(*key).into());
         let plaintext = Zeroizing::new(
             cipher
-                .decrypt(XNonce::from_slice(&nonce), ciphertext.as_ref())
+                .decrypt(&nonce, ciphertext.as_ref())
                 .map_err(|_| anyhow!("Wrong master password."))?,
         );
         let contents: Contents = serde_json::from_slice(&plaintext).context("the vault contents are damaged")?;
@@ -149,9 +147,9 @@ impl Vault {
         let mut nonce = [0u8; 24];
         rand::thread_rng().fill_bytes(&mut nonce);
         let plaintext = Zeroizing::new(serde_json::to_vec(&self.contents)?);
-        let cipher = XChaCha20Poly1305::new(self.key.as_ref().into());
+        let cipher = XChaCha20Poly1305::new(&(*self.key).into());
         let ciphertext = cipher
-            .encrypt(XNonce::from_slice(&nonce), plaintext.as_ref())
+            .encrypt(&XNonce::from(nonce), plaintext.as_ref())
             .map_err(|_| anyhow!("encryption failed"))?;
         let file = VaultFile {
             version: 1,
