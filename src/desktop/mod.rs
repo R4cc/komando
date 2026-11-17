@@ -240,6 +240,8 @@ pub struct Target {
     pub shared: bool,
     /// Picture detail traded for speed: colors (VNC), visual effects (RDP).
     pub quality: Quality,
+    /// Share text through the clipboard, both ways (see `Input::ShareClipboard`).
+    pub clipboard: bool,
     /// Where trusted RDP certificates are kept.
     pub certificates: PathBuf,
 }
@@ -275,6 +277,10 @@ pub enum Input {
     CtrlAltDel,
     /// Let go of every key and button held: the view lost the keyboard.
     ReleaseAll,
+    /// This PC's clipboard holds this text: offer it to the desktop, to paste there.
+    Clipboard(String),
+    /// Share the clipboard from now on, or stop. Stopping withdraws what was offered.
+    ShareClipboard(bool),
     Close,
 }
 
@@ -296,6 +302,9 @@ pub enum DesktopEvent {
         user: Option<String>,
         password: Zeroizing<String>,
     },
+    /// Text was copied on the desktop: put it on this PC's clipboard. Its line breaks are
+    /// already this PC's (see `for_this_pc`).
+    Clipboard(String),
 }
 
 pub enum DesktopPrompt {
@@ -413,6 +422,22 @@ pub fn spawn(target: Target) -> Connection {
     Connection { input: input_tx, events: events_rx, picture, pending, _cancel: cancel }
 }
 
+/// Text with Windows' line breaks (CRLF), as RDP's clipboard expects.
+pub(crate) fn with_crlf(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\n', "\r\n")
+}
+
+/// Text with Unix line breaks (LF), as VNC's clipboard is defined.
+pub(crate) fn with_lf(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+/// Text from a desktop's clipboard with this PC's line breaks, so it pastes as text copied
+/// here does.
+pub(crate) fn for_this_pc(text: &str) -> String {
+    if cfg!(windows) { with_crlf(text) } else { with_lf(text) }
+}
+
 /// "DOMAIN\user" as a domain and a user. A user with no backslash keeps the domain given.
 fn split_domain(user: &str, domain: Option<&str>) -> (String, Option<String>) {
     match user.split_once('\\') {
@@ -474,6 +499,7 @@ mod tests {
             scale_percent: 100,
             shared: true,
             quality: Quality::High,
+            clipboard: true,
             certificates: std::env::temp_dir().join(format!("komando-test-{}", crate::model::new_id())),
         }
     }
@@ -505,6 +531,107 @@ mod tests {
         }
     }
 
+    /// Accept a viewer on a loopback RFB server and take it through sign-in to a 2×1 desktop.
+    async fn rfb_accept(listener: &tokio::net::TcpListener, password_auth: bool) -> tokio::net::TcpStream {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let (mut socket, _) = listener.accept().await.unwrap();
+        socket.write_all(b"RFB 003.008\n").await.unwrap();
+        let mut version = [0; 12];
+        socket.read_exact(&mut version).await.unwrap();
+        assert_eq!(&version, b"RFB 003.008\n");
+        let security = if password_auth { 2 } else { 1 };
+        socket.write_all(&[1, security]).await.unwrap();
+        assert_eq!(socket.read_u8().await.unwrap(), security);
+        if password_auth {
+            socket.write_all(&[0x42; 16]).await.unwrap();
+            let mut response = [0; 16];
+            socket.read_exact(&mut response).await.unwrap();
+            assert_ne!(response, [0; 16]);
+        }
+        socket.write_all(&[0; 4]).await.unwrap();
+        assert_eq!(socket.read_u8().await.unwrap(), 1, "the viewer shares the desktop");
+        // ServerInit: 2×1 screen, 32-bit true colour, and the desktop name.
+        socket.write_all(&[0, 2, 0, 1, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]).await.unwrap();
+        socket.write_all(&4u32.to_be_bytes()).await.unwrap();
+        socket.write_all(b"test").await.unwrap();
+        socket
+    }
+
+    /// The server's next ClientCutText, skipping the viewer's setup and update requests.
+    async fn rfb_next_cut_text(socket: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt as _;
+
+        loop {
+            match socket.read_u8().await.unwrap() {
+                0 => drop(socket.read_exact(&mut [0; 19]).await.unwrap()),
+                2 => {
+                    socket.read_u8().await.unwrap();
+                    let count = socket.read_u16().await.unwrap();
+                    socket.read_exact(&mut vec![0; usize::from(count) * 4]).await.unwrap();
+                }
+                3 => drop(socket.read_exact(&mut [0; 9]).await.unwrap()),
+                6 => {
+                    socket.read_exact(&mut [0; 3]).await.unwrap();
+                    let length = socket.read_u32().await.unwrap();
+                    let mut text = vec![0; length as usize];
+                    socket.read_exact(&mut text).await.unwrap();
+                    return String::from_utf8(text).unwrap();
+                }
+                other => panic!("unexpected RFB message {other}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn vnc_shares_clipboard_text_both_ways_until_sharing_stops() {
+        use futures::StreamExt as _;
+        use tokio::io::AsyncWriteExt as _;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut target = target(Protocol::Vnc, listener.local_addr().unwrap().port());
+        target.password = None;
+        let server = tokio::spawn(async move {
+            let mut socket = rfb_accept(&listener, false).await;
+            // This PC's text arrives with VNC's line breaks.
+            assert_eq!(rfb_next_cut_text(&mut socket).await, "local\ntext");
+            // ServerCutText: the desktop copied.
+            let copied = b"remote\ntext";
+            socket.write_all(&[3, 0, 0, 0]).await.unwrap();
+            socket.write_all(&(copied.len() as u32).to_be_bytes()).await.unwrap();
+            socket.write_all(copied).await.unwrap();
+            // Sharing stopped: the next offer never comes, only the one after it is back on.
+            assert_eq!(rfb_next_cut_text(&mut socket).await, "again");
+        });
+        let mut connection = spawn(target);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match connection.events.next().await.expect("desktop event") {
+                    DesktopEvent::Status(Status::Connected) => connection.send(Input::Clipboard("local\r\ntext".into())),
+                    DesktopEvent::Clipboard(text) => {
+                        assert_eq!(text, for_this_pc("remote\ntext"));
+                        break;
+                    }
+                    DesktopEvent::Status(Status::Disconnected(reason)) => panic!("connection ended: {reason}"),
+                    _ => {}
+                }
+            }
+            connection.send(Input::ShareClipboard(false));
+            connection.send(Input::Clipboard("not shared".into()));
+            connection.send(Input::ShareClipboard(true));
+            connection.send(Input::Clipboard("again".into()));
+            server.await.unwrap();
+        })
+        .await
+        .expect("clipboard round trip");
+    }
+
+    #[test]
+    fn line_breaks_follow_each_side() {
+        assert_eq!(with_crlf("a\nb\r\nc"), "a\r\nb\r\nc");
+        assert_eq!(with_lf("a\r\nb\nc"), "a\nb\nc");
+    }
+
     /// A loopback RFB server exercises the real adapter, not just the framebuffer helpers.
     async fn vnc_round_trip(password_auth: bool) {
         use futures::StreamExt as _;
@@ -514,26 +641,7 @@ mod tests {
         let mut target = target(Protocol::Vnc, listener.local_addr().unwrap().port());
         target.password = None;
         let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            socket.write_all(b"RFB 003.008\n").await.unwrap();
-            let mut version = [0; 12];
-            socket.read_exact(&mut version).await.unwrap();
-            assert_eq!(&version, b"RFB 003.008\n");
-            let security = if password_auth { 2 } else { 1 };
-            socket.write_all(&[1, security]).await.unwrap();
-            assert_eq!(socket.read_u8().await.unwrap(), security);
-            if password_auth {
-                socket.write_all(&[0x42; 16]).await.unwrap();
-                let mut response = [0; 16];
-                socket.read_exact(&mut response).await.unwrap();
-                assert_ne!(response, [0; 16]);
-            }
-            socket.write_all(&[0; 4]).await.unwrap();
-            assert_eq!(socket.read_u8().await.unwrap(), 1, "the viewer shares the desktop");
-            // ServerInit: 2×1 screen, 32-bit true colour, and the desktop name.
-            socket.write_all(&[0, 2, 0, 1, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]).await.unwrap();
-            socket.write_all(&4u32.to_be_bytes()).await.unwrap();
-            socket.write_all(b"test").await.unwrap();
+            let mut socket = rfb_accept(&listener, password_auth).await;
             let mut sent = false;
             loop {
                 match socket.read_u8().await.unwrap() {

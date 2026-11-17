@@ -52,6 +52,7 @@ mod settings;
 mod split;
 mod updates;
 mod vault_page;
+mod window_frame;
 pub use settings::SettingsSection;
 use desktops::desktop_protocol;
 use nav::NavTarget;
@@ -809,9 +810,8 @@ impl Workspace {
             window.set_background_appearance(gpui::WindowBackgroundAppearance::Opaque);
         }
         let opaque = AppPalette::from_theme(self.theme_for(app_dark));
-        crate::platform::set_window_frame_colors(
+        crate::platform::style_native_frame(
             window,
-            crate::theme::packed(opaque.border),
             (!backdrop_enabled).then(|| crate::theme::packed(opaque.canvas)),
         );
         backdrop_enabled
@@ -4601,15 +4601,13 @@ impl Workspace {
     }
 
     /// One Session's terminal, with its file browser when open. In a split, a press anywhere
-    /// in it makes it the active one, and the other's Project colour edge fades.
+    /// in the pane activates it.
     fn render_pane(&self, id: usize, in_split: bool, p: AppPalette, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = self.sessions.get(id)?;
         if entry.own_window() {
             return Some(self.render_in_own_window(id, p, cx));
         }
         let focused = self.sessions.active() == Some(id);
-        let project = entry.project_id().and_then(|id| self.library.project(id));
-        let color = project.map(|pr| project_color(&pr.color)).unwrap_or(p.brand);
         let term_bg = cx.global::<Appearance>().term.background_hsla();
         let browser = entry.ui.browser.clone().filter(|_| entry.ui.sftp_open);
         // The browser keeps at least 300px for the terminal when the pane is narrow.
@@ -4685,17 +4683,6 @@ impl Workspace {
                         ),
                     )
                 })
-                // Project colour accent: you always see which Project you are typing into. It is
-                // the top edge of the island itself, so it follows the rounded corners and tapers
-                // off down their curve. In a split, the pane you are not typing in has it faded.
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .rounded(p.corner(ISLAND_RADIUS))
-                        .border_t_2()
-                        .border_color(if focused { color } else { color.opacity(0.3) }),
-                )
                 .into_any_element(),
         )
     }
@@ -5735,6 +5722,7 @@ impl Render for Workspace {
             .children(self.main_menu.render())
             .children(self.forwards_menu.render())
             .children(toast)
+            .children(window_frame::render(p, window, cx))
             .into_any_element()
     }
 }

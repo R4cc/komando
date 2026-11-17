@@ -10,6 +10,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Added
 
+- RDP and VNC desktops share plain text with this computer's clipboard. Turn it off for
+  a desktop from its toolbar under Keys → Share text with this PC. View only pauses
+  clipboard sharing.
 - Port forwarding. A host or project form's new Port forwards page sets Local forwards (a port
   on this computer reaches an address from the server's side), Remote forwards (a port on the
   server reaches an address from this computer's side) and SOCKS proxies. They open while the
@@ -32,6 +35,8 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- A thin silver frame with a soft glow surrounds the window and adapts to the app theme,
+  replacing the project-colored stripe above sessions.
 - While an SSH session connects and for its first five seconds, the connection bars play a
   searching animation instead of showing a reading. Quick checks during that time settle on
   the connection's real latency, so the bars no longer start low and creep up over the

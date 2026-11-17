@@ -122,14 +122,17 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 - **Inside Komando.** A desktop opens as a session under its host, with keyboard and mouse
   input, scaling to fit, and reconnect. Choose what a click on the host opens, including a
   desktop for Windows hosts without SSH.
+- **Shared clipboard.** Copy and paste plain text between this PC and an RDP or VNC desktop.
+  The desktop toolbar's Share text with this PC option switches it off for that desktop.
+  View only pauses sharing. VNC servers may differ in how they handle non-ASCII text.
 - **Direct or through SSH.** A tunnel on the host's SSH session reaches the desktop port on
   that same machine. VNC defaults to this route because classic VNC leaves screen traffic
   unencrypted. Connect the SSH session first; a waiting desktop then connects automatically.
 - **RDP certificate checks** happen before credentials are sent. New or changed certificates
   ask for trust. Settings → Remote desktop controls RDP resizing, VNC sharing and remembered
   certificates. RDP supports TLS and NLA with NTLM; VNC supports no authentication and classic
-  VNC passwords. Clipboard, audio and drive redirection, RD Gateway, Kerberos and VNC
-  TLS/VeNCrypt are outside this first version. Project sharing covers SSH; the experimental
+  VNC passwords. Audio and drive redirection, RD Gateway, Kerberos and VNC TLS/VeNCrypt
+  are outside the current scope. Project sharing covers SSH. The experimental
   MobaXterm import also supports direct RDP and VNC sessions.
 
 ### Files over SFTP

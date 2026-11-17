@@ -35,9 +35,12 @@ sha2 = "0.11"
 ureq = { version = "2", default-features = false, features = ["tls", "proxy-from-env"] }
 serde-saphyr = { version = "2.1", default-features = false, features = ["deserialize"] }
 # Remote desktops (see docs/adr/0012-remote-desktops-are-sessions-of-a-host.md): RDP through
-# IronRDP, VNC through vnc-rs, both drawn by Komando. Only what a plain desktop needs: no audio,
-# drive or clipboard redirection, and ring rather than aws-lc (no CMake or NASM to build).
+# IronRDP, VNC through vnc-rs, both drawn by Komando. Only what a plain desktop needs: text on
+# the clipboard but no audio or drive redirection, and ring rather than aws-lc (no CMake or
+# NASM to build).
 ironrdp-connector = "0.12"
+ironrdp-cliprdr = "0.9"
+ironrdp-svc = "0.10"
 ironrdp-session = "0.13"
 ironrdp-core = "0.3"
 ironrdp-pdu = "0.11"

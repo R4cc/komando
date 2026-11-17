@@ -13,7 +13,7 @@ use futures::channel::mpsc::UnboundedSender;
 use futures::channel::oneshot;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AnyWindowHandle, App, Bounds, Context, Corners, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyDownEvent, KeyUpEvent,
+    AnyElement, AnyWindowHandle, App, Bounds, ClipboardItem, Context, Corners, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyDownEvent, KeyUpEvent,
     Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage, ScrollDelta,
     ScrollEvent, SharedString, Subscription, Task, Window, actions, canvas, div, point, prelude::*, px, size,
 };
@@ -140,6 +140,9 @@ pub struct DesktopView {
     _captured: Option<Task<()>>,
     /// In full screen: the toolbar is out.
     toolbar_out: bool,
+    /// The text last passed through the clipboard, either way, with this PC's line breaks:
+    /// what is already on both sides isn't sent again, nor sent back where it came from.
+    clipboard_seen: Option<String>,
     _window_subscriptions: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
@@ -187,6 +190,7 @@ impl DesktopView {
             capture: None,
             _captured: None,
             toolbar_out: false,
+            clipboard_seen: None,
             _window_subscriptions: vec![],
             _subscriptions: vec![],
         };
@@ -204,6 +208,15 @@ impl DesktopView {
             this.release_all();
             this.refresh_capture(window, cx);
         });
+        // Text copied here since the desktop last had the keyboard goes to it now, so it is
+        // there to paste. There is no notice of a copy on this PC: it can only have happened
+        // while the keyboard was elsewhere.
+        let focused = cx.on_focus(&self.focus, window, |this, _, cx| this.offer_clipboard(cx));
+        let activated = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() && this.focus.is_focused(window) {
+                this.offer_clipboard(cx);
+            }
+        });
         let release = cx.on_release_in(window, |this, window, _| {
             for image in this.image.take().into_iter().chain(this.blurred.take()).chain(this.stale.drain(..)) {
                 let _ = window.drop_image(image);
@@ -212,7 +225,7 @@ impl DesktopView {
                 capture::stop(&sender);
             }
         });
-        self._window_subscriptions = vec![blur, release];
+        self._window_subscriptions = vec![blur, focused, activated, release];
         // A resize waiting to settle was measured in the other window.
         self.resize = None;
         if let Some(prompt) = self.pending_prompt.take() {
@@ -264,6 +277,8 @@ impl DesktopView {
         self.image_current = false;
         self.requested = Some(target.size);
         self.status = Status::Connecting;
+        // A new session has nothing on offer yet.
+        self.clipboard_seen = None;
         let mut connection = desktop::spawn(target);
         let mut events = std::mem::replace(&mut connection.events, futures::channel::mpsc::unbounded().1);
         self.connection = Some(connection);
@@ -360,6 +375,15 @@ impl DesktopView {
         }
         if self.options.view_only && !before.view_only {
             self.release_all();
+        }
+        let sharing = self.options.shares_clipboard();
+        if sharing != before.shares_clipboard() {
+            self.send(DesktopInput::ShareClipboard(sharing));
+            // Turned back on: what is on this PC's clipboard now is offered.
+            self.clipboard_seen = None;
+            if sharing {
+                self.offer_clipboard(cx);
+            }
         }
         if let Some(fit) = self.options.match_window.filter(|_| self.options.match_window != before.match_window) {
             self.fit_desktop = fit;
@@ -466,6 +490,36 @@ impl DesktopView {
         self.send(DesktopInput::ReleaseAll);
     }
 
+    /// Offer the text on this PC's clipboard to the desktop, unless it is already there.
+    /// View only sends nothing to the desktop, the clipboard included.
+    fn offer_clipboard(&mut self, cx: &mut Context<Self>) {
+        if !self.options.shares_clipboard() || !self.accepts_input() {
+            return;
+        }
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()).filter(|text| !text.is_empty()) else { return };
+        if self.clipboard_seen.as_ref() == Some(&text) {
+            return;
+        }
+        self.send(DesktopInput::Clipboard(text.clone()));
+        self.clipboard_seen = Some(text);
+    }
+
+    /// Text copied on the desktop: onto this PC's clipboard.
+    fn take_clipboard(&mut self, text: String, cx: &mut Context<Self>) {
+        if !self.options.shares_clipboard() || text.is_empty() {
+            return;
+        }
+        // The PC's clipboard can change while the desktop is unfocused, even if it just
+        // sent the same text as last time.
+        if self.clipboard_seen.as_ref() == Some(&text)
+            && cx.read_from_clipboard().and_then(|item| item.text()).as_ref() == Some(&text)
+        {
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        self.clipboard_seen = Some(text);
+    }
+
     fn on_event(&mut self, event: DesktopEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             DesktopEvent::Status(status) => {
@@ -473,9 +527,16 @@ impl DesktopView {
                     self.prompt = None;
                     self.connection = None;
                 }
+                let connected = matches!(status, Status::Connected) && !self.is_connected();
                 self.status = status;
+                // Connected with the keyboard already in the pane: its focus came too early
+                // to offer anything.
+                if connected && self.focus.is_focused(window) {
+                    self.offer_clipboard(cx);
+                }
                 cx.emit(DesktopViewEvent::Changed);
             }
+            DesktopEvent::Clipboard(text) => self.take_clipboard(text, cx),
             DesktopEvent::Picture => {}
             DesktopEvent::Prompt(prompt) => self.show_prompt(prompt, window, cx),
             DesktopEvent::Remember { user, password } => cx.emit(DesktopViewEvent::Remember { user, password }),
@@ -501,6 +562,8 @@ impl DesktopView {
             }
             DesktopEvent::Picture => cx.notify(),
             DesktopEvent::Remember { user, password } => cx.emit(DesktopViewEvent::Remember { user, password }),
+            // The clipboard is the computer's, not a window's: it still applies.
+            DesktopEvent::Clipboard(text) => self.take_clipboard(text, cx),
         }
     }
 

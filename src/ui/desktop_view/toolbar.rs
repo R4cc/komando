@@ -166,7 +166,11 @@ impl DesktopView {
                                 .on_click(set(&view, |o| o.send_volume_keys = !o.send_volume_keys)),
                         );
                 }
-                menu
+                menu.separator().label("Clipboard").item(
+                    PopupMenuItem::new("Share text with this PC")
+                        .checked(options.share_clipboard)
+                        .on_click(set(&view, |o| o.share_clipboard = !o.share_clipboard)),
+                )
             }
         };
 

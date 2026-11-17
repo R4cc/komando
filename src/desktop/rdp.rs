@@ -1,9 +1,11 @@
 //! RDP through IronRDP: TLS with the certificate checked like a Host Key, then Network Level
 //! Authentication (CredSSP with NTLM) or, for servers without it, TLS sign-in.
 //!
-//! Komando advertises only what a plain desktop needs: the display, keyboard and mouse, and
-//! the Display Control channel to follow the pane's size. No sound, drives, printers or
-//! clipboard are redirected.
+//! Komando advertises only what a plain desktop needs: the display, keyboard and mouse, the
+//! Display Control channel to follow the pane's size, and the clipboard for text (see
+//! `clipboard`). No sound, drives, printers or files are redirected.
+
+mod clipboard;
 
 use anyhow::{Result, anyhow};
 use ironrdp_connector::connection_activation::ConnectionActivationState;
@@ -22,13 +24,15 @@ use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
 use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput};
+use ironrdp_cliprdr::CliprdrClient;
+use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_tokio::{FramedWrite as _, TokioFramed, single_sequence_step_read, split_tokio_framed};
 use zeroize::Zeroizing;
 
 use super::keys::{self, Key};
 use super::trust::{self, Known};
-use super::{Button, Input, Link, Picture, Quality, Status, Stream, Target, split_domain};
+use super::{Button, DesktopEvent, Input, Link, Picture, Quality, Status, Stream, Target, split_domain};
+use clipboard::Clipboard;
 
 type Framed = TokioFramed<Stream>;
 
@@ -51,12 +55,12 @@ pub(super) async fn run(target: Target, link: &mut Link) -> Result<String> {
         }
         let (Some(name), Some(secret)) = (user.clone(), password.clone()) else { continue };
         match connect(&target, link, &name, &secret).await {
-            Ok((framed, result)) => {
+            Ok((framed, result, clipboard)) => {
                 if remember {
-                    link.send(super::DesktopEvent::Remember { user: Some(name), password: secret });
+                    link.send(DesktopEvent::Remember { user: Some(name), password: secret });
                 }
                 link.status(Status::Connected);
-                return active(framed, result, link).await;
+                return active(framed, result, clipboard, link).await;
             }
             Err(Failure::SignIn(message)) => error = Some(message),
             Err(Failure::Other(err)) => return Err(err),
@@ -77,13 +81,20 @@ impl From<anyhow::Error> for Failure {
     }
 }
 
-async fn connect(target: &Target, link: &Link, user: &str, password: &Zeroizing<String>) -> Result<(Framed, ConnectionResult), Failure> {
+async fn connect(
+    target: &Target,
+    link: &Link,
+    user: &str,
+    password: &Zeroizing<String>,
+) -> Result<(Framed, ConnectionResult, Clipboard), Failure> {
     let stream = target.route.open().await?;
     let mut framed = Framed::new(stream);
     let (username, domain) = split_domain(user, target.domain.as_deref());
     let config = config(target, username, password.to_string(), domain);
     let channels = DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
-    let mut connector = ClientConnector::new(config, target.route.local_address()).with_static_channel(channels);
+    let (cliprdr, clipboard) = Clipboard::new(target.clipboard);
+    let mut connector =
+        ClientConnector::new(config, target.route.local_address()).with_static_channel(channels).with_static_channel(cliprdr);
 
     let should_upgrade = within(ironrdp_tokio::connect_begin(&mut framed, &mut connector)).await?.map_err(failure)?;
     let (stream, leftover) = framed.into_inner();
@@ -111,7 +122,7 @@ async fn connect(target: &Target, link: &Link, user: &str, password: &Zeroizing<
     .map_err(failure)?
     .into_connected()
     .map_err(|_| anyhow!("The server redirected the connection to another server, which Komando doesn't follow."))?;
-    Ok((framed, result))
+    Ok((framed, result, clipboard))
 }
 
 /// How long one step of reaching the desktop (before or after the certificate question) may
@@ -263,7 +274,7 @@ impl ironrdp_tokio::NetworkClient for NoKerberos {
 }
 
 /// The connected desktop: frames in, input out, until either side ends it.
-async fn active(framed: Framed, result: ConnectionResult, link: &mut Link) -> Result<String> {
+async fn active(framed: Framed, result: ConnectionResult, mut clipboard: Clipboard, link: &mut Link) -> Result<String> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
     super::check_size(result.desktop_size.width.into(), result.desktop_size.height.into())?;
     let mut image = DecodedImage::new(PixelFormat::BgrA32, result.desktop_size.width, result.desktop_size.height);
@@ -298,7 +309,11 @@ async fn active(framed: Framed, result: ConnectionResult, link: &mut Link) -> Re
                     Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return Ok("The server closed the connection.".into()),
                     Err(err) => return Ok(format!("The connection ended: {err}")),
                 };
-                stage.process(&mut image, action, &payload, reader.last_read_at()).map_err(|e| anyhow!("{e}"))?
+                let mut outputs = stage.process(&mut image, action, &payload, reader.last_read_at()).map_err(|e| anyhow!("{e}"))?;
+                // What the clipboard channel noted meanwhile is answered after the server's
+                // own replies, so a paste request follows the format list's acknowledgement.
+                outputs.extend(on_clipboard(&mut stage, |c| clipboard.drain(c, |text| link.send(DesktopEvent::Clipboard(text)))));
+                outputs
             }
             event = link.input.recv() => match event {
                 None => return Ok("Session closed.".into()),
@@ -309,6 +324,8 @@ async fn active(framed: Framed, result: ConnectionResult, link: &mut Link) -> Re
                     deadline = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(2));
                     stage.graceful_shutdown().map_err(|e| anyhow!("{e}"))?
                 }
+                Some(Input::Clipboard(text)) => on_clipboard(&mut stage, |c| clipboard.offer(c, text)),
+                Some(Input::ShareClipboard(on)) => on_clipboard(&mut stage, |c| clipboard.share(c, on)),
                 Some(Input::ReleaseAll) => {
                     let events = input.release_all();
                     stage.process_fastpath_input(&mut image, &events).map_err(|e| anyhow!("{e}"))?
@@ -386,6 +403,23 @@ async fn active(framed: Framed, result: ConnectionResult, link: &mut Link) -> Re
     }
 }
 
+/// Run a step on the connection's clipboard channel, and what it sends as a frame to write.
+fn on_clipboard(stage: &mut ActiveStage, step: impl FnOnce(&mut CliprdrClient) -> Vec<ironrdp_svc::SvcMessage>) -> Vec<ActiveStageOutput> {
+    let Some(channel) = stage.get_svc_processor_mut::<CliprdrClient>() else { return vec![] };
+    let messages = step(channel);
+    if messages.is_empty() {
+        return vec![];
+    }
+    match stage.process_svc_processor_messages(ironrdp_svc::SvcProcessorMessages::<CliprdrClient>::new(messages)) {
+        Ok(frame) => vec![ActiveStageOutput::ResponseFrame(frame)],
+        // The clipboard is a convenience: a failure there doesn't end the desktop.
+        Err(err) => {
+            log::warn!("remote desktop clipboard: {err}");
+            vec![]
+        }
+    }
+}
+
 /// Copy what the server redrew into the shared picture.
 fn copy_rect(picture: &mut Picture, image: &DecodedImage, rect: &InclusiveRectangle) -> Result<()> {
     let (width, height) = (u32::from(image.width()), u32::from(image.height()));
@@ -432,6 +466,6 @@ fn operations(event: Input) -> Vec<Operation> {
             keys.iter().map(|k| Operation::KeyPressed(*k)).chain(keys.iter().rev().map(|k| Operation::KeyReleased(*k))).collect()
         }
         // Handled by the caller.
-        Input::ReleaseAll | Input::Resize { .. } | Input::Close => vec![],
+        Input::ReleaseAll | Input::Resize { .. } | Input::Clipboard(_) | Input::ShareClipboard(_) | Input::Close => vec![],
     }
 }

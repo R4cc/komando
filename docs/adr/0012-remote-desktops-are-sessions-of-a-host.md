@@ -41,6 +41,8 @@ testing the protocol adapters and maintaining their dependencies.
   multi-monitor sessions. Project files and the Tabby import remain SSH-only. The experimental
   MobaXterm import also supports direct RDP and VNC sessions (ADR 0011); desktop SSH gateways
   cannot be represented by the tunnel to the Host itself and are left out explicitly.
+- Komando now shares plain text through the RDP or VNC clipboard. The toolbar saves the
+  sharing preference per desktop, and View only pauses it.
 - Protocol work runs outside the UI thread. Picture notifications coalesce while rectangles
   are applied in order; replaced images are released from GPUI's atlas. Dropping a connection
   cancels handshakes and prompts as well as active sessions.

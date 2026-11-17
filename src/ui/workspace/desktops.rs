@@ -187,6 +187,7 @@ impl Workspace {
             scale_percent,
             shared: self.settings.vnc_shared,
             quality: remote.viewer.quality,
+            clipboard: remote.viewer.shares_clipboard(),
             certificates: self.data_dir.join(desktop::trust::FILE),
         };
         let fit = remote.viewer.match_window.unwrap_or(self.settings.rdp_fit_desktop);

@@ -10,7 +10,7 @@ use gpui::{
 };
 
 use super::sessions::EndRequest;
-use super::{SessionView, TITLE_BAR_HEIGHT, TRAFFIC_LIGHT_POSITION, TRAFFIC_LIGHTS_WIDTH, Workspace, strip_action, window_controls};
+use super::{SessionView, TITLE_BAR_HEIGHT, TRAFFIC_LIGHT_POSITION, TRAFFIC_LIGHTS_WIDTH, Workspace, strip_action, window_controls, window_frame};
 use crate::session::Status;
 use crate::theme::Appearance;
 use crate::ui::desktop_view::DesktopView;
@@ -139,6 +139,7 @@ impl Render for DesktopWindow {
         div()
             .id("desktop-window")
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .font_family(p.font_family)
@@ -153,6 +154,7 @@ impl Render for DesktopWindow {
                     ),
                 )
             })
+            .children(window_frame::render(p, window, cx))
     }
 }
 

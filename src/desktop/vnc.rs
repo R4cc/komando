@@ -3,6 +3,10 @@
 //!
 //! Classic VNC encrypts nothing after the password exchange, so a Host's VNC desktop is best
 //! reached through its SSH Session (`Desktop::through_ssh`); the form says so.
+//!
+//! The clipboard is VNC's cut text: plain text both ways, with LF line breaks. The protocol
+//! defines it as Latin-1; vnc-rs sends and reads UTF-8, which servers that follow the letter
+//! show as other characters past ASCII.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +24,10 @@ use super::{Button, DesktopEvent, Input, Link, Quality, Status, Target};
 const REFRESH: Duration = Duration::from_millis(33);
 
 const ATTEMPTS: usize = 5;
+
+/// The most text sent to the clipboard at once. vnc-rs drops the connection on more coming
+/// back, and servers may do the same.
+const MAX_CLIPBOARD: usize = 1024 * 1024;
 
 /// The password the server asked for, typed in: kept to remember it once signed in.
 type Typed = Arc<Mutex<Option<(Zeroizing<String>, bool)>>>;
@@ -40,7 +48,7 @@ pub(super) async fn run(target: Target, link: &mut Link) -> Result<String> {
                     link.send(DesktopEvent::Remember { user: None, password });
                 }
                 link.status(Status::Connected);
-                return active(client, link, pixel_format(target.quality)).await;
+                return active(client, link, pixel_format(target.quality), target.clipboard).await;
             }
             Err(VncError::WrongPassword) => error = Some("The password is incorrect.".to_string()),
             Err(VncError::General(reason)) if reason == CANCELLED => return Ok("Sign-in cancelled.".into()),
@@ -170,7 +178,7 @@ fn to_bgra<'a>(data: &'a [u8], format: &PixelFormat, scratch: &'a mut Vec<u8>) -
     scratch
 }
 
-async fn active(client: VncClient, link: &mut Link, format: PixelFormat) -> Result<String> {
+async fn active(client: VncClient, link: &mut Link, format: PixelFormat, mut sharing: bool) -> Result<String> {
     let mut refresh = tokio::time::interval(REFRESH);
     let mut pointer = Pointer::default();
     let mut scratch = Vec::new();
@@ -179,7 +187,7 @@ async fn active(client: VncClient, link: &mut Link, format: PixelFormat) -> Resu
         tokio::select! {
             event = client.recv_event() => match event {
                 Ok(event) => {
-                    if let Some(reason) = show(event, link, &format, &mut scratch)? {
+                    if let Some(reason) = show(event, link, &format, &mut scratch, sharing)? {
                         break reason;
                     }
                 }
@@ -187,9 +195,24 @@ async fn active(client: VncClient, link: &mut Link, format: PixelFormat) -> Resu
             },
             input = link.input.recv() => {
                 let Some(input) = input else { break "Session closed.".into() };
-                if matches!(input, Input::Close) {
-                    break "Session closed.".into();
-                }
+                let input = match input {
+                    Input::Close => break "Session closed.".into(),
+                    Input::ShareClipboard(on) => {
+                        sharing = on;
+                        continue;
+                    }
+                    Input::Clipboard(text) => {
+                        let text = super::with_lf(&text);
+                        if !sharing || text.len() > MAX_CLIPBOARD {
+                            continue;
+                        }
+                        if let Err(err) = client.input(X11Event::CopyText(text)).await {
+                            break format!("The connection ended: {err}");
+                        }
+                        continue;
+                    }
+                    input => input,
+                };
                 let mut failed = None;
                 for event in pointer.events(input) {
                     if let Err(err) = client.input(event).await {
@@ -213,7 +236,7 @@ async fn active(client: VncClient, link: &mut Link, format: PixelFormat) -> Resu
 }
 
 /// Draw what the server sent. `Some` ends the session, with why.
-fn show(event: VncEvent, link: &Link, format: &PixelFormat, scratch: &mut Vec<u8>) -> Result<Option<String>> {
+fn show(event: VncEvent, link: &Link, format: &PixelFormat, scratch: &mut Vec<u8>, sharing: bool) -> Result<Option<String>> {
     match event {
         VncEvent::SetResolution(screen) => link.draw(|p| p.resize(screen.width.into(), screen.height.into()))?,
         // A server that changes its layout on its own (wayvnc): the picture follows.
@@ -227,8 +250,9 @@ fn show(event: VncEvent, link: &Link, format: &PixelFormat, scratch: &mut Vec<u8
         VncEvent::Copy(to, from) => {
             link.draw(|p| p.copy((to.x.into(), to.y.into()), (from.x.into(), from.y.into()), to.width.into(), to.height.into()))
         }
+        VncEvent::Text(text) if sharing => link.send(DesktopEvent::Clipboard(super::for_this_pc(&text))),
         VncEvent::Error(reason) => return Ok(Some(format!("The connection ended: {reason}"))),
-        // Not asked for (Tight, cursor shapes), or not used yet (the server's clipboard).
+        // Not asked for (Tight, cursor shapes), or not shared (the server's clipboard).
         _ => {}
     }
     Ok(None)
@@ -310,7 +334,8 @@ impl Pointer {
                 }
                 events
             }
-            Input::Resize { .. } | Input::Close => vec![],
+            // Handled by the session loop.
+            Input::Resize { .. } | Input::Clipboard(_) | Input::ShareClipboard(_) | Input::Close => vec![],
         }
     }
 }

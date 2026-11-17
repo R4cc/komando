@@ -327,6 +327,9 @@ pub struct ViewerOptions {
     pub send_media_keys: bool,
     /// Send volume up, down and mute to the desktop.
     pub send_volume_keys: bool,
+    /// Text copied on this PC can be pasted on the desktop, and text copied there lands on
+    /// this PC's clipboard.
+    pub share_clipboard: bool,
     /// RDP: ask the server for a desktop the size of the pane, and again when it changes.
     /// `None` follows Settings → Remote desktop.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -342,8 +345,15 @@ impl Default for ViewerOptions {
             send_shortcuts: true,
             send_media_keys: true,
             send_volume_keys: false,
+            share_clipboard: true,
             match_window: None,
         }
+    }
+}
+
+impl ViewerOptions {
+    pub fn shares_clipboard(self) -> bool {
+        self.share_clipboard && !self.view_only
     }
 }
 

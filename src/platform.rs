@@ -66,25 +66,21 @@ pub fn set_window_dark_mode(window: &gpui::Window, dark: bool) {
 #[cfg(not(windows))]
 pub fn set_window_dark_mode(_window: &gpui::Window, _dark: bool) {}
 
-/// Paint the window's 1px DWM border and caption strip in the theme's colors (`0xrrggbb`).
-/// Without this, Windows uses the system accent color when "Show accent color on title bars
-/// and window borders" is on, which shows as a colored frame and top edge around Komando.
-/// `None` leaves the caption to Windows, so an opaque color can't cover Mica.
-/// Windows 10 doesn't support these attributes; there the call does nothing.
+/// Let Komando paint the window border and match the native caption to the app canvas.
+/// `None` leaves the caption color to Windows when Mica is on.
 #[cfg(windows)]
-pub fn set_window_frame_colors(window: &gpui::Window, border: u32, caption: Option<u32>) {
+pub fn style_native_frame(window: &gpui::Window, caption: Option<u32>) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows::Win32::Foundation::{COLORREF, HWND};
-    use windows::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DwmSetWindowAttribute};
+    use windows::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_COLOR_DEFAULT, DWMWA_COLOR_NONE, DwmSetWindowAttribute};
 
     let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
     let RawWindowHandle::Win32(win32) = handle.as_raw() else { return };
     let hwnd = HWND(win32.hwnd.get() as *mut core::ffi::c_void);
     // COLORREF is 0x00bbggrr.
     let colorref = |rgb: u32| COLORREF(((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff));
-    // DWMWA_COLOR_DEFAULT: Windows' own caption color.
-    let caption = caption.map_or(COLORREF(0xffff_ffff), colorref);
-    for (attribute, value) in [(DWMWA_BORDER_COLOR, colorref(border)), (DWMWA_CAPTION_COLOR, caption)] {
+    let caption = caption.map_or(COLORREF(DWMWA_COLOR_DEFAULT), colorref);
+    for (attribute, value) in [(DWMWA_BORDER_COLOR, COLORREF(DWMWA_COLOR_NONE)), (DWMWA_CAPTION_COLOR, caption)] {
         unsafe {
             let _ = DwmSetWindowAttribute(
                 hwnd,
@@ -97,7 +93,7 @@ pub fn set_window_frame_colors(window: &gpui::Window, border: u32, caption: Opti
 }
 
 #[cfg(not(windows))]
-pub fn set_window_frame_colors(_window: &gpui::Window, _border: u32, _caption: Option<u32>) {}
+pub fn style_native_frame(_window: &gpui::Window, _caption: Option<u32>) {}
 
 /// The window's Win32 handle, as a number so it can go to another thread (see
 /// `crate::elevate::open_shell_elevated`).
