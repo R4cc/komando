@@ -2811,19 +2811,21 @@ struct GridFont {
 }
 
 impl GridFont {
-    fn new(text_system: &gpui::WindowTextSystem, family: SharedString, size: Pixels) -> Self {
+    /// `weights`: of regular and of bold text.
+    fn new(text_system: &gpui::WindowTextSystem, family: SharedString, size: Pixels, weights: [FontWeight; 2]) -> Self {
         let mut regular = gpui::font(family);
+        regular.weight = weights[0];
         regular.features = gpui::FontFeatures::disable_ligatures();
         let font_id = text_system.resolve_font(&regular);
         let cell_w = text_system.advance(font_id, size, 'm').map(|s| s.width).unwrap_or(px(8.));
         let line_h = (size * 1.32).round();
         let metrics = RowTextMetrics::new(line_h, text_system.ascent(font_id, size), text_system.descent(font_id, size));
-        Self::with_metrics(regular, size, cell_w, line_h, metrics)
+        Self::with_metrics(regular, weights[1], size, cell_w, line_h, metrics)
     }
 
-    fn with_metrics(regular: gpui::Font, size: Pixels, cell_w: Pixels, line_h: Pixels, metrics: RowTextMetrics) -> Self {
+    fn with_metrics(regular: gpui::Font, bold_weight: FontWeight, size: Pixels, cell_w: Pixels, line_h: Pixels, metrics: RowTextMetrics) -> Self {
         let bold = |mut f: gpui::Font| {
-            f.weight = FontWeight::BOLD;
+            f.weight = bold_weight;
             f
         };
         let italic = |mut f: gpui::Font| {
@@ -2999,7 +3001,7 @@ fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &
         cursor,
         focused: look.focused,
     };
-    glyphs.prepare(&font.family, font.size);
+    glyphs.prepare(&font.family, font.size, [font.fonts[0].weight, font.fonts[1].weight]);
     if let Some(highlighter) = &highlight {
         highlights.prepare(highlighter, look.palette.dark);
     }
@@ -3090,8 +3092,8 @@ impl<K: Hash + Eq, V> Generations<K, V> {
 /// Whatever shaping gives is kept, including a character no font has (drawn as the missing
 /// glyph): it is not looked for in the fonts again.
 struct GlyphCache {
-    /// The font family and size the entries were shaped with.
-    font: Option<(SharedString, Pixels)>,
+    /// The font family, size, and regular and bold weights the entries were shaped with.
+    font: Option<(SharedString, Pixels, [FontWeight; 2])>,
     /// ASCII characters in each style, by style and code: most cells of most screens.
     ascii: Box<[Option<Box<[CachedGlyph]>>]>,
     clusters: Generations<ClusterKey>,
@@ -3118,9 +3120,9 @@ impl Default for GlyphCache {
 
 impl GlyphCache {
     /// Start a frame: forget everything if the font changed, and keep the cache bounded.
-    fn prepare(&mut self, family: &SharedString, size: Pixels) {
-        if self.font.as_ref().is_none_or(|(f, s)| f != family || *s != size) {
-            self.font = Some((family.clone(), size));
+    fn prepare(&mut self, family: &SharedString, size: Pixels, weights: [FontWeight; 2]) {
+        if self.font.as_ref().is_none_or(|(f, s, w)| f != family || *s != size || *w != weights) {
+            self.font = Some((family.clone(), size, weights));
             self.ascii.iter_mut().for_each(|slot| *slot = None);
             self.clusters.clear();
             self.long.clear();
@@ -3275,6 +3277,7 @@ impl Render for TerminalView {
         let palette = appearance.term.clone();
         let family = appearance.font_family.clone();
         let font_size = px(appearance.font_size);
+        let weights = [appearance.font_weight, appearance.bold_font_weight];
         let now = Instant::now();
         let minimap_state = self.minimap_state.clone();
         if !self.minimap {
@@ -3377,7 +3380,7 @@ impl Render for TerminalView {
         let surface = canvas(
             move |bounds, window, cx| crate::perf::time("terminal grid prepaint", || {
                 let text_system = window.text_system().clone();
-                let font = GridFont::new(&text_system, family.clone(), font_size);
+                let font = GridFont::new(&text_system, family.clone(), font_size, weights);
                 let (cell_w, line_h) = (font.cell_w, font.line_h);
                 let cw = f32::from(cell_w);
                 let lh = f32::from(line_h);
@@ -3918,7 +3921,7 @@ mod tests {
             ('x', &long),
         ];
         for _ in 0..3 {
-            cache.prepare(&"Mono".into(), px(14.));
+            cache.prepare(&"Mono".into(), px(14.), [gpui::FontWeight::NORMAL, gpui::FontWeight::BOLD]);
             for style in 0..4 {
                 for (c, extra) in cells {
                     let glyphs = cache.get_with(style, c, extra, &shape);
@@ -3934,7 +3937,7 @@ mod tests {
         assert_eq!(shaped.get(), 6 * 4 + 1);
 
         // Another font or size starts over.
-        cache.prepare(&"Mono".into(), px(15.));
+        cache.prepare(&"Mono".into(), px(15.), [gpui::FontWeight::NORMAL, gpui::FontWeight::BOLD]);
         assert_eq!(cache.len(), 0);
         cache.get_with(0, 'a', &[], &shape);
         cache.get_with(0, 'x', &long, &shape);
@@ -3952,7 +3955,7 @@ mod tests {
 
         // The same 1,000 clusters on screen frame after frame, ten times the limit: shaped once.
         for _ in 0..5 {
-            cache.prepare(&"Mono".into(), px(14.));
+            cache.prepare(&"Mono".into(), px(14.), [gpui::FontWeight::NORMAL, gpui::FontWeight::BOLD]);
             for (c, mark) in screen(0) {
                 cache.get_with(0, c, &[mark], &shape);
             }
@@ -3961,7 +3964,7 @@ mod tests {
 
         // New clusters every frame: those no longer on screen go two generations later.
         for frame in 1..=20 {
-            cache.prepare(&"Mono".into(), px(14.));
+            cache.prepare(&"Mono".into(), px(14.), [gpui::FontWeight::NORMAL, gpui::FontWeight::BOLD]);
             for (c, mark) in screen(frame * 1000 % 2912) {
                 cache.get_with(1, c, &[mark], &shape);
             }
@@ -3970,7 +3973,7 @@ mod tests {
         // Long clusters age the same way.
         let long: Vec<char> = std::iter::repeat_n('\u{0301}', INLINE_CLUSTER).collect();
         for frame in 0..20u32 {
-            cache.prepare(&"Mono".into(), px(14.));
+            cache.prepare(&"Mono".into(), px(14.), [gpui::FontWeight::NORMAL, gpui::FontWeight::BOLD]);
             for i in 0..50u32 {
                 cache.get_with(2, char::from_u32(0x4e00 + frame * 50 + i).unwrap(), &long, &shape);
             }
@@ -3999,7 +4002,7 @@ mod tests {
 
     fn grid_font(size: f32) -> GridFont {
         let metrics = RowTextMetrics::new(px(size * 1.32).round(), px(size * 0.9), px(-size * 0.25));
-        GridFont::with_metrics(gpui::font("Mono"), px(size), px(size * 0.6), px(size * 1.32).round(), metrics)
+        GridFont::with_metrics(gpui::font("Mono"), gpui::FontWeight::BOLD, px(size), px(size * 0.6), px(size * 1.32).round(), metrics)
     }
 
     /// A terminal and its grid, laid out frame after frame. Every frame is checked against

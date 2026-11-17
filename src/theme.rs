@@ -739,6 +739,9 @@ pub struct Appearance {
     pub term: TerminalPalette,
     pub font_family: gpui::SharedString,
     pub font_size: f32,
+    /// The terminal's regular and bold font weights.
+    pub font_weight: gpui::FontWeight,
+    pub bold_font_weight: gpui::FontWeight,
 }
 
 impl gpui::Global for Appearance {}

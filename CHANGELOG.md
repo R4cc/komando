@@ -11,6 +11,8 @@ All notable changes to Komando are listed here. The format follows
 - Restore tabs on start (Settings → Appearance → Behaviour): Komando reopens the terminal
   tabs that were open when it closed, with the names you gave them. Hosts that sign in with
   a saved password wait for the vault to be unlocked. Remote desktops aren't reopened.
+- Font weight and Bold font weight (Settings → Terminal) set how thick terminal text and
+  bold text are drawn, from 100 to 900. Reset puts each back to the regular 400 or bold 700.
 
 ### Changed
 

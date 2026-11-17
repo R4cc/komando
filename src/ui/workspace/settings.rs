@@ -125,6 +125,23 @@ fn logo(icon: AppIcon) -> &'static crate::ui::artwork::Artwork {
 }
 
 
+/// Which terminal font weight a field sets; the index of its field in `weight_inputs`.
+#[derive(Clone, Copy)]
+enum FontWeightKind {
+    Regular = 0,
+    Bold = 1,
+}
+
+impl FontWeightKind {
+    fn default(self) -> u16 {
+        let defaults = Settings::default();
+        match self {
+            Self::Regular => defaults.font_weight,
+            Self::Bold => defaults.bold_font_weight,
+        }
+    }
+}
+
 impl Workspace {
     pub(super) fn open_settings(&mut self, section: SettingsSection, window: &mut Window, cx: &mut Context<Self>) {
         self.ensure_settings_controls(window, cx);
@@ -213,6 +230,77 @@ impl Workspace {
             self._subscriptions.push(sub);
             self.font_input = Some(input);
         }
+        if self.weight_inputs.is_none() {
+            let inputs = [FontWeightKind::Regular, FontWeightKind::Bold].map(|kind| {
+                let value = self.font_weight_of(kind).to_string();
+                let input = cx.new(|cx| InputState::new(window, cx).default_value(value).placeholder(kind.default().to_string()));
+                let sub = cx.subscribe_in(&input, window, move |this, input, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                        let text = input.read(cx).value().to_string();
+                        match crate::model::parse_font_weight(&text) {
+                            Some(weight) => this.set_font_weight(kind, weight, window, cx),
+                            None => {
+                                // Put back the weight in use.
+                                let current = this.font_weight_of(kind).to_string();
+                                input.update(cx, |i, cx| i.set_value(current, window, cx));
+                                if !text.trim().is_empty() {
+                                    this.show_toast("A font weight is a whole number from 100 to 900.", cx);
+                                }
+                            }
+                        }
+                    }
+                });
+                self._subscriptions.push(sub);
+                input
+            });
+            self.weight_inputs = Some(inputs);
+        }
+    }
+
+    fn font_weight_of(&self, kind: FontWeightKind) -> u16 {
+        match kind {
+            FontWeightKind::Regular => self.settings.font_weight,
+            FontWeightKind::Bold => self.settings.bold_font_weight,
+        }
+    }
+
+    /// Use a terminal font weight, and show it in its field (as Reset needs).
+    fn set_font_weight(&mut self, kind: FontWeightKind, weight: u16, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(inputs) = &self.weight_inputs {
+            let input = inputs[kind as usize].clone();
+            if input.read(cx).value() != weight.to_string() {
+                input.update(cx, |i, cx| i.set_value(weight.to_string(), window, cx));
+            }
+        }
+        if self.font_weight_of(kind) == weight {
+            return;
+        }
+        match kind {
+            FontWeightKind::Regular => self.settings.font_weight = weight,
+            FontWeightKind::Bold => self.settings.bold_font_weight = weight,
+        }
+        self.save_settings(cx);
+        self.apply_appearance(window, cx);
+    }
+
+    /// A font weight field with its Reset button.
+    fn font_weight_control(&self, kind: FontWeightKind, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let input = self.weight_inputs.as_ref().map(|inputs| Input::new(&inputs[kind as usize]).into_any_element());
+        let id = match kind {
+            FontWeightKind::Regular => "reset-font-weight",
+            FontWeightKind::Bold => "reset-bold-font-weight",
+        };
+        div()
+            .w(px(260.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(div().flex_1().children(input))
+            .child(
+                button(id, "Reset", ButtonKind::Secondary, p)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.set_font_weight(kind, kind.default(), window, cx))),
+            )
+            .into_any_element()
     }
 
     /// Push terminal behaviour settings into every open session.
@@ -764,6 +852,18 @@ impl Workspace {
                         .child(div().flex_1().children(font_slider))
                         .child(value_label(format!("{} px", self.settings.font_size), p))
                         .into_any_element(),
+                ),
+                setting_row(
+                    p,
+                    "Font weight",
+                    "100 to 900. Regular is 400. Press Enter to apply.",
+                    self.font_weight_control(FontWeightKind::Regular, p, cx),
+                ),
+                setting_row(
+                    p,
+                    "Bold font weight",
+                    "For bold text. Bold is 700.",
+                    self.font_weight_control(FontWeightKind::Bold, p, cx),
                 ),
                 setting_row(
                     p,

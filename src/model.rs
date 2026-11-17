@@ -1037,6 +1037,10 @@ pub struct Settings {
     /// Empty follows the selected Terminal Theme's bundled font; a name overrides it.
     pub font_family: String,
     pub font_size: f32,
+    /// The weight of terminal text, 100 (thin) to 900 (black); 400 is regular.
+    pub font_weight: u16,
+    /// The weight of bold terminal text, 100 to 900; 700 is bold.
+    pub bold_font_weight: u16,
     /// Lines of Scrollback each Session keeps.
     pub scrollback_lines: usize,
     /// Minutes of inactivity before the Vault locks, up to 7 days. 0 means it stays unlocked
@@ -1123,6 +1127,8 @@ impl Default for Settings {
             light_terminal_colors: crate::theme::DEFAULT_TERMINAL_COLORS.into(),
             font_family: String::new(),
             font_size: 14.0,
+            font_weight: 400,
+            bold_font_weight: 700,
             scrollback_lines: 100_000,
             auto_lock_minutes: 0,
             stay_unlocked: true,
@@ -1231,6 +1237,14 @@ impl OpenTabs {
     }
 }
 
+/// The font weights a setting accepts, as CSS and OpenType number them.
+pub const FONT_WEIGHTS: std::ops::RangeInclusive<u16> = 100..=900;
+
+/// A font weight typed into Settings: a whole number from 100 to 900.
+pub fn parse_font_weight(text: &str) -> Option<u16> {
+    text.trim().parse::<u16>().ok().filter(|w| FONT_WEIGHTS.contains(w))
+}
+
 /// Shells offered when a Project defines none of its own.
 pub fn default_shells() -> Vec<LocalShell> {
     #[cfg(windows)]
@@ -1333,6 +1347,18 @@ mod tests {
         OpenTabs::clear(&dir).unwrap();
         assert_eq!(OpenTabs::load(&dir), OpenTabs::default());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn font_weights_are_whole_numbers_from_100_to_900() {
+        assert_eq!(parse_font_weight(" 350 "), Some(350));
+        assert_eq!(parse_font_weight("100"), Some(100));
+        assert_eq!(parse_font_weight("900"), Some(900));
+        for text in ["99", "901", "bold", "", "450.5", "-400"] {
+            assert_eq!(parse_font_weight(text), None, "{text}");
+        }
+        let settings: Settings = toml::from_str("font_size = 16.0").unwrap();
+        assert_eq!((settings.font_weight, settings.bold_font_weight), (400, 700));
     }
 
     #[test]

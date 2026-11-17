@@ -372,6 +372,11 @@ enum Pending {
     Form,
 }
 
+/// A saved font weight as the text system takes it; a weight edited out of range is kept in it.
+fn font_weight(weight: u16) -> gpui::FontWeight {
+    gpui::FontWeight(weight.clamp(*crate::model::FONT_WEIGHTS.start(), *crate::model::FONT_WEIGHTS.end()) as f32)
+}
+
 /// Things to do right after launch. Used by development tooling (screenshots, demos);
 /// the Komando binary itself never passes a master password.
 #[derive(Clone, Default)]
@@ -429,6 +434,8 @@ pub struct Workspace {
     blur_slider: Option<Entity<SliderState>>,
     font_slider: Option<Entity<SliderState>>,
     font_input: Option<Entity<InputState>>,
+    /// Settings → Terminal: the regular and bold font weight fields.
+    weight_inputs: Option<[Entity<InputState>; 2]>,
     /// Settings → Local shells: the form that adds a shell or edits one.
     shell_editor: Option<settings::ShellEditor>,
     /// A shell whose Remove button was clicked once, waiting for the second click.
@@ -577,6 +584,7 @@ impl Workspace {
             blur_slider: None,
             font_slider: None,
             font_input: None,
+            weight_inputs: None,
             shell_editor: None,
             confirm_remove_shell: None,
             vault: None,
@@ -779,6 +787,8 @@ impl Workspace {
             term: TerminalPalette::for_mode(term_dark, self.terminal_colors_for(term_dark), self.theme_for(term_dark)).translucent(t),
             font_family: if self.settings.font_family.trim().is_empty() { self.theme_for(term_dark).font_mono.into() } else { self.settings.font_family.clone().into() },
             font_size: self.settings.font_size,
+            font_weight: font_weight(self.settings.font_weight),
+            bold_font_weight: font_weight(self.settings.bold_font_weight),
         });
         gpui_component::Theme::change(
             if app_dark { gpui_component::ThemeMode::Dark } else { gpui_component::ThemeMode::Light },

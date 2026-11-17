@@ -49,7 +49,7 @@ impl Harness {
     pub fn new(cols: u16, rows: u16, text_system: gpui::WindowTextSystem) -> Self {
         let (tx, _rx) = futures::channel::mpsc::unbounded();
         let proxy = EventProxy::new(tx);
-        let font = GridFont::new(&text_system, "Cascadia Mono".into(), px(14.));
+        let font = GridFont::new(&text_system, "Cascadia Mono".into(), px(14.), [gpui::FontWeight::NORMAL, gpui::FontWeight::BOLD]);
         let size = GridSize { cols, rows, cell_width: 8, cell_height: 18 };
         let term = new_term(size, 10_000, proxy.clone());
         // The bundled set of highlight rules, as a first run has it.
