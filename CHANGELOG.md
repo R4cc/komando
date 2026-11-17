@@ -6,11 +6,20 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- SSH sign-in works with servers that ask their own questions (keyboard-interactive), such
+  as switches and firewalls that check passwords through RADIUS or TACACS+, and servers that
+  ask for a one-time code after the password. A plain password question still uses the saved
+  password and offers "Remember"; any other question is shown as the server words it.
+- A server that takes no password now says which sign-in methods it does take, instead of
+  asking for a password it will always reject.
+
 ### Fixed
 
 - SSH now connects to Cisco switches and other network gear that only offers older key
-  exchanges (NIST-curve ECDH, Diffie-Hellman group 14 with SHA-1), HMAC-SHA1, or AES-CBC
-  ciphers. Komando still prefers modern algorithms whenever the server has them.
+  exchanges (NIST-curve ECDH, or Diffie-Hellman group 14, group exchange or group 1 with
+  SHA-1), HMAC-SHA1, or AES-CBC ciphers. Komando still prefers modern algorithms whenever the server has them.
 - A long reason for a disconnect, such as a failed key exchange, now wraps inside the
   terminal instead of running off both edges.
 - Moving between buttons and other controls with Tab no longer makes them shift slightly,

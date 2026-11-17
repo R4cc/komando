@@ -503,13 +503,19 @@ fn compat_ssh_session_against_a_local_sshd() {
     r.wait("the session to end", |r| r.ended);
 }
 
-/// A server that offers only what an older Cisco switch does: NIST-curve ECDH or
-/// Diffie-Hellman group 14 with SHA-1, an RSA host key signed with SHA-1, AES-CBC and
-/// HMAC-SHA1. Komando falls back to these when the server has nothing better.
+/// A server that offers only what an older Cisco switch does: NIST-curve ECDH, or
+/// Diffie-Hellman group 14, group exchange or group 1 with SHA-1; an RSA host key signed with
+/// SHA-1, AES-CBC and HMAC-SHA1. Komando falls back to these when the server has nothing better.
 #[test]
 #[ignore]
 fn compat_ssh_session_with_cisco_style_algorithms() {
-    for (i, kex) in ["ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521", "diffie-hellman-group14-sha1"].iter().enumerate() {
+    let kexes = [
+        "ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521",
+        "diffie-hellman-group14-sha1",
+        "diffie-hellman-group-exchange-sha1",
+        "diffie-hellman-group1-sha1",
+    ];
+    for (i, kex) in kexes.iter().enumerate() {
         let extra = format!(
             "KexAlgorithms {kex}\nHostKeyAlgorithms ssh-rsa\nCiphers aes256-cbc,aes128-cbc\nMACs hmac-sha1\n"
         );

@@ -24,7 +24,8 @@ use anyhow::{Context as _, Result, anyhow};
 use futures::channel::oneshot;
 use russh::client::{self, AuthResult, Handle};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
-use russh::{ChannelMsg, Disconnect, Pty};
+use russh::client::KeyboardInteractiveAuthResponse;
+use russh::{ChannelMsg, Disconnect, MethodKind, MethodSet, Pty};
 use tokio::sync::mpsc;
 
 use super::pace::Pace;
@@ -313,6 +314,8 @@ fn client_config(window: u32) -> Arc<client::Config> {
 /// Cisco switches offers instead (NIST-curve ECDH, and Diffie-Hellman group 14 with SHA-1 on
 /// older firmware). The server picks the first of ours it also has, so a server with a modern
 /// key exchange still gets it, and the exchange hash protects the choice from tampering.
+/// Last, for the oldest firmware: group exchange with SHA-1, and group 1 (1024-bit, weak, but
+/// all some switches, UPS cards and out-of-band controllers have).
 const KEX: &[russh::kex::Name] = {
     use russh::kex::*;
     &[
@@ -329,6 +332,8 @@ const KEX: &[russh::kex::Name] = {
         ECDH_SHA2_NISTP384,
         ECDH_SHA2_NISTP521,
         DH_G14_SHA1,
+        DH_GEX_SHA1,
+        DH_G1_SHA1,
         EXTENSION_SUPPORT_AS_CLIENT,
         EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
     ]
@@ -1009,8 +1014,38 @@ struct SignedIn {
     remember: bool,
 }
 
+/// Where signing in with a password stands, shared by the password and keyboard-interactive
+/// methods and across a server's several steps (a key, then a one-time code, say).
+struct PasswordState<'a> {
+    /// The saved password, until it has been tried once.
+    saved: Option<&'a str>,
+    /// The tick on "Remember", carried over from one question to the next.
+    remember: bool,
+    /// Why the last try failed, shown with the next question.
+    last_error: Option<String>,
+    signed_in: SignedIn,
+}
+
+/// What one sign-in method came to.
+enum Step {
+    /// Signed in.
+    Done,
+    /// Accepted, but the server asks for more, by one of these methods.
+    More(MethodSet),
+    /// Turned down; the server still accepts these methods.
+    Refused(MethodSet),
+}
+
+/// Tries of a method the user typed answers for before Komando gives up, as OpenSSH does.
+const TRIES: usize = 3;
+
 /// `address` names the machine in the password question, so a Jump Host's (perhaps from a
 /// shared Project) can't pass for another's.
+///
+/// After a saved key, the server says which methods it takes next. Of those, keyboard-
+/// interactive goes first, as in OpenSSH: network gear and servers with one-time codes
+/// (RADIUS, TACACS+, PAM) often take passwords only that way. A plain "Password:" question
+/// looks the same as with the password method, saved password and "Remember" included.
 async fn authenticate(
     handle: &mut Handle<Client>,
     user: &str,
@@ -1019,63 +1054,246 @@ async fn authenticate(
     proxy: &EventProxy,
     log: &ConnectLog,
 ) -> Result<SignedIn> {
-    let mut last_error = None;
-    match secret {
-        Some(Secret::PrivateKey { key, passphrase }) => {
-            log.line(LogKind::Step, &format!("Signing in as {user} with the saved key"));
-            let decoded = match russh::keys::decode_secret_key(key, passphrase.as_deref()) {
-                Ok(decoded) => Ok(decoded),
-                Err(_) if passphrase.is_none() => {
-                    let pass = ask(proxy, "Key passphrase", true, None, None).await.ok_or_else(|| anyhow!(CANCELLED))?;
-                    let pass = Zeroizing::new(pass.value);
-                    russh::keys::decode_secret_key(key, Some(pass.as_str()))
-                }
-                Err(err) => Err(err),
-            };
-            match decoded {
-                Ok(private_key) => {
-                    let hash = handle.best_supported_rsa_hash().await?.flatten();
-                    let result = handle
-                        .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(private_key), hash))
-                        .await?;
-                    if matches!(result, AuthResult::Success) {
-                        return Ok(SignedIn { password: None, remember: false });
-                    }
-                    last_error = Some("The server rejected the saved key.".to_string());
-                }
-                Err(err) => last_error = Some(format!("Could not read the saved key: {err}")),
+    let saved = match secret {
+        Some(Secret::Password { password }) => Some(password.as_str()),
+        _ => None,
+    };
+    let mut state = PasswordState { saved, remember: false, last_error: None, signed_in: SignedIn { password: None, remember: false } };
+    let mut methods = None;
+    if let Some(Secret::PrivateKey { key, passphrase }) = secret {
+        log.line(LogKind::Step, &format!("Signing in as {user} with the saved key"));
+        let decoded = match russh::keys::decode_secret_key(key, passphrase.as_deref()) {
+            Ok(decoded) => Ok(decoded),
+            Err(_) if passphrase.is_none() => {
+                let pass = ask(proxy, "Key passphrase", true, None, None).await.ok_or_else(|| anyhow!(CANCELLED))?;
+                let pass = Zeroizing::new(pass.value);
+                russh::keys::decode_secret_key(key, Some(pass.as_str()))
             }
-        }
-        Some(Secret::Password { password }) => {
-            log.line(LogKind::Step, &format!("Signing in as {user} with the saved password"));
-            if matches!(handle.authenticate_password(user, password.as_str()).await?, AuthResult::Success) {
-                return Ok(SignedIn { password: Some(Zeroizing::new(password.clone())), remember: false });
-            }
-            last_error = Some("The saved password was rejected.".to_string());
-        }
-        None => {}
-    }
-    if let Some(error) = &last_error {
-        log.line(LogKind::Warn, error);
-    }
-    log.line(LogKind::Step, &format!("Signing in as {user} with a password: waiting for it"));
-
-    // Fall back to asking. The tick on "Remember" carries over to the next try.
-    let mut remember = false;
-    for _ in 0..3 {
-        let label = format!("Password for {user}@{address}");
-        let Some(answer) = ask(proxy, &label, true, Some(remember), last_error.take()).await else {
-            return Err(anyhow!(CANCELLED));
+            Err(err) => Err(err),
         };
-        remember = answer.remember;
-        let password = Zeroizing::new(answer.value);
-        if matches!(handle.authenticate_password(user, password.as_str()).await?, AuthResult::Success) {
-            return Ok(SignedIn { password: Some(password), remember });
+        match decoded {
+            Ok(private_key) => {
+                let hash = handle.best_supported_rsa_hash().await?.flatten();
+                let result = handle
+                    .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(private_key), hash))
+                    .await?;
+                match result {
+                    AuthResult::Success => return Ok(state.signed_in),
+                    AuthResult::Failure { remaining_methods, partial_success: true } => {
+                        log.line(LogKind::Step, "The key was accepted; the server asks for more");
+                        methods = Some(remaining_methods);
+                    }
+                    AuthResult::Failure { remaining_methods, partial_success: false } => {
+                        state.last_error = Some("The server rejected the saved key.".to_string());
+                        methods = Some(remaining_methods);
+                    }
+                }
+            }
+            Err(err) => state.last_error = Some(format!("Could not read the saved key: {err}")),
         }
-        log.line(LogKind::Warn, "Wrong password");
-        last_error = Some("Wrong password. Try again.".to_string());
+        if let Some(error) = &state.last_error {
+            log.line(LogKind::Warn, error);
+        }
+    }
+    // Without a key, asking to sign in with no method at all is how the server says which it takes.
+    let mut methods = match methods {
+        Some(methods) => methods,
+        None => match handle.authenticate_none(user).await? {
+            AuthResult::Success => return Ok(state.signed_in),
+            AuthResult::Failure { remaining_methods, .. } => remaining_methods,
+        },
+    };
+    // A server asks for at most a few things in turn (a key, a password, a code).
+    for _ in 0..4 {
+        let interactive = methods.contains(&MethodKind::KeyboardInteractive);
+        let step = if interactive {
+            keyboard_interactive(handle, user, address, &mut state, proxy, log).await?
+        } else if methods.contains(&MethodKind::Password) || methods.is_empty() {
+            // An empty list is a server that didn't say: try a password, as before.
+            password(handle, user, address, &mut state, proxy, log).await?
+        } else {
+            let names: Vec<&str> = methods.iter().map(<&str>::from).collect();
+            return Err(anyhow!("{address} takes no password, only: {}.", names.join(", ")));
+        };
+        match step {
+            Step::Done => return Ok(state.signed_in),
+            Step::More(next) => {
+                log.line(LogKind::Step, "Accepted; the server asks for more");
+                methods = next;
+            }
+            // Keyboard-interactive turned down: the password method, if the server takes it too.
+            Step::Refused(mut next) if interactive && next.contains(&MethodKind::Password) => {
+                next.remove(MethodKind::KeyboardInteractive);
+                methods = next;
+            }
+            Step::Refused(_) => break,
+        }
     }
     Err(anyhow!("Authentication failed."))
+}
+
+/// The password method: the saved password, then up to [`TRIES`] typed ones.
+async fn password(
+    handle: &mut Handle<Client>,
+    user: &str,
+    address: &str,
+    state: &mut PasswordState<'_>,
+    proxy: &EventProxy,
+    log: &ConnectLog,
+) -> Result<Step> {
+    let mut refused = MethodSet::empty();
+    if let Some(saved) = state.saved.take() {
+        log.line(LogKind::Step, &format!("Signing in as {user} with the saved password"));
+        match handle.authenticate_password(user, saved).await? {
+            AuthResult::Success => {
+                state.signed_in.password = Some(Zeroizing::new(saved.to_string()));
+                return Ok(Step::Done);
+            }
+            AuthResult::Failure { remaining_methods, partial_success: true } => {
+                state.signed_in.password = Some(Zeroizing::new(saved.to_string()));
+                return Ok(Step::More(remaining_methods));
+            }
+            AuthResult::Failure { remaining_methods, partial_success: false } => {
+                log.line(LogKind::Warn, "The saved password was rejected.");
+                state.last_error = Some("The saved password was rejected.".to_string());
+                refused = remaining_methods;
+            }
+        }
+    }
+    log.line(LogKind::Step, &format!("Signing in as {user} with a password: waiting for it"));
+    for _ in 0..TRIES {
+        let password = ask_password(user, address, state, proxy).await?;
+        match handle.authenticate_password(user, password.as_str()).await? {
+            AuthResult::Success => {
+                state.signed_in.password = Some(password);
+                state.signed_in.remember = state.remember;
+                return Ok(Step::Done);
+            }
+            AuthResult::Failure { remaining_methods, partial_success: true } => {
+                state.signed_in.password = Some(password);
+                state.signed_in.remember = state.remember;
+                return Ok(Step::More(remaining_methods));
+            }
+            AuthResult::Failure { remaining_methods, partial_success: false } => {
+                log.line(LogKind::Warn, "Wrong password");
+                state.last_error = Some("Wrong password. Try again.".to_string());
+                refused = remaining_methods;
+            }
+        }
+    }
+    Ok(Step::Refused(refused))
+}
+
+/// Keyboard-interactive: the server asks questions, any number of them in any number of
+/// rounds. A password question gets the saved password once, then asks as the password method
+/// does; any other question (a one-time code, a challenge) is asked as the server words it.
+async fn keyboard_interactive(
+    handle: &mut Handle<Client>,
+    user: &str,
+    address: &str,
+    state: &mut PasswordState<'_>,
+    proxy: &EventProxy,
+    log: &ConnectLog,
+) -> Result<Step> {
+    log.line(LogKind::Step, &format!("Signing in as {user} (keyboard-interactive)"));
+    let mut failures = 0;
+    // Rounds without a question don't count as tries, but a server can't send them forever.
+    let mut rounds = 0;
+    let mut reply = handle.authenticate_keyboard_interactive_start(user, None).await?;
+    // Whether this try answered with something the user typed (not just the saved password).
+    let mut typed = false;
+    // The password given in this try, kept if it signs in.
+    let mut given: Option<(Zeroizing<String>, bool)> = None;
+    loop {
+        match reply {
+            KeyboardInteractiveAuthResponse::Success => {
+                keep_password(state, given);
+                return Ok(Step::Done);
+            }
+            KeyboardInteractiveAuthResponse::Failure { remaining_methods, partial_success: true } => {
+                keep_password(state, given);
+                return Ok(Step::More(remaining_methods));
+            }
+            KeyboardInteractiveAuthResponse::Failure { remaining_methods, partial_success: false } => {
+                let (line, error) = match &given {
+                    Some((_, false)) => ("The saved password was rejected.", "The saved password was rejected."),
+                    Some((_, true)) => ("Wrong password", "Wrong password. Try again."),
+                    None => ("Not accepted", "Not accepted. Try again."),
+                };
+                log.line(LogKind::Warn, line);
+                state.last_error = Some(error.to_string());
+                if typed {
+                    failures += 1;
+                }
+                if failures >= TRIES || !remaining_methods.contains(&MethodKind::KeyboardInteractive) {
+                    return Ok(Step::Refused(remaining_methods));
+                }
+                (typed, given) = (false, None);
+                reply = handle.authenticate_keyboard_interactive_start(user, None).await?;
+            }
+            KeyboardInteractiveAuthResponse::InfoRequest { name, instructions, prompts } => {
+                rounds += 1;
+                if rounds > 20 {
+                    return Err(anyhow!("The server kept asking without signing in."));
+                }
+                for text in [name.trim(), instructions.trim()] {
+                    if !text.is_empty() {
+                        log.line(LogKind::Step, text);
+                    }
+                }
+                let mut answers = Vec::with_capacity(prompts.len());
+                for prompt in &prompts {
+                    if is_password_question(&prompt.prompt, prompt.echo) {
+                        let (password, was_typed) = match state.saved.take() {
+                            Some(saved) => (Zeroizing::new(saved.to_string()), false),
+                            None => (ask_password(user, address, state, proxy).await?, true),
+                        };
+                        typed |= was_typed;
+                        answers.push(password.to_string());
+                        given = Some((password, was_typed));
+                    } else {
+                        typed = true;
+                        let label = question_label(&prompt.prompt, user, address);
+                        let answer = ask(proxy, &label, !prompt.echo, None, state.last_error.take())
+                            .await
+                            .ok_or_else(|| anyhow!(CANCELLED))?;
+                        answers.push(answer.value);
+                    }
+                }
+                reply = handle.authenticate_keyboard_interactive_respond(answers).await?;
+            }
+        }
+    }
+}
+
+/// Keeps the password that signed in, for sudo and, if typed with "Remember" ticked, the vault.
+fn keep_password(state: &mut PasswordState<'_>, given: Option<(Zeroizing<String>, bool)>) {
+    if let Some((password, typed)) = given {
+        state.signed_in.remember = typed && state.remember;
+        state.signed_in.password = Some(password);
+    }
+}
+
+async fn ask_password(user: &str, address: &str, state: &mut PasswordState<'_>, proxy: &EventProxy) -> Result<Zeroizing<String>> {
+    let label = format!("Password for {user}@{address}");
+    let answer = ask(proxy, &label, true, Some(state.remember), state.last_error.take())
+        .await
+        .ok_or_else(|| anyhow!(CANCELLED))?;
+    state.remember = answer.remember;
+    Ok(Zeroizing::new(answer.value))
+}
+
+/// A hidden question that asks for the password, which a saved password may answer. Servers
+/// word it "Password:", "Password for alice:", "alice@host's password:" and the like; a
+/// question for a code or a "passcode" is not one.
+fn is_password_question(prompt: &str, echo: bool) -> bool {
+    !echo && prompt.to_lowercase().contains("password")
+}
+
+/// The server's question as the prompt's label, with who it is for.
+fn question_label(prompt: &str, user: &str, address: &str) -> String {
+    let question = prompt.trim().trim_end_matches(':').trim();
+    if question.is_empty() { format!("Answer for {user}@{address}") } else { format!("{question} ({user}@{address})") }
 }
 
 #[cfg(test)]
