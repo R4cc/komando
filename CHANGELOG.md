@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-11-17
+
 ### Added
 
 - The top bar shows four connection-quality bars for SSH sessions, with smoothed latency,
@@ -1831,7 +1833,9 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.7.6...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.7.8...HEAD
+[0.7.8]: https://github.com/R4cc/komando/compare/v0.7.7...v0.7.8
+[0.7.7]: https://github.com/R4cc/komando/compare/v0.7.6...v0.7.7
 [0.7.6]: https://github.com/R4cc/komando/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/R4cc/komando/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/R4cc/komando/compare/v0.7.3...v0.7.4
