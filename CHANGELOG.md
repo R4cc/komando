@@ -6,6 +6,15 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- While an SSH session connects and for its first five seconds, the connection bars play a
+  searching animation instead of showing a reading. Quick checks during that time settle on
+  the connection's real latency, so the bars no longer start low and creep up over the
+  first minute.
+- The connection tooltip says when it is connecting, measuring or waiting for a reply,
+  instead of showing "— ms" or an outdated time.
+
 ## [0.7.9] - 2026-11-17
 
 ### Changed

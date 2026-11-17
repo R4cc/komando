@@ -1,6 +1,11 @@
 //! SSH round trips for the connection indicator. Sampling is independent of shell traffic
 //! and never disconnects a Session. Each hop is measured from this computer, through all
 //! preceding Jump Hosts, rather than being a delay to add to the other hops.
+//!
+//! The first seconds of a connection read slow: TCP is still ramping up, the host is
+//! starting the shell and its first output queues ahead of the replies. A warm-up therefore
+//! samples quickly and publishes the low end of what it saw, so the bars start where they
+//! settle instead of drifting down from a bad first reading.
 
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -91,6 +96,10 @@ struct Timing {
     background: Duration,
     slow: Duration,
     unresponsive: Duration,
+    /// How long the warm-up lasts; the hop stays `Measuring` until it ends.
+    warmup: Duration,
+    /// The pause between warm-up pings.
+    warmup_interval: Duration,
 }
 
 const TIMING: Timing = Timing {
@@ -98,7 +107,20 @@ const TIMING: Timing = Timing {
     background: Duration::from_secs(30),
     slow: Duration::from_secs(2),
     unresponsive: Duration::from_secs(5),
+    warmup: Duration::from_secs(5),
+    warmup_interval: Duration::from_millis(250),
 };
+
+/// The warm-up's first published round trip: its lower quartile. Session setup only ever
+/// adds delay, so the low end is the route itself, while one lucky reply cannot set it.
+fn settled(samples: &mut [Duration]) -> Option<Duration> {
+    samples.sort_unstable();
+    samples.get(samples.len().saturating_sub(1) / 4).copied()
+}
+
+fn sleep_until(deadline: Instant) -> tokio::time::Sleep {
+    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline))
+}
 
 /// One outstanding ping at most. A late reply still belongs to that ping, so it can recover
 /// the indicator without retries piling up in SSH's ordered global-request reply queue.
@@ -124,12 +146,16 @@ async fn monitor_with_timing<P, F, R>(
     R: FnMut(HopLatency),
 {
     report(latency.clone());
+    let warmed_up = Instant::now() + timing.warmup;
+    let mut warmup = Vec::new();
     loop {
         let started = Instant::now();
         let answer = ping();
         tokio::pin!(answer);
-        let slow = tokio::time::sleep(timing.slow);
-        let unresponsive = tokio::time::sleep(timing.unresponsive);
+        // Until the first round trip is published, a late reply is part of the warm-up.
+        let not_before = if latency.round_trip.is_none() { warmed_up } else { started };
+        let slow = sleep_until((started + timing.slow).max(not_before));
+        let unresponsive = sleep_until((started + timing.unresponsive).max(not_before));
         tokio::pin!(slow, unresponsive);
         let mut warned = false;
         let mut stalled = false;
@@ -156,7 +182,18 @@ async fn monitor_with_timing<P, F, R>(
             return;
         }
         let now = Instant::now();
-        latency.answered(now.duration_since(started), now);
+        let sample = now.duration_since(started);
+        if latency.round_trip.is_none() {
+            warmup.push(sample);
+            if now < warmed_up {
+                tokio::time::sleep(timing.warmup_interval.min(warmed_up - now)).await;
+                continue;
+            }
+            latency.answered(settled(&mut warmup).unwrap_or(sample), now);
+            warmup = Vec::new();
+        } else {
+            latency.answered(sample, now);
+        }
         report(latency.clone());
 
         // Activation refreshes immediately; deactivation switches to the longer interval.
@@ -234,7 +271,59 @@ mod tests {
         background: Duration::from_secs(5),
         slow: Duration::from_millis(20),
         unresponsive: Duration::from_millis(40),
+        warmup: Duration::ZERO,
+        warmup_interval: Duration::ZERO,
     };
+
+    #[test]
+    fn warmup_settles_on_the_low_end_of_its_samples() {
+        let ms = Duration::from_millis;
+        assert_eq!(settled(&mut []), None);
+        assert_eq!(settled(&mut [ms(400)]), Some(ms(400)));
+        assert_eq!(settled(&mut [ms(400), ms(30)]), Some(ms(30)));
+        // A slow start and a backlog behind the shell's first output are left out, and so
+        // is the single fastest reply.
+        let mut samples = [ms(900), ms(450), ms(31), ms(30), ms(33), ms(29), ms(32), ms(35), ms(30)];
+        assert_eq!(settled(&mut samples), Some(ms(30)));
+    }
+
+    #[tokio::test]
+    async fn warmup_keeps_measuring_then_publishes_a_settled_round_trip() {
+        let (_focus, active) = watch::channel(true);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        // The first reply is held up as if by the shell starting; later ones are quick.
+        let delays = std::sync::Arc::new(std::sync::Mutex::new(vec![Duration::from_millis(120)]));
+        let started = Instant::now();
+        let task = tokio::spawn(monitor_with_timing(
+            HopLatency::new(0, "host".into()),
+            active,
+            move || {
+                let delay = delays.lock().unwrap().pop().unwrap_or(Duration::from_millis(2));
+                async move {
+                    tokio::time::sleep(delay).await;
+                    true
+                }
+            },
+            move |sample| {
+                tx.send(sample).unwrap();
+            },
+            Timing {
+                warmup: Duration::from_millis(250),
+                warmup_interval: Duration::from_millis(10),
+                // An overdue first reply is still part of the warm-up.
+                slow: Duration::from_millis(50),
+                unresponsive: Duration::from_millis(100),
+                ..TEST_TIMING
+            },
+        ));
+        assert_eq!(next(&mut rx).await.state, ReplyState::Measuring);
+        let first = next(&mut rx).await;
+        assert!(started.elapsed() >= Duration::from_millis(250));
+        assert_eq!(first.state, ReplyState::Responsive);
+        assert!(first.round_trip.unwrap() < Duration::from_millis(60), "{:?}", first.round_trip);
+        task.abort();
+        let _ = task.await;
+    }
 
     async fn next(rx: &mut tokio::sync::mpsc::UnboundedReceiver<HopLatency>) -> HopLatency {
         tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap()

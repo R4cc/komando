@@ -657,56 +657,96 @@ pub fn status_dot(color: Hsla) -> impl IntoElement {
     div().size(px(7.)).rounded_full().flex_shrink_0().bg(color)
 }
 
+/// One pass of the searching bars, including the rest before the next.
+const SEARCH_CYCLE: Duration = Duration::from_millis(1600);
+
+/// How lit searching bar `index` is, `delta` of the way through a cycle: each bar fades in
+/// a step after the one before it, all four fade out together, and the row rests dim.
+fn searching_level(index: usize, delta: f32) -> f32 {
+    let ease = |x: f32| {
+        let x = x.clamp(0., 1.);
+        x * x * (3. - 2. * x)
+    };
+    let on = 0.08 + index as f32 * 0.16;
+    ease((delta - on) / 0.08) * (1. - ease((delta - 0.8) / 0.12))
+}
+
 /// SSH connection quality, with a stable footprint and a hover target larger than the bars.
 /// Local shells and Remote Desktops keep their ordinary connection status dot.
 pub fn connection_indicator(
     status: &crate::session::Status,
     hops: &[crate::session::latency::HopLatency],
+    reduce_motion: bool,
     p: AppPalette,
 ) -> impl IntoElement {
     use crate::session::Status;
     use crate::session::latency::{ReplyState, weakest_hop};
 
+    let overdue = hops.iter().any(|hop| matches!(hop.state, ReplyState::Slow | ReplyState::Unresponsive));
+    // Until every hop has finished its warm-up the bars search, like a phone looking for
+    // signal: an early reading would look worse than the connection really is.
+    let searching = match status {
+        Status::Connecting => true,
+        Status::Connected => !overdue && (hops.is_empty() || hops.iter().any(|hop| hop.state == ReplyState::Measuring)),
+        Status::Disconnected(_) => false,
+    };
     // The weakest hop drives the bars, including an overdue Jump Host reply. All samples
     // measure from this computer; adding them together would count the early hops twice.
     let weakest = weakest_hop(hops);
-    let (bars, color) = match status {
-        Status::Connecting => (1, p.warning),
-        Status::Disconnected(_) => (0, p.text_faint),
-        Status::Connected => match weakest {
-            Some(hop) => {
-                let color = match hop.state {
-                    ReplyState::Measuring | ReplyState::Unavailable => p.text_faint,
-                    ReplyState::Slow => p.warning,
-                    ReplyState::Unresponsive => p.danger,
-                    ReplyState::Responsive => match hop.bars() {
-                        3..=4 => p.success,
-                        2 => p.warning,
-                        _ => p.danger,
-                    },
-                };
-                (hop.bars(), color)
-            }
-            None => (0, p.text_faint),
-        },
+    let (bars, color) = match (status, weakest) {
+        (Status::Connected, Some(hop)) => {
+            let color = match hop.state {
+                ReplyState::Measuring | ReplyState::Unavailable => p.text_faint,
+                ReplyState::Slow => p.warning,
+                ReplyState::Unresponsive => p.danger,
+                ReplyState::Responsive => match hop.bars() {
+                    3..=4 => p.success,
+                    2 => p.warning,
+                    _ => p.danger,
+                },
+            };
+            (hop.bars(), color)
+        }
+        _ => (0, p.text_faint),
     };
     // The final hop's round trip includes the whole route through any Jump Hosts.
-    let latency = match status {
-        Status::Connected => hops.iter().max_by_key(|hop| hop.hop).and_then(|hop| hop.round_trip),
-        _ => None,
-    };
-    let latency_text = match latency {
-        Some(rtt) if rtt < Duration::from_millis(1) => "<1 ms".to_string(),
-        Some(rtt) => format!("{} ms", rtt.as_millis()),
-        None => "— ms".to_string(),
-    };
-    let label = match &status {
-        Status::Connecting => "Connecting · SSH latency".to_string(),
-        Status::Disconnected(_) => "Disconnected".to_string(),
-        Status::Connected => match weakest {
-            Some(hop) => format!("SSH connection: {} of 4 bars · {}", bars, hop.description(Instant::now())),
-            None => "Connected · Measuring SSH latency…".to_string(),
+    let target = hops.iter().max_by_key(|hop| hop.hop).and_then(|hop| hop.round_trip);
+    let tip: SharedString = match (status, weakest.map(|hop| hop.state)) {
+        (Status::Connecting, _) => "Connecting…".into(),
+        (Status::Disconnected(_), _) => "Disconnected".into(),
+        _ if searching => "Measuring latency…".into(),
+        (_, Some(ReplyState::Unresponsive)) => "No reply for over 5 s".into(),
+        (_, Some(ReplyState::Slow)) => "Waiting for a reply…".into(),
+        _ => match target {
+            Some(rtt) if rtt < Duration::from_millis(1) => "<1 ms".into(),
+            Some(rtt) => format!("{} ms", rtt.as_millis()).into(),
+            None => "Latency unavailable".into(),
         },
+    };
+    let label = match (status, weakest) {
+        (Status::Disconnected(_), _) => "SSH connection: disconnected".to_string(),
+        _ if searching => "SSH connection: measuring latency".to_string(),
+        (_, Some(hop)) => format!("SSH connection: {bars} of 4 bars · {}", hop.description(Instant::now())),
+        _ => "SSH connection: latency unavailable".to_string(),
+    };
+    let bar = |index: usize| div().w(px(3.)).h(px(4. + index as f32 * 3.)).rounded(px(1.));
+    let meter = div().h(px(13.)).flex().items_end().gap(px(2.));
+    let meter = if searching && !reduce_motion {
+        // The bars light up one after another, shortest first, hold, then fade out together.
+        meter
+            .with_animation("connection-searching", Animation::new(SEARCH_CYCLE).repeat(), move |el, delta| {
+                el.children((0..4).map(|index| {
+                    let lit = searching_level(index, delta);
+                    bar(index).bg(p.text_muted.opacity(0.22 + 0.78 * lit))
+                }))
+            })
+            .into_any_element()
+    } else if searching {
+        meter.children((0..4).map(|index| bar(index).bg(p.text_muted.opacity(0.35)))).into_any_element()
+    } else {
+        meter
+            .children((0..4).map(|index| bar(index).bg(if index < bars as usize { color } else { color.opacity(0.25) })))
+            .into_any_element()
     };
     div()
         .id("connection-quality")
@@ -718,21 +758,28 @@ pub fn connection_indicator(
         .flex()
         .items_center()
         .justify_center()
-        .child(
-            div().h(px(13.)).flex().items_end().gap(px(2.)).children((0..4).map(|bar| {
-                div()
-                    .w(px(3.))
-                    .h(px(4. + bar as f32 * 3.))
-                    .rounded(px(1.))
-                    .bg(if bar < bars { color } else { color.opacity(0.25) })
-            })),
-        )
-        .tooltip(move |window, cx| Tooltip::new(latency_text.clone()).build(window, cx))
+        .child(meter)
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn searching_bars_fill_from_the_shortest_and_loop_without_a_jump() {
+        for index in 0..4 {
+            assert_eq!(searching_level(index, 0.), 0.);
+            assert_eq!(searching_level(index, 1.), 0.);
+            assert_eq!(searching_level(index, 0.78), 1.);
+        }
+        // Mid-fill, every shorter bar is at least as lit as a taller one.
+        for delta in [0.2, 0.35, 0.5, 0.6] {
+            let levels: Vec<f32> = (0..4).map(|index| searching_level(index, delta)).collect();
+            assert!(levels.windows(2).all(|pair| pair[0] >= pair[1]), "{delta}: {levels:?}");
+            assert!(levels[0] == 1. && levels[3] < 1.);
+        }
+    }
 
     #[test]
     fn shell_artwork_uses_native_frames_for_the_display_scale() {

@@ -4572,7 +4572,7 @@ impl Workspace {
         let is_ssh = matches!(entry.kind, SessionKind::Ssh { .. });
         let indicator = if is_ssh {
             let hops = entry.view.terminal().map(|view| view.read(cx).latency.as_slice()).unwrap_or_default();
-            connection_indicator(&entry.status, hops, p).into_any_element()
+            connection_indicator(&entry.status, hops, cx.reduce_motion(), p).into_any_element()
         } else {
             status_dot(status_color).into_any_element()
         };
