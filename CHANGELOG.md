@@ -6,11 +6,15 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-11-18
+
 ### Changed
 
 - Themes only change colors. Every theme uses the same corner rounding and flat surfaces
   as Komando Default. The interface uses Geist, and without a terminal font set in
   Settings the terminal uses Cascadia Mono.
+- The SFTP file browser is a panel of its own beside the terminal instead of a card on top
+  of it. Drag the gap between them to resize it.
 
 ## [0.8.4] - 2026-11-18
 
