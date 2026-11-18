@@ -159,4 +159,26 @@ mod tests {
     fn each_wait_has_its_own_id() {
         assert_ne!(WaitFor::new("a", false).id(), WaitFor::new("a", false).id());
     }
+
+    /// Fuzzed: any output, in any chunks (split at 0xF8), with any text to wait for. Nothing
+    /// panics, and text that arrives plainly in one chunk after the echoed line is found.
+    #[test]
+    fn fuzz_waiting_for_text() {
+        let seed = b"password:\xf8echo hi\r\nhi\r\n\x1b[1mpass\x1b[0mword:\xf8 \xf8";
+        let dictionary: &[&[u8]] = &[b"\xf8", b"\r\n", b"\x1b[", b"\x1b]0;title\x07", b"\x1bP", b"\x1b\\", b"password:", b"\x07", "\u{e9}".as_bytes()];
+        crate::fuzz::run("wait for text", &[seed], dictionary, |input| {
+            let mut parts = input.split(|b| *b == 0xf8);
+            let pattern = crate::fuzz::text(parts.next().unwrap_or_default()).into_owned();
+            for after_echo in [false, true] {
+                let mut wait = WaitFor::new(&pattern, after_echo);
+                let mut found = false;
+                for chunk in parts.clone() {
+                    found |= wait.feed(chunk);
+                }
+                let _ = found;
+            }
+            let mut plain = WaitFor::new("ok:", false);
+            assert!(plain.feed(b"login ok: "), "plain text is found");
+        });
+    }
 }

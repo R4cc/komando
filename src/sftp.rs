@@ -2145,4 +2145,46 @@ mod tests {
         })).unwrap();
     }
 
+    /// Fuzzed: a hostile server's folder listing, one entry per line ("/" at the end for a
+    /// folder). Whatever the names, the download stays inside its folder and never names two
+    /// entries alike.
+    #[test]
+    fn fuzz_download_names() {
+        let seed = b"README\nreadme\nfoo.\nfoo\ncon.log\naux/\naux/nul\nsub/\nsub/a\nsub/A\n../escape\n..\n.\n";
+        let dictionary: &[&[u8]] = &[b"/", b"\n", b"..", b".", b" ", b"CON", b"com1", b"LPT\xc2\xb9", b"conin$", b":", b"*", b"?", b"<", b"|", b"\\", b"\x00", "\u{130}".as_bytes(), "\u{df}".as_bytes()];
+        crate::fuzz::run("download names", &[seed], dictionary, |input| {
+            let text = crate::fuzz::text(input);
+            let mut dirs = vec![String::new()];
+            let mut files = vec![];
+            for line in text.lines().take(500) {
+                match line.strip_suffix('/') {
+                    Some(dir) => dirs.push(dir.to_string()),
+                    None => files.push((line.to_string(), 1)),
+                }
+            }
+            let (local_dirs, local_files) = map_download_names(&dirs, &files);
+            let mut seen = HashSet::new();
+            for local in local_dirs.iter().chain(local_files.iter().map(|(_, l, _)| l)) {
+                for part in local.split('/') {
+                    assert!(!matches!(part, "" | "." | ".."), "{local:?} has the part {part:?}");
+                    assert_eq!(local_file_name(part), part, "{part:?} of {local:?} isn't a safe name");
+                }
+                assert!(seen.insert(local.to_uppercase()), "two entries are named {local:?}");
+            }
+            for name in text.lines().take(50) {
+                for safe in [windows_file_name(name), unix_file_name(name)] {
+                    assert!(!safe.is_empty() && safe != "." && safe != "..", "{name:?} became {safe:?}");
+                    assert!(!safe.contains('/') && !safe.contains('\0'), "{name:?} became {safe:?}");
+                }
+                let windows = windows_file_name(name);
+                assert!(!windows.contains(['<', '>', ':', '"', '\\', '|', '?', '*']) && !windows.chars().any(char::is_control), "{windows:?}");
+                assert!(!windows.ends_with(['.', ' ']), "{name:?} became {windows:?}");
+                let stem = windows.split('.').next().unwrap_or_default();
+                assert!(!is_device_name(stem), "{name:?} became the device name {windows:?}");
+                assert_eq!(windows_file_name(&windows), windows, "not settled: {name:?}");
+            }
+            let id = Identity::parse_id(&text);
+            let _ = id.group_name(0);
+        });
+    }
 }

@@ -119,4 +119,18 @@ mod tests {
         assert!(!is_openable("komando:command-mark"));
         assert!(!is_openable("http://"));
     }
+
+    /// Found by fuzzing (`fuzz::targets::fuzz_links_in_output`): closing brackets after an
+    /// address are trimmed one at a time, and each step counts every bracket again, so the
+    /// time grows with the square of their number. The terminal looks a link up across up to
+    /// 33 rows, holding the terminal's lock, on pointer moves and output while one is hovered:
+    /// 6,600 brackets took 160 ms a lookup. The bound below is loose; linear work takes
+    /// well under a millisecond.
+    #[test]
+    fn closing_brackets_after_an_address_take_linear_time() {
+        let line = format!("see https://example.com/a{}", "]".repeat(20_000));
+        let started = std::time::Instant::now();
+        assert_eq!(link_at(&line, 6).map(|r| &line[r]), Some("https://example.com/a"));
+        assert!(started.elapsed() < std::time::Duration::from_millis(250), "took {:?}", started.elapsed());
+    }
 }

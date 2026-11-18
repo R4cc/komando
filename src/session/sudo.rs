@@ -254,4 +254,36 @@ mod tests {
         assert!(s.offer(10).is_none());
         assert!(!s.output_arrives(), "nothing offered, nothing to erase");
     }
+
+    /// Fuzzed: output and keys interleaved (a 0xF8 byte switches between them). The password
+    /// is only ever typed whole, for one Enter, right after the hint was offered.
+    #[test]
+    fn fuzz_prompts_and_keys() {
+        let seed = b"$ sudo ls\r\n[sudo] password for ana: \xf8\r\xf8\r\nSorry, try again.\r\n[sudo] password for ana: \xf8x\xf8\x1b[1m[sudo] Passwort f\xc3\xbcr ana:\x1b[0m \xf8\r";
+        let dictionary: &[&[u8]] = &[b"\xf8", b"\xf8\r\xf8", b"[sudo] password for ana: ", b"[sudo: authenticate] Password: ", b"\r", b"\n", b"\x1b[K", b"\x1b[31m", b"\x1b[I", b"[sudo", "\u{ff1a}".as_bytes(), b"ana"];
+        crate::fuzz::run("sudo prompts", &[seed], dictionary, |input| {
+            let mut s = sudo();
+            let mut offered = false;
+            for (i, part) in input.split(|b| *b == 0xf8).enumerate() {
+                if i % 2 == 0 {
+                    if s.output_arrives() {
+                        offered = false;
+                    }
+                    if s.output_shown(part) {
+                        offered = s.offer(1 + part.len() % 120).is_some();
+                    }
+                } else {
+                    let was_offered = offered;
+                    let typed = s.typed(part.to_vec());
+                    if part != b"\x1b[I" && part != b"\x1b[O" {
+                        offered = false;
+                    }
+                    let leaked = typed.send.windows(7).any(|w| w == b"hunter2");
+                    if leaked {
+                        assert!(was_offered && part == b"\r" && &*typed.send == b"hunter2\r", "the password went out for {part:?}");
+                    }
+                }
+            }
+        });
+    }
 }

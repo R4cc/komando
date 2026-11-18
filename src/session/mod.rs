@@ -1052,4 +1052,93 @@ root@web01:~# ");
         proxy.send_event(Event::Wakeup);
         assert!(matches!(rx.try_recv(), Ok(SessionEvent::Wakeup)));
     }
+
+    /// Found by fuzzing (`fuzz_terminal_output`): copying a row that wraps a wide character onto
+    /// the next row. alacritty's `line_to_string` adds that character from the row *above*
+    /// (`line - 1`), not the one it went on to: on the top row of the Scrollback that is past
+    /// the grid and panics, elsewhere the copy gets another row's first character. Komando
+    /// copies through it for a selection (`selection_to_string`) and, for rows with a tab, for
+    /// Copy output (`scrollback_text`).
+    #[test]
+    fn copying_a_row_that_wraps_a_wide_character() {
+        let row_of = |prefix: &[u8]| {
+            let (term, _proxy, _rx) = replying_term();
+            let mut parser: Processor = Processor::new();
+            let mut bytes = prefix.to_vec();
+            bytes.extend(std::iter::repeat_n(b'x', 79));
+            bytes.extend("\u{1F600} done".as_bytes());
+            parser.advance(&mut *term.lock(), &bytes);
+            term
+        };
+        let copy = |term: &SharedTerm, line: i32| {
+            let t = term.lock();
+            let (start, end) = (Point::new(Line(line), Column(0)), Point::new(Line(line), t.grid().last_column()));
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.bounds_to_string(start, end)))
+        };
+        // Lower down, the wrapped character is the one added.
+        let lower = row_of(b"A\r\n");
+        let text = copy(&lower, 1).expect("copying a lower row");
+        assert!(!text.ends_with('A'), "copied the row above's first character: ...{:?}", &text[text.len() - 3..]);
+        // The top row panics.
+        assert!(copy(&row_of(b""), 0).is_ok(), "copying the top row panicked");
+        // Copy output, for a row with a tab.
+        let tabbed = row_of(b"\t");
+        let exported = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scrollback_text(&*tabbed.lock())));
+        assert!(exported.is_ok(), "Copy output panicked");
+    }
+
+    /// Fuzzed: terminal output as a server could send it, through the SSH output path, with
+    /// resizes in between (0xF8 'R' cols rows), then export and compaction. Widths start at 2
+    /// columns, as the terminal view's do: alacritty can't place a wide character in one. Nothing panics,
+    /// the cursor stays on the grid, and the grid keeps the size it was given.
+    #[test]
+    fn fuzz_terminal_output() {
+        let seed = b"\x1b[?1049h\x1b[2J\x1b[H\x1b[31mERROR\x1b[0m e\xcc\x81 \xe6\x97\xa5\xe6\x9c\xac\r\n\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\\x1b[?2026h\xf8R\x28\x10\x1b[10;5r\x1b[5S\x1b[?2026l\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07\x1b[?1049l\x1b[6n\x1b]11;?\x07";
+        let dictionary: &[&[u8]] = &[
+            b"\xf8R\x01\x01", b"\xf8R\xff\xff", b"\xf8R\x00\x05", b"\xf8", b"\x1b[", b"\x1b]", b"\x07", b"\x1b\\", b"\x1bP", b"\x1b[?2026h", b"\x1b[?2026l",
+            b"\x1b[?1049h", b"\x1b[?1049l", b"\x1b[?6h", b"\x1b[r", b"\x1b[999;999H", b"\x1b[4294967295C", b"\x1b[0;0r", b"\x1b[3J", b"\x1b[@", b"\x1b[999P", b"\x1b[999L",
+            b"\x1b[999M", b"\x1b[999X", b"\x1b[999b", b"\x1b#8", b"\x1b[?3h", b"\x1b[?7l", b"\x1b[g", b"\x1b[3g", b"\x1bH", b"\t", b"\x1b[999I", b"\x1b[999Z", b"\x1b]8;;x\x1b\\",
+            b"\x1b]52;c;aGVsbG8=\x07", b"\x1b]4;1;?\x07", b"\x1b]133;A\x07", b"\x1b]133;D;1\x07", b"\x1b]7;file:///tmp\x07", b"\x1b[38;2;1;2;3m", b"\x1b[38:5:9m", b"\x1b[>c",
+            b"\x1b[14t", b"\x1b[18t", b"\x1b[22;0t", b"\x1b[23;0t", b"\x1b%G", b"\x1b(0", b"\x0e", b"\x0f", "\u{1F600}".as_bytes(), "\u{300}".as_bytes(), "\u{fe0f}".as_bytes(),
+            "\u{200d}".as_bytes(), "\u{3000}".as_bytes(), b"\r\n", b"\x08", b"\x7f",
+        ];
+        crate::fuzz::run("terminal output", &[seed], dictionary, |input| {
+            let (term, proxy, _rx) = replying_term();
+            let mut output = ssh::Output::default();
+            for part in input.split(|b| *b == 0xf8) {
+                match part {
+                    [b'R', cols, rows, rest @ ..] => {
+                        let size = GridSize { cols: 2 + u16::from(*cols) % 299, rows: 1 + u16::from(*rows) % 100, cell_width: 9, cell_height: 18 };
+                        let cancelled = AtomicBool::new(false);
+                        let from = term.lock().columns();
+                        prepare_width(&term, from, usize::from(size.cols), &cancelled);
+                        proxy.set_size(size);
+                        resize(&mut *term.lock(), size);
+                        compact_rows(&term, usize::from(size.cols));
+                        let t = term.lock();
+                        assert_eq!((t.columns(), t.screen_lines()), (usize::from(size.cols), usize::from(size.rows)), "the grid didn't take its size");
+                        drop(t);
+                        output.feed(&term, &proxy, rest);
+                    }
+                    _ => output.feed(&term, &proxy, part),
+                }
+            }
+            output.flush(&term, &proxy);
+            let t = term.lock();
+            let cursor = t.grid().cursor.point;
+            assert!(cursor.column.0 < t.columns() && cursor.line.0 >= 0 && (cursor.line.0 as usize) < t.screen_lines(), "the cursor left the grid: {cursor:?}");
+            // A row that wraps a wide character can't be copied yet: a known bug with a test of
+            // its own (`copying_a_row_that_wraps_a_wide_character`), left out here.
+            use alacritty_terminal::term::cell::Flags;
+            let wraps_wide = (-(t.grid().history_size() as i32)..t.screen_lines() as i32)
+                .any(|line| t.grid()[Line(line)][t.grid().last_column()].flags.contains(Flags::LEADING_WIDE_CHAR_SPACER));
+            if !wraps_wide {
+                let text = scrollback_text(&*t);
+                assert!(!text.contains('\0'));
+                let _ = tidy_export(&text);
+            }
+            drop(t);
+            drop_blank_scrollback(&mut *term.lock());
+        });
+    }
 }

@@ -680,4 +680,31 @@ mod tests {
         let (channel, _server) = tokio::io::duplex(64);
         assert!(remote.accept(9000, Box::new(channel)), "the forward shown as open must take the server's connections");
     }
+
+    /// Fuzzed: whatever a program sends to the SOCKS port, the handshake ends (no hang, no
+    /// panic), replies only with well-formed SOCKS5 messages, and asks for a channel only
+    /// for a CONNECT it read in full.
+    #[test]
+    fn fuzz_socks_handshakes() {
+        let seeds: &[&[u8]] = &[&[5, 1, 0, 5, 1, 0, 3, 11, b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'.', b'c', b'o', b'm', 0, 80], &[5, 2, 2, 0, 5, 1, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 187], &[4, 1, 0, 80, 1, 2, 3, 4, 0]];
+        let dictionary: &[&[u8]] = &[&[5], &[5, 1, 0], &[5, 255], &[0], &[1], &[3], &[4], &[255], &[3, 0], &[3, 255]];
+        crate::fuzz::run("socks handshakes", seeds, dictionary, |input| {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            runtime.block_on(async {
+                let (mut near, mut far) = tokio::io::duplex(64 * 1024);
+                far.write_all(input).await.unwrap();
+                far.shutdown().await.unwrap();
+                let result = tokio::time::timeout(Duration::from_secs(2), socks_handshake(&mut near)).await.expect("the handshake ends");
+                drop(near);
+                let mut written = vec![];
+                far.read_to_end(&mut written).await.unwrap();
+                assert!(written.is_empty() || written == [5, 0] || written == [5, 0xff], "replied {written:?}");
+                if let Ok(request) = result {
+                    assert!(input.len() >= 10, "a request from {} bytes", input.len());
+                    assert_eq!(input[0], 5);
+                    assert!(request.host.len() <= 255 * 3, "a {}-byte host from one length byte", request.host.len());
+                }
+            });
+        });
+    }
 }

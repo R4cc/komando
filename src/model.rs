@@ -2240,6 +2240,23 @@ mod tests {
         assert!(lib.move_host("web", "p2", "p1"));
     }
 
+    /// Found by fuzzing (`fuzz::targets::fuzz_mobaxterm_files`): `toml` 0.8's writer counts
+    /// quotes in a row in a `u8`, so a name, address or Startup Command with 256 of them panics
+    /// on save in builds with overflow checks (dev, `ci`, tests). Release builds wrap the count
+    /// and still write it correctly. Any import or form can bring such a string in.
+    #[test]
+    fn names_with_long_runs_of_quotes_save() {
+        for quote in ["'", "\""] {
+            let mut host = named("web");
+            host.name = quote.repeat(256);
+            host.startup_commands = vec![StartupCommand::new(format!("echo {}", quote.repeat(300)))];
+            let lib = library(vec![host]);
+            let saved = std::panic::catch_unwind(|| toml::to_string_pretty(&lib));
+            let text = saved.unwrap_or_else(|_| panic!("saving a host named with 256 {quote} panicked")).unwrap();
+            assert_eq!(toml::from_str::<Library>(&text).unwrap(), lib);
+        }
+    }
+
     #[test]
     fn port_forwards_open_the_projects_first_unless_a_host_leaves_them_out() {
         let mut web = named("web");

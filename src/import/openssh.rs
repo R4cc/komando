@@ -847,4 +847,73 @@ mod tests {
         assert!(parse("Host *\n  User me\n").groups.is_empty());
         assert!(parse("").groups.is_empty());
     }
+
+    /// Found by fuzzing (`fuzz_ssh_configs`): `HostName ""` gives the host an empty address. It
+    /// would be added and could never connect; the other importers leave such a host out with a
+    /// note.
+    #[test]
+    fn an_empty_host_name_is_not_imported_as_an_address() {
+        let found = parse("Host b\n  HostName \"\"\n");
+        for host in found.groups.iter().flat_map(|g| &g.hosts) {
+            assert!(!host.address.is_empty(), "{} was imported without an address", host.name);
+        }
+    }
+
+    /// Found by fuzzing (`fuzz_ssh_configs`): files that include each other more than once are
+    /// read again at every level up to `MAX_DEPTH`, so the lines grow as (includes)^16. Two
+    /// Includes make 65,536 copies; three freeze Komando (the import runs on the UI thread)
+    /// and fill its memory. `ssh` stops such a loop with an error instead.
+    #[test]
+    fn includes_that_loop_stop_growing() {
+        let dir = std::env::temp_dir().join(format!("komando-ssh-loop-{}", crate::model::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = "Host web\n  HostName web.lan\nInclude config\nInclude config\n";
+        std::fs::write(dir.join("config"), config).unwrap();
+        let mut lines = vec![];
+        expand(config, &dir, None, 0, None, &mut lines);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(lines.len() < 1000, "{} lines from a 4-line file", lines.len());
+    }
+
+    /// Fuzzed: SSH configs with their Includes, in a folder of their own. Paths stay relative
+    /// to it, so no other file on this computer is read.
+    #[test]
+    fn fuzz_ssh_configs() {
+        let seed = b"Host bastion\n  HostName bastion.example.com\n  Port 2222\n  User ops\n  IdentityFile ~/.ssh/id_ed25519\n\
+            Host web db *.lan !old.lan\n  ProxyJump ops@bastion:2222,[fe80::1]:22\n  LocalForward 8080 db.lan:5432\n  RemoteForward [::1]:9000 localhost:3000\n  DynamicForward *:1080\n  GatewayPorts yes\n\
+            Match host web exec true\n  User web\n\
+            Host %h-alias\n  HostName %h.example.com\n\
+            Include extra\nHost *\n  User everyone\n";
+        let dictionary: &[&[u8]] = &[
+            b"\nHost ", b"\nMatch ", b"\n  HostName ", b"\n  ProxyJump ", b"\n  ProxyCommand ", b"\n  LocalForward ", b"\n  RemoteForward ",
+            b"\n  DynamicForward ", b"\nInclude extra\n", b"\nInclude c*\n", b"\nInclude e* e?tra\n", b"=", b"\"", b"%h", b"%%", b"%",
+            b"!", b"*", b"?", b"[", b"]", b":", b"@", b",", b"none", b"ssh://", b"\t", b"#",
+        ];
+        let dir = std::env::temp_dir().join(format!("komando-fuzz-ssh-{}", crate::model::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("extra"), "Host extra\n  HostName extra.lan\n  ProxyJump web\n").unwrap();
+        let base = dir.clone();
+        crate::fuzz::run("ssh configs", &[seed], dictionary, move |input| {
+            let text = crate::fuzz::text(input);
+            // A file that includes itself more than once grows exponentially: a known bug with
+            // a test of its own (`includes_that_loop_stop_growing`), left out here.
+            if text.contains(['/', '\\', '~']) || text.to_lowercase().matches("include").count() > 1 {
+                return;
+            }
+            std::fs::write(base.join("config"), text.as_bytes()).unwrap();
+            let mut lines = vec![];
+            expand(&text, &base, None, 0, None, &mut lines);
+            let found = found(&lines);
+            for host in found.groups.iter().flat_map(|g| &g.hosts) {
+                assert!(host.port != 0, "{} has port 0", host.name);
+                // `HostName ""` is a known bug with a test of its own
+                // (`an_empty_host_name_is_not_imported_as_an_address`), left out here.
+                if host.address.is_empty() {
+                    return;
+                }
+            }
+            crate::fuzz::check_import(&found);
+        });
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

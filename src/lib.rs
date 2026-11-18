@@ -8,6 +8,8 @@ pub mod desktop;
 pub mod elevate;
 pub mod export;
 pub mod favorites;
+#[cfg(test)]
+mod fuzz;
 pub mod highlight;
 pub mod history;
 pub mod icons;
