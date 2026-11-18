@@ -21,7 +21,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 /// The most one input may take before it counts as a hang.
 const SLOW: Duration = Duration::from_secs(5);
@@ -80,9 +80,9 @@ pub(crate) fn run(name: &str, seeds: &[&[u8]], dictionary: &[&[u8]], check: impl
         }
     }
     for iteration in 0..iterations() {
-        let parent = &corpus[rng.gen_range(0..corpus.len())];
+        let parent = &corpus[rng.random_range(0..corpus.len())];
         let mut input = parent.clone();
-        for _ in 0..rng.gen_range(1..=6) {
+        for _ in 0..rng.random_range(1..=6) {
             mutate(&mut input, &corpus, &tokens, &mut rng);
         }
         if let Err(why) = worker.try_input(&input) {
@@ -95,10 +95,10 @@ pub(crate) fn run(name: &str, seeds: &[&[u8]], dictionary: &[&[u8]], check: impl
             );
         }
         // Keep some of what was made, so later inputs build on deeper ones.
-        if corpus.len() < 256 && rng.gen_ratio(1, 8) {
+        if corpus.len() < 256 && rng.random_ratio(1, 8) {
             corpus.push(input);
-        } else if rng.gen_ratio(1, 16) {
-            let at = rng.gen_range(seeds.len().min(corpus.len() - 1)..corpus.len());
+        } else if rng.random_ratio(1, 16) {
+            let at = rng.random_range(seeds.len().min(corpus.len() - 1)..corpus.len());
             corpus[at] = input;
         }
     }
@@ -179,65 +179,65 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 fn mutate(input: &mut Vec<u8>, corpus: &[Vec<u8>], tokens: &[&[u8]], rng: &mut StdRng) {
     let len = input.len();
-    let at = |rng: &mut StdRng| rng.gen_range(0..=input.len());
-    match rng.gen_range(0..12) {
+    let at = |rng: &mut StdRng| rng.random_range(0..=input.len());
+    match rng.random_range(0..12) {
         0 if len > 0 => {
-            let i = rng.gen_range(0..len);
-            input[i] ^= 1 << rng.gen_range(0..8);
+            let i = rng.random_range(0..len);
+            input[i] ^= 1 << rng.random_range(0..8);
         }
         1 if len > 0 => {
-            let i = rng.gen_range(0..len);
-            input[i] = INTERESTING[rng.gen_range(0..INTERESTING.len())];
+            let i = rng.random_range(0..len);
+            input[i] = INTERESTING[rng.random_range(0..INTERESTING.len())];
         }
         2 | 3 => {
             let i = at(rng);
-            let token = tokens[rng.gen_range(0..tokens.len())];
+            let token = tokens[rng.random_range(0..tokens.len())];
             input.splice(i..i, token.iter().copied());
         }
         4 if len > 0 => {
-            let start = rng.gen_range(0..len);
-            let end = rng.gen_range(start..=len.min(start + 64));
+            let start = rng.random_range(0..len);
+            let end = rng.random_range(start..=len.min(start + 64));
             input.drain(start..end);
         }
         5 if len > 0 => {
             // Repeat a piece: deep nesting, long lines, many entries.
-            let start = rng.gen_range(0..len);
-            let end = rng.gen_range(start..=len.min(start + 32));
+            let start = rng.random_range(0..len);
+            let end = rng.random_range(start..=len.min(start + 32));
             let piece = input[start..end].to_vec();
-            let times = if rng.gen_ratio(1, 8) { rng.gen_range(100..2000) } else { rng.gen_range(1..8) };
+            let times = if rng.random_ratio(1, 8) { rng.random_range(100..2000) } else { rng.random_range(1..8) };
             let i = at(rng);
             input.splice(i..i, piece.iter().copied().cycle().take(piece.len() * times));
         }
         6 => {
-            let other = &corpus[rng.gen_range(0..corpus.len())];
+            let other = &corpus[rng.random_range(0..corpus.len())];
             if !other.is_empty() {
-                let start = rng.gen_range(0..other.len());
-                let end = rng.gen_range(start..=other.len());
+                let start = rng.random_range(0..other.len());
+                let end = rng.random_range(start..=other.len());
                 let i = at(rng);
                 input.splice(i..i, other[start..end].iter().copied());
             }
         }
         7 => {
             let i = at(rng);
-            let n = rng.gen_range(1..16);
-            let bytes: Vec<u8> = (0..n).map(|_| rng.r#gen()).collect();
+            let n = rng.random_range(1..16);
+            let bytes: Vec<u8> = (0..n).map(|_| rng.random()).collect();
             input.splice(i..i, bytes);
         }
-        8 if len > 0 => input.truncate(rng.gen_range(0..len)),
-        9 if rng.gen_ratio(1, 4) => {
+        8 if len > 0 => input.truncate(rng.random_range(0..len)),
+        9 if rng.random_ratio(1, 4) => {
             let i = at(rng);
-            let byte = INTERESTING[rng.gen_range(0..INTERESTING.len())];
-            input.splice(i..i, std::iter::repeat_n(byte, rng.gen_range(1000..20_000)));
+            let byte = INTERESTING[rng.random_range(0..INTERESTING.len())];
+            input.splice(i..i, std::iter::repeat_n(byte, rng.random_range(1000..20_000)));
         }
         10 => {
             // A number where one was: past the edges of the integer types.
             let numbers: [&[u8]; 8] = [b"0", b"-1", b"255", b"256", b"65535", b"65536", b"4294967296", b"99999999999999999999"];
             let i = at(rng);
-            input.splice(i..i, numbers[rng.gen_range(0..numbers.len())].iter().copied());
+            input.splice(i..i, numbers[rng.random_range(0..numbers.len())].iter().copied());
         }
         _ => {
             if len > 1 {
-                let (a, b) = (rng.gen_range(0..len), rng.gen_range(0..len));
+                let (a, b) = (rng.random_range(0..len), rng.random_range(0..len));
                 input.swap(a, b);
             }
         }
