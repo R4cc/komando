@@ -1,0 +1,16 @@
+{
+  "application": "Windows Terminal + Windows OpenSSH",
+  "measured_on": "2026-11-13",
+  "version": "not recorded",
+  "source": "../../benchmarks.md#earlier-windows-terminal-comparison-komando-036",
+  "kind": "Rounded historical summaries, not new measurements or raw trials",
+  "settings": "Approximately 1600 x 1000 window; default 9001-line scrollback; earlier log fixture",
+  "metrics": {
+    "startup_ms": 351,
+    "idle_1_mb": 29,
+    "idle_10_mb": 127,
+    "processes_10": 21,
+    "throughput_seconds": 1.4
+  },
+  "memory_units": "MB as originally reported; original raw byte samples are not available here"
+}

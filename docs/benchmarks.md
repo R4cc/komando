@@ -6,48 +6,48 @@ The numbers in the README, how they were measured, and their limits.
 
 | Application | Startup | Memory, 1 idle SSH Session | Memory, 10 idle SSH Sessions | Processes, 10 Sessions | A million log lines | Measured |
 |---|---:|---:|---:|---:|---:|---|
-| Komando 0.4.0 | 187 ms | 23.5 MB | 28.3 MB | 1 | 0.81 s | 2026-11-14 |
+| Komando 0.8.4 | 203 ms | 29.7 MB | 36.5 MB | 1 | 0.37 s | 2026-11-18 |
 | Windows Terminal + OpenSSH* | 351 ms | 29 MB | 127 MB | 21 | 1.4 s | 2026-11-13 |
-| Tabby 1.0.238 | 725 ms | 318.7 MB | 382.8 MB | 5 | 4.19 s | 2026-11-14 |
+| Tabby 1.0.238 | 687 ms | 319.6 MB | 380.8 MB | 5 | 3.73 s | 2026-11-18 |
 
 \*The Windows Terminal row repeats the rounded historical figures below. Its version was not
 recorded, its window was approximately 1600 × 1000, its Scrollback was the default 9,001 lines,
 and its million-line fixture was reported as 95.6 MB. Komando and Tabby use the newer matched
-107 × 40 grid, 100,000-line Scrollback and 100,778,552-byte fixture described next. The earlier
+104 × 40 grid, 100,000-line Scrollback and 100,778,552-byte fixture described next. The earlier
 memory figures retain their originally reported MB units; original raw byte samples are not
 available here. This overview is not a controlled three-way benchmark or a basis for speed-up
-ratios against Windows Terminal. Its [historical summary](performance/2026-11-14/windows-terminal-historical.json)
+ratios against Windows Terminal. Its [historical summary](performance/2026-11-18/windows-terminal-historical.json)
 is kept separately from the new raw trials.
 
-## Komando 0.4.0 versus Tabby 1.0.238
+## Komando 0.8.4 versus Tabby 1.0.238
 
-Measured on 2026-11-14 on the Windows 11 machine described below, using the installed
-**Komando 0.4.0** for startup and the installed **Tabby 1.0.238** for all Tabby measurements.
-Komando's SSH measurements use a release-built launcher linked to the unchanged 0.4.0
+Measured on 2026-11-18 on the Windows 11 machine described below, using the installed
+**Komando 0.8.4** for startup and the installed **Tabby 1.0.238** for all Tabby measurements.
+Komando's SSH measurements use a release-built launcher linked to the unchanged 0.8.4
 library. It only seeds a disposable Project, unlocks a disposable Vault and opens the
 requested Sessions through the normal application. It does not replace SSH, the parser,
 rendering or the allocator. This is a whole GUI application measurement, not a headless parser
 test; the SSH results are not measurements of the installed Komando executable itself.
 
-The [raw trials and computed medians](performance/2026-11-14/results.json) and
-[versions, executable hashes and source revisions](performance/2026-11-14/environment.json)
+The [raw trials and computed medians](performance/2026-11-18/results.json) and
+[versions, executable hashes and source revisions](performance/2026-11-18/environment.json)
 are included. The library's `src`, `vendor`, `Cargo.toml` and `Cargo.lock` matched the
-`v0.4.0` source at `6edfabb` when the launcher was built.
+`v0.8.4` source at `2f48773` when the launcher was built.
 
 ### Results
 
-| Metric | Komando 0.4.0 | Tabby 1.0.238 | Tabby / Komando |
+| Metric | Komando 0.8.4 | Tabby 1.0.238 | Tabby / Komando |
 |---|---:|---:|---:|
-| Warm launch to visible window, median | 187 ms | 725 ms | 3.9× |
-| Startup range, five launches | 187–189 ms | 723–772 ms | |
-| Private working set, 1 idle SSH Session | 23.5 MB | 318.7 MB | 13.5× |
-| Memory range, all 15 samples | 23.3–24.3 MB | 316.2–320.3 MB | |
-| Private working set, 10 idle SSH Sessions | 28.3 MB | 382.8 MB | 13.5× |
-| Memory range, all 15 samples | 28.1–28.6 MB | 380.9–396.5 MB | |
+| Warm launch to visible window, median | 203 ms | 687 ms | 3.4× |
+| Startup range, five launches | 190–204 ms | 672–692 ms | |
+| Private working set, 1 idle SSH Session | 29.7 MB | 319.6 MB | 10.7× |
+| Memory range, all 15 samples | 29.5–30.2 MB | 318.8–321.2 MB | |
+| Private working set, 10 idle SSH Sessions | 36.5 MB | 380.8 MB | 10.4× |
+| Memory range, all 15 samples | 36.4–37.6 MB | 380.6–382.4 MB | |
 | Client process count, 1 or 10 Sessions | 1 | 5 | |
-| 1,000,000 coloured log lines, median | 0.808 s | 4.189 s | 5.2× |
-| Throughput time range, five runs | 0.803–0.811 s | 3.828–4.302 s | |
-| Throughput, median | 124.7 MB/s | 24.1 MB/s | 5.2× |
+| 1,000,000 coloured log lines, median | 0.367 s | 3.729 s | 10.1× |
+| Throughput time range, five runs | 0.365–0.379 s | 3.699–3.815 s | |
+| Throughput, median | 274.3 MB/s | 27.0 MB/s | 10.1× |
 
 ### Method
 
@@ -62,9 +62,10 @@ are included. The library's `src`, `vendor`, `Cargo.toml` and `Cargo.lock` match
   is involved. Ten Sessions use ten separate SSH connections, with Tabby's reuse disabled.
   Saved user profiles, credentials and application settings are not loaded or changed.
 - **Terminal settings:** Cascadia Mono at size 14 and 100,000 lines of Scrollback in both.
-  The final PTY size is checked as **107 columns × 40 rows**. Komando uses its normal window,
-  sidebar and minimap; Tabby's window is sized to give the same terminal grid. A matching
-  outer window would give Tabby a larger grid because Komando also shows the sidebar.
+  The final PTY size is checked as **104 columns × 40 rows**, the grid Komando's default
+  1280 × 800 window gives with its normal sidebar and minimap. Tabby's window (867 × 748) is
+  sized to give the same terminal grid. A matching outer window would give Tabby a larger grid
+  because Komando also shows the sidebar.
   Other rendering features retain each application's defaults. Automatic update checks and
   Tabby's analytics are disabled in the disposable configurations.
 - **Memory:** private resident working set, summed over the full client process tree, using
@@ -91,12 +92,12 @@ python -m venv target/tabby-benchmark/venv
 cargo build --release --locked --example benchmark_client
 ```
 
-Run [compare.py](performance/2026-11-14/compare.py) sequentially, with only one benchmark
+Run [compare.py](performance/2026-11-18/compare.py) sequentially, with only one benchmark
 application open at a time. Startup and throughput each produce five runs by default:
 
 ```powershell
 $benchmarkPython = 'target/tabby-benchmark/venv/Scripts/python.exe'
-$benchmarkScript = 'docs/performance/2026-11-14/compare.py'
+$benchmarkScript = 'docs/performance/2026-11-18/compare.py'
 foreach ($benchmarkApp in @('komando', 'tabby')) {
     & $benchmarkPython -B $benchmarkScript --app $benchmarkApp --mode startup
     & $benchmarkPython -B $benchmarkScript --app $benchmarkApp --mode throughput
@@ -111,14 +112,33 @@ foreach ($benchmarkRepeat in 1..3) {
 ```
 
 Output and disposable configurations go under the ignored `target/tabby-benchmark` directory.
-The launcher refuses an existing data directory. The script terminates only the processes it
-started. If font metrics, display scaling or application layout differ, adjust the fixture
-window size to get the checked 107 × 40 grid before comparing results.
-[summarize.py](performance/2026-11-14/summarize.py) can collect the latest complete trials and
+Move earlier trials out of it first, because the summary takes the newest complete trials it
+finds. The launcher refuses an existing data directory. The script terminates only the
+processes it started. If font metrics, display scaling or Komando's layout differ, the run
+stops and reports the grid it found. Set `GRID` in compare.py to Komando's grid and adjust
+`TABBY_WINDOW` until Tabby reports the same grid before comparing results.
+[summarize.py](performance/2026-11-18/summarize.py) can collect the latest complete trials and
 regenerate the light and dark three-terminal graphics. Pass `--charts-only` instead of a results
 directory to redraw them from the checked-in results and historical summary without collecting
 new trials. The checked-in environment file records this
 run; record the new machine and binary versions separately when repeating it.
+
+## Earlier Tabby comparison: Komando 0.4.0
+
+Measured on 2026-11-14 with the same method, except that Komando 0.4.0's default window gave a
+**107 × 40** grid and Tabby's window was 892 × 748 to match it. Because the grids differ, these
+figures are not directly comparable with the 0.8.4 run above.
+
+| Metric | Komando 0.4.0 | Tabby 1.0.238 |
+|---|---:|---:|
+| Warm launch to visible window, median | 187 ms | 725 ms |
+| Private working set, 1 idle SSH Session | 23.5 MB | 318.7 MB |
+| Private working set, 10 idle SSH Sessions | 28.3 MB | 382.8 MB |
+| 1,000,000 coloured log lines, median | 0.808 s | 4.189 s |
+
+The [raw trials](performance/2026-11-14/results.json),
+[environment](performance/2026-11-14/environment.json) and
+[scripts](performance/2026-11-14/compare.py) for that run are kept unchanged.
 
 ## Earlier Windows Terminal comparison: Komando 0.3.6
 
