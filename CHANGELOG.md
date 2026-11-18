@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-11-18
+
 ## [0.8.2] - 2026-11-18
 
 ### Added
