@@ -439,6 +439,10 @@ pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<
             if read == 0 {
                 break;
             }
+            // A server that keeps sending past the listed size would otherwise fill the disk.
+            if total + read as u64 > asset.size {
+                bail!("The download is larger than the {} bytes GitHub lists for it.", asset.size);
+            }
             file.write_all(&buffer[..read]).with_context(saving)?;
             hasher.update(&buffer[..read]);
             total += read as u64;
@@ -1091,6 +1095,20 @@ mod tests {
         server.join().unwrap();
         result.unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"installer");
+        assert!(!dest.with_extension("part").exists());
+    }
+
+    #[test]
+    fn a_download_stops_once_it_passes_the_listed_size() {
+        let dir = TestDir::new();
+        let dest = dir.0.join("installer.msi");
+        let (mut asset, server) = download_fixture(b"installer");
+        asset.size = 4;
+        let result = download(&asset, &dest, Arc::new(AtomicU64::new(0)));
+        server.join().unwrap();
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("larger than the 4 bytes"), "{error}");
+        assert!(!dest.exists());
         assert!(!dest.with_extension("part").exists());
     }
 

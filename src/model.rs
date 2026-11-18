@@ -2196,6 +2196,20 @@ mod tests {
         assert_eq!(jump_addresses(&lib, "db"), ["bastion.lan"]);
     }
 
+    /// Regression: the host and project forms refuse a Host whose own forward listens on the
+    /// same port, in the same place, as its Project's. Moving a Host between Projects must not
+    /// produce that combination either.
+    #[test]
+    fn moving_a_host_never_gives_it_two_forwards_on_one_port() {
+        let mut web = named("web");
+        web.port_forwards = vec![PortForward::remote(9000, "localhost", 4000)];
+        let mut lib = two_projects(vec![web]);
+        lib.projects[1].port_forwards = vec![PortForward::remote(9000, "localhost", 3000)];
+        let moved = lib.move_host("web", "p1", "p2");
+        let ports: Vec<u16> = lib.resolve("p2", "web").map(|r| r.port_forwards.iter().map(|f| f.port).collect()).unwrap_or_default();
+        assert!(!moved || ports.iter().filter(|p| **p == 9000).count() < 2, "moved into a clash: {ports:?}");
+    }
+
     #[test]
     fn port_forwards_open_the_projects_first_unless_a_host_leaves_them_out() {
         let mut web = named("web");

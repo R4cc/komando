@@ -85,6 +85,23 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    /// Regression: a store that can't be read as UTF-8 (one damaged byte, or a line written by
+    /// another tool) must not make a trusted server look new, nor lose the other servers when
+    /// one more is trusted.
+    #[test]
+    fn a_damaged_line_neither_hides_trusted_servers_nor_erases_them() {
+        let dir = std::env::temp_dir().join(format!("komando-rdp-trust-{}", crate::model::new_id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE);
+        fs::write(&path, b"win01:3389 SHA256:a\nwin\xff02:3389 SHA256:b\n").unwrap();
+        let known = check(&path, "win01:3389", "SHA256:evil");
+        trust(&path, "win03:3389", "SHA256:c").unwrap();
+        let kept = check(&path, "win01:3389", "SHA256:a");
+        let _ = fs::remove_dir_all(dir);
+        assert_eq!(known, Known::Changed { previous: "SHA256:a".into() }, "a changed certificate must not look like a first connection");
+        assert_eq!(kept, Known::Trusted, "trusting another server erased this one");
+    }
+
     #[test]
     fn fingerprints_read_like_host_keys() {
         assert_eq!(fingerprint(b""), "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU");

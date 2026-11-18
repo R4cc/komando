@@ -6,6 +6,15 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- When a change to your shells in Settings can't be saved, Komando now shows the shells as
+  they are saved instead of a change that would be lost on restart, and the shell form stays
+  open with what you typed.
+- The daily usage ping is sent once a day even when Komando can't write to its data folder.
+- An update download stops as soon as it is larger than the release lists, instead of filling
+  the disk.
+
 ## [0.8.3] - 2026-11-18
 
 ## [0.8.2] - 2026-11-18

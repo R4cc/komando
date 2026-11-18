@@ -241,6 +241,23 @@ mod tests {
         fs::remove_dir_all(dir).ok();
     }
 
+    /// Regression: two Komando processes share one Vault (Linux and macOS have no single-
+    /// instance guard; on Windows the elevated shell window is a second full process). A
+    /// credential saved in one must survive a later save in the other.
+    #[test]
+    fn a_second_process_saving_does_not_drop_the_firsts_credential() {
+        let dir = temp_dir();
+        Vault::create(&dir, "correct horse").unwrap();
+        let mut first = Vault::unlock(&dir, "correct horse").unwrap();
+        let mut second = Vault::unlock(&dir, "correct horse").unwrap();
+        let a = first.add(password("from the main window")).unwrap();
+        let b = second.add(password("from the admin window")).unwrap();
+        let reopened = Vault::unlock(&dir, "correct horse").unwrap();
+        fs::remove_dir_all(&dir).ok();
+        assert!(reopened.get(&b).is_some());
+        assert!(reopened.get(&a).is_some(), "the first process's credential was overwritten");
+    }
+
     #[test]
     fn wrong_password_is_rejected() {
         let dir = temp_dir();

@@ -636,4 +636,28 @@ mod tests {
         let (channel, _) = tokio::io::duplex(16);
         assert!(!remote.accept(80, Box::new(channel)));
     }
+
+    /// Regression: two Remote forwards on the same port (a Host dragged into a Project that
+    /// forwards the same port, see `Library::move_host`). The server listens for the first and
+    /// refuses the second; the refusal must not take the working forward's connections away.
+    #[tokio::test]
+    async fn a_refused_duplicate_remote_forward_leaves_the_working_one_reachable() {
+        let target = echo().await;
+        let (report, seen) = reports();
+        let remote = RemoteForwards::default();
+        let taken = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let listen: Listen = {
+            let taken = taken.clone();
+            Arc::new(move |_, port| {
+                let fresh = taken.lock().unwrap().insert(port);
+                Box::pin(async move { if fresh { Ok(()) } else { Err(remote_refused(port as u16)) } })
+            })
+        };
+        let forwards = [PortForward::remote(9000, "127.0.0.1", target), PortForward::remote(9000, "127.0.0.1", target)];
+        let _tasks = start(&forwards, direct(), listen, &remote, report);
+        until(&seen, |s| matches!(s.state, ForwardState::Open { .. })).await;
+        until(&seen, |s| matches!(s.state, ForwardState::Failed(_))).await;
+        let (channel, _server) = tokio::io::duplex(64);
+        assert!(remote.accept(9000, Box::new(channel)), "the forward shown as open must take the server's connections");
+    }
 }

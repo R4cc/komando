@@ -41,6 +41,9 @@ fn endpoint(app_key: &str) -> Option<&'static str> {
     }
 }
 
+/// The day this process last sent a ping, whether or not `STATE_FILE` could be written.
+static SENT_ON: std::sync::Mutex<Option<NaiveDate>> = std::sync::Mutex::new(None);
+
 /// A ping is due when none was sent today.
 fn due(last: Option<NaiveDate>, today: NaiveDate) -> bool {
     last.is_none_or(|last| last < today)
@@ -101,7 +104,8 @@ pub fn ping_if_due(data_dir: &Path) -> Result<bool> {
 fn send_if_due(data_dir: &Path, url: &str) -> Result<bool> {
     let now = Utc::now();
     let today = now.date_naive();
-    if !due(last_ping(data_dir), today) {
+    let sent_here = *SENT_ON.lock().unwrap_or_else(|e| e.into_inner());
+    if !due(last_ping(data_dir).max(sent_here), today) {
         return Ok(false);
     }
     // As Aptabase's own SDKs make them: the time in seconds and a random part.
@@ -110,7 +114,10 @@ fn send_if_due(data_dir: &Path, url: &str) -> Result<bool> {
         ureq::Error::Status(code, _) => anyhow!("Aptabase answered with error {code}"),
         ureq::Error::Transport(err) => anyhow!("Couldn't reach Aptabase: {err}"),
     })?;
-    fs::write(data_dir.join(STATE_FILE), today.format("%Y-%m-%d").to_string())?;
+    // Remembered here too: when the file can't be written (a read-only or full disk), the
+    // hourly look would otherwise send another ping every hour.
+    *SENT_ON.lock().unwrap_or_else(|e| e.into_inner()) = Some(today);
+    crate::model::write_atomic(&data_dir.join(STATE_FILE), today.format("%Y-%m-%d").to_string().as_bytes())?;
     Ok(true)
 }
 

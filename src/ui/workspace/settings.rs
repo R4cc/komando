@@ -1606,31 +1606,41 @@ impl Workspace {
 
     // ---- local shells ------------------------------------------------------------------
 
-    fn save_library_or_toast(&mut self, cx: &mut Context<Self>) {
-        if let Err(err) = self.library.save(&self.data_dir) {
-            self.show_toast(format!("Could not save: {err:#}"), cx);
+    /// Change the standalone shells on a copy of the Library and keep it only once it is saved,
+    /// so a failed write leaves what is shown matching what is on disk. `false` when it failed.
+    fn change_shells(&mut self, change: impl FnOnce(&mut Library), cx: &mut Context<Self>) -> bool {
+        let mut library = self.library.clone();
+        change(&mut library);
+        let saved = self.commit_library(library);
+        if let Err(err) = &saved {
+            self.show_toast(err.clone(), cx);
         }
         cx.notify();
+        saved.is_ok()
     }
 
     fn toggle_shell_hidden(&mut self, name: &str, cx: &mut Context<Self>) {
-        if let Some(shell) = self.library.standalone_shells_mut().iter_mut().find(|s| s.name == name) {
-            shell.hidden = !shell.hidden;
-        }
-        self.save_library_or_toast(cx);
+        self.change_shells(
+            |library| {
+                if let Some(shell) = library.standalone_shells_mut().iter_mut().find(|s| s.name == name) {
+                    shell.hidden = !shell.hidden;
+                }
+            },
+            cx,
+        );
     }
 
     fn remove_shell(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.library.standalone_shells_mut().retain(|s| s.name != name);
+        if !self.change_shells(|library| library.standalone_shells_mut().retain(|s| s.name != name), cx) {
+            return;
+        }
         if self.shell_editor.as_ref().is_some_and(|e| e.editing.as_deref() == Some(name)) {
             self.clear_shell_editor(window, cx);
         }
-        self.save_library_or_toast(cx);
     }
 
     fn restore_detected_shells(&mut self, cx: &mut Context<Self>) {
-        self.library.restore_detected_shells();
-        self.save_library_or_toast(cx);
+        self.change_shells(Library::restore_detected_shells, cx);
     }
 
     fn new_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1703,7 +1713,8 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let shells = self.library.standalone_shells_mut();
+        let mut library = self.library.clone();
+        let shells = library.standalone_shells_mut();
         match editing.as_ref().and_then(|old| shells.iter_mut().find(|s| s.name == *old)) {
             Some(shell) => {
                 shell.name = name.clone();
@@ -1712,6 +1723,14 @@ impl Workspace {
                 shell.icon = icon.clone();
             }
             None => shells.push(LocalShell { name: name.clone(), program, args, icon, hidden: false }),
+        }
+        // Nothing changes, and the form stays open with what was typed, until it is on disk.
+        if let Err(err) = self.commit_library(library) {
+            if let Some(editor) = self.shell_editor.as_mut() {
+                editor.error = Some(err);
+            }
+            cx.notify();
+            return;
         }
         let saved = self.library.standalone_shells().into_iter().find(|s| s.name == name);
         // Open Sessions follow the change: they stay under the shell, and reconnect with it.
@@ -1722,7 +1741,6 @@ impl Workspace {
                 self.collapsed_items.insert(new_key);
             }
         }
-        self.save_library_or_toast(cx);
         self.close_overlay(window, cx);
     }
 
