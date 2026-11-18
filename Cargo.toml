@@ -21,7 +21,8 @@ rand = "0.8"
 zeroize = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+# 1.x: 0.8's writer counted quotes in a row in a `u8` and panicked on 256 of them.
+toml = "1"
 dirs = "5"
 uuid = { version = "1", features = ["v4", "serde"] }
 anyhow = "1"
@@ -92,6 +93,11 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features =
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+# The TOML reader of Komando 0.8 and older, so tests can check that settings and the Library
+# written now still open in them. Already built for rust-i18n.
+[dev-dependencies]
+toml_0_8 = { package = "toml", version = "0.8" }
 
 # The text system GPUI uses on Linux, for the headless render benchmark (`render_bench_`). GPUI
 # already depends on it; this only makes it reachable from tests.

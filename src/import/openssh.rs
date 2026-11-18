@@ -342,7 +342,7 @@ impl Settings {
             match line.key.as_str() {
                 "host" => applies = host_matches(&line.args, name),
                 "match" => {
-                    let host_name = settings.first("hostname").and_then(|h| expand_host_name(h, name)).unwrap_or_else(|| name.to_string());
+                    let host_name = usable_host_name(&settings, name).unwrap_or_else(|| name.to_string());
                     applies = match_criteria(&line.args).is_some_and(|criteria| criteria.iter().all(|c| c.holds(name, &host_name)));
                 }
                 key if applies && (MULTIPLE.contains(&key) || !settings.values.iter().any(|(k, _)| k == key)) => {
@@ -369,10 +369,16 @@ impl Settings {
 
 /// Where a name leads: its `HostName` (with `%h` for the name itself), port and user.
 fn address_of(settings: &Settings, name: &str) -> (String, u16, Option<String>) {
-    let address = settings.first("hostname").and_then(|h| expand_host_name(h, name)).unwrap_or_else(|| name.to_string());
+    let address = usable_host_name(&settings, name).unwrap_or_else(|| name.to_string());
     let port = settings.first("port").and_then(|p| p.parse::<u16>().ok()).filter(|p| *p != 0).unwrap_or(22);
     let user = settings.first("user").filter(|u| !u.contains('%')).map(str::to_string);
     (address, port, user)
+}
+
+/// The address a `HostName` gives `name`, if it is one: `%h` expanded, and not empty
+/// (`HostName ""` would leave the host nothing to connect to).
+fn usable_host_name(settings: &Settings, name: &str) -> Option<String> {
+    settings.first("hostname").and_then(|h| expand_host_name(h, name)).filter(|address| !address.trim().is_empty())
 }
 
 /// A `HostName` with its tokens replaced: `%h` is the name it is looked up by and `%%` a
@@ -573,8 +579,8 @@ fn left_out(settings: &Settings) -> Vec<LeftOut> {
     if let Some(interval) = settings.first("serveraliveinterval").filter(|v| *v != "0") {
         out.push(LeftOut::new("Keep-alive", format!("every {interval} s")));
     }
-    if let Some(host_name) = settings.first("hostname").filter(|h| expand_host_name(h, "").is_none()) {
-        out.push(LeftOut::new("Host name", host_name));
+    if let Some(host_name) = settings.first("hostname").filter(|h| h.trim().is_empty() || expand_host_name(h, "").is_none()) {
+        out.push(LeftOut::new("Host name", if host_name.trim().is_empty() { "\"\" (empty)" } else { host_name }));
     }
     if settings.first("user").is_some_and(|u| u.contains('%')) {
         out.push(LeftOut::new("User", settings.first("user").unwrap_or_default()));
@@ -587,7 +593,8 @@ fn found(lines: &[Line]) -> Found {
     let mut hosts: Vec<FoundHost> = vec![];
     let mut notes = vec![];
     for line in lines.iter().filter(|l| l.key == "host") {
-        let Some(name) = line.args.iter().find(|n| !is_pattern(n)) else { continue };
+        // `Host ""` names no host.
+        let Some(name) = line.args.iter().find(|n| !is_pattern(n) && !n.trim().is_empty()) else { continue };
         if hosts.iter().any(|h| h.name.eq_ignore_ascii_case(name)) {
             continue;
         }
@@ -911,15 +918,23 @@ mod tests {
         assert!(parse("").groups.is_empty());
     }
 
-    /// Found by fuzzing (`fuzz_ssh_configs`): `HostName ""` gives the host an empty address. It
-    /// would be added and could never connect; the other importers leave such a host out with a
-    /// note.
+    /// Found by fuzzing (`fuzz_ssh_configs`): `HostName ""` gave the host an empty address, so it
+    /// was added and could never connect. Like a `HostName` with a token `ssh` doesn't take, the
+    /// host keeps its name as its address and the `HostName` is listed as left out, also for a
+    /// Jump Host.
     #[test]
     fn an_empty_host_name_is_not_imported_as_an_address() {
-        let found = parse("Host b\n  HostName \"\"\n");
-        for host in found.groups.iter().flat_map(|g| &g.hosts) {
-            assert!(!host.address.is_empty(), "{} was imported without an address", host.name);
-        }
+        let found = parse("Host b\n  HostName \"\"\nHost web\n  HostName \" \"\n  ProxyJump b\n");
+        let b = host(&found, "b");
+        assert_eq!(b.address, "b");
+        assert_eq!(b.left_out, [LeftOut::new("Host name", "\"\" (empty)")]);
+        let web = host(&found, "web");
+        assert_eq!(web.address, "web");
+        assert_eq!(web.jump_hosts.as_deref(), Some(&[jump(None, "b", 22)][..]));
+        assert!(web.left_out.contains(&LeftOut::new("Host name of jump host b", "\"\" (empty)")), "{:?}", web.left_out);
+        // An empty name names no host: the block's next name does, if it has one.
+        assert!(parse("Host \"\"\n  HostName x.lan\n").groups.is_empty());
+        assert_eq!(host(&parse("Host \"\" real\n"), "real").address, "real");
     }
 
     /// Found by fuzzing (`fuzz_ssh_configs`): files that include each other were read again at
@@ -1005,11 +1020,7 @@ mod tests {
             let found = found(&lines);
             for host in found.groups.iter().flat_map(|g| &g.hosts) {
                 assert!(host.port != 0, "{} has port 0", host.name);
-                // `HostName ""` is a known bug with a test of its own
-                // (`an_empty_host_name_is_not_imported_as_an_address`), left out here.
-                if host.address.is_empty() {
-                    return;
-                }
+                assert!(!host.address.trim().is_empty(), "{} has no address", host.name);
             }
             crate::fuzz::check_import(&found);
         });

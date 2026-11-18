@@ -4379,6 +4379,7 @@ dependencies = [
  "smallvec",
  "tokio",
  "toml 0.8.23",
+ "toml 1.2.1+spec-1.1.0",
  "ureq",
  "uuid",
  "vnc-rs",

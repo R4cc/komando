@@ -2240,21 +2240,44 @@ mod tests {
         assert!(lib.move_host("web", "p2", "p1"));
     }
 
-    /// Found by fuzzing (`fuzz::targets::fuzz_mobaxterm_files`): `toml` 0.8's writer counts
-    /// quotes in a row in a `u8`, so a name, address or Startup Command with 256 of them panics
-    /// on save in builds with overflow checks (dev, `ci`, tests). Release builds wrap the count
-    /// and still write it correctly. Any import or form can bring such a string in.
+    /// Found by fuzzing (`fuzz::targets::fuzz_mobaxterm_files`): `toml` 0.8's writer counted
+    /// quotes in a row in a `u8`, so a name, address or Startup Command with 256 of them
+    /// panicked on save in builds with overflow checks (dev, `ci`, tests). Any import or form
+    /// can bring such a string in. Komando now writes with `toml` 1.
     #[test]
     fn names_with_long_runs_of_quotes_save() {
-        for quote in ["'", "\""] {
+        for quote in ["'", "\"", "\\"] {
             let mut host = named("web");
             host.name = quote.repeat(256);
-            host.startup_commands = vec![StartupCommand::new(format!("echo {}", quote.repeat(300)))];
+            host.address = format!("{}\"'\\", quote.repeat(300));
+            host.startup_commands = vec![StartupCommand::new(format!("echo {}", quote.repeat(1000)))];
             let lib = library(vec![host]);
-            let saved = std::panic::catch_unwind(|| toml::to_string_pretty(&lib));
-            let text = saved.unwrap_or_else(|_| panic!("saving a host named with 256 {quote} panicked")).unwrap();
+            let text = toml::to_string_pretty(&lib).unwrap();
             assert_eq!(toml::from_str::<Library>(&text).unwrap(), lib);
+            assert_eq!(toml_0_8::from_str::<Library>(&text).unwrap(), lib, "older Komando can't read it");
         }
+    }
+
+    /// Files written now open in Komando 0.8 and older, which read them with `toml` 0.8 (TOML
+    /// 1.0): `toml` 1 follows TOML 1.1, whose new syntax those can't read.
+    #[test]
+    fn saved_files_open_in_older_versions() {
+        let mut web = named("web");
+        web.address = "fe80::1%eth0".into();
+        web.user = Inherited::Own("ops\u{e9}".into());
+        web.port_forwards = vec![PortForward::socks(1080), PortForward { open_to_network: true, ..PortForward::remote(9000, "::1", 3000) }];
+        web.startup_commands = vec![StartupCommand::new("printf 'a\tb\u{1b}[31m\u{7f}\\n' \"$HOME\"")];
+        web.jump_hosts = vec![JumpHost { user: Some("j".into()), ..JumpHost::new("bastion.lan") }];
+        let mut lib = two_projects(vec![web, named("db")]);
+        lib.projects[0].default_user = Some("multi\nline".into());
+        lib.shells = Some(vec![LocalShell { name: "bash \"login\"".into(), program: "C:\\x\\bash.exe".into(), args: vec!["-l".into(), String::new()], icon: None, hidden: true }]);
+        let text = toml::to_string_pretty(&lib).unwrap();
+        assert_eq!(toml_0_8::from_str::<Library>(&text).unwrap(), lib, "{text}");
+        let settings = Settings { font_family: "Cascadia \"Code\"".into(), ..Settings::default() };
+        let text = toml::to_string_pretty(&settings).unwrap();
+        assert_eq!(toml_0_8::from_str::<Settings>(&text).unwrap(), settings, "{text}");
+        let tabs = OpenTabs { tabs: vec![SavedTab::Shell { project: None, shell: "pwsh".into(), name: Some("\u{1F600}".into()) }], active: Some(0) };
+        assert_eq!(toml_0_8::from_str::<OpenTabs>(&toml::to_string_pretty(&tabs).unwrap()).unwrap(), tabs);
     }
 
     #[test]

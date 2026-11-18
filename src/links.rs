@@ -51,17 +51,25 @@ fn url_len(rest: &str) -> usize {
         .char_indices()
         .find(|(_, c)| c.is_whitespace() || c.is_control() || matches!(c, '"' | '<' | '>' | '`' | '{' | '}' | '|' | '\\' | '^'))
         .map_or(rest.len(), |(i, _)| i);
+    // The brackets in what is kept so far, counted once and updated as the end moves back, so
+    // a long run of them takes linear time, not quadratic.
+    let count = |c: char| rest[..end].chars().filter(|&x| x == c).count();
+    let (mut round, mut square) = ((count('('), count(')')), (count('['), count(']')));
     loop {
         let Some(last) = rest[..end].chars().next_back() else { return 0 };
-        let unopened = |open: char| rest[..end].matches(open).count() < rest[..end].matches(last).count();
         let trim = match last {
             '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*' => true,
-            ')' => unopened('('),
-            ']' => unopened('['),
+            ')' => round.0 < round.1,
+            ']' => square.0 < square.1,
             _ => false,
         };
         if !trim {
             return end;
+        }
+        match last {
+            ')' => round.1 -= 1,
+            ']' => square.1 -= 1,
+            _ => {}
         }
         end -= last.len_utf8();
     }
@@ -121,16 +129,52 @@ mod tests {
     }
 
     /// Found by fuzzing (`fuzz::targets::fuzz_links_in_output`): closing brackets after an
-    /// address are trimmed one at a time, and each step counts every bracket again, so the
-    /// time grows with the square of their number. The terminal looks a link up across up to
-    /// 33 rows, holding the terminal's lock, on pointer moves and output while one is hovered:
-    /// 6,600 brackets took 160 ms a lookup. The bound below is loose; linear work takes
-    /// well under a millisecond.
+    /// address were trimmed one at a time, each step counting every bracket again, so the time
+    /// grew with the square of their number. The terminal looks a link up across up to 33
+    /// rows, holding the terminal's lock, on pointer moves and on output while one is hovered:
+    /// 6,600 brackets took 160 ms a lookup. The bound below is loose; it now takes well under
+    /// a millisecond.
     #[test]
     fn closing_brackets_after_an_address_take_linear_time() {
         let line = format!("see https://example.com/a{}", "]".repeat(20_000));
         let started = std::time::Instant::now();
         assert_eq!(link_at(&line, 6).map(|r| &line[r]), Some("https://example.com/a"));
         assert!(started.elapsed() < std::time::Duration::from_millis(250), "took {:?}", started.elapsed());
+    }
+
+    /// `url_len` as it was before it counted brackets once: the reference it must agree with.
+    fn url_len_reference(rest: &str) -> usize {
+        let mut end = rest
+            .char_indices()
+            .find(|(_, c)| c.is_whitespace() || c.is_control() || matches!(c, '"' | '<' | '>' | '`' | '{' | '}' | '|' | '\\' | '^'))
+            .map_or(rest.len(), |(i, _)| i);
+        loop {
+            let Some(last) = rest[..end].chars().next_back() else { return 0 };
+            let unopened = |open: char| rest[..end].matches(open).count() < rest[..end].matches(last).count();
+            let trim = match last {
+                '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*' => true,
+                ')' => unopened('('),
+                ']' => unopened('['),
+                _ => false,
+            };
+            if !trim {
+                return end;
+            }
+            end -= last.len_utf8();
+        }
+    }
+
+    /// Fuzzed: the faster `url_len` ends every address where the reference does.
+    #[test]
+    fn fuzz_url_len_matches_the_reference() {
+        let seeds: &[&[u8]] = &[b"en.wikipedia.org/wiki/Rust_(language)).", b"[fe80::1]:80/a](b)]", b"x.lan/a'),;:!?*"];
+        let dictionary: &[&[u8]] = &[b"(", b")", b"[", b"]", b".", b",", b"'", b"*", b"!", b"?", b";", b":", b" ", b"\"", "\u{e9}".as_bytes()];
+        crate::fuzz::run("url_len", seeds, dictionary, |input| {
+            let text = crate::fuzz::text(input);
+            if text.len() > 4000 {
+                return; // The reference is quadratic.
+            }
+            assert_eq!(url_len(&text), url_len_reference(&text), "{text:?}");
+        });
     }
 }

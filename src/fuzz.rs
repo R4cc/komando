@@ -334,16 +334,12 @@ pub(crate) fn check_import(found: &crate::import::Found) {
         users_before,
         "an imported host took a saved Credential"
     );
-    // What was added is saved and read back as it is. A string with 256 quotes in a row
-    // overflows `toml` 0.8's writer in builds with overflow checks: a known bug with a test
-    // of its own (`model::tests::names_with_long_runs_of_quotes_save`), left out here so the
-    // fuzzer looks further.
-    if cfg!(debug_assertions) && has_long_quote_run(&library) {
-        return;
-    }
+    // What was added is saved and read back as it is, also by Komando 0.8 and older.
     let text = toml::to_string_pretty(&library).expect("the Library is written as TOML");
     let read: Library = toml::from_str(&text).unwrap_or_else(|err| panic!("the saved Library can't be read back: {err}\n{text}"));
     assert_eq!(read, library, "the Library changed on its way through library.toml");
+    let older: Library = toml_0_8::from_str(&text).unwrap_or_else(|err| panic!("Komando 0.8 can't read the saved Library: {err}\n{text}"));
+    assert_eq!(older, library, "Komando 0.8 reads the saved Library differently");
 
     // Importing the same again adds nothing: every host is now already there.
     let again = plan(found, &library);
@@ -354,19 +350,6 @@ pub(crate) fn check_import(found: &crate::import::Found) {
             }
         }
     }
-}
-
-/// Whether any string in `value` has 256 or more of the same quote in a row.
-fn has_long_quote_run(value: &impl serde::Serialize) -> bool {
-    fn walk(value: &serde_json::Value) -> bool {
-        match value {
-            serde_json::Value::String(s) => ['\'', '"'].iter().any(|q| s.contains(&q.to_string().repeat(256))),
-            serde_json::Value::Array(items) => items.iter().any(walk),
-            serde_json::Value::Object(map) => map.iter().any(|(k, v)| walk(&serde_json::Value::String(k.clone())) || walk(v)),
-            _ => false,
-        }
-    }
-    serde_json::to_value(value).is_ok_and(|v| walk(&v))
 }
 
 /// Targets reached through public functions. Those that need a module's private parts are
@@ -476,11 +459,6 @@ mod targets {
         let dictionary: &[&[u8]] = &[b"https://", b"HTTP://", b"ftp://", b"(", b")", b"[", b"]", b".", b",", b"'", b"\"", "\u{fffd}".as_bytes(), "\u{200b}".as_bytes()];
         run("links", &[seed], dictionary, |input| {
             let line = text(input);
-            // Long runs of closing brackets are slow: a known bug with a test of its own
-            // (`links::tests::closing_brackets_after_an_address_take_linear_time`).
-            if line.contains(&"]".repeat(500)) || line.contains(&")".repeat(500)) {
-                return;
-            }
             let found = crate::links::links(&line);
             let mut end = 0;
             for range in &found {

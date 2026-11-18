@@ -29,6 +29,10 @@ All notable changes to Komando are listed here. The format follows
 - Importing an SSH config whose `Include`s loop back to a file that includes them no longer
   freezes Komando. Such an `Include` is left out with a note, as `ssh` refuses it too, and so
   is an `Include` of something that isn't a file.
+- Imported SSH config hosts whose `HostName` is empty keep their name as their address,
+  and the empty `HostName` is listed as left out, instead of being added with no address.
+- Hovering over output with a long run of closing brackets after a web address no longer
+  makes the terminal stutter.
 
 ## [0.8.3] - 2026-11-18
 
