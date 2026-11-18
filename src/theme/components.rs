@@ -7,9 +7,9 @@ impl AppPalette {
         let c = self.navigation;
         theme.font_family = self.font_family.into();
         theme.mono_font_family = self.mono_family.into();
-        theme.radius = gpui::px(self.radius);
+        theme.radius = self.corner(8.);
         theme.radius_lg = self.corner(12.);
-        theme.shadow = self.shadow.opacity > 0.;
+        theme.shadow = false;
         let colors = &mut theme.colors;
         // Workspace paints the canvas; keep Root transparent for optional native Mica.
         colors.background = gpui::transparent_black();

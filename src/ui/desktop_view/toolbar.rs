@@ -16,7 +16,6 @@ use crate::desktop::keys::{self, Code};
 use crate::desktop::Protocol;
 use crate::model::{Quality, Scaling, ViewerOptions};
 use crate::theme::{AppPalette, Appearance};
-use crate::ui::widgets::elevation;
 
 const HEIGHT: f32 = 40.;
 
@@ -290,7 +289,6 @@ impl DesktopView {
                             .border_1()
                             .border_color(p.border)
                             .bg(p.surface)
-                            .shadow(elevation(p))
                             .min_w(px(520.)),
                     )
                 } else {

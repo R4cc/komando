@@ -1,4 +1,4 @@
-//! Small building blocks shared by every screen: buttons, icons, elevation, labels.
+//! Small building blocks shared by every screen: buttons, icons, labels.
 //!
 //! Type scale (px): 11 uppercase labels (+tracking), 12 meta, 13 UI text, 14 inputs and
 //! terminal, 15 dialog titles. The logo is drawn, not set in a font. Radii are concentric: an inner element's
@@ -12,7 +12,7 @@ use gpui::{
 
 use std::time::{Duration, Instant};
 
-use crate::theme::{AppPalette, alpha};
+use crate::theme::AppPalette;
 use gpui::Focusable as _;
 use gpui_component::input::{Input, InputState};
 use gpui_component::tooltip::Tooltip;
@@ -626,26 +626,14 @@ pub fn island(p: AppPalette) -> gpui::Div {
         .bg(p.background)
         .border_1()
         .border_color(p.border)
-        .shadow(elevation(p))
 }
 
-/// Layered, low-opacity shadows for floating surfaces (dialogs, popovers).
 /// How a control shows keyboard focus: a 2px ring painted inside its edge. Widening the
 /// border instead would shrink the content box, so the label would shift as Tab moves.
 pub fn focus_outline(s: gpui::StyleRefinement, color: Hsla) -> gpui::StyleRefinement {
     s.border_color(color).shadow(vec![BoxShadow {
         color, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(2.), inset: true,
     }])
-}
-
-pub fn elevation(p: AppPalette) -> Vec<BoxShadow> {
-    let s = p.shadow;
-    if s.opacity <= 0. { return vec![]; }
-    vec![BoxShadow {
-        color: alpha(s.color, s.opacity), offset: point(px(s.x), px(s.y)),
-        blur_radius: px(s.blur), spread_radius: px(s.spread), inset: false,
-    }]
-
 }
 
 /// Small uppercase section label. Copy stays in natural case; it is uppercased here.

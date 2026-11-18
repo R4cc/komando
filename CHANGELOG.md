@@ -6,6 +6,12 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Themes only change colors. Every theme uses the same corner rounding and flat surfaces
+  as Komando Default. The interface uses Geist, and without a terminal font set in
+  Settings the terminal uses Cascadia Mono.
+
 ## [0.8.4] - 2026-11-18
 
 ### Changed

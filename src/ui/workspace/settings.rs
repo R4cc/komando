@@ -251,7 +251,7 @@ impl Workspace {
         }
         if self.font_input.is_none() {
             let family = self.settings.font_family.clone();
-            let input = cx.new(|cx| InputState::new(window, cx).default_value(family).placeholder("Theme default"));
+            let input = cx.new(|cx| InputState::new(window, cx).default_value(family).placeholder(crate::theme::TERMINAL_FONT));
             let sub = cx.subscribe_in(&input, window, |this, input, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
                     let value = input.read(cx).value().trim().to_string();
@@ -954,7 +954,7 @@ impl Workspace {
         let term_dark = self.terminal_dark(dark);
         let (app, term) = self.mode_look(dark);
         let font: SharedString = if self.settings.font_family.trim().is_empty() {
-            self.theme_for(term_dark).font_mono.into()
+            crate::theme::TERMINAL_FONT.into()
         } else {
             self.settings.font_family.clone().into()
         };

@@ -30,7 +30,7 @@ use crate::ui::popup::item as menu_item;
 use crate::ui::terminal_view::{TerminalEvent, TerminalView};
 use crate::ui::transfers::{Activity, Transfers, TransfersChanged};
 use crate::ui::widgets::{
-    Busy, BusyPhase, ButtonKind, ISLAND_GAP, MenuTrigger, badge, busy_done, button, close_button, elevation, icon_button, icon_el, icon_text_button, island,
+    Busy, BusyPhase, ButtonKind, ISLAND_GAP, MenuTrigger, badge, busy_done, button, close_button, icon_button, icon_el, icon_text_button, island,
     connection_indicator, is_artwork, password_input, progress_ring, section_label, shell_icon_color, spinner, status_dot, wordmark,
 };
 use crate::vault::{Credential, Secret, Vault};
@@ -823,7 +823,7 @@ impl Workspace {
         cx.set_global(Appearance {
             app: AppPalette::from_theme(self.theme_for(app_dark)).translucent(t),
             term: TerminalPalette::for_mode(term_dark, self.terminal_colors_for(term_dark), self.theme_for(term_dark)).translucent(t, app_dark),
-            font_family: if self.settings.font_family.trim().is_empty() { self.theme_for(term_dark).font_mono.into() } else { self.settings.font_family.clone().into() },
+            font_family: if self.settings.font_family.trim().is_empty() { crate::theme::TERMINAL_FONT.into() } else { self.settings.font_family.clone().into() },
             font_size: self.terminal_font_size(),
             font_weight: font_weight(self.settings.font_weight),
             bold_font_weight: font_weight(self.settings.bold_font_weight),
@@ -3091,7 +3091,6 @@ impl Workspace {
             .bg(p.surface)
             .border_1()
             .border_color(p.border)
-            .shadow(elevation(p))
             .child(
                 div()
                     .rounded(p.corner(14.))
@@ -5057,7 +5056,6 @@ impl Workspace {
                         .bg(p.surface)
                         .border_1()
                         .border_color(p.border)
-                        .shadow(elevation(p))
                         .relative()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(body)
@@ -5220,8 +5218,7 @@ fn switch_with(id: SharedString, label: SharedString, on: bool, small: bool, p: 
             div()
                 .size(px(knob))
                 .rounded_full()
-                .bg(if on && !small { p.on_brand } else { p.text })
-                .shadow(elevation(p)),
+                .bg(if on && !small { p.on_brand } else { p.text }),
         )
 }
 
@@ -5735,7 +5732,6 @@ impl Render for Workspace {
                 .bg(p.surface)
                 .border_1()
                 .border_color(p.border)
-                .shadow(elevation(p))
                 .text_size(px(13.))
                 .text_color(p.text)
                 .child(msg.clone())

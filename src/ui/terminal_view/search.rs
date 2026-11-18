@@ -461,7 +461,6 @@ impl TerminalView {
                 .bg(p.surface)
                 .border_1()
                 .border_color(p.border)
-                .shadow(crate::ui::widgets::elevation(p))
                 .font_family(p.font_family)
                 .cursor_default()
                 .on_mouse_down(MouseButton::Left, stop)

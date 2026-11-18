@@ -18,7 +18,7 @@ use crate::sftp::{self, ErrorKind, OpError, Progress, Remote, format_size};
 use crate::theme::{AppPalette, Appearance};
 use crate::ui::file_browser::FileBrowser;
 use crate::ui::popup::{self, Popup};
-use crate::ui::widgets::{elevation, icon_el};
+use crate::ui::widgets::icon_el;
 
 #[derive(Clone, Debug)]
 pub enum Job {
@@ -685,7 +685,6 @@ impl Render for Transfers {
             .bg(p.surface.opacity(1.))
             .border_1()
             .border_color(p.border)
-            .shadow(elevation(p))
             .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 if !this.popup.is_open() {
                     this.close(cx);

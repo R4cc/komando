@@ -2475,7 +2475,6 @@ impl FileBrowser {
                 .bg(p.surface.opacity(1.))
                 .border_1()
                 .border_color(p.border)
-                .shadow(crate::ui::widgets::elevation(p))
                 .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                     this.favorites_open = false;
                     this.favorite_rename = None;
@@ -2661,7 +2660,6 @@ impl FileBrowser {
                         .bg(p.surface.opacity(1.))
                         .border_1()
                         .border_color(p.border)
-                        .shadow(crate::ui::widgets::elevation(p))
                         .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
                         .child(body)
                         .child(div().flex().justify_end().gap(px(8.)).children(actions)),

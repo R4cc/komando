@@ -37,18 +37,15 @@ color_tokens! {
     chart_1, chart_2, chart_3, chart_4, chart_5,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ThemeShadow {
-    pub color: u32,
-    pub opacity: f32,
-    pub x: f32,
-    pub y: f32,
-    pub blur: f32,
-    pub spread: f32,
-}
+/// The UI font of every theme.
+pub const SANS_FONT: &str = "Geist";
+/// The monospace font of every theme.
+pub const MONO_FONT: &str = "JetBrains Mono";
+/// The terminal's font when none is set in Settings.
+pub const TERMINAL_FONT: &str = "Cascadia Mono";
 
-/// One native variant of an embedded source theme. Layout and terminal font overrides
-/// remain user settings; refined colors and source fonts, radii and shadows live here.
+/// One native variant of an embedded source theme. A theme is only colors: fonts,
+/// corner radii and shadows are the same in every theme.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThemeSpec {
     pub id: &'static str,
@@ -56,10 +53,6 @@ pub struct ThemeSpec {
     pub source: &'static str,
     pub dark: bool,
     pub colors: ThemeColors,
-    pub font_sans: &'static str,
-    pub font_mono: &'static str,
-    pub radius: f32,
-    pub shadow: ThemeShadow,
 }
 
 pub static DARK_THEMES: LazyLock<Vec<ThemeSpec>> = LazyLock::new(|| catalog::load(true));
@@ -80,8 +73,6 @@ pub struct AppPalette {
     pub dark: bool,
     pub font_family: &'static str,
     pub mono_family: &'static str,
-    pub radius: f32,
-    pub shadow: ThemeShadow,
     pub canvas: Hsla,
     pub background: Hsla,
     pub sidebar: Hsla,
@@ -124,7 +115,7 @@ impl AppPalette {
         let (active, active_text) = active_colors(c);
         Self {
             dark: t.dark,
-            font_family: t.font_sans, mono_family: t.font_mono, radius: t.radius.clamp(6., 8.), shadow: t.shadow,
+            font_family: SANS_FONT, mono_family: MONO_FONT,
             canvas: hex(c.background), background: hex(c.background), sidebar: hex(c.sidebar),
             surface: hex(c.card), surface_text: hex(readable(c.card_foreground, c.card, 4.5)),
             popover: hex(c.popover), popover_text: hex(readable(c.popover_foreground, c.popover, 4.5)),
@@ -188,10 +179,9 @@ impl AppPalette {
         self
     }
 
-    /// Keep controls gently rounded and preserve the larger corners of panels.
-    /// Source radii cannot turn compact buttons into pills or make controls square.
+    /// Keep controls gently rounded and cap the larger corners of panels.
     pub fn corner(self, base: f32) -> gpui::Pixels {
-        gpui::px((base + self.radius.clamp(6., 8.) - 8.).clamp(4., 12.))
+        gpui::px(base.clamp(4., 12.))
     }
 
     /// Visible hover/press feedback without sacrificing a button's text contrast.
@@ -539,8 +529,6 @@ mod tests {
                 assert_eq!(t.dark, dark);
                 assert!(ids.insert(t.id));
                 assert!(t.source.starts_with("https://tweakcn.com/themes/"));
-                assert!(!t.font_sans.is_empty() && !t.font_mono.is_empty());
-                assert!(t.radius.is_finite() && t.radius >= 0.);
             }
         }
     }
@@ -580,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn refined_roles_reach_panels_and_preserve_source_typography() {
+    fn refined_roles_reach_panels_and_every_theme_shares_the_default_typography() {
         let t = theme(true, "qrafthive");
         let p = AppPalette::from_theme(t);
         let nav = p.navigation();
@@ -590,15 +578,12 @@ mod tests {
         assert_eq!(value(p.secondary), t.colors.secondary);
         assert_eq!(value(p.active), t.colors.accent);
         assert_eq!(value(p.popover), t.colors.popover);
-        assert_eq!(p.font_family, "Outfit");
-        assert_eq!(p.mono_family, "JetBrains Mono");
-        assert_eq!(p.corner(8.), gpui::px(8.));
-        let default = AppPalette::dark();
-        assert_eq!(default.font_family, "Inter");
-        assert_eq!(default.mono_family, "JetBrains Mono");
-        assert_eq!(default.corner(8.), gpui::px(8.));
-        assert_eq!(default.shadow.blur, 0.);
-        assert_eq!(default.shadow.opacity, 0.);
+        for t in themes(false).iter().chain(themes(true)) {
+            let p = AppPalette::from_theme(t);
+            assert_eq!(p.font_family, "Geist");
+            assert_eq!(p.mono_family, "JetBrains Mono");
+            assert_eq!(p.corner(8.), gpui::px(8.));
+        }
         assert!(TerminalPalette::from_theme(theme(true, "fl-theme")).dark);
     }
 
@@ -649,22 +634,17 @@ mod tests {
     }
 
     #[test]
-    fn source_radius_cannot_make_controls_square_or_pill_shaped() {
-        for radius in [0., 4., 8., 16., 64., 9999.] {
-            let mut source = *theme(true, DEFAULT_THEME);
-            source.radius = radius;
-            let p = AppPalette::from_theme(&source);
-            assert!((6. ..=8.).contains(&p.radius));
-            for base in [3., 4., 6., 7., 8., 10.] {
-                let radius = f32::from(p.corner(base));
-                assert!((4. ..=10.).contains(&radius), "compact control corner {radius}");
-            }
-            assert!(p.corner(12.) > p.corner(8.), "panels retain their size hierarchy");
-            assert!(p.corner(24.) <= gpui::px(12.));
-            let mut library = gpui_component::Theme::default();
-            p.apply_components(&mut library);
-            assert!((6. ..=8.).contains(&f32::from(library.radius)));
+    fn corners_keep_controls_rounded_and_cap_panels() {
+        let p = AppPalette::dark();
+        for base in [3., 4., 6., 7., 8., 10.] {
+            let radius = f32::from(p.corner(base));
+            assert!((4. ..=10.).contains(&radius), "compact control corner {radius}");
         }
+        assert!(p.corner(12.) > p.corner(8.), "panels retain their size hierarchy");
+        assert!(p.corner(24.) <= gpui::px(12.));
+        let mut library = gpui_component::Theme::default();
+        p.apply_components(&mut library);
+        assert_eq!(library.radius, gpui::px(8.));
     }
 
     #[test]
@@ -687,20 +667,20 @@ mod tests {
     }
 
     #[test]
-    fn source_styles_reach_library_controls_and_reset_when_switching() {
+    fn theme_colors_reach_library_controls_and_reset_when_switching() {
         let mut library = gpui_component::Theme::default();
         for id in ["noctua", "mint", "komando-default", "salesforce"] {
             let p = AppPalette::from_theme(theme(true, id));
             p.apply_components(&mut library);
-            assert_eq!(library.font_family.as_ref(), p.font_family);
-            assert_eq!(library.radius, gpui::px(p.radius));
-            assert_eq!(library.shadow, p.shadow.opacity > 0.);
+            assert_eq!(library.font_family.as_ref(), SANS_FONT);
+            assert_eq!(library.mono_font_family.as_ref(), MONO_FONT);
+            assert_eq!(library.radius, gpui::px(8.));
+            assert!(!library.shadow);
             assert_eq!(library.colors.popover, p.popover);
             assert_eq!(library.colors.primary, p.brand);
             assert_eq!(library.colors.button_primary_foreground, p.on_brand);
             assert_eq!(library.colors.secondary, p.secondary);
             assert_eq!(library.colors.ring, p.focus);
-            assert_eq!(crate::ui::widgets::elevation(p).is_empty(), p.shadow.opacity == 0.);
         }
     }
 
@@ -759,4 +739,3 @@ pub struct Appearance {
 
 impl gpui::Global for Appearance {}
 
-pub const UI_FONT: &str = "Geist";

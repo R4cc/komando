@@ -24,7 +24,7 @@ use gpui_component::tooltip::Tooltip;
 use super::sessions::{Placed, Side};
 use super::{ItemKey, SidebarItem, SidebarRow, Workspace};
 use crate::theme::{AppPalette, Appearance, project_color};
-use crate::ui::widgets::{ISLAND_GAP, ISLAND_RADIUS, elevation, icon_el};
+use crate::ui::widgets::{ISLAND_GAP, ISLAND_RADIUS, icon_el};
 
 /// What is dragged from the sidebar: an item, or one of its Sessions (a row under an item
 /// that has several).
@@ -587,7 +587,6 @@ impl Render for DragPreview {
                     .bg(p.surface.opacity(1.))
                     .border_1()
                     .border_color(p.border)
-                    .shadow(elevation(p))
                     .font_family(p.font_family)
                     .text_size(px(12.5))
                     .text_color(p.text)

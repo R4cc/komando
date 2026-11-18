@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, sync::LazyLock};
 use serde::Deserialize;
-use super::{ThemeColors, ThemeShadow, ThemeSpec};
+use super::{ThemeColors, ThemeSpec};
 
 #[derive(Deserialize)]
 struct Source<'a> {
@@ -27,33 +27,11 @@ pub(super) fn load(dark: bool) -> Vec<ThemeSpec> {
         let mut styles = source.styles[mode].clone();
         styles.extend(REFINEMENTS[source.id][mode].clone());
         let color = |key: &str| parse_color(&styles[key]).unwrap_or_else(|e| panic!("{} {key}: {e}", source.name));
-        let number = |key: &str| styles[key].trim_end_matches("px").parse::<f32>().expect("theme dimension");
         ThemeSpec {
             id: source.id, name: source.name, source: source.source, dark,
             colors: ThemeColors::read(&color),
-            font_sans: font(&styles["font-sans"], false),
-            font_mono: font(&styles["font-mono"], true),
-            radius: styles["radius"].trim_end_matches("rem").parse::<f32>().expect("theme radius") * 16.,
-            shadow: ThemeShadow {
-                color: color("shadow-color"), opacity: number("shadow-opacity"),
-                x: number("shadow-offset-x"), y: number("shadow-offset-y"),
-                blur: number("shadow-blur"), spread: number("shadow-spread"),
-            },
         }
     }).collect()
-}
-
-fn font(value: &str, mono: bool) -> &'static str {
-    // DirectWrite exposes this variable font's optical-size family under its legacy name.
-    if !mono && value.starts_with("DM Sans") { return if cfg!(windows) { "DM Sans 14pt" } else { "DM Sans" }; }
-    let families = if mono {
-        &["Geist Mono", "JetBrains Mono", "IBM Plex Mono", "Fira Code"][..]
-    } else {
-        &["Outfit", "Plus Jakarta Sans", "DM Sans", "Inter", "Segoe UI"][..]
-    };
-    families.iter().copied().find(|name| value.starts_with(name))
-        // FL-Theme specifies Inter as its mono font; the native terminal requires fixed width.
-        .unwrap_or(if mono { "JetBrains Mono" } else { "Geist" })
 }
 
 pub(super) fn parse_color(value: &str) -> Result<u32, String> {
@@ -85,7 +63,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn komando_default_keeps_the_supplied_colors_fonts_radius_and_zero_shadows() {
+    fn komando_default_keeps_the_supplied_colors() {
         let source = SOURCES.iter().find(|s| s.id == crate::theme::DEFAULT_THEME).unwrap();
         for dark in [false, true] {
             let styles = &source.styles[if dark { "dark" } else { "light" }];
@@ -93,10 +71,6 @@ mod tests {
             let resolved = load(dark).into_iter().find(|t| t.id == crate::theme::DEFAULT_THEME).unwrap();
             assert_eq!(resolved.colors, expected, "the supplied default must not inherit palette refinements");
             assert_eq!(resolved.colors.background == 0, dark);
-            assert_eq!(resolved.font_sans, "Inter");
-            assert_eq!(resolved.font_mono, "JetBrains Mono");
-            assert_eq!(resolved.radius, 8.);
-            assert_eq!(resolved.shadow, ThemeShadow { color: 0, opacity: 0., x: 0., y: 0., blur: 0., spread: 0. });
         }
     }
 

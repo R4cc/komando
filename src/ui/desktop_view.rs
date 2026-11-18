@@ -25,7 +25,7 @@ use crate::desktop::keys::Code;
 use crate::desktop::{self, Button, Connection, DesktopEvent, DesktopPrompt, Input as DesktopInput, Key, Protocol, SignIn, Status, Target};
 use crate::model::{Scaling, ViewerOptions};
 use crate::theme::{Appearance};
-use crate::ui::widgets::{ButtonKind, button, elevation, password_input, spinner};
+use crate::ui::widgets::{ButtonKind, button, password_input, spinner};
 
 /// The key context of a desktop pane, so Tab goes to the remote desktop instead of moving focus.
 pub const CONTEXT: &str = "RemoteDesktop";
@@ -1014,7 +1014,6 @@ impl DesktopView {
                 .bg(p.surface)
                 .border_1()
                 .border_color(p.border)
-                .shadow(elevation(p))
                 .flex()
                 .flex_col()
                 .gap(px(14.))
