@@ -1807,7 +1807,8 @@ impl Workspace {
     /// Drag the divider between terminal and file browser: the browser takes what is right
     /// of the pointer, up to the right edge of its pane (`pane`).
     fn resize_sftp(&mut self, x: f32, pane: gpui::Bounds<gpui::Pixels>, cx: &mut Context<Self>) {
-        let right_edge = f32::from(pane.right()) - 8.;
+        // The pointer is on the middle of the gap left of the browser card.
+        let right_edge = f32::from(pane.right()) - ISLAND_GAP / 2.;
         let max = (f32::from(pane.size.width) - 300.).max(320.);
         let width = (right_edge - x).clamp(320., max);
         if (width - self.settings.sftp_width).abs() >= 1. {
@@ -4686,19 +4687,26 @@ impl Workspace {
         if let Some(browser) = &browser {
             browser.update(cx, |b, _| b.width = width);
         }
+        let session = island(p)
+            .when(matches!(&entry.ui.view, SessionView::Terminal(_)), |el| el.border_color(p.border.blend(p.text.opacity(0.18))))
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .bg(term_bg)
+            .overflow_hidden()
+            .flex()
+            .child(div().flex_1().min_w_0().h_full().map(|el| match &entry.ui.view {
+                SessionView::Terminal(view) => el.child(view.clone()),
+                SessionView::Desktop(view) => el.child(view.clone()),
+            }));
         Some(
-            island(p)
-                .when(matches!(&entry.ui.view, SessionView::Terminal(_)), |el| {
-                    el.border_color(p.border.blend(p.text.opacity(0.18)))
-                })
+            div()
                 .id(("pane", id))
                 .relative()
                 .flex_1()
                 .map(grow)
                 .min_w_0()
                 .h_full()
-                .bg(term_bg)
-                .overflow_hidden()
                 .flex()
                 .when(in_split && !focused, |el| {
                     el.capture_any_mouse_down(cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
@@ -4714,16 +4722,15 @@ impl Workspace {
                         this.resize_sftp(f32::from(event.event.position.x), event.bounds, cx);
                     }
                 }))
-                .child(div().flex_1().min_w_0().h_full().map(|el| match &entry.ui.view {
-                    SessionView::Terminal(view) => el.child(view.clone()),
-                    SessionView::Desktop(view) => el.child(view.clone()),
-                }))
+                .child(session)
+                // The browser is a card of its own beside the session; the gap between them
+                // is the handle that resizes it.
                 .when_some(browser, |el, browser| {
                     el.child(
                         div()
                             .id("sftp-divider")
                             .group("sftp-divider")
-                            .w(px(9.))
+                            .w(px(ISLAND_GAP))
                             .h_full()
                             .flex_shrink_0()
                             .flex()
@@ -4740,18 +4747,7 @@ impl Workspace {
                                     .group_hover("sftp-divider", |s| s.bg(p.brand.opacity(0.6))),
                             ),
                     )
-                    .child(
-                        div().w(px(width)).flex_shrink_0().h_full().pt(px(10.)).pr(px(8.)).pb(px(8.)).child(
-                            div()
-                                .size_full()
-                                .rounded(p.corner(12.))
-                                .border_1()
-                                .border_color(p.border)
-                                .bg(p.sidebar)
-                                .overflow_hidden()
-                                .child(browser),
-                        ),
-                    )
+                    .child(island(p).w(px(width)).flex_shrink_0().h_full().bg(p.sidebar).overflow_hidden().child(browser))
                 })
                 .into_any_element(),
         )
