@@ -2511,6 +2511,10 @@ struct RowContext<'a> {
     default_bg: Rgb,
     selection: Hsla,
     selection_foreground: Rgb,
+    /// The current search match's cells, (row, columns), and the colour of its text: it sits
+    /// on a solid accent background (see `search_colors`).
+    current_match: &'a [(i32, Range<usize>)],
+    match_foreground: Rgb,
     cursor: Option<CursorSnap>,
     focused: bool,
 }
@@ -2644,6 +2648,28 @@ impl RowPaint {
     }
 }
 
+/// How Scrollback Search marks its matches in the output, from the Theme's accent.
+struct SearchColors {
+    /// The current match's background, and the colour of its text on it.
+    current: Hsla,
+    current_text: Rgb,
+    /// Every other match: a tint light enough that coloured text stays readable on it (a
+    /// heavier one turns a dark terminal mid-grey, where red, blue and magenta all but vanish),
+    /// and an edge that makes it easy to spot.
+    other: Hsla,
+    other_edge: Hsla,
+}
+
+fn search_colors(app: crate::theme::AppPalette) -> SearchColors {
+    let text = crate::theme::packed(app.on_brand);
+    SearchColors {
+        current: Hsla { a: 1., ..app.brand },
+        current_text: Rgb { r: (text >> 16) as u8, g: (text >> 8) as u8, b: text as u8 },
+        other: Hsla { a: if app.dark { 0.15 } else { 0.25 }, ..app.brand },
+        other_edge: Hsla { a: if app.dark { 0.7 } else { 1. }, ..app.brand },
+    }
+}
+
 /// What a frame draws besides the rows (which `GridCache` holds).
 #[derive(Default)]
 struct Frame {
@@ -2651,7 +2677,7 @@ struct Frame {
     flash: Option<(Bounds<Pixels>, Hsla)>,
     /// Search matches: over the cells' backgrounds and the selection, under the text.
     matches: Vec<(Bounds<Pixels>, Hsla)>,
-    /// The current search match's edge, over the text.
+    /// The edges of the search matches other than the current one, over the text.
     outlines: Vec<(Bounds<Pixels>, Hsla)>,
     /// What the IME is composing, over the cursor: its area, text and background.
     preedit: Option<(Bounds<Pixels>, ShapedLine, Hsla)>,
@@ -2722,6 +2748,7 @@ fn layout_row(
 
     let cursor_here = ctx.cursor.filter(|k| k.row == row);
     let block_cursor = ctx.focused && cursor_here.is_some_and(|k| k.shape == CursorShape::Block);
+    let current_match = ctx.current_match.iter().find(|(r, _)| *r == row).map(|(_, cols)| cols);
 
     for (i, cell) in cells.iter().enumerate() {
         let (mut fg, mut bg) = (cell.fg, cell.bg);
@@ -2736,6 +2763,8 @@ fn layout_row(
             bold |= rule.bold;
         }
         if cell.selected { fg = ctx.selection_foreground; }
+        let in_current_match = current_match.is_some_and(|cols| cols.contains(&cell.col));
+        if in_current_match { fg = ctx.match_foreground; }
         let width = cell_width(cell);
         if block_cursor && cursor_here.is_some_and(|k| k.col == cell.col) {
             fg = bg;
@@ -2755,7 +2784,7 @@ fn layout_row(
         }
 
         let mut color = rgb_to_hsla(fg);
-        if cell.flags.contains(Flags::DIM) && !cell.selected {
+        if cell.flags.contains(Flags::DIM) && !cell.selected && !in_current_match {
             color.a *= 0.66;
         }
 
@@ -3133,12 +3162,16 @@ struct GridLook<'a> {
     highlighter: &'a Arc<highlight::Highlighter>,
     focused: bool,
     cursor_visible: bool,
+    /// The current search match on screen, (row, columns), and its text colour.
+    current_match: &'a [(i32, Range<usize>)],
+    match_foreground: Rgb,
 }
 
 /// What the grid keeps from one frame to the next: the rows laid out, and buffers reused.
 ///
 /// A row is laid out again only when something it shows has changed: its cells (the terminal's
-/// damage), the selection on it, or the cursor on it or leaving it. Anything else that changes
+/// damage), the selection on it, the current search match on it or leaving it, or the cursor
+/// on it or leaving it. Anything else that changes
 /// how rows look (font, theme, highlight rules, size, position, scrolling) lays out every row.
 ///
 /// The view paints its rows from here, so each view draws one grid per frame (as its `origin`
@@ -3156,6 +3189,8 @@ struct GridCache {
     /// The selection and the row of the cursor that `rows` show.
     selection: Option<SelectionRange>,
     cursor_row: Option<usize>,
+    /// The current search match that `rows` show.
+    current_match: Vec<(i32, Range<usize>)>,
     /// The rows to lay out this frame.
     dirty: Vec<bool>,
 }
@@ -3170,6 +3205,7 @@ struct LaidOutWith {
     origin: gpui::Point<Pixels>,
     scale: f32,
     palette: crate::theme::TerminalPalette,
+    match_foreground: Rgb,
     /// The rules colouring output, `None` while highlighting is off; compared by identity
     /// (and held, so the address cannot come back with other rules).
     highlighter: Option<ByAddress<highlight::Highlighter>>,
@@ -3194,7 +3230,7 @@ impl<T> PartialEq for ByAddress<T> {
 /// This is the only reader of the terminal's damage, and resets it: the rows of a `GridCache`
 /// are only right if nothing else does.
 fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &mut GridCache) {
-    let GridCache { glyphs, highlights, snapshot, scratch, rows, looked, selection, cursor_row, dirty } = cache;
+    let GridCache { glyphs, highlights, snapshot, scratch, rows, looked, selection, cursor_row, current_match, dirty } = cache;
     let font = look.font;
     snapshot.clear();
     let (cursor, highlight) = {
@@ -3231,6 +3267,7 @@ fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &
             origin: look.origin,
             scale: look.scale,
             palette: look.palette.clone(),
+            match_foreground: look.match_foreground,
             highlighter: highlight.clone().map(ByAddress),
             columns: term.columns(),
             lines,
@@ -3254,6 +3291,14 @@ fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &
                     }
                 }
             }
+            // Nor is the current search match, whose text has its own colour: its rows before and now.
+            if current_match.as_slice() != look.current_match {
+                for &(row, _) in current_match.iter().chain(look.current_match) {
+                    if let Some(row) = usize::try_from(row).ok().and_then(|row| dirty.get_mut(row)) {
+                        *row = true;
+                    }
+                }
+            }
             // Nor is the cursor's look (shape, colour, focus): the row it was drawn on, and its row.
             for row in [*cursor_row, cursor.map(|k| k.row as usize)].into_iter().flatten() {
                 if let Some(row) = dirty.get_mut(row) {
@@ -3263,6 +3308,9 @@ fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &
         }
         *selection = content.selection;
         *cursor_row = cursor.map(|k| k.row as usize);
+        if current_match.as_slice() != look.current_match {
+            *current_match = look.current_match.to_vec();
+        }
         rows.resize_with(lines, RowPaint::default);
         let changed = dirty.iter().enumerate().filter_map(|(row, dirty)| dirty.then_some(row));
         snapshot.copy_rows(&term, &content, look.palette, changed);
@@ -3284,6 +3332,8 @@ fn layout_grid(term: &SharedTerm, shaper: &dyn Shaper, look: &GridLook, cache: &
         default_bg: look.palette.background,
         selection: look.palette.selection,
         selection_foreground: look.palette.selection_foreground,
+        current_match: look.current_match,
+        match_foreground: look.match_foreground,
         cursor,
         focused: look.focused,
     };
@@ -3663,7 +3713,10 @@ impl Render for TerminalView {
             (None, overlay)
         };
         let flash_color = Hsla { a: palette.selection.a * 0.7, ..palette.selection };
-        let search_colors = (Hsla { a: 0.3, ..app.brand }, Hsla { a: 0.6, ..app.brand }, app.brand);
+        let search_colors = search_colors(app);
+        // The current match's text, laid out with the grid (see `RowContext::current_match`).
+        let current_match: Vec<(i32, Range<usize>)> =
+            search_marks.iter().filter(|(_, _, current)| *current).map(|(row, cols, _)| (*row, cols.clone())).collect();
         let search_bar = self.render_search_bar(cx);
 
         let surface = canvas(
@@ -3769,18 +3822,23 @@ impl Render for TerminalView {
                     highlighter: &highlighter,
                     focused,
                     cursor_visible,
+                    current_match: &current_match,
+                    match_foreground: search_colors.current_text,
                 };
                 layout_grid(&term, &*text_system, &look, &mut grid_cache.borrow_mut());
                 // Search matches: over the cells' backgrounds and the selection, under the text.
-                let (match_bg, current_bg, current_edge) = search_colors;
+                // The current one is solid, its text recoloured to read on it; the others are a
+                // light tint with an edge, so their text keeps its own colours.
                 for (row, cols, current) in &search_marks {
                     let area = Bounds::new(
                         point(bounds.origin.x + cell_w * cols.start as f32, bounds.origin.y + line_h * *row as f32),
                         size(cell_w * cols.len() as f32, line_h),
                     );
-                    frame.matches.push((area, if *current { current_bg } else { match_bg }));
                     if *current {
-                        frame.outlines.push((area, current_edge));
+                        frame.matches.push((area, search_colors.current));
+                    } else {
+                        frame.matches.push((area, search_colors.other));
+                        frame.outlines.push((area, search_colors.other_edge));
                     }
                 }
                 // The IME's composition sits at the cursor, underlined, until it is committed.
@@ -4024,6 +4082,9 @@ mod tests {
         Activity, CachedGlyph, GlyphCache, GridCache, GridFont, GridLook, INLINE_CLUSTER, RowTextMetrics, Shaper,
         asks_for_secret, layout_grid,
     };
+    use crate::theme::rgb_to_hsla;
+    use alacritty_terminal::vte::ansi::Rgb;
+    use std::ops::Range;
 
     #[test]
     fn pasting_as_one_line_turns_every_line_break_into_a_space() {
@@ -4337,6 +4398,7 @@ mod tests {
         highlighter: Arc<Highlighter>,
         focused: bool,
         cursor_visible: bool,
+        current_match: Vec<(i32, Range<usize>)>,
         cache: GridCache,
     }
 
@@ -4357,6 +4419,7 @@ mod tests {
                 highlighter: Arc::new(Highlighter::from_sets(&sets, &[])),
                 focused: true,
                 cursor_visible: true,
+                current_match: Vec::new(),
                 cache: GridCache::default(),
             }
         }
@@ -4367,8 +4430,18 @@ mod tests {
 
         /// Lay out a frame and check it against a fresh layout. Returns how many rows it laid out.
         fn frame(&mut self, what: &str) -> usize {
-            let Grid { term, font, origin, scale, palette, highlighter, focused, cursor_visible, cache, .. } = self;
-            let look = GridLook { font, origin: *origin, scale: *scale, palette, highlighter, focused: *focused, cursor_visible: *cursor_visible };
+            let Grid { term, font, origin, scale, palette, highlighter, focused, cursor_visible, current_match, cache, .. } = self;
+            let look = GridLook {
+                font,
+                origin: *origin,
+                scale: *scale,
+                palette,
+                highlighter,
+                focused: *focused,
+                cursor_visible: *cursor_visible,
+                current_match,
+                match_foreground: MATCH_TEXT,
+            };
             layout_grid(term, &FakeShaper, &look, cache);
             let mut laid_out: Vec<i32> = cache.snapshot.cells.iter().map(|c| c.row).collect();
             laid_out.dedup();
@@ -4422,6 +4495,46 @@ mod tests {
         assert_eq!((program.url.as_str(), program.spans.clone()), ("https://docs.lan/x", vec![(Line(2), 0..4)]));
         assert_eq!(at(2, 11), None, "only web addresses open");
         assert_eq!(at(3, 7), None, "an IP address alone isn't a link");
+    }
+
+    /// The current search match's text colour in these tests.
+    const MATCH_TEXT: Rgb = Rgb { r: 0x10, g: 0x20, b: 0x30 };
+
+    #[test]
+    fn the_current_search_match_has_its_own_text_colour_and_is_laid_out_again_when_it_moves() {
+        let glyph_color = |g: &Grid, row: usize, col: usize| {
+            let x = g.origin.x + g.font.cell_w * col as f32;
+            g.cache.rows[row].glyphs.iter().find(|gl| (gl.origin.x - x).abs() < g.font.cell_w * 0.5).map(|gl| gl.color).unwrap()
+        };
+        let mut g = Grid::new(30, 4);
+        g.cursor_visible = false;
+        g.feed("\x1b[31merror\x1b[0m one\r\n\x1b[2merror\x1b[0m two");
+        g.frame("no search");
+        let red = glyph_color(&g, 0, 0);
+        assert_ne!(red, rgb_to_hsla(MATCH_TEXT));
+        // The first is current: only its cells change colour.
+        g.current_match = vec![(0, 0..5)];
+        g.frame("first match current");
+        assert_eq!(glyph_color(&g, 0, 0), rgb_to_hsla(MATCH_TEXT));
+        assert_eq!(glyph_color(&g, 0, 6), glyph_color(&g, 1, 6), "after the match");
+        // The next one: the first goes back, and dim text isn't dimmed on the solid background.
+        g.current_match = vec![(1, 0..5)];
+        g.frame("second match current");
+        assert_eq!(glyph_color(&g, 0, 0), red);
+        assert_eq!(glyph_color(&g, 1, 0), rgb_to_hsla(MATCH_TEXT));
+        g.current_match.clear();
+        g.frame("search closed");
+    }
+
+    #[test]
+    fn the_current_search_match_reads_on_its_background_in_every_theme() {
+        for theme in crate::theme::themes(false).iter().chain(crate::theme::themes(true)) {
+            let app = crate::theme::AppPalette::from_theme(theme);
+            let colors = super::search_colors(app);
+            let text = rgb_to_hsla(colors.current_text);
+            let ratio = crate::theme::contrast(crate::theme::packed(text), crate::theme::packed(colors.current));
+            assert!(ratio >= 4.5, "{}: {ratio:.2}", theme.name);
+        }
     }
 
     #[test]
@@ -4730,7 +4843,17 @@ $ ");
                     g.cache.highlights = Default::default();
                 }
                 let Grid { term, font, origin, scale, palette, highlighter, focused, cursor_visible, cache, .. } = &mut g;
-                let look = GridLook { font, origin: *origin, scale: *scale, palette, highlighter, focused: *focused, cursor_visible: *cursor_visible };
+                let look = GridLook {
+                    font,
+                    origin: *origin,
+                    scale: *scale,
+                    palette,
+                    highlighter,
+                    focused: *focused,
+                    cursor_visible: *cursor_visible,
+                    current_match: &[],
+                    match_foreground: MATCH_TEXT,
+                };
                 let start = Instant::now();
                 layout_grid(term, &FakeShaper, &look, cache);
                 took += start.elapsed();

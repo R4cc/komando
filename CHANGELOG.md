@@ -20,6 +20,12 @@ All notable changes to Komando are listed here. The format follows
 - The minimap is hidden in split view, so both sessions get more room for output. Turn it back on in
   Settings → Terminal → Minimap in split view.
 
+### Fixed
+
+- Search results in the terminal (Ctrl+Shift+F) no longer wash out coloured text. The current
+  match has a solid highlight with text drawn in a colour that stays readable on it, and the
+  other matches have a lighter tint with an outline.
+
 ## [0.8.1] - 2026-11-17
 
 ### Changed
