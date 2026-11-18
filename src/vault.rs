@@ -110,7 +110,7 @@ impl Vault {
         let key = derive_key(master_password, &salt, kdf)?;
         let vault = Self { path: Self::path_in(dir), kdf, salt, key, contents: Contents::default() };
         fs::create_dir_all(dir)?;
-        vault.save()?;
+        vault.write(&vault.contents)?;
         Ok(vault)
     }
 
@@ -143,10 +143,11 @@ impl Vault {
         Ok(Self { path, kdf: file.kdf, salt, key, contents })
     }
 
-    fn save(&self) -> Result<()> {
+    /// Encrypt `contents` with a fresh nonce and write them as the Vault file.
+    fn write(&self, contents: &Contents) -> Result<()> {
         let mut nonce = [0u8; 24];
         rand::thread_rng().fill_bytes(&mut nonce);
-        let plaintext = Zeroizing::new(serde_json::to_vec(&self.contents)?);
+        let plaintext = Zeroizing::new(serde_json::to_vec(contents)?);
         let cipher = XChaCha20Poly1305::new(&(*self.key).into());
         let ciphertext = cipher
             .encrypt(&XNonce::from(nonce), plaintext.as_ref())
@@ -161,6 +162,41 @@ impl Vault {
         write_atomic(&self.path, serde_json::to_string_pretty(&file)?.as_bytes())
     }
 
+    /// The Credentials as saved now, which another Komando process (a second window, or the
+    /// elevated shell window) may have changed since this one unlocked.
+    fn latest(&self) -> Result<Contents> {
+        let text = fs::read_to_string(&self.path).with_context(|| format!("reading {}", self.path.display()))?;
+        let file: VaultFile = serde_json::from_str(&text).context("the vault file is damaged")?;
+        let changed = || anyhow!("The master password was changed in another Komando window. Lock the vault and unlock it again.");
+        if file.version != 1 || file.kdf != self.kdf || B64.decode(&file.salt)? != self.salt {
+            return Err(changed());
+        }
+        let vault = Self::decrypt(self.path.clone(), file, self.salt, self.key.clone()).map_err(|_| changed())?;
+        Ok(std::mem::take(&mut { vault }.contents))
+    }
+
+    /// Apply `edit` to the Credentials as saved now and save them, so a change made in another
+    /// Komando process meanwhile is kept, not overwritten. Processes take turns through a lock
+    /// file next to the Vault; the system releases it if a process ends while holding it. What
+    /// is shown here is updated only once the change is on disk.
+    fn change<T>(&mut self, edit: impl FnOnce(&mut Contents) -> Result<T>) -> Result<T> {
+        let mut lock_name = self.path.file_name().unwrap_or_default().to_os_string();
+        lock_name.push(".lock");
+        let lock_path = self.path.with_file_name(lock_name);
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .with_context(|| format!("opening {}", lock_path.display()))?;
+        lock.lock().with_context(|| format!("locking {}", lock_path.display()))?;
+        let mut contents = self.latest()?;
+        let result = edit(&mut contents)?;
+        self.write(&contents)?;
+        self.contents = contents;
+        Ok(result)
+    }
+
     pub fn get(&self, id: &str) -> Option<&Credential> {
         self.contents.credentials.get(id)
     }
@@ -171,38 +207,30 @@ impl Vault {
 
     /// Store a new Credential and return its id.
     pub fn add(&mut self, credential: Credential) -> Result<CredentialId> {
-        let id = new_id();
-        self.contents.credentials.insert(id.clone(), credential);
-        if let Err(err) = self.save() {
-            self.contents.credentials.remove(&id);
-            return Err(err);
-        }
-        Ok(id)
+        self.change(|contents| {
+            let id = new_id();
+            contents.credentials.insert(id.clone(), credential);
+            Ok(id)
+        })
     }
 
     /// Replace the secret of an existing Credential (e.g. after a password change).
     /// Every Host that shares it picks up the new secret.
     pub fn replace(&mut self, id: &str, credential: Credential) -> Result<()> {
-        let Some(previous) = self.contents.credentials.get_mut(id) else {
-            bail!("unknown credential");
-        };
-        let previous = std::mem::replace(previous, credential);
-        if let Err(err) = self.save() {
-            self.contents.credentials.insert(id.to_string(), previous);
-            return Err(err);
-        }
-        Ok(())
+        self.change(|contents| match contents.credentials.get_mut(id) {
+            Some(previous) => {
+                *previous = credential;
+                Ok(())
+            }
+            None => bail!("unknown credential"),
+        })
     }
 
     pub fn remove(&mut self, id: &str) -> Result<()> {
-        let previous = self.contents.credentials.remove(id);
-        if let Err(err) = self.save() {
-            if let Some(previous) = previous {
-                self.contents.credentials.insert(id.to_string(), previous);
-            }
-            return Err(err);
-        }
-        Ok(())
+        self.change(|contents| {
+            contents.credentials.remove(id);
+            Ok(())
+        })
     }
 }
 

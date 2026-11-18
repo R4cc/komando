@@ -14,6 +14,15 @@ All notable changes to Komando are listed here. The format follows
 - The daily usage ping is sent once a day even when Komando can't write to its data folder.
 - An update download stops as soon as it is larger than the release lists, instead of filling
   the disk.
+- Passwords saved in the vault from two Komando windows at once, such as the main window and
+  an administrator shell window, are all kept. Before, the later save could drop the other.
+- A damaged line in the list of trusted remote desktop certificates no longer makes a changed
+  certificate look like a first connection, and trusting a certificate no longer erases the
+  others.
+- Moving a host into a project whose port forwards use the same port as the host's own is
+  refused with an explanation, instead of leaving the host with two forwards on one port.
+- When two remote port forwards of a session use the same port, the one that opened keeps
+  working, and the other says why it didn't open.
 
 ## [0.8.3] - 2026-11-18
 

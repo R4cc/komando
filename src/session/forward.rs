@@ -187,11 +187,26 @@ pub fn start(forwards: &[PortForward], open: Opener, listen: Listen, remote: &Re
                     // the server's GatewayPorts lets clients choose.
                     let address = if tracker.forward.open_to_network { "" } else { "localhost" };
                     let port = u32::from(tracker.forward.port);
-                    remote.0.lock().unwrap().insert(port, tracker.clone());
+                    // Another of the Session's forwards has the port already: the server's
+                    // connections there stay with it, and this one doesn't ask the server.
+                    let claimed = match remote.0.lock().unwrap().entry(port) {
+                        std::collections::hash_map::Entry::Occupied(_) => false,
+                        std::collections::hash_map::Entry::Vacant(vacant) => {
+                            vacant.insert(tracker.clone());
+                            true
+                        }
+                    };
+                    if !claimed {
+                        return tracker.failed(remote_taken(tracker.forward.port));
+                    }
                     match listen(address.to_string(), port).await {
                         Ok(()) => tracker.send_open(),
                         Err(why) => {
-                            remote.0.lock().unwrap().remove(&port);
+                            let mut map = remote.0.lock().unwrap();
+                            if map.get(&port).is_some_and(|owner| Arc::ptr_eq(owner, &tracker)) {
+                                map.remove(&port);
+                            }
+                            drop(map);
                             tracker.failed(why);
                         }
                     }
@@ -200,6 +215,11 @@ pub fn start(forwards: &[PortForward], open: Opener, listen: Listen, remote: &Re
         }
     }
     tasks
+}
+
+/// The sentence for a Remote forward whose port another forward of the Session listens on.
+pub fn remote_taken(port: u16) -> String {
+    format!("Another port forward of this session already listens on port {port} on the host. Pick another port for one of them.")
 }
 
 /// The sentence for a Remote forward the server refused.

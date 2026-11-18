@@ -275,7 +275,7 @@ fn parse_forwards(rows: &[ForwardFields], inherited: &[PortForward]) -> Result<V
             PortForward { open_to_network: row.open_to_network, ..PortForward::socks(port) }
         };
         let place = if forward.kind.listens_here() { "on this computer" } else { "on the host" };
-        let same = |other: &PortForward| other.port == forward.port && other.kind.listens_here() == forward.kind.listens_here();
+        let same = |other: &PortForward| other.same_listener(&forward);
         if let Some(project) = inherited.iter().find(|other| same(other)) {
             return Err(format!(
                 "Port forward {n} listens on port {port} {place}, as the project's \"{}\" does. Pick another port, or \
@@ -295,7 +295,7 @@ fn parse_forwards(rows: &[ForwardFields], inherited: &[PortForward]) -> Result<V
 /// the own forwards of `hosts` (its hosts that open the project's forwards too).
 fn clash_with_hosts(project: &[PortForward], hosts: &[(&str, &[PortForward])]) -> Result<(), String> {
     for forward in project {
-        let same = |other: &&PortForward| other.port == forward.port && other.kind.listens_here() == forward.kind.listens_here();
+        let same = |other: &&PortForward| other.same_listener(forward);
         if let Some((host, own)) = hosts.iter().find_map(|(host, own)| own.iter().find(same).map(|own| (host, own))) {
             let place = if forward.kind.listens_here() { "on this computer" } else { "on the host" };
             return Err(format!(

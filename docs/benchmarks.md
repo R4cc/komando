@@ -205,6 +205,3 @@ flow control after each one, and recorded how long the whole output took. Memory
 `Win32_PerfFormattedData_PerfProc_Process` counters (`WorkingSetPrivate`), a few seconds after
 the sessions had settled. Startup was timed from `CreateProcess` until a visible top-level window
 belonging to the process appeared.
-
-Earlier, Linux-based measurements of specific code paths (sidebar with 10,000 hosts, highlighting,
-download name reservation) are in [performance/2026-11-12](performance/2026-11-12/REPORT.md).

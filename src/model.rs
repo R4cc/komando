@@ -675,6 +675,12 @@ pub struct PortForward {
 }
 
 impl PortForward {
+    /// Whether both listen on the same port in the same place (this computer, or the Host),
+    /// so they can't both open in one Session.
+    pub fn same_listener(&self, other: &PortForward) -> bool {
+        self.port == other.port && self.kind.listens_here() == other.kind.listens_here()
+    }
+
     pub fn local(port: u16, to_host: impl Into<String>, to_port: u16) -> Self {
         Self { kind: ForwardKind::Local, port, to_host: to_host.into(), to_port, open_to_network: false }
     }
@@ -1069,11 +1075,15 @@ impl Library {
     /// Move a Host from one Project to the end of another. A Host that is already in the
     /// other Project only leaves this one. Its own settings stay; what it took from the
     /// Project (user, Credential, Jump Hosts, Startup Commands) now comes from the new one.
-    /// Returns false when nothing changed.
+    /// Returns false when nothing changed, also when the move would give the Host two Port
+    /// Forwards on one port (see `forward_clash`).
     pub fn move_host(&mut self, host_id: &str, from: &str, to: &str) -> bool {
         let position = |id: &str| self.projects.iter().position(|p| p.id == id);
         let (Some(from), Some(to)) = (position(from), position(to)) else { return false };
         if from == to || self.host(host_id).is_none() || !self.projects[from].hosts.iter().any(|h| h == host_id) {
+            return false;
+        }
+        if self.forward_clash(host_id, &self.projects[to].id).is_some() {
             return false;
         }
         self.projects[from].hosts.retain(|h| h != host_id);
@@ -1081,6 +1091,18 @@ impl Library {
             self.projects[to].hosts.push(host_id.to_string());
         }
         true
+    }
+
+    /// The first of `project_id`'s Port Forwards that listens where one of `host_id`'s own does,
+    /// with that one of the Host's, when the Host opens its Project's forwards: as part of that
+    /// Project it couldn't open both. The host and project forms refuse the same.
+    pub fn forward_clash(&self, host_id: &str, project_id: &str) -> Option<(&PortForward, &PortForward)> {
+        let host = self.host(host_id).filter(|h| h.use_project_forwards)?;
+        let project = self.project(project_id)?;
+        project
+            .port_forwards
+            .iter()
+            .find_map(|theirs| host.port_forwards.iter().find(|own| own.same_listener(theirs)).map(|own| (theirs, own)))
     }
 
     /// Move a Host to another place in its Project's sidebar order. `index` is where it goes
@@ -2205,9 +2227,17 @@ mod tests {
         web.port_forwards = vec![PortForward::remote(9000, "localhost", 4000)];
         let mut lib = two_projects(vec![web]);
         lib.projects[1].port_forwards = vec![PortForward::remote(9000, "localhost", 3000)];
-        let moved = lib.move_host("web", "p1", "p2");
-        let ports: Vec<u16> = lib.resolve("p2", "web").map(|r| r.port_forwards.iter().map(|f| f.port).collect()).unwrap_or_default();
-        assert!(!moved || ports.iter().filter(|p| **p == 9000).count() < 2, "moved into a clash: {ports:?}");
+        assert!(lib.forward_clash("web", "p2").is_some());
+        assert!(!lib.move_host("web", "p1", "p2"), "moved into a clash");
+        assert_eq!(lib.projects[0].hosts, ["web"]);
+        // The same port on the other side (this computer, not the host) is no clash.
+        lib.hosts[0].port_forwards = vec![PortForward::local(9000, "localhost", 4000)];
+        assert!(lib.move_host("web", "p1", "p2"));
+        // Nor is one the Host doesn't open: it leaves out its Project's forwards.
+        lib.hosts[0].port_forwards = vec![PortForward::remote(9000, "localhost", 4000)];
+        lib.hosts[0].use_project_forwards = false;
+        lib.projects[0].port_forwards = vec![PortForward::remote(9000, "localhost", 3000)];
+        assert!(lib.move_host("web", "p2", "p1"));
     }
 
     #[test]

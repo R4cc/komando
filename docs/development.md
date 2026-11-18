@@ -165,7 +165,6 @@ those runs. Total preparation plus resize was about 230 ms: this improves respon
 by moving allocations off the UI thread, rather than reducing total work. These are
 headless resize measurements, not Windows sidebar click-to-paint measurements. The benchmark
 also reports a 1,000-row case for comparison; the UI does not start a worker for that case.
-The [three recorded runs](performance/2026-11-16/sidebar-width.log) include all timings.
 
 `throughput_sftp_divider_resize` exercises a sequence of widths matching an SFTP divider
 drag with 56,000 log rows:
@@ -178,9 +177,7 @@ Narrowing a row with an empty tail now truncates it without allocating a tempora
 The median step while narrowing from 177 to 169 columns was 7.65 ms in the baseline run;
 the medians after the change were 3.79, 3.97 and 3.94 ms. Steps that wrap real text still
 need to move cells and can be much slower: the largest observed step remained over 100 ms.
-See the [baseline](performance/2026-11-16/sftp-divider-before.log) and
-[three subsequent runs](performance/2026-11-16/sftp-divider-after.log). These headless tests
-time synchronous reflow, not GPUI rendering or Windows SFTP interaction.
+These headless tests time synchronous reflow, not GPUI rendering or Windows SFTP interaction.
 
 During widening, preparation groups up to 16 adjacent column widths so small drag movements
 share work. The extra capacity is reclaimed when the layout settles. Reflows are spaced by
@@ -370,9 +367,7 @@ Projects, and 1,000 queued download reservations (32 active) with identical file
 cargo test --release --lib stress_ -- --ignored --nocapture --test-threads=1
 ```
 
-These print timings without machine-dependent pass/fail thresholds. See
-[the recorded performance investigation](performance/2026-11-12/REPORT.md) for measured
-results, raw test output, scope, and limitations. SSH tests run entirely against temporary
+These print timings without machine-dependent pass/fail thresholds. SSH tests run entirely against temporary
 fixtures; they do not connect to saved Hosts or change a user's library.
 
 ## Design notes

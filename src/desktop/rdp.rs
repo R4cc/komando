@@ -7,7 +7,7 @@
 
 mod clipboard;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use ironrdp_connector::connection_activation::ConnectionActivationState;
 use ironrdp_connector::sspi::generator::NetworkRequest;
 use ironrdp_connector::{
@@ -140,7 +140,9 @@ async fn within<T>(step: impl std::future::Future<Output = T>) -> Result<T, Fail
 async fn check_certificate(target: &Target, link: &Link, der: &[u8]) -> Result<()> {
     let server = format!("{}:{}", target.address, target.port);
     let fingerprint = trust::fingerprint(der);
-    let previous = match trust::check(&target.certificates, &server, &fingerprint) {
+    let known = trust::check(&target.certificates, &server, &fingerprint)
+        .with_context(|| format!("Couldn't read the trusted certificates in {}", target.certificates.display()))?;
+    let previous = match known {
         Known::Trusted => return Ok(()),
         Known::New => None,
         Known::Changed { previous } => Some(previous),

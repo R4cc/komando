@@ -460,11 +460,25 @@ impl Workspace {
     /// Move a Host to another Project. Its open Sessions go with it: they stay connected,
     /// and reconnect with the new Project's defaults.
     fn move_host_to(&mut self, host_id: &str, from: &str, to: &str, cx: &mut Context<Self>) {
+        let name = self.library.host(host_id).map(|h| h.name.clone()).unwrap_or_default();
+        // Its own forwards open beside the Project's: two on one port would clash.
+        if let Some((theirs, own)) = self.library.forward_clash(host_id, to) {
+            let project = self.library.project(to).map(|p| p.name.clone()).unwrap_or_default();
+            let place = if own.kind.listens_here() { "on this computer" } else { "on the host" };
+            let message = format!(
+                "Could not move {name}: its port forward \"{}\" listens on port {} {place}, as {project}'s \"{}\" does. \
+                 Pick another port, or have {name} leave out its project's forwards.",
+                own.label(),
+                own.port,
+                theirs.label()
+            );
+            self.show_toast(message, cx);
+            return;
+        }
         let mut library = self.library.clone();
         if !library.move_host(host_id, from, to) {
             return;
         }
-        let name = self.library.host(host_id).map(|h| h.name.clone()).unwrap_or_default();
         if let Err(err) = self.commit_library(library) {
             self.show_toast(format!("Could not move {name}. {err}"), cx);
             return;
