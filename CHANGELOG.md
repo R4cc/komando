@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-18
+
 ### Added
 
 - Drag the divider of a split view to give one session more room than the other.
