@@ -6,6 +6,12 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-11-18
+
+### Changed
+
+- Updated the `dirs` library to 6.0 and the `rand` library to 0.10.
+
 ### Fixed
 
 - When a change to your shells in Settings can't be saved, Komando now shows the shells as
@@ -1956,7 +1962,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.8.4...HEAD
+[0.8.4]: https://github.com/R4cc/komando/compare/v0.8.3...v0.8.4
 [0.8.0]: https://github.com/R4cc/komando/compare/v0.7.9...v0.8.0
 [0.7.9]: https://github.com/R4cc/komando/compare/v0.7.8...v0.7.9
 [0.7.8]: https://github.com/R4cc/komando/compare/v0.7.7...v0.7.8
