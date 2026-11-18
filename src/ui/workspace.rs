@@ -30,7 +30,7 @@ use crate::ui::popup::item as menu_item;
 use crate::ui::terminal_view::{TerminalEvent, TerminalView};
 use crate::ui::transfers::{Activity, Transfers, TransfersChanged};
 use crate::ui::widgets::{
-    Busy, BusyPhase, ButtonKind, ISLAND_GAP, ISLAND_RADIUS, MenuTrigger, badge, busy_done, button, close_button, elevation, icon_button, icon_el, icon_text_button, island,
+    Busy, BusyPhase, ButtonKind, ISLAND_GAP, MenuTrigger, badge, busy_done, button, close_button, elevation, icon_button, icon_el, icon_text_button, island,
     connection_indicator, is_artwork, password_input, progress_ring, section_label, shell_icon_color, spinner, status_dot, wordmark,
 };
 use crate::vault::{Credential, Secret, Vault};
@@ -113,23 +113,6 @@ fn sidebar_width(preferred: f32, window_width: f32) -> f32 {
     let max = (window_width - ISLAND_GAP * 3. - 360.).clamp(200., 520.);
     let preferred = if preferred.is_finite() { preferred } else { SIDEBAR_WIDTH };
     preferred.clamp(200., max)
-}
-
-/// The gap between the two panes of a split. On a dark canvas the bare gap is a black groove
-/// between two near-black terminals and barely shows, so a hairline runs down its middle. It
-/// is pure white (black in light themes) at low alpha, so it takes no tint from the canvas,
-/// and it stops where the islands' corners start to curve, so it spans only their straight edges.
-fn split_seam(p: AppPalette) -> AnyElement {
-    let ink = if p.dark { gpui::white().opacity(0.25) } else { gpui::black().opacity(0.12) };
-    div()
-        .w(px(ISLAND_GAP))
-        .h_full()
-        .flex_shrink_0()
-        .flex()
-        .justify_center()
-        .py(px(ISLAND_RADIUS))
-        .child(div().w(px(1.)).h_full().bg(ink))
-        .into_any_element()
 }
 
 /// A divider drag has no image following the pointer.
@@ -294,6 +277,8 @@ struct ItemState<'a> {
     /// The Session the row itself stands for, if it stands for one.
     main: Option<&'a SessionEntry>,
     beside: bool,
+    /// The Session beside the row's in the remembered split, shown or not (see `split_link`).
+    linked: Option<usize>,
     status: Option<Status>,
     live: bool,
     busy: bool,
@@ -527,6 +512,8 @@ pub struct Workspace {
     favorites: Entity<FavoriteStore>,
     /// The divider between terminal and file browser is being dragged.
     sftp_resizing: bool,
+    /// The divider between the two panes of a split is being dragged.
+    split_resizing: bool,
     /// The last key handed to a jump host row in a form (see `forms::JumpRow`).
     next_jump_row: usize,
     /// Settings → Import: where an import from another SSH client is.
@@ -660,6 +647,7 @@ impl Workspace {
             transfers,
             favorites,
             sftp_resizing: false,
+            split_resizing: false,
             next_jump_row: 0,
             import: import::ImportFlow::default(),
             _subscriptions: vec![transfers_sub, transfers_ticks],
@@ -1390,7 +1378,8 @@ impl Workspace {
         let command_rail = self.settings.command_rail;
         // Kept per Host: Local Sessions have their shell's own history.
         let command_history = self.settings.command_history && matches!(kind, SessionKind::Ssh { .. });
-        let minimap = self.settings.minimap;
+        // Not in a split yet; `activate` below tells it if it opened into one.
+        let minimap = self.minimap_shown(false);
         let minimap_overlay = self.settings.minimap_placement == crate::model::MinimapPlacement::Over;
         let minimap_delay = std::time::Duration::from_millis(self.settings.minimap_delay_ms.into());
         let project_id = match &item {
@@ -1478,11 +1467,18 @@ impl Workspace {
                 }
                 TerminalEvent::Entered { line, at } => this.record_command(id, line, *at, cx),
                 TerminalEvent::Unhighlight { rule } => this.unhighlight(rule, cx),
+                // In a split, only the split's minimap goes.
+                TerminalEvent::HideMinimap if this.sessions.in_split(id) && this.settings.minimap_in_split => {
+                    this.settings.minimap_in_split = false;
+                    this.apply_terminal_settings(cx);
+                    this.show_toast("Minimap hidden in split view. Turn it back on in Settings → Terminal.", cx);
+                }
                 TerminalEvent::HideMinimap => {
                     this.settings.minimap = false;
                     this.apply_terminal_settings(cx);
                     this.show_toast("Minimap hidden. Turn it back on in Settings → Terminal.", cx);
                 }
+                TerminalEvent::CloseSplit => this.close_split(window, cx),
                 TerminalEvent::ForwardFailed { forward, why } => this.forward_failed(id, forward, why, cx),
                 TerminalEvent::StartupStopped { waited_for } => this.show_toast_for(
                     format!("Startup commands stopped: \"{}\" didn't appear within a minute.", waited_for.trim()),
@@ -1713,6 +1709,8 @@ impl Workspace {
         if matches!(self.page, Page::Settings(_)) {
             self.page = Page::Sessions;
         }
+        // It may have just gone into a split (see `Sessions::add`).
+        self.sync_split_views(cx);
         self.focus_active(window, cx);
         cx.notify();
     }
@@ -2721,6 +2719,8 @@ impl Workspace {
             }
             entry.ui.view.close(cx);
         }
+        // The other half of a split one of them was in has its minimap back.
+        self.sync_split_views(cx);
         removed.show
     }
 
@@ -3716,7 +3716,12 @@ impl Workspace {
             && if grouped { sessions.iter().any(|s| self.sessions.busy_out_of_sight(s)) } else { main.is_some_and(|s| self.sessions.busy_out_of_sight(s)) };
         // With the Sessions listed below, the active one is marked there instead.
         let active = main.is_some_and(|s| Some(s.id()) == self.sessions.active()) || (holds_active && !expanded);
-        ItemState { sessions, listed, grouped, expanded, shown, main, beside, status, live, busy, active }
+        // In a split that stays while another Session is shown: linked to the other half. Expanded,
+        // the listed Sessions show it on their own rows.
+        let remembered = self.sessions.split();
+        let partner = |s: &SessionEntry| remembered.and_then(|split| split.other(s.id()));
+        let linked = if expanded { main.and_then(partner) } else { sessions.iter().find_map(|s| partner(s)) };
+        ItemState { sessions, listed, grouped, expanded, shown, main, beside, linked, status, live, busy, active }
     }
 
     /// The menu of an item's row: its right-click menu, and the one its ⋯ button and
@@ -3727,7 +3732,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + Clone + 'static {
         let key = item.key();
-        let ItemState { sessions, grouped, expanded, shown, main, .. } = self.item_state(&key);
+        let ItemState { sessions, grouped, expanded, shown, main, linked, .. } = self.item_state(&key);
         let any_live = sessions.iter().any(|s| s.is_live());
         let session_id = main.map(|s| s.id());
         let sessions_live = main.is_some_and(|s| s.is_live());
@@ -3749,6 +3754,7 @@ impl Workspace {
         // × and Delete only disconnect a terminal; with the setting off they close it.
         let keep_sessions = self.settings.keep_disconnected_sessions && main.is_some_and(|s| s.ui.view.desktop().is_none());
         let completion_ids: Vec<usize> = sessions.iter().map(|s| s.id()).collect();
+        let linked = linked.is_some();
         // Its connected terminal, for Browse files: the row's own, else the last shown.
         let files_session = main
             .into_iter()
@@ -3775,6 +3781,9 @@ impl Workspace {
                 menu = menu.item(menu_item("Open in split view", None, &ws, move |this, window, cx| {
                     this.open_in_split(&split_key, None, Side::Right, window, cx)
                 }));
+            }
+            if linked {
+                menu = menu.item(menu_item("Close split view", Some("columns-2"), &ws, |this, window, cx| this.close_split(window, cx)));
             }
             // A dropped Session still needs Connect, even with its retained output visible.
             if !open_live || !visible {
@@ -3884,7 +3893,7 @@ impl Workspace {
     /// and each Session has its own row with its own close button.
     fn render_item(&self, item: &SidebarItem, color: Hsla, indent: f32, p: AppPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let key = item.key();
-        let ItemState { listed, grouped, expanded, main, beside, status, live, busy, active, .. } = self.item_state(&key);
+        let ItemState { listed, grouped, expanded, main, beside, linked, status, live, busy, active, .. } = self.item_state(&key);
         let icon = item.icon();
         let icon_size = if matches!(item, SidebarItem::Shell { .. }) { 16. } else { 15. };
         let icon_color = item.icon_color(&icon, if active || live { color } else { p.text_faint }, p);
@@ -4012,7 +4021,10 @@ impl Workspace {
                                     .text_color(if active { p.active_text.opacity(0.75) } else { p.text_faint })
                                     .child(format!("· {name}")),
                             )
-                        }),
+                        })
+                        .children(linked.and_then(|partner| {
+                            self.split_link(partner, if active { p.active_text.opacity(0.75) } else { p.text_faint })
+                        })),
                 )
                 // The state stays put while the row's actions show beside it.
                 .child(
@@ -4152,6 +4164,7 @@ impl Workspace {
         let active = Some(id) == self.sessions.active();
         let focused = self.nav_focus_on(&NavTarget::Session(id));
         let beside = !active && self.sessions.shown_split().is_some_and(|s| s.contains(id));
+        let linked = self.sessions.split().and_then(|s| s.other(id));
         let dragged = self.dragged(item, Some(id), color);
         let live = session.is_live();
         let desktop = desktop_protocol(session);
@@ -4235,6 +4248,7 @@ impl Workspace {
                     .when(!active, |el| el.group_hover("session-row", |s| s.text_color(p.hover_text)))
                     .child(title.clone()),
             )
+            .children(linked.and_then(|partner| self.split_link(partner, if active { p.active_text.opacity(0.75) } else { p.text_faint })))
             .when(own_window, |el| {
                 el.child(
                     div()
@@ -4281,6 +4295,23 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The link on a sidebar row whose Session is in the remembered split, shown or not: the
+    /// split stays while another Session is shown and comes back with either of its two. Its
+    /// tooltip names the Session on the other side.
+    fn split_link(&self, partner: usize, color: Hsla) -> Option<AnyElement> {
+        let name = self.sessions.display_name(self.sessions.get(partner)?);
+        let tip: SharedString = format!("In split view with {name}").into();
+        Some(
+            div()
+                .id("split-link")
+                .flex_shrink_0()
+                .aria_label(tip.clone())
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                .child(icon_el("link-2", 12., color))
+                .into_any_element(),
+        )
+    }
+
     /// The menu of a Session's own row.
     fn session_menu(&self, id: usize, cx: &mut Context<Self>) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + Clone + 'static {
         let ws = cx.entity().downgrade();
@@ -4290,11 +4321,15 @@ impl Workspace {
         let own_window = session.is_some_and(|s| s.own_window());
         let keep = self.settings.keep_disconnected_sessions && desktop.is_none();
         let files = session.is_some_and(|s| matches!(s.kind(), SessionKind::Ssh { .. }) && matches!(s.status(), Status::Connected));
+        let in_split = self.sessions.in_split(id);
         let sidebar_focus = self.nav.focus.clone();
         move |menu: PopupMenu, _: &mut Window, cx: &mut Context<PopupMenu>| {
             let mut menu = menu.action_context(sidebar_focus.clone());
             if files {
                 menu = menu.item(menu_item("Browse files", Some("folder-open"), &ws, move |this, window, cx| this.show_files(id, window, cx)));
+            }
+            if in_split {
+                menu = menu.item(menu_item("Close split view", Some("columns-2"), &ws, |this, window, cx| this.close_split(window, cx)));
             }
             menu = menu.item(
                 menu_item("Rename session…", None, &ws, move |this, window, cx| this.open_rename_session(id, window, cx))
@@ -4577,14 +4612,17 @@ impl Workspace {
         let content = match (self.active_entry(), self.sessions.shown_split()) {
             (None, _) => self.render_empty(p, cx),
             (Some(_), Some(split)) => {
-                let mut panes: Vec<AnyElement> =
-                    [split.left, split.right].into_iter().filter_map(|id| self.render_pane(id, true, p, window, cx)).collect();
+                let ratio = self.sessions.split_ratio();
+                let mut panes: Vec<AnyElement> = [(split.left, ratio), (split.right, 1. - ratio)]
+                    .into_iter()
+                    .filter_map(|(id, share)| self.render_pane(id, Some(share), p, window, cx))
+                    .collect();
                 if panes.len() == 2 {
-                    panes.insert(1, split_seam(p));
+                    panes.insert(1, self.render_split_divider(p, cx));
                 }
                 div().flex_1().min_w_0().h_full().flex().children(panes).into_any_element()
             }
-            (Some(entry), None) => self.render_pane(entry.id(), false, p, window, cx).unwrap_or_else(|| div().into_any_element()),
+            (Some(entry), None) => self.render_pane(entry.id(), None, p, window, cx).unwrap_or_else(|| div().into_any_element()),
         };
         div()
             .id("main-area")
@@ -4596,16 +4634,26 @@ impl Workspace {
             .child(content)
             .children(self.render_drop_overlay(cx))
             .on_drag_move(cx.listener(|this, event: &gpui::DragMoveEvent<DraggedItem>, _, cx| this.drag_over_main(event, cx)))
+            .on_drag_move(cx.listener(|this, event: &gpui::DragMoveEvent<split::SplitDivider>, _, cx| this.drag_split_divider(event, cx)))
             .on_drop(cx.listener(|this, dragged: &DraggedItem, window, cx| this.drop_on_main(dragged, window, cx)))
             .into_any_element()
     }
 
-    /// One Session's terminal, with its file browser when open. In a split, a press anywhere
-    /// in the pane activates it.
-    fn render_pane(&self, id: usize, in_split: bool, p: AppPalette, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// One Session's terminal, with its file browser when open. In a split, `share` is its
+    /// part of the width, and a press anywhere in the pane activates it.
+    fn render_pane(&self, id: usize, share: Option<f32>, p: AppPalette, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = self.sessions.get(id)?;
+        let in_split = share.is_some();
+        // Both panes grow from nothing, each by its share: the divider sets how the width splits.
+        let grow = move |mut el: gpui::Stateful<gpui::Div>| {
+            if let Some(share) = share {
+                el.style().flex_grow = Some(share);
+            }
+            el
+        };
         if entry.own_window() {
-            return Some(self.render_in_own_window(id, p, cx));
+            let placeholder = self.render_in_own_window(id, p, cx);
+            return Some(grow(div().id(("pane", id)).flex_1().min_w_0().h_full().flex().child(placeholder)).into_any_element());
         }
         let focused = self.sessions.active() == Some(id);
         let term_bg = cx.global::<Appearance>().term.background_hsla();
@@ -4614,7 +4662,10 @@ impl Workspace {
         let window_width = f32::from(window.bounds().size.width);
         let area = window_width - ISLAND_GAP * 2.
             - if self.sidebar_visible { self.sidebar_width(window) + ISLAND_GAP } else { 0. };
-        let pane_width = if in_split { (area - ISLAND_GAP) / 2. } else { area };
+        let pane_width = match share {
+            Some(share) => (area - ISLAND_GAP) * share,
+            None => area,
+        };
         let max = (pane_width - 300.).max(280.);
         let width = self.settings.sftp_width.min(max).max(280.);
         if let Some(browser) = &browser {
@@ -4628,6 +4679,7 @@ impl Workspace {
                 .id(("pane", id))
                 .relative()
                 .flex_1()
+                .map(grow)
                 .min_w_0()
                 .h_full()
                 .bg(term_bg)

@@ -28,6 +28,8 @@ pub(super) struct Sessions<P> {
     last_shown: HashMap<ItemKey, usize>,
     /// Two Sessions side by side, shown while either is active.
     split: Option<Split>,
+    /// The left pane's share of the split's width, 0.5 for halves (see `set_split`).
+    split_ratio: f32,
     /// A split waiting for the new Session dropped into it.
     pending_split: Option<PendingSplit>,
     /// Goes up whenever something the saved tabs record may have changed (see `tabs`).
@@ -82,6 +84,9 @@ pub(super) enum EndingAll {
     /// Ask first: `printing` of the `live` Sessions are still printing output.
     Ask { printing: usize, live: usize },
 }
+
+/// How far the divider of a split can go: each pane keeps at least this share of the width.
+pub(super) const SPLIT_RATIO_LIMITS: (f32, f32) = (0.15, 0.85);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Side {
@@ -268,6 +273,7 @@ impl<P> Default for Sessions<P> {
             active: None,
             last_shown: HashMap::new(),
             split: None,
+            split_ratio: 0.5,
             pending_split: None,
             revision: 0,
         }
@@ -429,6 +435,34 @@ impl<P> Sessions<P> {
         self.revision += 1;
     }
 
+    /// The remembered split, shown or not.
+    pub fn split(&self) -> Option<Split> {
+        self.split
+    }
+
+    /// The left pane's share of the split's width.
+    pub fn split_ratio(&self) -> f32 {
+        self.split_ratio
+    }
+
+    /// Move the divider between the two panes. Kept within `SPLIT_RATIO_LIMITS`.
+    pub fn set_split_ratio(&mut self, ratio: f32) {
+        let (min, max) = SPLIT_RATIO_LIMITS;
+        if ratio.is_finite() {
+            self.split_ratio = ratio.clamp(min, max);
+        }
+    }
+
+    /// Set the split, `partner` being the Session that stays from what was shown. A split
+    /// that only changes one side, or swaps them, keeps where the divider was; a new pair
+    /// starts at halves.
+    fn set_split(&mut self, split: Split, partner: usize) {
+        if !self.split.is_some_and(|old| old.contains(partner)) {
+            self.split_ratio = 0.5;
+        }
+        self.split = Some(split);
+    }
+
     /// The split on screen: the remembered one, while one of its Sessions is shown.
     pub fn shown_split(&self) -> Option<Split> {
         let split = self.split?;
@@ -500,11 +534,11 @@ impl<P> Sessions<P> {
         Some(match placement {
             Placement::Swap => {
                 let split = self.shown_split()?;
-                self.split = Some(Split { left: split.right, right: split.left });
+                self.set_split(Split { left: split.right, right: split.left }, other);
                 Placed::Show(other)
             }
             Placement::Existing(id) => {
-                self.split = Some(Split::new(side, id, other));
+                self.set_split(Split::new(side, id, other), other);
                 Placed::Existing(id)
             }
             Placement::New => Placed::New(PendingSplit { item: item.clone(), partner: other, side }),
@@ -522,7 +556,7 @@ impl<P> Sessions<P> {
         let Some(item) = self.get(id).map(|s| s.item.clone()) else { return };
         let Some(pending) = self.pending_split.take_if(|p| p.item == item) else { return };
         if self.contains(pending.partner) {
-            self.split = Some(Split::new(pending.side, id, pending.partner));
+            self.set_split(Split::new(pending.side, id, pending.partner), pending.partner);
         }
     }
 
@@ -1184,6 +1218,52 @@ mod tests {
         assert_eq!(close(&mut sessions, left).show, None);
         assert!(!sessions.in_split(right));
         assert_eq!(sessions.active(), Some(other));
+    }
+
+    #[test]
+    fn the_divider_stays_while_one_side_changes_or_the_sides_swap() {
+        let mut sessions = Sessions::default();
+        let (web, db, app) = (host("web01"), host("db01"), host("app01"));
+        let left = open(&mut sessions, &web, ssh("web01"));
+        let right = open(&mut sessions, &db, ssh("db01"));
+        let third = open(&mut sessions, &app, ssh("app01"));
+        split(&mut sessions, left, right);
+        assert_eq!(sessions.split_ratio(), 0.5);
+        sessions.set_split_ratio(0.7);
+        // Another Session dropped on the right replaces db01; web01 stays on the left.
+        assert!(sessions.place(&app, Some(third), Side::Right).is_some());
+        assert_eq!(sessions.split(), Some(Split { left, right: third }));
+        assert_eq!(sessions.split_ratio(), 0.7);
+        assert!(matches!(sessions.place(&app, None, Side::Left), Some(Placed::Show(_))));
+        assert_eq!(sessions.split_ratio(), 0.7);
+    }
+
+    #[test]
+    fn a_new_pair_starts_at_halves() {
+        let mut sessions = Sessions::default();
+        let (web, db, app) = (host("web01"), host("db01"), host("app01"));
+        let left = open(&mut sessions, &web, ssh("web01"));
+        let right = open(&mut sessions, &db, ssh("db01"));
+        let other = open(&mut sessions, &app, ssh("app01"));
+        split(&mut sessions, left, right);
+        sessions.set_split_ratio(0.3);
+        // From a Session outside the remembered split: a split of its own.
+        sessions.activate(other);
+        assert!(sessions.place(&web, Some(left), Side::Left).is_some());
+        assert_eq!(sessions.split(), Some(Split { left, right: other }));
+        assert_eq!(sessions.split_ratio(), 0.5);
+    }
+
+    #[test]
+    fn the_divider_keeps_each_pane_a_share_of_the_width() {
+        let mut sessions = Sessions::<()>::default();
+        let (min, max) = SPLIT_RATIO_LIMITS;
+        sessions.set_split_ratio(0.0);
+        assert_eq!(sessions.split_ratio(), min);
+        sessions.set_split_ratio(1.0);
+        assert_eq!(sessions.split_ratio(), max);
+        sessions.set_split_ratio(f32::NAN);
+        assert_eq!(sessions.split_ratio(), max);
     }
 
     #[test]

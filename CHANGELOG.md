@@ -6,6 +6,20 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Drag the divider of a split view to give one session more room than the other.
+  Double-click it to go back to halves.
+- Sessions in a split view show a link icon in the sidebar, even while you look at another
+  host. Hover over it to see which session is on the other side.
+- Close split view from a session's right-click menu in the sidebar, or from the terminal's
+  right-click menu.
+
+### Changed
+
+- The minimap is hidden in split view, so both sessions get more room for output. Turn it back on in
+  Settings → Terminal → Minimap in split view.
+
 ## [0.8.1] - 2026-11-17
 
 ### Changed

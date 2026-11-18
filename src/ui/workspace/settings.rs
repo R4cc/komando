@@ -372,11 +372,12 @@ impl Workspace {
         let cursor_blink = self.settings.cursor_blink;
         let rail = self.settings.command_rail;
         let history = self.settings.command_history;
-        let minimap = self.settings.minimap;
         let minimap_overlay = self.settings.minimap_placement == MinimapPlacement::Over;
         let minimap_delay = std::time::Duration::from_millis(self.settings.minimap_delay_ms.into());
         for entry in &self.sessions {
             let ssh = matches!(entry.kind(), SessionKind::Ssh { .. });
+            let in_split = self.sessions.in_split(entry.id());
+            let minimap = self.minimap_shown(in_split);
             let Some(view) = entry.ui.view.terminal() else { continue };
             view.update(cx, |v, cx| {
                 v.pointer = pointer.clone();
@@ -388,11 +389,34 @@ impl Workspace {
                 v.minimap = minimap;
                 v.minimap_overlay = minimap_overlay;
                 v.minimap_delay = minimap_delay;
+                v.in_split = in_split;
                 cx.notify();
             });
         }
         self.save_settings(cx);
         cx.notify();
+    }
+
+    /// Whether a terminal shows its minimap: in Split View only with Minimap in split view on.
+    pub(super) fn minimap_shown(&self, in_split: bool) -> bool {
+        self.settings.minimap && (self.settings.minimap_in_split || !in_split)
+    }
+
+    /// Tell each terminal whether it is in the remembered split, after the split changed: it
+    /// hides or shows its minimap (see `minimap_shown`) and offers Close split view.
+    pub(super) fn sync_split_views(&mut self, cx: &mut Context<Self>) {
+        for entry in &self.sessions {
+            let Some(view) = entry.ui.view.terminal() else { continue };
+            let in_split = self.sessions.in_split(entry.id());
+            let minimap = self.minimap_shown(in_split);
+            if view.read(cx).in_split != in_split || view.read(cx).minimap != minimap {
+                view.update(cx, |v, cx| {
+                    v.in_split = in_split;
+                    v.minimap = minimap;
+                    cx.notify();
+                });
+            }
+        }
     }
 
     /// A switch for one setting: a click sets it to the opposite of `on`, the value shown,
@@ -1012,6 +1036,7 @@ impl Workspace {
         let minimap = self.settings.minimap;
         let placement = self.settings.minimap_placement;
         let delay = self.settings.minimap_delay_ms;
+        let minimap_in_split = self.settings.minimap_in_split;
         let placement_choice = segmented(
             "minimap-placement",
             &MINIMAP_PLACEMENTS.map(|(value, label)| (label, value == placement)),
@@ -1143,6 +1168,22 @@ impl Workspace {
                     "Open after",
                     "",
                     delay_choice,
+                )
+            }))
+            .chain(minimap.then(|| {
+                setting_row(
+                    p,
+                    "Minimap in split view",
+                    "Off, both sessions of a split view give its room to output.",
+                    Self::setting_switch(
+                        "minimap-in-split",
+                        "Minimap in split view",
+                        minimap_in_split,
+                        p,
+                        cx,
+                        |s, on| s.minimap_in_split = on,
+                        Self::apply_terminal_settings,
+                    ),
                 )
             }))
             .chain(cfg!(target_os = "macos").then(|| {

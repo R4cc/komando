@@ -1291,6 +1291,8 @@ pub struct Settings {
     pub minimap_placement: MinimapPlacement,
     /// Over the output: how long the pointer rests at the right edge before the minimap opens.
     pub minimap_delay_ms: u32,
+    /// Also show the minimap in Split View. Off, both panes give its room to output.
+    pub minimap_in_split: bool,
     /// Highlight sets (by id) that are switched off.
     pub disabled_highlight_sets: Vec<String>,
     /// Highlight Rules colour terminal output at all. Hosts and Projects can turn it off too.
@@ -1497,6 +1499,7 @@ impl Default for Settings {
             minimap: true,
             minimap_placement: MinimapPlacement::Beside,
             minimap_delay_ms: 300,
+            minimap_in_split: false,
             disabled_highlight_sets: vec![],
             highlighting: true,
             highlight_full_screen: false,

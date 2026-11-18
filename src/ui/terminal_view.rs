@@ -188,6 +188,8 @@ pub enum TerminalEvent {
     Unhighlight { rule: highlight::RuleHit },
     /// Turn the minimap off in Settings (from its right-click menu).
     HideMinimap,
+    /// Back to one Session: close the split this pane is in (from the right-click menu).
+    CloseSplit,
     /// A Port Forward couldn't start; `why` says so in a sentence.
     ForwardFailed { forward: crate::model::PortForward, why: String },
 }
@@ -288,6 +290,8 @@ pub struct TerminalView {
     pub minimap_overlay: bool,
     /// Over the output: how long the pointer rests at the right edge before it opens.
     pub minimap_delay: Duration,
+    /// One of the two panes of Split View: its right-click menu offers to close the split.
+    pub in_split: bool,
     minimap_state: Rc<crate::ui::minimap::MinimapState>,
     grid_cache: Rc<RefCell<GridCache>>,
     marks: Marks,
@@ -569,6 +573,7 @@ impl TerminalView {
             minimap: true,
             minimap_overlay: false,
             minimap_delay: Duration::from_millis(300),
+            in_split: false,
             minimap_state: Rc::new(Default::default()),
             grid_cache: Rc::new(RefCell::new(GridCache::default())),
             marks: Marks::default(),
@@ -1559,13 +1564,13 @@ impl TerminalView {
     /// selecting everything, searching, and copying the whole output.
     fn context_menu(view: gpui::WeakEntity<Self>, focus: FocusHandle, menu: PopupMenu, cx: &mut App) -> PopupMenu {
         let Some(this) = view.upgrade() else { return menu };
-        let (selected, can_type, hit, link) = {
+        let (selected, can_type, hit, link, in_split) = {
             let this = this.read(cx);
             let highlighter = this.highlight.then(|| cx.try_global::<ActiveHighlights>().map(|h| h.0.clone())).flatten();
             let selected = this.term.lock().selection_to_string().is_some_and(|t| !t.is_empty());
             let hit = highlighter.zip(this.menu_point).and_then(|(h, at)| highlighted_at(&*this.term.lock(), &h, at));
             let link = this.menu_point.and_then(|at| link_at(&*this.term.lock(), at)).map(|l| l.url);
-            (selected, this.sink.is_some() && !this.is_disconnected(), hit, link)
+            (selected, this.sink.is_some() && !this.is_disconnected(), hit, link, this.in_split)
         };
         let menu = if this.read(cx).menu_on_minimap {
             menu.item(crate::ui::popup::item("Hide minimap", None, &view, |_, _, cx| cx.emit(TerminalEvent::HideMinimap)))
@@ -1600,7 +1605,7 @@ impl TerminalView {
             }
             None => menu,
         };
-        menu.action_context(focus)
+        let menu = menu.action_context(focus)
             .menu_with_icon_and_disabled("Copy", icon("copy"), Box::new(Copy), !selected)
             .menu_with_icon_and_disabled("Paste", icon("clipboard-paste"), Box::new(Paste), !can_type)
             .item(
@@ -1612,7 +1617,13 @@ impl TerminalView {
             .menu_with_icon("Find in output…", icon("search"), Box::new(Find))
             .separator()
             .menu("Copy output", Box::new(crate::ui::workspace::CopyOutputText))
-            .menu("Copy as .txt", Box::new(crate::ui::workspace::CopyOutputFile))
+            .menu("Copy as .txt", Box::new(crate::ui::workspace::CopyOutputFile));
+        if !in_split {
+            return menu;
+        }
+        menu.separator().item(crate::ui::popup::item("Close split view", Some("columns-2"), &view, |_, _, cx| {
+            cx.emit(TerminalEvent::CloseSplit)
+        }))
     }
 
     /// Type the selected text into the shell, as if pasted.

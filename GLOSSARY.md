@@ -89,7 +89,8 @@ _Avoid_: Log, audit log, shell history
 
 **Split View**:
 Two Sessions shown side by side, made by dragging a sidebar item onto a half of the terminal
-area. It comes back when either of its Sessions is activated, and ends when one is discarded.
+area. The divider between them sets how much room each gets. It comes back when either of its
+Sessions is activated, and ends when one is discarded or it is closed.
 _Avoid_: Pane layout, tiling
 
 **File Browser**:

@@ -6,6 +6,9 @@
 //! Host moves to that Project; dragged up or down within its own Project, it changes place
 //! there, a blue line showing where it would go.
 //!
+//! The divider between the two panes of a split is dragged to give one more room than the
+//! other; a double-click on it goes back to halves.
+//!
 //! What a drop puts where, and how a split behaves as Sessions come and go, is decided in
 //! `sessions.rs`; this file draws it and carries it out.
 
@@ -13,9 +16,10 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, Context, DragMoveEvent, Hsla, Pixels, Point, SharedString, Window, div,
-    ease_out_quint, prelude::*, px,
+    Animation, AnimationExt as _, AnyElement, ClickEvent, Context, DragMoveEvent, Hsla, Pixels, Point, SharedString, Window,
+    div, ease_out_quint, prelude::*, px,
 };
+use gpui_component::tooltip::Tooltip;
 
 use super::sessions::{Placed, Side};
 use super::{ItemKey, SidebarItem, SidebarRow, Workspace};
@@ -58,6 +62,18 @@ pub(super) enum DropTarget {
     /// along the top of sidebar row `row`, or along its bottom when `after`.
     Reorder { project: String, index: usize, row: usize, after: bool },
 }
+
+/// What is dragged while moving the divider of a split (drawn as nothing).
+pub(super) struct SplitDivider;
+
+impl Render for SplitDivider {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+/// The narrowest a pane of a split is dragged, in pixels, while the window has room for it.
+const MIN_PANE_WIDTH: f32 = 240.;
 
 /// The colour of every drop indicator: blue whatever the Theme's accent.
 pub(super) fn drop_color() -> Hsla {
@@ -202,8 +218,86 @@ impl Workspace {
     /// Back to one Session: the active one fills the terminal area again.
     pub(super) fn close_split(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sessions.close_split();
+        self.sync_split_views(cx);
         self.focus_active(window, cx);
         cx.notify();
+    }
+
+    /// The gap between the two panes of a split, which is also the handle that resizes them.
+    /// On a dark canvas the bare gap is a black groove between two near-black terminals and
+    /// barely shows, so a hairline runs down its middle. It is pure white (black in light
+    /// themes) at low alpha, so it takes no tint from the canvas, and it stops where the
+    /// islands' corners start to curve, so it spans only their straight edges. Hovered or
+    /// dragged, it takes the accent colour, as the sidebar's divider does.
+    pub(super) fn render_split_divider(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let ink = if p.dark { gpui::white().opacity(0.25) } else { gpui::black().opacity(0.12) };
+        let workspace = cx.entity().downgrade();
+        div()
+            .id("split-divider")
+            .group("split-divider")
+            .w(px(ISLAND_GAP))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .justify_center()
+            .py(px(ISLAND_RADIUS))
+            .cursor_col_resize()
+            .tooltip(|window, cx| Tooltip::new("Drag to resize, double-click for halves").build(window, cx))
+            .on_drag(SplitDivider, move |_, _, _, cx| {
+                let _ = workspace.update(cx, |this, cx| {
+                    this.split_resizing = true;
+                    this.drop_target = None;
+                    cx.notify();
+                });
+                let workspace = workspace.clone();
+                cx.new(|cx| {
+                    // Release covers cancellation and letting go outside the window too.
+                    cx.on_release(move |_, cx| {
+                        let _ = workspace.update(cx, |this, cx| {
+                            this.split_resizing = false;
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                    SplitDivider
+                })
+            })
+            .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                if event.click_count() >= 2 {
+                    this.sessions.set_split_ratio(0.5);
+                    cx.notify();
+                }
+            }))
+            .child(
+                div()
+                    .w(px(1.))
+                    .h_full()
+                    .rounded_full()
+                    .bg(ink)
+                    .when(self.split_resizing, |el| el.w(px(2.)).bg(p.brand))
+                    .group_hover("split-divider", |s| s.w(px(2.)).bg(p.brand.opacity(0.6))),
+            )
+            .into_any_element()
+    }
+
+    /// The divider of a split is dragged: the left pane ends where the pointer is, each pane
+    /// keeping `MIN_PANE_WIDTH` while there is room. `event.bounds` is the terminal area.
+    pub(super) fn drag_split_divider(&mut self, event: &DragMoveEvent<SplitDivider>, cx: &mut Context<Self>) {
+        if !self.split_resizing {
+            return;
+        }
+        let room = f32::from(event.bounds.size.width) - ISLAND_GAP;
+        if room <= 0. {
+            return;
+        }
+        let x = f32::from(event.event.position.x - event.bounds.left()) - ISLAND_GAP / 2.;
+        let min = (MIN_PANE_WIDTH / room).min(0.5);
+        let ratio = (x / room).clamp(min, 1. - min);
+        let before = self.sessions.split_ratio();
+        self.sessions.set_split_ratio(ratio);
+        if (self.sessions.split_ratio() - before).abs() * room >= 1. {
+            cx.notify();
+        }
     }
 
     fn set_drop_target(&mut self, target: Option<DropTarget>, cx: &mut Context<Self>) {
@@ -228,7 +322,10 @@ impl Workspace {
         } else if self.sessions.active().is_none() {
             Some(DropTarget::Main)
         } else {
-            let side = if position.x < event.bounds.center().x { Side::Left } else { Side::Right };
+            // A shown split's panes are where its divider puts them; otherwise halves.
+            let ratio = self.drop_ratio();
+            let divider = event.bounds.left() + event.bounds.size.width * ratio;
+            let side = if position.x < divider { Side::Left } else { Side::Right };
             self.sessions.can_place(&dragged.key, dragged.session, side).then_some(DropTarget::Pane(side))
         };
         self.set_drop_target(target, cx);
@@ -384,6 +481,11 @@ impl Workspace {
         self.show_toast(format!("Moved {name} to {project}."), cx);
     }
 
+    /// Where the divider stands for a drop: that of the split shown, or halves for a new one.
+    fn drop_ratio(&self) -> f32 {
+        if self.sessions.shown_split().is_some() { self.sessions.split_ratio() } else { 0.5 }
+    }
+
     /// The blue rectangle over the half of the terminal area the dragged item would take.
     pub(super) fn render_drop_overlay(&self, cx: &gpui::App) -> Option<AnyElement> {
         if !cx.has_active_drag() {
@@ -396,24 +498,33 @@ impl Workspace {
         };
         let p = cx.global::<Appearance>().app;
         let blue = drop_color();
-        let rect = div().flex_1().min_w_0().h_full().p(px(6.)).child(
-            div()
-                .size_full()
-                .rounded(p.corner(ISLAND_RADIUS - 4.))
-                .border_2()
-                .border_color(blue.opacity(0.85))
-                .bg(blue.opacity(if p.dark { 0.12 } else { 0.09 })),
-        );
+        let ratio = self.drop_ratio();
+        // Each part grows by its share, as the panes of a split do (see `render_pane`).
+        let part = |share: f32| {
+            let mut el = div().flex_1().min_w_0().h_full();
+            el.style().flex_grow = Some(share);
+            el
+        };
+        let rect = |share: f32| {
+            part(share).p(px(6.)).child(
+                div()
+                    .size_full()
+                    .rounded(p.corner(ISLAND_RADIUS - 4.))
+                    .border_2()
+                    .border_color(blue.opacity(0.85))
+                    .bg(blue.opacity(if p.dark { 0.12 } else { 0.09 })),
+            )
+        };
         let id = match side {
             None => "drop-main",
             Some(Side::Left) => "drop-left",
             Some(Side::Right) => "drop-right",
         };
-        // The two halves line up with the panes of a split.
+        // The two parts line up with the panes of a split.
         let overlay = div().absolute().inset_0().flex().gap(px(ISLAND_GAP)).map(|el| match side {
-            None => el.child(rect),
-            Some(Side::Left) => el.child(rect).child(div().flex_1()),
-            Some(Side::Right) => el.child(div().flex_1()).child(rect),
+            None => el.child(rect(1.)),
+            Some(Side::Left) => el.child(rect(ratio)).child(part(1. - ratio)),
+            Some(Side::Right) => el.child(part(ratio)).child(rect(1. - ratio)),
         });
         Some(
             overlay

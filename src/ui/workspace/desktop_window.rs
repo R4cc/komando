@@ -245,6 +245,7 @@ impl Workspace {
         if let Some(next) = self.sessions.detach(id) {
             self.activate(next, window, cx);
         }
+        self.sync_split_views(cx);
         cx.notify();
     }
 
