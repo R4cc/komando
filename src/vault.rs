@@ -14,7 +14,7 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -105,7 +105,7 @@ impl Vault {
             bail!("A vault already exists. Unlock it with its master password instead.");
         }
         let mut salt = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut salt);
+        rand::rng().fill_bytes(&mut salt);
         let kdf = KdfParams::DEFAULT;
         let key = derive_key(master_password, &salt, kdf)?;
         let vault = Self { path: Self::path_in(dir), kdf, salt, key, contents: Contents::default() };
@@ -146,7 +146,7 @@ impl Vault {
     /// Encrypt `contents` with a fresh nonce and write them as the Vault file.
     fn write(&self, contents: &Contents) -> Result<()> {
         let mut nonce = [0u8; 24];
-        rand::thread_rng().fill_bytes(&mut nonce);
+        rand::rng().fill_bytes(&mut nonce);
         let plaintext = Zeroizing::new(serde_json::to_vec(contents)?);
         let cipher = XChaCha20Poly1305::new(&(*self.key).into());
         let ciphertext = cipher

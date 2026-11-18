@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, anyhow};
 use chrono::{NaiveDate, SecondsFormat, Utc};
-use rand::Rng;
+use rand::RngExt;
 
 /// The Aptabase app key, from `KOMANDO_APTABASE_APP_KEY` when Komando is built (the release
 /// workflow sets it from a repository secret). Its region (`A-EU-…`, `A-US-…`) picks the
@@ -109,7 +109,7 @@ fn send_if_due(data_dir: &Path, url: &str) -> Result<bool> {
         return Ok(false);
     }
     // As Aptabase's own SDKs make them: the time in seconds and a random part.
-    let session_id = now.timestamp() as u64 * 100_000_000 + rand::thread_rng().gen_range(0..100_000_000);
+    let session_id = now.timestamp() as u64 * 100_000_000 + rand::rng().random_range(0..100_000_000);
     crate::update::post_json(url, &[("App-Key", APP_KEY)], &body(now, session_id)).map_err(|err| match err {
         ureq::Error::Status(code, _) => anyhow!("Aptabase answered with error {code}"),
         ureq::Error::Transport(err) => anyhow!("Couldn't reach Aptabase: {err}"),
