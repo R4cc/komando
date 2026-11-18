@@ -19,6 +19,9 @@ All notable changes to Komando are listed here. The format follows
 
 - The minimap is hidden in split view, so both sessions get more room for output. Turn it back on in
   Settings → Terminal → Minimap in split view.
+- Updating asks first, and says that Komando will close and how many open sessions close
+  with it.
+- The progress ring around the update button fills smoothly while the update downloads.
 
 ### Fixed
 

@@ -69,6 +69,46 @@ impl Workspace {
         .detach();
     }
 
+    /// Before an update closes Komando: say so, and how many open sessions close with it, and
+    /// go ahead only once confirmed (see `ConfirmAction::InstallUpdate`). Linux and macOS only
+    /// open the release page, which closes nothing.
+    pub(super) fn confirm_update(&mut self, cx: &mut Context<Self>) {
+        let kind = update::install_kind();
+        let open = self.sessions.iter().filter(|s| s.is_live()).count();
+        let sessions = match open {
+            0 => String::new(),
+            1 => " The open session closes; connect again after the restart.".into(),
+            n => format!(" The {n} open sessions close; connect again after the restart."),
+        };
+        let (title, body, action) = match (&self.update, &kind) {
+            (UpdateState::Available(release), InstallKind::Unsupported) => {
+                cx.open_url(&release.url);
+                return;
+            }
+            (UpdateState::Available(release), InstallKind::Portable { .. }) => (
+                format!("Update to Komando {}?", release.version_text()),
+                format!("Komando downloads the update, then closes and restarts to finish.{sessions}"),
+                ConfirmAction::InstallUpdate,
+            ),
+            (UpdateState::Available(release), InstallKind::Installer { all_users }) => (
+                format!("Update to Komando {}?", release.version_text()),
+                format!(
+                    "Komando downloads the update, then closes to install it{} and reopens when it's done.{sessions}",
+                    if *all_users { " (Windows asks for administrator rights)" } else { "" },
+                ),
+                ConfirmAction::InstallUpdate,
+            ),
+            (UpdateState::Ready(release), _) => (
+                format!("Restart into Komando {}?", release.version_text()),
+                format!("Komando closes and starts again with the update.{sessions}"),
+                ConfirmAction::RestartForUpdate,
+            ),
+            _ => return,
+        };
+        self.overlay = Some(Overlay::Confirm { title, body, action });
+        cx.notify();
+    }
+
     /// Download, install and restart from one click. A Windows helper finishes an MSI
     /// installation after this process has exited, then reopens the program.
     pub(super) fn install_update(&mut self, cx: &mut Context<Self>) {
@@ -219,8 +259,8 @@ impl Workspace {
     fn activate_update_button(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match &self.update {
             UpdateState::Available(release) if update::install_kind() == InstallKind::Unsupported => cx.open_url(&release.url),
-            UpdateState::Available(_) => self.install_update(cx),
-            UpdateState::Ready(_) => self.restart_for_update(cx),
+            UpdateState::Available(_) => self.confirm_update(cx),
+            UpdateState::Ready(_) => self.confirm_update(cx),
             UpdateState::Failed(_) => self.open_settings(SettingsSection::About, window, cx),
             _ => {}
         }
@@ -353,7 +393,7 @@ impl Workspace {
                         .into_any_element()
                 } else {
                     button("update-install", "Update and restart", ButtonKind::Primary, p)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.install_update(cx)))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.confirm_update(cx)))
                         .into_any_element()
                 };
                 let (a, b, c) = update::current_version();
@@ -385,7 +425,7 @@ impl Workspace {
                 "Restart Komando to use it. Open sessions close; connect again after the restart.".into(),
                 p.text_muted,
                 button("update-restart", "Restart now", ButtonKind::Primary, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.restart_for_update(cx)))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.confirm_update(cx)))
                     .into_any_element(),
             ),
             UpdateState::Failed(message) => (

@@ -508,31 +508,82 @@ pub fn after_delay<E: Styled + IntoElement + 'static>(id: impl Into<ElementId>, 
 /// arc from 12 o'clock clockwise to `fraction` (0 to 1). `None`: the amount isn't known, so a
 /// quarter arc turns instead. `size` is the ring's outer diameter.
 pub fn progress_ring(id: impl Into<ElementId>, fraction: Option<f32>, size: f32, stroke: f32, track: Hsla, color: Hsla) -> AnyElement {
-    let ring = move |start: f32, sweep: f32| {
-        gpui::canvas(
-            |_, _, _| {},
-            move |bounds, _, window, _| {
-                let center = bounds.center();
-                let radius = (size - stroke) / 2.;
-                if let Some(path) = arc_path(center, radius, stroke, 0., 1.) {
-                    window.paint_path(path, track);
-                }
-                if let Some(path) = arc_path(center, radius, stroke, start, sweep) {
-                    window.paint_path(path, color);
-                }
-            },
-        )
-        .size(px(size))
+    let paint = move |bounds: gpui::Bounds<gpui::Pixels>, start: f32, sweep: f32, window: &mut gpui::Window| {
+        let center = bounds.center();
+        let radius = (size - stroke) / 2.;
+        if let Some(path) = arc_path(center, radius, stroke, 0., 1.) {
+            window.paint_path(path, track);
+        }
+        if let Some(path) = arc_path(center, radius, stroke, start, sweep) {
+            window.paint_path(path, color);
+        }
     };
+    let id = id.into();
     match fraction {
-        Some(fraction) => div().size(px(size)).child(ring(0., fraction.clamp(0., 1.))).into_any_element(),
+        // The fill glides to the progress reported, which comes in steps (a redraw every so
+        // often, a buffer of bytes at a time), instead of jumping from one to the next.
+        Some(fraction) => div()
+            .size(px(size))
+            .child(
+                gpui::canvas(
+                    move |_, window, cx| RingFill::shown(id, fraction.clamp(0., 1.), window, cx),
+                    move |bounds, shown, window, _| paint(bounds, 0., shown, window),
+                )
+                .size(px(size)),
+            )
+            .into_any_element(),
         None => div()
             .size(px(size))
             .with_animation(id, Animation::new(std::time::Duration::from_millis(1000)).repeat(), move |el, delta| {
-                el.child(ring(delta, 0.25))
+                el.child(gpui::canvas(|_, _, _| {}, move |bounds, _, window, _| paint(bounds, delta, 0.25, window)).size(px(size)))
             })
             .into_any_element(),
     }
+}
+
+/// How full a determinate `progress_ring` is drawn, kept from frame to frame.
+struct RingFill {
+    shown: f32,
+    at: std::time::Instant,
+}
+
+impl RingFill {
+    /// How long the fill takes to cover about two thirds of the way to new progress. Close to
+    /// how often progress is redrawn, so a steady download fills at a steady pace.
+    const LAG: f32 = 0.18;
+
+    /// The fraction to draw this frame for a ring showing `target`, asking for the next frame
+    /// while it is still on its way there.
+    fn shown(id: ElementId, target: f32, window: &mut gpui::Window, cx: &mut gpui::App) -> f32 {
+        let state = window.use_keyed_state(id, cx, |_, _| RingFill { shown: 0., at: std::time::Instant::now() });
+        let now = std::time::Instant::now();
+        let shown = state.update(cx, |fill, _| {
+            let elapsed = now.duration_since(fill.at).as_secs_f32();
+            fill.at = now;
+            fill.shown = glide(fill.shown, target, elapsed, Self::LAG);
+            fill.shown
+        });
+        // Reduced motion: no glide, the ring shows the progress as it comes.
+        if cx.reduce_motion() {
+            state.update(cx, |fill, _| fill.shown = target);
+            return target;
+        }
+        if shown != target {
+            window.request_animation_frame();
+        }
+        shown
+    }
+}
+
+/// Move `shown` towards `target` after `elapsed` seconds, covering `1 - 1/e` of the way every
+/// `lag` seconds. It never runs backwards (progress that restarts is shown at once) and lands
+/// on `target` once less than a thousandth is left, so it comes to rest.
+fn glide(shown: f32, target: f32, elapsed: f32, lag: f32) -> f32 {
+    if target <= shown {
+        return target;
+    }
+    let next = shown + (target - shown) * (1. - (-elapsed.max(0.) / lag).exp());
+    if target - next < 0.001 { target } else { next }
 }
 
 /// A stroked circular arc starting `start` turns clockwise from 12 o'clock and running
@@ -764,6 +815,28 @@ pub fn connection_indicator(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_ring_glides_towards_new_progress_and_comes_to_rest() {
+        use super::glide;
+        let lag = 0.2;
+        // One frame in, it has moved part of the way, not all of it.
+        let first = glide(0.1, 0.5, 1. / 60., lag);
+        assert!(first > 0.1 && first < 0.2, "{first}");
+        // Frame by frame it gets there, never overshooting, and stops exactly on it.
+        let mut shown = 0.1;
+        let mut frames = 0;
+        while shown != 0.5 {
+            let next = glide(shown, 0.5, 1. / 60., lag);
+            assert!(next > shown && next <= 0.5);
+            shown = next;
+            frames += 1;
+            assert!(frames < 120, "still moving after two seconds");
+        }
+        // Progress that starts over shows at once, and a long gap (the window was hidden) lands.
+        assert_eq!(glide(0.8, 0.2, 1. / 60., lag), 0.2);
+        assert_eq!(glide(0.2, 0.9, 5., lag), 0.9);
+    }
+
     use super::*;
 
     #[test]

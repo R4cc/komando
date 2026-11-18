@@ -370,6 +370,10 @@ enum ConfirmAction {
     DeleteAllHistory,
     /// A saved password or key (Settings → Vault).
     DeleteCredential(model::CredentialId),
+    /// Download and install the update, after which Komando closes (see `install_update`).
+    InstallUpdate,
+    /// Restart into the update already in place.
+    RestartForUpdate,
 }
 
 /// What waits for the Vault: done once the master password is entered.
@@ -2666,6 +2670,15 @@ impl Workspace {
                 self.focus_active(window, cx);
                 return;
             }
+            ConfirmAction::InstallUpdate => {
+                self.install_update(cx);
+                self.focus_active(window, cx);
+                return;
+            }
+            ConfirmAction::RestartForUpdate => {
+                self.restart_for_update(cx);
+                return;
+            }
         }
         // Persist before closing Sessions or removing sidebar state: a failed deletion
         // should leave the saved library and its running Sessions intact.
@@ -2700,6 +2713,8 @@ impl Workspace {
             }
             ConfirmAction::DeleteAllHistory
             | ConfirmAction::DeleteCredential(_)
+            | ConfirmAction::InstallUpdate
+            | ConfirmAction::RestartForUpdate
             | ConfirmAction::Disconnect(_)
             | ConfirmAction::Close(_)
             | ConfirmAction::DisconnectAll(_) => {}
@@ -4994,8 +5009,15 @@ impl Workspace {
                     button("confirm-ok", match action {
                         ConfirmAction::Disconnect(_) | ConfirmAction::DisconnectAll(_) => "Disconnect",
                         ConfirmAction::Close(_) => "Close",
+                        ConfirmAction::InstallUpdate => "Update and restart",
+                        ConfirmAction::RestartForUpdate => "Restart now",
                         _ => "Delete",
-                    }, ButtonKind::Danger, p)
+                    }, if matches!(action, ConfirmAction::InstallUpdate | ConfirmAction::RestartForUpdate) {
+                        // Nothing is lost for good: the restart is what was asked for.
+                        ButtonKind::Primary
+                    } else {
+                        ButtonKind::Danger
+                    }, p)
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.run_confirm(window, cx)))
                         .into_any_element(),
                 ],
