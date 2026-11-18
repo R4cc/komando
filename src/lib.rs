@@ -26,6 +26,7 @@ pub mod share;
 pub mod theme;
 pub mod ui;
 pub mod update;
+pub mod usage;
 pub mod vault;
 pub mod wsl;
 

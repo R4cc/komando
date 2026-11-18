@@ -69,6 +69,9 @@ pub(super) struct Tour {
     error: Option<String>,
 }
 
+/// What the usage ping is, in the tour and Settings → About (see `crate::usage`).
+pub(super) const USAGE_PING_HINT: &str = "Once a day, Komando sends an anonymous ping so the developers can estimate how many people use it. Only the version and operating system: no hosts, commands or anything about you.";
+
 /// Lock-after choices offered in the tour: a shorter list than Settings → Security's.
 const TOUR_AUTO_LOCK: [(u32, &str); 5] = [(15, "15 min"), (60, "1 h"), (8 * 60, "8 h"), (24 * 60, "1 day"), (0, "Until restart")];
 
@@ -108,6 +111,8 @@ impl Workspace {
         if !self.settings.onboarded {
             self.settings.onboarded = true;
             self.save_settings(cx);
+            // Held back while the tour was open, where it can be switched off.
+            self.send_usage_ping(cx);
         }
     }
 
@@ -315,6 +320,7 @@ impl Workspace {
         let paste = s.pointer.confirm_multiline_paste;
         let tray = s.minimize_to_tray;
         let updates = s.check_for_updates;
+        let usage = s.usage_ping;
         let mut rows = vec![
             tour_row(
                 p,
@@ -370,6 +376,13 @@ impl Workspace {
                 "Check for updates",
                 "Look for a new version on GitHub when Komando starts. Nothing is installed without asking.",
                 Self::setting_switch("tour-updates", "Check for updates", updates, p, cx, |s, on| s.check_for_updates = on, Self::save_settings_and_notify),
+            ),
+            tour_row(
+                p,
+                "chart-no-axes-column",
+                "Anonymous daily ping",
+                USAGE_PING_HINT,
+                Self::setting_switch("tour-usage", "Anonymous daily ping", usage, p, cx, |s, on| s.usage_ping = on, Self::save_settings_and_notify),
             ),
         ];
         // The tray icon is Windows only (see `Settings` → Behaviour).

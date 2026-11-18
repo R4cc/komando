@@ -701,6 +701,7 @@ impl Workspace {
             })
             .detach();
         }
+        this.start_usage_ping(cx);
         crate::perf::startup("workspace ready");
         // The welcome tour, on a fresh install. Development tooling that opens Sessions or
         // unlocks at start isn't interrupted by it.

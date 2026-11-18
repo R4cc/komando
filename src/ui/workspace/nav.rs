@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn opening_row_menu_preserves_sidebar_scroll() {
         let dir = std::env::temp_dir().join(format!("komando-row-menu-{}", uuid::Uuid::new_v4()));
-        Settings { onboarded: true, check_for_updates: false, ..Settings::default() }.save(&dir).unwrap();
+        Settings { onboarded: true, check_for_updates: false, usage_ping: false, ..Settings::default() }.save(&dir).unwrap();
         let data_dir = dir.clone();
         gpui_platform::headless().run(move |cx| {
             crate::init(cx);

@@ -243,6 +243,28 @@ fn get(url: &str, accept: Option<&str>) -> Result<ureq::Response, ureq::Error> {
     }
 }
 
+/// POST a JSON `body` to `url` with extra `headers`, through the same proxy and certificate
+/// handling as `get`. Used by the usage ping (`crate::usage`).
+pub(crate) fn post_json(url: &str, headers: &[(&str, &str)], body: &str) -> Result<ureq::Response, ureq::Error> {
+    let request = |agent: ureq::Agent| {
+        let mut request = agent.post(url).set("Content-Type", "application/json");
+        for (name, value) in headers {
+            request = request.set(name, value);
+        }
+        request.send_string(body)
+    };
+    match request(agent_for(url, true)) {
+        Err(ureq::Error::Transport(first)) if cfg!(windows) => {
+            log::debug!("Request to {url} failed with the Windows certificate store: {first}");
+            request(agent_for(url, false)).map_err(|err| match err {
+                ureq::Error::Transport(_) => ureq::Error::Transport(first),
+                other => other,
+            })
+        }
+        other => other,
+    }
+}
+
 /// The Windows per-user proxy (Internet Settings), as read from the registry.
 #[cfg(windows)]
 mod system_proxy {

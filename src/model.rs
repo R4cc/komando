@@ -1307,6 +1307,9 @@ pub struct Settings {
     pub background_blur_intensity: u8,
     /// Look for a newer release on GitHub when Komando starts.
     pub check_for_updates: bool,
+    /// Send the usage ping: once a day, an anonymous event so the developers can estimate how
+    /// many people use Komando (see `crate::usage`). On unless switched off.
+    pub usage_ping: bool,
     /// Width of the SFTP file browser beside the terminal, in pixels.
     pub sftp_width: f32,
     /// Preferred sidebar width in logical pixels, adjusted by dragging its divider.
@@ -1507,6 +1510,7 @@ impl Default for Settings {
             minimize_to_tray: true,
             background_blur_intensity: 60,
             check_for_updates: true,
+            usage_ping: true,
             sftp_width: 540.,
             sidebar_width: 264.,
             sidebar_auto_hide: false,

@@ -71,6 +71,8 @@ jobs:
     env:
       TAG: ${{ inputs.tag }}
       VERSION: ${{ needs.version.outputs.version }}
+      # Built into Komando for the daily usage ping (src/usage.rs).
+      KOMANDO_APTABASE_APP_KEY: ${{ secrets.APTABASE_APP_KEY }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -123,6 +125,8 @@ jobs:
     env:
       TAG: ${{ inputs.tag }}
       VERSION: ${{ needs.version.outputs.version }}
+      # Built into Komando for the daily usage ping (src/usage.rs).
+      KOMANDO_APTABASE_APP_KEY: ${{ secrets.APTABASE_APP_KEY }}
       # Load fontconfig when the app starts instead of linking it, like Wayland and Vulkan.
       RUST_FONTCONFIG_DLOPEN: "on"
     steps:
@@ -169,6 +173,8 @@ jobs:
     env:
       TAG: ${{ inputs.tag }}
       VERSION: ${{ needs.version.outputs.version }}
+      # Built into Komando for the daily usage ping (src/usage.rs).
+      KOMANDO_APTABASE_APP_KEY: ${{ secrets.APTABASE_APP_KEY }}
       # GPUI's Metal shaders are compiled for macOS 12, so the app can't start on anything older.
       MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:

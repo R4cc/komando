@@ -38,7 +38,42 @@ fn manual_update_steps() -> &'static str {
     }
 }
 
+/// How often a running Komando looks whether today's usage ping is still due: it often stays
+/// open for days.
+const USAGE_PING_EVERY: Duration = Duration::from_secs(60 * 60);
+
 impl Workspace {
+    /// Send the usage ping shortly after start, then look again every hour (see `crate::usage`).
+    pub(super) fn start_usage_ping(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(10)).await;
+            loop {
+                if this.update(cx, |this, cx| this.send_usage_ping(cx)).is_err() {
+                    return;
+                }
+                cx.background_executor().timer(USAGE_PING_EVERY).await;
+            }
+        })
+        .detach();
+    }
+
+    /// Send today's usage ping if it is switched on and not sent yet. Not before the welcome
+    /// tour is closed, where it can be switched off first.
+    pub(super) fn send_usage_ping(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.usage_ping || !self.settings.onboarded {
+            return;
+        }
+        let data_dir = self.data_dir.clone();
+        cx.background_spawn(async move {
+            match crate::usage::ping_if_due(&data_dir) {
+                Ok(true) => log::info!("Sent today's usage ping"),
+                Ok(false) => {}
+                Err(err) => log::debug!("Usage ping not sent: {err:#}"),
+            }
+        })
+        .detach();
+    }
+
     /// Ask GitHub for the latest release. `quiet` (the check at startup) keeps failures off
     /// the page: being offline isn't worth a message.
     pub(super) fn check_for_updates(&mut self, quiet: bool, cx: &mut Context<Self>) {

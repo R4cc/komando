@@ -1578,6 +1578,20 @@ impl Workspace {
                         .into_any_element(),
                     setting_row(
                         p,
+                        "Anonymous daily ping",
+                        super::onboarding::USAGE_PING_HINT,
+                        Self::setting_switch(
+                            "usage-ping",
+                            "Anonymous daily ping",
+                            self.settings.usage_ping,
+                            p,
+                            cx,
+                            |s, on| s.usage_ping = on,
+                            Self::save_settings_and_notify,
+                        ),
+                    ),
+                    setting_row(
+                        p,
                         "Welcome tour",
                         "",
                         button("replay-tour", "Show again", ButtonKind::Secondary, p)

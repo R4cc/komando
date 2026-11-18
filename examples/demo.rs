@@ -173,8 +173,9 @@ fn main() {
     library.save(&dir).unwrap();
 
     let mut settings = Settings::default();
-    // Screenshots and load tests shouldn't depend on GitHub.
+    // Screenshots and load tests shouldn't depend on GitHub, or count as users.
     settings.check_for_updates = false;
+    settings.usage_ping = false;
     settings.app_theme = if theme == "light" { AppThemeSetting::Light } else { AppThemeSetting::Dark };
     if env::var("KOMANDO_DEMO_ICON").as_deref() == Ok("light") {
         settings.app_icon = komando::model::AppIcon::Light;
