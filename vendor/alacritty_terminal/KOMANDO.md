@@ -187,6 +187,17 @@ combining characters, wide characters and wrapped text, then checks their reset 
 `throughput_sftp_divider_resize` measures narrowing and widening with 56,000 log rows.
 Full text reflow still runs on the UI thread.
 
+## Copying a line that wraps a wide character
+
+When a wide character doesn't fit at the end of a line, a leading spacer takes the last cell
+and the character goes to the start of the next line. `Term::line_to_string` (in
+`src/term/mod.rs`) adds that character to the copied line, but upstream read it from the line
+*above* (`line - 1`): the copy got another line's first character, and on the topmost line
+of the Scrollback the index was past the grid and panicked. It now reads the next line, and
+only when there is one. Komando copies through it for a selection and, for rows with a tab,
+for Copy output; `a_wrapped_wide_character_is_copied_from_the_next_line` here and Komando's
+`copying_a_row_that_wraps_a_wide_character` cover both. Found by Komando's fuzzer.
+
 ## Updating alacritty_terminal
 
 Copy the new release's crate source over this folder (leaving out `Cargo.lock`, `.cargo-ok`,

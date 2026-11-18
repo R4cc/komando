@@ -3,7 +3,7 @@
 
 use crate::event::VoidListener;
 use crate::grid::Dimensions;
-use crate::index::{Column, Line};
+use crate::index::{Column, Line, Point};
 use crate::term::cell::{Cell, Flags};
 use crate::term::test::TermSize;
 use crate::term::{Config, Term, TermDamage};
@@ -334,4 +334,18 @@ fn input_ascii_writes_cells() {
     assert_eq!(term.grid[Line(1)][Column(0)].fg, Color::Named(NamedColor::Red));
     assert_eq!(term.grid.cursor.point.column, Column(2));
     assert_eq!(term.grid[Line(1)][Column(2)], Cell::default());
+}
+
+/// Komando patch: a line whose last cell is the spacer of a wide character that wrapped onto
+/// the next line copies with that character, taken from the next line, also on the topmost
+/// line (upstream took the line above's first character, and panicked on the topmost line).
+#[test]
+fn a_wrapped_wide_character_is_copied_from_the_next_line() {
+    for (before, line) in [("", 0), ("A\r\n", 1)] {
+        let mut term = Term::new(Config::default(), &TermSize::new(10, 4), VoidListener);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, format!("{before}xxxxxxxxx\u{1F600}").as_bytes());
+        let (start, end) = (Point::new(Line(line), Column(0)), Point::new(Line(line), Column(9)));
+        assert_eq!(term.bounds_to_string(start, end), "xxxxxxxxx\u{1F600}", "{before:?}");
+    }
 }

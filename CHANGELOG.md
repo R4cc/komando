@@ -23,6 +23,12 @@ All notable changes to Komando are listed here. The format follows
   refused with an explanation, instead of leaving the host with two forwards on one port.
 - When two remote port forwards of a session use the same port, the one that opened keeps
   working, and the other says why it didn't open.
+- Copying terminal text that ends where a wide character, such as an emoji or a CJK
+  character, moved to the next line copies that character, instead of one from the line
+  above. On the first line of the scrollback this crashed Komando.
+- Importing an SSH config whose `Include`s loop back to a file that includes them no longer
+  freezes Komando. Such an `Include` is left out with a note, as `ssh` refuses it too, and so
+  is an `Include` of something that isn't a file.
 
 ## [0.8.3] - 2026-11-18
 

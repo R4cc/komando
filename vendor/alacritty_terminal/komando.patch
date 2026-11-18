@@ -1,18 +1,19 @@
 --- a/src/grid/mod.rs
 +++ b/src/grid/mod.rs
-@@ -2,6 +2,7 @@
-
+@@ -1,7 +1,9 @@
+ //! A specialized 2D grid implementation optimized for use in a terminal.
+ 
  use std::cmp::{max, min};
++use std::collections::VecDeque;
  use std::ops::{Bound, Deref, Index, IndexMut, Range, RangeBounds};
 +use std::sync::Arc;
-
+ 
  #[cfg(feature = "serde")]
  use serde::{Deserialize, Serialize};
-@@ -18,6 +19,18 @@
-
+@@ -19,6 +21,18 @@
  pub use self::row::Row;
  use self::storage::Storage;
-+
+ 
 +/// Komando patch: where a grid's new rows come from.
 +///
 +/// While the history grows, the grid asks its row source for the fresh rows it would otherwise
@@ -24,18 +25,88 @@
 +    /// `columns` and `rows_left` after a resize or a change of the history's size.
 +    fn take_rows(&self, columns: usize, count: usize, rows_left: usize, rows: &mut Vec<Row<T>>);
 +}
-
++
  pub trait GridCell: Sized {
      /// Check if the cell contains any content.
-@@ -158,6 +171,7 @@
+     fn is_empty(&self) -> bool;
+@@ -135,6 +149,11 @@
+ 
+     /// Maximum number of lines in history.
+     max_scroll_limit: usize,
++
++    /// Komando patch: history rows a clear hid, oldest first, until `restore_history` puts them
++    /// back. Together with the history they never hold more than `max_scroll_limit` rows.
++    #[cfg_attr(feature = "serde", serde(skip))]
++    hidden: VecDeque<Row<T>>,
+ }
+ 
+ impl<T: GridCell + Default + PartialEq> Grid<T> {
+@@ -143,6 +162,7 @@
+             raw: Storage::with_capacity(lines, columns),
+             max_scroll_limit,
+             display_offset: 0,
++            hidden: VecDeque::new(),
+             saved_cursor: Cursor::default(),
+             cursor: Cursor::default(),
+             lines,
+@@ -158,6 +178,8 @@
          }
          self.display_offset = min(self.display_offset, history_size);
          self.max_scroll_limit = history_size;
++        self.trim_hidden();
 +        self.report_rows_left();
      }
-
+ 
      pub fn scroll_display(&mut self, scroll: Scroll) {
-@@ -293,6 +307,9 @@
+@@ -176,7 +198,47 @@
+         let count = min(count, self.max_scroll_limit - self.history_size());
+         if count != 0 {
+             self.raw.initialize(count, self.columns);
++            // Komando patch: new history pushes out the oldest hidden rows.
++            self.trim_hidden();
++        }
++    }
++
++    /// Komando patch: drop the oldest hidden rows the Scrollback no longer has room for.
++    fn trim_hidden(&mut self) {
++        let over = (self.history_size() + self.hidden.len()).saturating_sub(self.max_scroll_limit);
++        if over != 0 {
++            self.hidden.drain(..over.min(self.hidden.len()));
++        }
++    }
++
++    /// Komando patch: hide the whole history, as if a clear had erased it, until
++    /// `restore_history` brings it back.
++    pub fn hide_history(&mut self) {
++        if self.history_size() == 0 {
++            return;
+         }
++        // The newest hidden row must not wrap into the row after it, or a reflow would join them.
++        let last = self.last_column();
++        self.raw[Line(-1)][last].flags_mut().remove(Flags::WRAPLINE);
++        self.hidden.extend(self.raw.take_history());
++        self.display_offset = 0;
++        self.report_rows_left();
++    }
++
++    /// Komando patch: rows a clear hid (see `hide_history`).
++    pub fn hidden_history(&self) -> usize {
++        self.hidden.len()
++    }
++
++    /// Komando patch: put the hidden rows back above the history. The view stays where it is.
++    pub fn restore_history(&mut self) {
++        if self.hidden.is_empty() {
++            return;
++        }
++        self.trim_hidden();
++        let rows = std::mem::take(&mut self.hidden);
++        self.raw.put_history_above(rows.into_iter());
++        self.report_rows_left();
+     }
+ 
+     fn decrease_scroll_limit(&mut self, count: usize) {
+@@ -293,6 +355,9 @@
              for i in (region.end.0..screen_lines).rev().map(Line::from) {
                  self.raw.swap(i, i - positions);
              }
@@ -45,9 +116,17 @@
          } else {
              // Rotate lines without moving anything into history.
              for i in (region.start.0..region.end.0 - positions as i32).map(Line::from) {
-@@ -353,6 +370,18 @@
+@@ -339,6 +404,7 @@
+         D: PartialEq,
+     {
+         self.clear_history();
++        self.hidden.clear();
+ 
+         self.saved_cursor = Cursor::default();
+         self.cursor = Cursor::default();
+@@ -353,6 +419,18 @@
  }
-
+ 
  impl<T> Grid<T> {
 +    /// Komando patch: take new rows from `source` while the history grows, or build them all
 +    /// here with `None`.
@@ -66,22 +145,49 @@
      where
 --- a/src/grid/resize.rs
 +++ b/src/grid/resize.rs
-@@ -33,6 +33,9 @@
-
+@@ -25,6 +25,11 @@
+             Ordering::Equal => (),
+         }
+ 
++        // Komando patch: the hidden history rewraps the same way as the rest.
++        if !self.hidden.is_empty() && self.columns != columns {
++            self.reflow_hidden(reflow, columns);
++        }
++
+         match self.columns.cmp(&columns) {
+             Ordering::Less => self.grow_columns(reflow, columns),
+             Ordering::Greater => self.shrink_columns(reflow, columns),
+@@ -33,6 +38,24 @@
+ 
          // Restore template cell.
          self.cursor.template = template;
 +
 +        // Komando patch: rows of the old width are no use any more.
 +        self.report_rows_left();
++    }
++
++    /// Komando patch: rewrap the hidden history to `columns`, as the history of a grid one blank
++    /// line tall. Its newest row doesn't wrap (see `hide_history`), so the blank line stays apart.
++    fn reflow_hidden(&mut self, reflow: bool, columns: usize) {
++        let rows = mem::take(&mut self.hidden);
++        let mut grid = Grid::<T>::new(1, self.columns, usize::MAX / 2);
++        grid.raw.put_history_above(rows.into_iter());
++        if columns > self.columns {
++            grid.grow_columns(reflow, columns);
++        } else {
++            grid.shrink_columns(reflow, columns);
++        }
++        self.hidden = grid.raw.take_history().into();
++        self.trim_hidden();
      }
-
+ 
      /// Add lines to the visible area.
 --- a/src/grid/row.rs
 +++ b/src/grid/row.rs
 @@ -76,14 +76,18 @@
              return None;
          }
-
+ 
 -        // Split off cells for a new row.
 -        let mut new_row = self.inner.split_off(columns);
 -        let index = new_row.iter().rposition(|c| !c.is_empty()).map_or(0, |i| i + 1);
@@ -102,10 +208,10 @@
 +            Some(new_row)
 +        }
      }
-
+ 
      /// Reset all cells in the row to the `template` cell.
 @@ -112,6 +116,35 @@
-
+ 
  #[allow(clippy::len_without_is_empty)]
  impl<T> Row<T> {
 +    /// Komando patch: ask the CPU to start loading the cells `reset` will touch (the occupied
@@ -147,14 +253,14 @@
  use std::mem::MaybeUninit;
  use std::ops::{Index, IndexMut};
 +use std::sync::Arc;
-
+ 
  #[cfg(feature = "serde")]
  use serde::{Deserialize, Serialize};
-
+ 
 -use super::Row;
 +use super::{Row, RowSource};
  use crate::index::Line;
-
+ 
  /// Maximum number of buffered lines outside of the grid for performance optimization.
 @@ -50,6 +51,10 @@
      /// As long as `len` is bigger than `inner`, it is also possible to grow the scrollback buffer
@@ -165,20 +271,43 @@
 +    #[cfg_attr(feature = "serde", serde(skip))]
 +    row_source: Option<(Arc<dyn RowSource<T>>, usize)>,
  }
-
+ 
  impl<T: PartialEq> PartialEq for Storage<T> {
 @@ -72,7 +77,7 @@
          let mut inner = Vec::with_capacity(visible_lines);
          inner.resize_with(visible_lines, || Row::new(columns));
-
+ 
 -        Storage { inner, zero: 0, visible_lines, len: visible_lines }
 +        Storage { inner, zero: 0, visible_lines, len: visible_lines, row_source: None }
      }
-
+ 
      /// Increase the number of lines in the buffer.
-@@ -131,10 +136,43 @@
+@@ -121,6 +126,22 @@
+         self.inner.truncate(self.len);
+     }
+ 
++    /// Komando patch: take every history row out of the buffer, oldest first.
++    pub fn take_history(&mut self) -> Vec<Row<T>> {
++        self.truncate();
++        let mut rows = self.inner.split_off(self.visible_lines);
++        self.len = self.visible_lines;
++        rows.reverse();
++        rows
++    }
++
++    /// Komando patch: put `rows` (oldest first) back above the oldest history row.
++    pub fn put_history_above(&mut self, rows: impl DoubleEndedIterator<Item = Row<T>>) {
++        self.truncate();
++        self.inner.extend(rows.rev());
++        self.len = self.inner.len();
++    }
++
+     /// Dynamically grow the storage buffer at runtime.
+     #[inline]
+     pub fn initialize(&mut self, additional_rows: usize, columns: usize)
+@@ -131,12 +152,45 @@
              self.rezero();
-
+ 
              let realloc_size = self.inner.len() + max(additional_rows, MAX_CACHE_SIZE);
 +            // Komando patch: rows from the row source first, as far as it has them ready.
 +            if self.row_source.is_some() {
@@ -186,10 +315,10 @@
 +            }
              self.inner.resize_with(realloc_size, || Row::new(columns));
          }
-
+ 
          self.len += additional_rows;
-+    }
-+
+     }
+ 
 +    /// Komando patch: take new rows from `source`, or build them all here with `None`.
 +    pub fn set_row_source(&mut self, source: Option<Arc<dyn RowSource<T>>>) {
 +        self.row_source = source.map(|source| (source, usize::MAX));
@@ -217,15 +346,15 @@
 +        if taken.len() > realloc_size - start || taken.iter().any(|row| row.len() != columns) {
 +            self.inner.truncate(start);
 +        }
-     }
-
-     #[inline]
-@@ -182,6 +220,18 @@
-
-         let len = self.inner.len();
-         self.zero = (self.zero as isize + count + len as isize) as usize % len;
 +    }
 +
+     #[inline]
+     pub fn len(&self) -> usize {
+         self.len
+@@ -184,6 +238,18 @@
+         self.zero = (self.zero as isize + count + len as isize) as usize % len;
+     }
+ 
 +    /// Komando patch: prefetch the row the next `rotate(-1)` brings to the bottom of the
 +    /// screen (see `Row::prefetch`). Not worth it while all rows fit in the CPU's caches
 +    /// (a small Scrollback): there it would only cost the instructions.
@@ -236,50 +365,52 @@
 +        if len >= MIN_ROWS {
 +            self.inner[(self.zero + len - 1) % len].prefetch();
 +        }
-     }
-
++    }
++
      /// Rotate all existing lines down in history.
-@@ -354,6 +404,7 @@
+     ///
+     /// This is a faster, specialized version of [`rotate_left`].
+@@ -354,6 +420,7 @@
              zero: 0,
              visible_lines: 3,
              len: 3,
 +            row_source: None,
          };
-
+ 
          // Grow buffer.
-@@ -365,6 +416,7 @@
+@@ -365,6 +432,7 @@
              zero: 0,
              visible_lines: 4,
              len: 4,
 +            row_source: None,
          };
          expected.inner.append(&mut vec![filled_row('\0'); MAX_CACHE_SIZE]);
-
-@@ -395,6 +447,7 @@
+ 
+@@ -395,6 +463,7 @@
              zero: 1,
              visible_lines: 3,
              len: 3,
 +            row_source: None,
          };
-
+ 
          // Grow buffer.
-@@ -406,6 +459,7 @@
+@@ -406,6 +475,7 @@
              zero: 0,
              visible_lines: 4,
              len: 4,
 +            row_source: None,
          };
          expected.inner.append(&mut vec![filled_row('\0'); MAX_CACHE_SIZE]);
-
-@@ -433,6 +487,7 @@
+ 
+@@ -433,6 +503,7 @@
              zero: 1,
              visible_lines: 3,
              len: 3,
 +            row_source: None,
          };
-
+ 
          // Shrink buffer.
-@@ -444,6 +499,7 @@
+@@ -444,6 +515,7 @@
              zero: 1,
              visible_lines: 2,
              len: 2,
@@ -287,15 +418,15 @@
          };
          assert_eq!(storage.visible_lines, expected.visible_lines);
          assert_eq!(storage.inner, expected.inner);
-@@ -469,6 +525,7 @@
+@@ -469,6 +541,7 @@
              zero: 0,
              visible_lines: 3,
              len: 3,
 +            row_source: None,
          };
-
+ 
          // Shrink buffer.
-@@ -480,6 +537,7 @@
+@@ -480,6 +553,7 @@
              zero: 0,
              visible_lines: 2,
              len: 2,
@@ -303,15 +434,15 @@
          };
          assert_eq!(storage.visible_lines, expected.visible_lines);
          assert_eq!(storage.inner, expected.inner);
-@@ -518,6 +576,7 @@
+@@ -518,6 +592,7 @@
              zero: 2,
              visible_lines: 6,
              len: 6,
 +            row_source: None,
          };
-
+ 
          // Shrink buffer.
-@@ -536,6 +595,7 @@
+@@ -536,6 +611,7 @@
              zero: 2,
              visible_lines: 2,
              len: 2,
@@ -319,15 +450,15 @@
          };
          assert_eq!(storage.visible_lines, expected.visible_lines);
          assert_eq!(storage.inner, expected.inner);
-@@ -570,6 +630,7 @@
+@@ -570,6 +646,7 @@
              zero: 2,
              visible_lines: 1,
              len: 2,
 +            row_source: None,
          };
-
+ 
          // Truncate buffer.
-@@ -581,6 +642,7 @@
+@@ -581,6 +658,7 @@
              zero: 0,
              visible_lines: 1,
              len: 2,
@@ -335,15 +466,15 @@
          };
          assert_eq!(storage.visible_lines, expected.visible_lines);
          assert_eq!(storage.inner, expected.inner);
-@@ -605,6 +667,7 @@
+@@ -605,6 +683,7 @@
              zero: 2,
              visible_lines: 1,
              len: 2,
 +            row_source: None,
          };
-
+ 
          // Truncate buffer.
-@@ -616,6 +679,7 @@
+@@ -616,6 +695,7 @@
              zero: 0,
              visible_lines: 1,
              len: 2,
@@ -351,15 +482,15 @@
          };
          assert_eq!(storage.visible_lines, expected.visible_lines);
          assert_eq!(storage.inner, expected.inner);
-@@ -662,6 +726,7 @@
+@@ -662,6 +742,7 @@
              zero: 2,
              visible_lines: 0,
              len: 6,
 +            row_source: None,
          };
-
+ 
          // Shrink buffer.
-@@ -680,6 +745,7 @@
+@@ -680,6 +761,7 @@
              zero: 2,
              visible_lines: 0,
              len: 3,
@@ -367,49 +498,155 @@
          };
          assert_eq!(storage.inner, shrinking_expected.inner);
          assert_eq!(storage.zero, shrinking_expected.zero);
-@@ -701,6 +767,7 @@
+@@ -701,6 +783,7 @@
              zero: 2,
              visible_lines: 0,
              len: 4,
 +            row_source: None,
          };
-
+ 
          assert_eq!(storage.inner, growing_expected.inner);
-@@ -723,6 +790,7 @@
+@@ -723,6 +806,7 @@
              zero: 2,
              visible_lines: 0,
              len: 6,
 +            row_source: None,
          };
-
+ 
          // Initialize additional lines.
-@@ -740,7 +808,8 @@
+@@ -740,7 +824,8 @@
          ];
          let expected_init_size = std::cmp::max(init_size, MAX_CACHE_SIZE);
          expected_inner.append(&mut vec![filled_row('\0'); expected_init_size]);
 -        let expected_storage = Storage { inner: expected_inner, zero: 0, visible_lines: 0, len: 9 };
 +        let expected_storage =
 +            Storage { inner: expected_inner, zero: 0, visible_lines: 0, len: 9, row_source: None };
-
+ 
          assert_eq!(storage.len, expected_storage.len);
          assert_eq!(storage.zero, expected_storage.zero);
-@@ -754,6 +823,7 @@
+@@ -754,6 +839,7 @@
              zero: 2,
              visible_lines: 0,
              len: 3,
 +            row_source: None,
          };
-
+ 
          storage.rotate(2);
+--- a/src/term/komando_hidden_tests.rs
++++ b/src/term/komando_hidden_tests.rs
+@@ -0,0 +1,103 @@
++//! Komando patch: a clear hides the Scrollback instead of erasing it, and it can come back.
++
++use crate::event::VoidListener;
++use crate::grid::Dimensions;
++use crate::index::{Column, Line};
++use crate::term::test::TermSize;
++use crate::term::{Config, Term};
++use crate::vte::ansi::Processor;
++
++fn term(columns: usize, lines: usize, history: usize) -> (Term<VoidListener>, Processor) {
++    let config = Config { scrolling_history: history, ..Config::default() };
++    (Term::new(config, &TermSize::new(columns, lines), VoidListener), Processor::new())
++}
++
++fn feed(term: &mut Term<VoidListener>, parser: &mut Processor, text: &str) {
++    parser.advance(term, text.as_bytes());
++}
++
++fn row(term: &Term<VoidListener>, line: i32) -> String {
++    let row = &term.grid()[Line(line)];
++    (0..term.columns()).map(|c| row[Column(c)].c).collect::<String>().trim_end().to_string()
++}
++
++fn print_rows(term: &mut Term<VoidListener>, parser: &mut Processor, range: std::ops::Range<usize>) {
++    for i in range {
++        feed(term, parser, &format!("row {i}\r\n"));
++    }
++}
++
++#[test]
++fn erase_display_hides_the_scrollback_until_restored() {
++    let (mut term, mut p) = term(20, 4, 100);
++    print_rows(&mut term, &mut p, 0..10);
++    feed(&mut term, &mut p, "\x1b[H\x1b[2J$ ");
++    assert_eq!(term.grid().history_size(), 0);
++    assert_eq!(term.grid().hidden_history(), 10);
++    assert_eq!(row(&term, 0), "$");
++
++    print_rows(&mut term, &mut p, 10..15);
++    let history = term.grid().history_size();
++    assert!(history > 0);
++
++    term.grid_mut().restore_history();
++    assert_eq!(term.grid().hidden_history(), 0);
++    assert_eq!(term.grid().history_size(), history + 10);
++    let top = -(term.grid().history_size() as i32);
++    assert_eq!(row(&term, top), "row 0");
++    assert_eq!(row(&term, top + 9), "row 9");
++    assert_eq!(row(&term, top + 10), "$ row 10");
++}
++
++#[test]
++fn erase_scrollback_hides_it_too() {
++    let (mut term, mut p) = term(20, 4, 100);
++    print_rows(&mut term, &mut p, 0..10);
++    feed(&mut term, &mut p, "\x1b[H\x1b[2J\x1b[3J");
++    assert_eq!(term.grid().history_size(), 0);
++    assert_eq!(term.grid().hidden_history(), 10);
++    term.grid_mut().restore_history();
++    assert_eq!(row(&term, -(term.grid().history_size() as i32)), "row 0");
++}
++
++#[test]
++fn new_output_pushes_out_the_oldest_hidden_rows() {
++    let (mut term, mut p) = term(20, 4, 20);
++    print_rows(&mut term, &mut p, 0..30);
++    feed(&mut term, &mut p, "\x1b[H\x1b[2J");
++    assert_eq!(term.grid().hidden_history(), 20);
++    print_rows(&mut term, &mut p, 30..42);
++    assert_eq!(term.grid().history_size() + term.grid().hidden_history(), 20);
++    term.grid_mut().restore_history();
++    assert_eq!(term.grid().history_size(), 20);
++}
++
++#[test]
++fn hidden_rows_rewrap_on_resize_and_stay_apart() {
++    let (mut term, mut p) = term(10, 4, 100);
++    feed(&mut term, &mut p, "abcdefghijklmno\r\n");
++    print_rows(&mut term, &mut p, 0..6);
++    feed(&mut term, &mut p, "\x1b[H\x1b[2Jxy");
++    let hidden = term.grid().hidden_history();
++    term.resize(TermSize::new(20, 4));
++    // The 15 characters fit on one row now.
++    assert_eq!(term.grid().hidden_history(), hidden - 1);
++    term.resize(TermSize::new(5, 4));
++    assert_eq!(term.grid().hidden_history(), hidden + 1);
++
++    term.resize(TermSize::new(10, 4));
++    assert_eq!(term.grid().hidden_history(), hidden);
++    term.grid_mut().restore_history();
++    let top = -(term.grid().history_size() as i32);
++    assert_eq!(row(&term, top), "abcdefghij");
++    assert_eq!(row(&term, top + 1), "klmno");
++    assert_eq!(row(&term, 0), "xy");
++}
++
++#[test]
++fn a_reset_erases_the_hidden_rows() {
++    let (mut term, mut p) = term(20, 4, 100);
++    print_rows(&mut term, &mut p, 0..10);
++    feed(&mut term, &mut p, "\x1b[2J\x1bc");
++    assert_eq!(term.grid().hidden_history(), 0);
++}
 --- a/src/term/komando_tests.rs
 +++ b/src/term/komando_tests.rs
-@@ -0,0 +1,337 @@
+@@ -0,0 +1,351 @@
 +//! Komando patch: tests that `Term::input_ascii` leaves the terminal exactly as calling
 +//! `Term::input` for each character does.
 +
 +use crate::event::VoidListener;
 +use crate::grid::Dimensions;
-+use crate::index::{Column, Line};
++use crate::index::{Column, Line, Point};
 +use crate::term::cell::{Cell, Flags};
 +use crate::term::test::TermSize;
 +use crate::term::{Config, Term, TermDamage};
@@ -741,15 +978,45 @@
 +    assert_eq!(term.grid.cursor.point.column, Column(2));
 +    assert_eq!(term.grid[Line(1)][Column(2)], Cell::default());
 +}
++
++/// Komando patch: a line whose last cell is the spacer of a wide character that wrapped onto
++/// the next line copies with that character, taken from the next line, also on the topmost
++/// line (upstream took the line above's first character, and panicked on the topmost line).
++#[test]
++fn a_wrapped_wide_character_is_copied_from_the_next_line() {
++    for (before, line) in [("", 0), ("A\r\n", 1)] {
++        let mut term = Term::new(Config::default(), &TermSize::new(10, 4), VoidListener);
++        let mut parser: Processor = Processor::new();
++        parser.advance(&mut term, format!("{before}xxxxxxxxx\u{1F600}").as_bytes());
++        let (start, end) = (Point::new(Line(line), Column(0)), Point::new(Line(line), Column(9)));
++        assert_eq!(term.bounds_to_string(start, end), "xxxxxxxxx\u{1F600}", "{before:?}");
++    }
++}
 --- a/src/term/mod.rs
 +++ b/src/term/mod.rs
-@@ -1134,6 +1134,83 @@
-             self.grid.cursor.point.column += 1;
-         } else {
-             self.grid.cursor.input_needs_wrap = true;
-+        }
-+    }
-+
+@@ -620,13 +620,16 @@
+             text.push('\n');
+         }
+ 
+-        // If wide char is not part of the selection, but leading spacer is, include it.
++        // If wide char is not part of the selection, but leading spacer is, include it. It
++        // wrapped onto the start of the next line (upstream read the line above: wrong text,
++        // and a panic on the topmost line).
+         if line_length == self.columns()
+             && line_length.0 >= 2
+             && grid_line[line_length - 1].flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
+             && include_wrapped_wide
++            && line < self.grid.bottommost_line()
+         {
+-            text.push(self.grid[line - 1i32][Column(0)].c);
++            text.push(self.grid[line + 1i32][Column(0)].c);
+         }
+ 
+         text
+@@ -1137,6 +1140,83 @@
+         }
+     }
+ 
 +    /// Komando patch: a run of printable ASCII to be displayed.
 +    ///
 +    /// Does exactly what calling [`Self::input`] for each character would, but
@@ -824,20 +1091,68 @@
 +                self.grid.cursor.input_needs_wrap = true;
 +            }
 +            bytes = &bytes[count..];
-         }
-     }
-
-@@ -2504,6 +2581,10 @@
++        }
++    }
++
+     #[inline]
+     fn decaln(&mut self) {
+         trace!("Decalnning");
+@@ -1798,12 +1878,18 @@
+ 
+                     self.vi_mode_cursor.point.line =
+                         (self.vi_mode_cursor.point.line - lines).grid_clamp(self, Boundary::Grid);
++
++                    // Komando patch: what scrolled off stays out of sight, but can come back.
++                    self.grid.hide_history();
++                    self.vi_mode_cursor.point.line =
++                        self.vi_mode_cursor.point.line.grid_clamp(self, Boundary::Grid);
+                 }
+ 
+                 self.selection = None;
+             },
+             ansi::ClearMode::Saved if self.history_size() > 0 => {
+-                self.grid.clear_history();
++                // Komando patch: hidden rather than erased, so it can come back.
++                self.grid.hide_history();
+ 
+                 self.vi_mode_cursor.point.line =
+                     self.vi_mode_cursor.point.line.grid_clamp(self, Boundary::Cursor);
+@@ -2504,6 +2590,12 @@
      }
  }
-
+ 
 +// Komando patch.
 +#[cfg(test)]
 +mod komando_tests;
++#[cfg(test)]
++mod komando_hidden_tests;
 +
  #[cfg(test)]
  mod tests {
      use super::*;
+@@ -2775,7 +2867,9 @@
+         // Clear the viewport.
+         term.clear_screen(ansi::ClearMode::All);
+ 
+-        assert_eq!(term.grid.display_offset(), 10);
++        // Komando patch: the clear hides the history, so the view is at the bottom.
++        assert_eq!(term.grid.display_offset(), 0);
++        assert_eq!(term.grid.hidden_history(), 10);
+     }
+ 
+     #[test]
+@@ -2800,8 +2894,9 @@
+         // Clear the viewport.
+         term.clear_screen(ansi::ClearMode::All);
+ 
+-        assert_eq!(term.grid.display_offset(), 10);
+-        assert_eq!(term.vi_mode_cursor.point, Point::new(Line(-5), Column(3)));
++        // Komando patch: the clear hides the history; the vi cursor stays on the screen.
++        assert_eq!(term.grid.display_offset(), 0);
++        assert_eq!(term.vi_mode_cursor.point, Point::new(Line(0), Column(3)));
+     }
+ 
+     #[test]
 --- a/src/tty/windows/child.rs
 +++ b/src/tty/windows/child.rs
 @@ -2,17 +2,18 @@
@@ -850,10 +1165,10 @@
 -use std::sync::atomic::{AtomicPtr, Ordering};
 +use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
  use std::sync::{Arc, Mutex, mpsc};
-
+ 
  use polling::os::iocp::{CompletionPacket, PollerIocpExt};
  use polling::{Event, Poller};
-
+ 
 -use windows_sys::Win32::Foundation::{BOOLEAN, FALSE, HANDLE};
 +use windows_sys::Win32::Foundation::{BOOLEAN, FALSE, HANDLE, DuplicateHandle, DUPLICATE_SAME_ACCESS, INVALID_HANDLE_VALUE};
  use windows_sys::Win32::System::Threading::{
@@ -861,31 +1176,31 @@
 +    GetCurrentProcess, GetExitCodeProcess, GetProcessId, INFINITE, RegisterWaitForSingleObject, UnregisterWaitEx,
      WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE,
  };
-
+ 
 @@ -27,6 +28,7 @@
      sender: mpsc::Sender<ChildEvent>,
      interest: Arc<Mutex<Option<Interest>>>,
      child_handle: AtomicPtr<c_void>,
 +    exited: AtomicBool,
  }
-
+ 
  /// WinAPI callback to run when child process exits.
 @@ -35,13 +37,16 @@
          return;
      }
-
+ 
 -    let event_tx: Box<_> = unsafe { Box::from_raw(ctx as *mut ChildExitSender) };
 +    // Komando patch: the watcher owns this context until cancellation has waited
 +    // for any running callback. A callback that never fires must not leak it.
 +    let event_tx = unsafe { &*(ctx as *const ChildExitSender) };
-
+ 
      let mut exit_code = 0_u32;
      let child_handle = event_tx.child_handle.load(Ordering::Relaxed) as HANDLE;
      let status = unsafe { GetExitCodeProcess(child_handle, &mut exit_code) };
      let exit_status = if status == FALSE { None } else { Some(ExitStatus::from_raw(exit_code)) };
      event_tx.sender.send(ChildEvent::Exited(exit_status)).ok();
 +    event_tx.exited.store(true, Ordering::Release);
-
+ 
      let interest = event_tx.interest.lock().unwrap();
      if let Some(interest) = interest.as_ref() {
 @@ -53,20 +58,30 @@
@@ -897,7 +1212,7 @@
 +    _sender: Box<ChildExitSender>,
      pid: Option<NonZeroU32>,
  }
-
+ 
  impl ChildExitWatcher {
      pub fn new(child_handle: HANDLE) -> Result<ChildExitWatcher, Error> {
 +        // Preserve the public borrowed-handle API while keeping the handle valid
@@ -909,7 +1224,7 @@
 +        let owned_handle = unsafe { OwnedHandle::from_raw_handle(duplicate) };
 +        let child_handle = owned_handle.as_raw_handle();
          let (event_tx, event_rx) = mpsc::channel();
-
+ 
          let mut wait_handle: HANDLE = ptr::null_mut();
          let interest = Arc::new(Mutex::new(None));
 -        let sender_ref = Box::new(ChildExitSender {
@@ -919,7 +1234,7 @@
              child_handle: AtomicPtr::from(child_handle),
 +            exited: AtomicBool::new(false),
          });
-
+ 
          let success = unsafe {
 @@ -74,7 +89,7 @@
                  &mut wait_handle,
@@ -942,7 +1257,7 @@
          }
 @@ -99,7 +115,15 @@
      }
-
+ 
      pub fn register(&self, poller: &Arc<Poller>, event: Event) {
 -        *self.interest.lock().unwrap() = Some(Interest { poller: poller.clone(), event });
 +        let mut interest = self.interest.lock().unwrap();
@@ -955,7 +1270,7 @@
 +            poller.post(CompletionPacket::new(event)).ok();
 +        }
      }
-
+ 
      pub fn deregister(&self) {
 @@ -115,7 +139,7 @@
      /// If you terminate the process using this handle, the terminal will get a
@@ -964,7 +1279,7 @@
 -        self.child_handle.load(Ordering::Relaxed) as HANDLE
 +        self.child_handle.as_raw_handle()
      }
-
+ 
      /// Retrieve the Process ID associated to the underlying child process.
 @@ -127,7 +151,9 @@
  impl Drop for ChildExitWatcher {
@@ -986,11 +1301,11 @@
 -use std::os::windows::io::IntoRawHandle;
 +use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
  use std::{mem, ptr};
-
+ 
  use windows_sys::Win32::Foundation::{HANDLE, S_OK};
 @@ -15,7 +15,8 @@
  use windows_sys::{s, w};
-
+ 
  use windows_sys::Win32::System::Threading::{
 -    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, EXTENDED_STARTUPINFO_PRESENT,
 +    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
@@ -1001,7 +1316,7 @@
 @@ -94,6 +95,16 @@
      api: ConptyApi,
  }
-
+ 
 +// Komando patch: release the native allocation inside the attribute list before its
 +// backing buffer goes away, including when creating the child process fails.
 +struct AttributeList(LPPROC_THREAD_ATTRIBUTE_LIST);
@@ -1027,7 +1342,7 @@
              &mut pty_handle as *mut _,
          )
      };
-
+ 
 -    assert_eq!(result, S_OK);
 +    if result != S_OK {
 +        return Err(Error::other(format!("CreatePseudoConsole failed: {result:#010x}")));
@@ -1035,15 +1350,16 @@
 +    // Own the pseudo-console immediately so every later error closes it. The pipe
 +    // ends passed above stay owned too; CreatePseudoConsole does not consume them.
 +    let conpty = Conpty { handle: pty_handle, api };
-
+ 
      let mut success;
-
+ 
 @@ -158,18 +174,10 @@
          }
      }
-
+ 
 -    let mut attr_list: Box<[u8]> = vec![0; size].into_boxed_slice();
--
++    let mut attr_list = vec![0usize; size.div_ceil(mem::size_of::<usize>())].into_boxed_slice();
+ 
 -    // Set startup info's attribute list & initialize it
 -    //
 -    // Lint failure is spurious; it's because winapi's definition of PROC_THREAD_ATTRIBUTE_LIST
@@ -1054,26 +1370,24 @@
 -    {
 -        startup_info_ex.lpAttributeList = attr_list.as_mut_ptr() as _;
 -    }
-+    let mut attr_list = vec![0usize; size.div_ceil(mem::size_of::<usize>())].into_boxed_slice();
-+
 +    // Komando patch: the native attribute list needs pointer-aligned backing storage.
 +    startup_info_ex.lpAttributeList = attr_list.as_mut_ptr() as _;
-
+ 
      unsafe {
          success = InitializeProcThreadAttributeList(
-@@ -183,6 +191,8 @@
-             return Err(Error::last_os_error());
+@@ -184,6 +192,8 @@
          }
      }
-+
+ 
 +    let _attributes = AttributeList(startup_info_ex.lpAttributeList);
-
++
      // Set thread attribute list's Pseudo Console to the specified ConPTY.
      unsafe {
+         success = UpdateProcThreadAttribute(
 @@ -234,11 +244,22 @@
          }
      }
-
+ 
 +    // CreateProcess returns two owned handles. The watcher duplicates the process
 +    // handle for its own lifetime; neither original may be leaked.
 +    let process = unsafe { OwnedHandle::from_raw_handle(proc_info.hProcess) };
@@ -1093,6 +1407,6 @@
 +            return Err(error);
 +        },
 +    };
-
+ 
      Ok(Pty::new(conpty, conout, conin, child_watcher))
  }

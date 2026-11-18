@@ -592,7 +592,12 @@ pub fn scrollback_text<T>(term: &Term<T>) -> String {
         let cells = &row[..][..len];
         if cells.iter().any(|cell| cell.c == '\t') {
             // A tab skips the cells up to the next tab stop, and only the terminal knows those.
-            let (start, end) = (Point::new(Line(line), Column(0)), Point::new(Line(line), grid.last_column()));
+            // A wide character that wrapped onto the next row is written with that row: stop
+            // before its spacer here, or the terminal adds it to this row too.
+            let last = grid.last_column();
+            let wraps_wide = row[last].flags.contains(Flags::LEADING_WIDE_CHAR_SPACER);
+            let end_column = if wraps_wide { Column(last.0 - 1) } else { last };
+            let (start, end) = (Point::new(Line(line), Column(0)), Point::new(Line(line), end_column));
             out.push_str(term.bounds_to_string(start, end).trim_end_matches('\n'));
         } else {
             for cell in cells {
@@ -1054,18 +1059,19 @@ root@web01:~# ");
     }
 
     /// Found by fuzzing (`fuzz_terminal_output`): copying a row that wraps a wide character onto
-    /// the next row. alacritty's `line_to_string` adds that character from the row *above*
-    /// (`line - 1`), not the one it went on to: on the top row of the Scrollback that is past
-    /// the grid and panics, elsewhere the copy gets another row's first character. Komando
-    /// copies through it for a selection (`selection_to_string`) and, for rows with a tab, for
-    /// Copy output (`scrollback_text`).
+    /// the next row. alacritty's `line_to_string` took that character from the row *above*:
+    /// on the top row of the Scrollback that panicked, elsewhere the copy got another row's
+    /// first character. Komando copies through it for a selection (`selection_to_string`) and,
+    /// for rows with a tab, for Copy output (`scrollback_text`), which must not then write the
+    /// character twice.
     #[test]
     fn copying_a_row_that_wraps_a_wide_character() {
-        let row_of = |prefix: &[u8]| {
+        // `fill` x's after `prefix` reach the last column, where the emoji doesn't fit.
+        let term_with = |prefix: &[u8], fill: usize| {
             let (term, _proxy, _rx) = replying_term();
             let mut parser: Processor = Processor::new();
             let mut bytes = prefix.to_vec();
-            bytes.extend(std::iter::repeat_n(b'x', 79));
+            bytes.extend(std::iter::repeat_n(b'x', fill));
             bytes.extend("\u{1F600} done".as_bytes());
             parser.advance(&mut *term.lock(), &bytes);
             term
@@ -1075,16 +1081,21 @@ root@web01:~# ");
             let (start, end) = (Point::new(Line(line), Column(0)), Point::new(Line(line), t.grid().last_column()));
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.bounds_to_string(start, end)))
         };
-        // Lower down, the wrapped character is the one added.
-        let lower = row_of(b"A\r\n");
-        let text = copy(&lower, 1).expect("copying a lower row");
-        assert!(!text.ends_with('A'), "copied the row above's first character: ...{:?}", &text[text.len() - 3..]);
-        // The top row panics.
-        assert!(copy(&row_of(b""), 0).is_ok(), "copying the top row panicked");
-        // Copy output, for a row with a tab.
-        let tabbed = row_of(b"\t");
-        let exported = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scrollback_text(&*tabbed.lock())));
-        assert!(exported.is_ok(), "Copy output panicked");
+        let wrapped = format!("{}\u{1F600}", "x".repeat(79));
+        assert_eq!(copy(&term_with(b"A\r\n", 79), 1).expect("copying a lower row"), wrapped);
+        assert_eq!(copy(&term_with(b"", 79), 0).expect("copying the top row"), wrapped);
+
+        // Copy output: once, whether the row has a tab or not, at the top or lower down.
+        for (prefix, fill) in [(&b""[..], 79), (b"A\r\n", 79), (b"\t", 71), (b"A\r\n\t", 71)] {
+            let term = term_with(prefix, fill);
+            let t = term.lock();
+            let row = if prefix.starts_with(b"A") { 1 } else { 0 };
+            assert!(t.grid()[Line(row)][t.grid().last_column()].flags.contains(alacritty_terminal::term::cell::Flags::LEADING_WIDE_CHAR_SPACER));
+            let exported = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scrollback_text(&*t))).expect("Copy output");
+            let line = format!("{}{}\u{1F600} done\r\n", if prefix.ends_with(b"\t") { "\t" } else { "" }, "x".repeat(fill));
+            let want = if prefix.starts_with(b"A") { format!("A\r\n{line}") } else { line };
+            assert_eq!(exported, want, "{prefix:?}");
+        }
     }
 
     /// Fuzzed: terminal output as a server could send it, through the SSH output path, with
@@ -1127,16 +1138,9 @@ root@web01:~# ");
             let t = term.lock();
             let cursor = t.grid().cursor.point;
             assert!(cursor.column.0 < t.columns() && cursor.line.0 >= 0 && (cursor.line.0 as usize) < t.screen_lines(), "the cursor left the grid: {cursor:?}");
-            // A row that wraps a wide character can't be copied yet: a known bug with a test of
-            // its own (`copying_a_row_that_wraps_a_wide_character`), left out here.
-            use alacritty_terminal::term::cell::Flags;
-            let wraps_wide = (-(t.grid().history_size() as i32)..t.screen_lines() as i32)
-                .any(|line| t.grid()[Line(line)][t.grid().last_column()].flags.contains(Flags::LEADING_WIDE_CHAR_SPACER));
-            if !wraps_wide {
-                let text = scrollback_text(&*t);
-                assert!(!text.contains('\0'));
-                let _ = tidy_export(&text);
-            }
+            let text = scrollback_text(&*t);
+            assert!(!text.contains('\0'));
+            let _ = tidy_export(&text);
             drop(t);
             drop_blank_scrollback(&mut *term.lock());
         });

@@ -43,9 +43,55 @@ pub fn read(path: &Path) -> Result<Found> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let base = ssh_dir().unwrap_or_else(|| path.parent().map(Path::to_path_buf).unwrap_or_default());
     let home = dirs::home_dir();
+    let mut includes = Includes::new(&base, home.as_deref());
+    includes.chain.push(identity(path));
     let mut lines = vec![];
-    expand(&text, &base, home.as_deref(), 0, None, &mut lines);
-    Ok(found(&lines))
+    expand(&text, &mut includes, 0, None, &mut lines);
+    let mut found = found(&lines);
+    found.notes.extend(includes.notes());
+    Ok(found)
+}
+
+/// Where `Include`s are looked up, and the files on the way to the one being read, so one that
+/// includes a file it is itself included from isn't read again. `ssh` stops such a loop with
+/// an error; following it would read the files again at every level, as many times over as
+/// they have `Include`s, to the power of `MAX_DEPTH`.
+struct Includes<'a> {
+    base: &'a Path,
+    home: Option<&'a Path>,
+    /// The files being read, outermost first, as `identity` gives them.
+    chain: Vec<PathBuf>,
+    /// Included files left out: they loop back, or aren't regular files.
+    looped: Vec<PathBuf>,
+    not_files: Vec<PathBuf>,
+}
+
+impl<'a> Includes<'a> {
+    fn new(base: &'a Path, home: Option<&'a Path>) -> Self {
+        Self { base, home, chain: vec![], looped: vec![], not_files: vec![] }
+    }
+
+    /// Notes for the review on what was left out.
+    fn notes(&self) -> Vec<String> {
+        let list = |paths: &[PathBuf]| join_and(&paths.iter().map(|p| format!("Include {}", p.display())).collect::<Vec<_>>());
+        let mut notes = vec![];
+        if let [one] = self.looped.as_slice() {
+            notes.push(format!("{} is left out: it loops back to a file that includes it, which ssh refuses too.", list(std::slice::from_ref(one))));
+        } else if !self.looped.is_empty() {
+            notes.push(format!("{} are left out: they loop back to a file that includes them, which ssh refuses too.", list(&self.looped)));
+        }
+        if let [one] = self.not_files.as_slice() {
+            notes.push(format!("{} is left out: it isn't a file.", list(std::slice::from_ref(one))));
+        } else if !self.not_files.is_empty() {
+            notes.push(format!("{} are left out: they aren't files.", list(&self.not_files)));
+        }
+        notes
+    }
+}
+
+/// One name for a file however it is reached (through `..`, a link or another spelling).
+fn identity(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// A keyword and its arguments, keyword in lower case.
@@ -100,7 +146,7 @@ fn parse_line(raw: &str) -> Option<Line> {
 /// file starts in the block its `Include` sits in (`outer`; `None` before any `Host` line, where
 /// lines apply to every host), and a `Host` or `Match` line in it changes the block only until
 /// the file ends, as in `ssh`: the block around the `Include` goes on after it.
-fn expand(text: &str, base: &Path, home: Option<&Path>, depth: usize, outer: Option<&Line>, out: &mut Vec<Line>) {
+fn expand(text: &str, includes: &mut Includes, depth: usize, outer: Option<&Line>, out: &mut Vec<Line>) {
     let mut block: Option<Line> = outer.cloned();
     for line in text.lines().filter_map(parse_line) {
         match line.key.as_str() {
@@ -111,9 +157,26 @@ fn expand(text: &str, base: &Path, home: Option<&Path>, depth: usize, outer: Opt
             "include" if depth < MAX_DEPTH => {
                 let start = out.len();
                 for pattern in &line.args {
-                    for file in include_files(pattern, base, home) {
+                    for file in include_files(pattern, includes.base, includes.home) {
+                        let Ok(meta) = std::fs::metadata(&file) else { continue };
+                        // A device or pipe (`/dev/zero`, `/dev/stdin`) would never end.
+                        if !meta.is_file() {
+                            if !includes.not_files.contains(&file) {
+                                includes.not_files.push(file);
+                            }
+                            continue;
+                        }
+                        let id = identity(&file);
+                        if includes.chain.contains(&id) {
+                            if !includes.looped.contains(&file) {
+                                includes.looped.push(file);
+                            }
+                            continue;
+                        }
                         if let Ok(text) = std::fs::read_to_string(&file) {
-                            expand(&text, base, home, depth + 1, block.as_ref(), out);
+                            includes.chain.push(id);
+                            expand(&text, includes, depth + 1, block.as_ref(), out);
+                            includes.chain.pop();
                         }
                     }
                 }
@@ -582,7 +645,7 @@ mod tests {
 
     fn parse(text: &str) -> Found {
         let mut lines = vec![];
-        expand(text, Path::new("/nonexistent"), None, 0, None, &mut lines);
+        expand(text, &mut Includes::new(Path::new("/nonexistent"), None), 0, None, &mut lines);
         found(&lines)
     }
 
@@ -788,7 +851,7 @@ mod tests {
         std::fs::write(dir.join("extra"), "User from-extra\n").unwrap();
         let config = "Host bastion\n  Include extra\n  Port 2200\nInclude config.d/??-* config.d/*web*\nHost *\n  User everyone\n";
         let mut lines = vec![];
-        expand(config, &dir, None, 0, None, &mut lines);
+        expand(config, &mut Includes::new(&dir, None), 0, None, &mut lines);
         let found = found(&lines);
         let names: Vec<&str> = found.groups[0].hosts.iter().map(|h| h.name.as_str()).collect();
         assert_eq!(names, ["bastion", "web", "db"], "included files in name order");
@@ -832,7 +895,7 @@ mod tests {
         std::fs::write(dir.join("inc3"), "Host other\n  HostName other.lan\n").unwrap();
         let config = "Host web\n  Include inc1\n  Include inc3\n  HostName web.lan\nHost db\n  HostName 10.0.0.5\n";
         let mut lines = vec![];
-        expand(config, &dir, None, 0, None, &mut lines);
+        expand(config, &mut Includes::new(&dir, None), 0, None, &mut lines);
         let found = found(&lines);
         let web = host(&found, "web");
         assert_eq!((web.address.as_str(), web.port, web.user.as_deref()), ("web.lan", 2200, Some("from-inc1")));
@@ -859,20 +922,56 @@ mod tests {
         }
     }
 
-    /// Found by fuzzing (`fuzz_ssh_configs`): files that include each other more than once are
-    /// read again at every level up to `MAX_DEPTH`, so the lines grow as (includes)^16. Two
-    /// Includes make 65,536 copies; three freeze Komando (the import runs on the UI thread)
-    /// and fill its memory. `ssh` stops such a loop with an error instead.
+    /// Found by fuzzing (`fuzz_ssh_configs`): files that include each other were read again at
+    /// every level up to `MAX_DEPTH`, so the lines grew as (includes)^16: 524,284 lines from
+    /// this 4-line file, and with three Includes Komando froze (the import runs on the UI
+    /// thread) and filled its memory. An Include back to a file on the way is now left out
+    /// with a note, as `ssh` refuses it. So is one of something that isn't a file.
     #[test]
-    fn includes_that_loop_stop_growing() {
+    fn includes_that_loop_are_left_out() {
         let dir = std::env::temp_dir().join(format!("komando-ssh-loop-{}", crate::model::new_id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let config = "Host web\n  HostName web.lan\nInclude config\nInclude config\n";
+        std::fs::create_dir_all(dir.join("conf.d")).unwrap();
+        let config = "Host web\n  HostName web.lan\nInclude config\nInclude a\nInclude a\nInclude conf.d\n";
         std::fs::write(dir.join("config"), config).unwrap();
+        // a and b include each other, twice each.
+        std::fs::write(dir.join("a"), "Host a\n  HostName a.lan\nInclude b\nInclude b\n").unwrap();
+        std::fs::write(dir.join("b"), "Host b\n  HostName b.lan\nInclude a\nInclude a\n").unwrap();
+        let mut includes = Includes::new(&dir, None);
+        includes.chain.push(identity(&dir.join("config")));
         let mut lines = vec![];
-        expand(config, &dir, None, 0, None, &mut lines);
+        let started = std::time::Instant::now();
+        expand(config, &mut includes, 0, None, &mut lines);
+        let mut found = found(&lines);
+        found.notes.extend(includes.notes());
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(lines.len() < 1000, "{} lines from a 4-line file", lines.len());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "took {:?}", started.elapsed());
+        assert!(lines.len() < 50, "{} lines from three short files", lines.len());
+        let names: Vec<&str> = found.groups[0].hosts.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, ["web", "a", "b"]);
+        // config's Include of itself and b's of a loop back; a's of b doesn't.
+        let path = |name: &str| dir.join(name).display().to_string();
+        assert_eq!(
+            found.notes,
+            [
+                format!(
+                    "Include {} and Include {} are left out: they loop back to a file that includes them, which ssh refuses too.",
+                    path("config"),
+                    path("a")
+                ),
+                format!("Include {} is left out: it isn't a file.", path("conf.d")),
+            ]
+        );
+    }
+
+    /// An Include of a device would never finish reading (`/dev/zero` is endless, valid text).
+    #[cfg(unix)]
+    #[test]
+    fn an_include_of_a_device_is_not_read() {
+        let mut includes = Includes::new(Path::new("/nonexistent"), None);
+        let mut lines = vec![];
+        expand("Include /dev/zero /dev/null\nHost web\n  HostName web.lan\n", &mut includes, 0, None, &mut lines);
+        assert_eq!(found(&lines).groups[0].hosts[0].address, "web.lan");
+        assert_eq!(includes.not_files, [PathBuf::from("/dev/zero"), PathBuf::from("/dev/null")]);
     }
 
     /// Fuzzed: SSH configs with their Includes, in a folder of their own. Paths stay relative
@@ -886,23 +985,23 @@ mod tests {
             Include extra\nHost *\n  User everyone\n";
         let dictionary: &[&[u8]] = &[
             b"\nHost ", b"\nMatch ", b"\n  HostName ", b"\n  ProxyJump ", b"\n  ProxyCommand ", b"\n  LocalForward ", b"\n  RemoteForward ",
-            b"\n  DynamicForward ", b"\nInclude extra\n", b"\nInclude c*\n", b"\nInclude e* e?tra\n", b"=", b"\"", b"%h", b"%%", b"%",
+            b"\n  DynamicForward ", b"\nInclude extra\n", b"\nInclude config\n", b"\nInclude c*\n", b"\nInclude e* e?tra\n", b"=", b"\"", b"%h", b"%%", b"%",
             b"!", b"*", b"?", b"[", b"]", b":", b"@", b",", b"none", b"ssh://", b"\t", b"#",
         ];
         let dir = std::env::temp_dir().join(format!("komando-fuzz-ssh-{}", crate::model::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("extra"), "Host extra\n  HostName extra.lan\n  ProxyJump web\n").unwrap();
+        std::fs::write(dir.join("extra"), "Host extra\n  HostName extra.lan\n  ProxyJump web\nInclude config\nInclude e*\n").unwrap();
         let base = dir.clone();
         crate::fuzz::run("ssh configs", &[seed], dictionary, move |input| {
             let text = crate::fuzz::text(input);
-            // A file that includes itself more than once grows exponentially: a known bug with
-            // a test of its own (`includes_that_loop_stop_growing`), left out here.
-            if text.contains(['/', '\\', '~']) || text.to_lowercase().matches("include").count() > 1 {
+            if text.contains(['/', '\\', '~']) {
                 return;
             }
             std::fs::write(base.join("config"), text.as_bytes()).unwrap();
+            let mut includes = Includes::new(&base, None);
+            includes.chain.push(identity(&base.join("config")));
             let mut lines = vec![];
-            expand(&text, &base, None, 0, None, &mut lines);
+            expand(&text, &mut includes, 0, None, &mut lines);
             let found = found(&lines);
             for host in found.groups.iter().flat_map(|g| &g.hosts) {
                 assert!(host.port != 0, "{} has port 0", host.name);

@@ -620,13 +620,16 @@ impl<T> Term<T> {
             text.push('\n');
         }
 
-        // If wide char is not part of the selection, but leading spacer is, include it.
+        // If wide char is not part of the selection, but leading spacer is, include it. It
+        // wrapped onto the start of the next line (upstream read the line above: wrong text,
+        // and a panic on the topmost line).
         if line_length == self.columns()
             && line_length.0 >= 2
             && grid_line[line_length - 1].flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
             && include_wrapped_wide
+            && line < self.grid.bottommost_line()
         {
-            text.push(self.grid[line - 1i32][Column(0)].c);
+            text.push(self.grid[line + 1i32][Column(0)].c);
         }
 
         text

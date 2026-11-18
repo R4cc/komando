@@ -40,7 +40,10 @@ command, the network or a tag is left out, with a note saying so.
 - The import is a copy. Later edits to `~/.ssh/config` don't reach Komando. Importing again
   starts hosts that are already in Komando unticked (ADR 0008's duplicate check).
 - `Include` follows `~`, absolute paths and paths relative to `~/.ssh`, with `*` and `?` in
-  the file name only. Missing files are skipped, as `ssh` does.
+  the file name only. Missing files are skipped, as `ssh` does. An `Include` that loops back
+  to a file it is included from, or names something that isn't a file (a folder, a device), is
+  left out with a note: `ssh` refuses a loop, and following one read the files again at every
+  level, freezing the import.
 - `HostName` takes `%h` and `%%`, as in `ssh`. Any other token is an error for `ssh`: the host
   keeps its name as its address and the `HostName` is listed as left out. A `User` with tokens
   is listed as left out too.
