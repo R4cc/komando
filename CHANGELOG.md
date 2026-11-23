@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-11-23
+
 ### Added
 
 - Quick connect marks hosts and shells that are already open with a "Switch to tab" badge.
