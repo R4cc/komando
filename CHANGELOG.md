@@ -6,6 +6,11 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Quick connect marks hosts and shells that are already open with a "Switch to tab" badge.
+  Picking one takes you to its open session; Ctrl+Enter still opens a new one.
+
 ### Changed
 
 - Session cards in the sidebar are wider, so they wrap onto a second line sooner instead of

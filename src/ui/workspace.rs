@@ -265,6 +265,8 @@ struct PickerResult {
     color: Option<Hsla>,
     name: SharedString,
     detail: SharedString,
+    /// It has an open Session, so picking it switches to that rather than connecting again.
+    open: bool,
 }
 
 /// What an item's sidebar row shows (see `Workspace::item_state`).
@@ -2577,7 +2579,8 @@ impl Workspace {
                         (crate::icons::shell_icon(shell).to_string(), None, shell.name.clone(), detail)
                     }
                 };
-                Some(PickerResult { item, icon, color, name: name.into(), detail: detail.into() })
+                let open = self.sessions.of(&item.key()).next().is_some();
+                Some(PickerResult { item, icon, color, name: name.into(), detail: detail.into(), open })
             })
             .collect()
     }
@@ -4912,6 +4915,7 @@ impl Workspace {
                 let count = results.len();
                 let selected = (*selected).min(count.saturating_sub(1));
                 let title = "Quick connect".to_string();
+                let enter_label = if results.get(selected).is_some_and(|r| r.open) { "Switch to tab" } else { "Open" };
                 let mut list = div()
                     .id("picker-list")
                     .role(gpui::Role::ListBox)
@@ -4932,7 +4936,7 @@ impl Workspace {
                     };
                     list = list.child(div().p(px(16.)).text_size(px(13.)).text_color(p.text_faint).child(hint));
                 }
-                for (i, PickerResult { item, icon, color, name, detail }) in results.iter().enumerate() {
+                for (i, PickerResult { item, icon, color, name, detail, open }) in results.iter().enumerate() {
                     let color = color.unwrap_or_else(|| shell_icon_color(icon, p));
                     let item = item.clone();
                     list = list.child(
@@ -4946,7 +4950,7 @@ impl Workspace {
                             .rounded(p.corner(8.))
                             .cursor_pointer()
                             .role(gpui::Role::ListBoxOption)
-                            .aria_label(format!("{name}, {detail}"))
+                            .aria_label(if *open { format!("{name}, {detail}, switch to tab") } else { format!("{name}, {detail}") })
                             .aria_selected(i == selected)
                             .aria_position_in_set(i + 1)
                             .aria_size_of_set(count)
@@ -4960,10 +4964,14 @@ impl Workspace {
                                 div()
                                     .flex()
                                     .flex_col()
+                                    .flex_1()
                                     .min_w_0()
                                     .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(name.clone()))
                                     .child(div().text_size(px(12.)).text_color(p.text_faint).truncate().child(detail.clone())),
-                            ),
+                            )
+                            // Like a browser's address bar offering an open tab: picking it shows
+                            // the open Session instead of connecting again.
+                            .when(*open, |el| el.child(switch_to_tab_badge(i == selected, p))),
                     );
                 }
                 div()
@@ -5000,7 +5008,7 @@ impl Workspace {
                                 .border_color(p.border)
                                 .text_size(px(11.5))
                                 .text_color(p.text_faint)
-                                .child(div().flex().items_center().gap(px(6.)).child(kbd("Enter", p)).child("Open"))
+                                .child(div().flex().items_center().gap(px(6.)).child(kbd("Enter", p)).child(enter_label))
                                 .child(div().flex().items_center().gap(px(6.)).child(kbd("Ctrl Enter", p)).child("New session")),
                         )
                     })
@@ -5592,6 +5600,26 @@ fn strip_action(id: &'static str, icon: &str, label: &'static str, danger: bool,
 }
 
 /// A keyboard shortcut ("Ctrl ,") in a small outlined chip, the only one in the app.
+/// The "Switch to tab" pill on a quick connect result that already has an open Session.
+fn switch_to_tab_badge(selected: bool, p: AppPalette) -> impl IntoElement {
+    div()
+        .flex_shrink_0()
+        .h(px(22.))
+        .px(px(8.))
+        .flex()
+        .items_center()
+        .gap(px(5.))
+        .rounded(p.corner(6.))
+        .border_1()
+        .border_color(p.border)
+        .bg(if selected { p.active } else { p.hover })
+        .text_size(px(11.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(p.text_muted)
+        .child("Switch to tab")
+        .child(icon_el("arrow-right", 12., p.text_muted))
+}
+
 fn kbd(keys: &str, p: AppPalette) -> impl IntoElement {
     div()
         .flex_shrink_0()
