@@ -4163,9 +4163,9 @@ impl Workspace {
         rows
     }
 
-    /// An item's listed Sessions as a grid of cards under its row, hung off a guide line so they
-    /// never read as Hosts. Equal-width cards, as many to a line as the sidebar's width fits
-    /// (see `session_card_columns`), wrapping onto more lines as Sessions open.
+    /// An item's listed Sessions as cards under its row, hung off a guide line so they never
+    /// read as Hosts. The cards always fill the sidebar's width: as many to a line as fit (see
+    /// `session_card_rows`), the lines balanced and each card stretched to share its line.
     fn render_session_cards(
         &self,
         item: &SidebarItem,
@@ -4177,18 +4177,23 @@ impl Workspace {
     ) -> AnyElement {
         // The guide hangs from the middle of the item's icon.
         let guide = indent + 7.;
-        let columns = session_card_columns(self.sidebar_width_px, indent);
+        let mut sessions = listed.iter();
+        let rows = session_card_rows(listed.len(), self.sidebar_width_px, indent).into_iter().map(|count| {
+            div().flex().gap(px(5.)).children(sessions.by_ref().take(count).map(|session| {
+                div().flex_1().flex_basis(px(0.)).min_w_0().child(self.render_session_card(item, session, color, p, cx))
+            }))
+        });
         div()
             .relative()
             .ml(px(guide + 7.))
             .mr(px(4.))
             .pl(px(4.))
             .py(px(3.))
-            .grid()
-            .grid_cols(columns)
+            .flex()
+            .flex_col()
             .gap(px(5.))
             .child(div().absolute().left(px(-7.)).top(px(-2.)).bottom(px(-2.)).w(px(1.)).bg(p.border))
-            .children(listed.iter().map(|session| self.render_session_card(item, session, color, p, cx)))
+            .children(rows)
             .into_any_element()
     }
 
@@ -5115,15 +5120,22 @@ fn focus_ring(radius: gpui::Pixels, p: AppPalette) -> gpui::Div {
 /// else a desktop's protocol or a terminal's number. The tooltip: the name, else the title its
 /// shell set unless that only repeats the item's name or is the program's path (as Windows
 /// shells set it), with what the Session is.
-/// How many Session cards fit on a line of the sidebar at its width, under an item indented by
-/// `indent`: a card stays at least `MIN` wide, so a wide sidebar fits more of them and a narrow
-/// one two. Never more than six, so a few Sessions don't stretch into a thin strip.
-fn session_card_columns(sidebar_width: f32, indent: f32) -> u16 {
+/// How many Session cards go on each line of the sidebar, for `count` cards under an item
+/// indented by `indent`. A card stays at least `MIN` wide, so a wide sidebar fits more to a line
+/// and a narrow one two, never more than six. The lines are balanced (five cards three to a line
+/// go 3 + 2, not 3 + 1 + 1) and each line's cards share its whole width.
+fn session_card_rows(count: usize, sidebar_width: f32, indent: f32) -> Vec<usize> {
     const MIN: f32 = 60.;
     const GAP: f32 = 5.;
-    // The list's own padding, the guide line's inset and the grid's margins.
+    if count == 0 {
+        return Vec::new();
+    }
+    // The list's own padding, the guide line's inset and the margins.
     let room = sidebar_width - (16. + indent + 14. + 8.);
-    (((room + GAP) / (MIN + GAP)).floor() as u16).clamp(2, 6)
+    let fit = (((room + GAP) / (MIN + GAP)).floor() as usize).clamp(2, 6);
+    let lines = count.div_ceil(fit);
+    let (each, extra) = (count / lines, count % lines);
+    (0..lines).map(|line| each + usize::from(line < extra)).collect()
 }
 
 fn session_card_text(session: &SessionEntry) -> (SharedString, SharedString) {
@@ -5805,16 +5817,26 @@ impl Render for Workspace {
 }
 
 #[cfg(test)]
-mod session_card_columns_tests {
-    use super::{NESTED_INDENT, session_card_columns};
+mod session_card_rows_tests {
+    use super::{NESTED_INDENT, session_card_rows};
 
     #[test]
     fn fits_more_cards_as_the_sidebar_widens() {
-        assert_eq!(session_card_columns(200., NESTED_INDENT), 2);
-        assert_eq!(session_card_columns(264., NESTED_INDENT), 3);
-        assert_eq!(session_card_columns(400., NESTED_INDENT), 5);
-        assert_eq!(session_card_columns(520., NESTED_INDENT), 6);
-        assert_eq!(session_card_columns(f32::NAN, NESTED_INDENT), 2);
+        assert_eq!(session_card_rows(6, 200., NESTED_INDENT), [2, 2, 2]);
+        assert_eq!(session_card_rows(6, 264., NESTED_INDENT), [3, 3]);
+        assert_eq!(session_card_rows(6, 400., NESTED_INDENT), [3, 3]);
+        assert_eq!(session_card_rows(6, 520., NESTED_INDENT), [6]);
+        assert_eq!(session_card_rows(3, f32::NAN, NESTED_INDENT), [2, 1]);
+    }
+
+    #[test]
+    fn cards_fill_every_line() {
+        assert!(session_card_rows(0, 264., NESTED_INDENT).is_empty());
+        assert_eq!(session_card_rows(1, 264., NESTED_INDENT), [1]);
+        assert_eq!(session_card_rows(2, 264., NESTED_INDENT), [2]);
+        assert_eq!(session_card_rows(4, 264., NESTED_INDENT), [2, 2]);
+        assert_eq!(session_card_rows(5, 264., NESTED_INDENT), [3, 2]);
+        assert_eq!(session_card_rows(7, 400., NESTED_INDENT), [4, 3]);
     }
 }
 

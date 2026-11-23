@@ -6,11 +6,15 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-11-23
+
 ### Changed
 
 - Session cards in the sidebar are taller with larger icons and text, and each card has a
   visible outline so its edges stand out from the sidebar. The session you're on is ringed
   in the host's colour, and the cards fit more to a line as the sidebar widens.
+- Session cards always fill the sidebar's width: each line's cards stretch to share it, and
+  the cards are spread evenly over the lines.
 
 ## [0.8.6] - 2026-11-23
 
