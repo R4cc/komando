@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-11-23
+
 ### Added
 
 - Running transfers show their speed and about how long is left, or that they have stalled.
