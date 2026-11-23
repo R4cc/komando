@@ -688,6 +688,7 @@ impl Workspace {
         this.vault_exists = Vault::exists(&this.data_dir);
         this.start_auto_lock(window, cx);
         this.start_notifications(window, cx);
+        this.watch_close_to_tray(window, cx);
         // Desktops in windows of their own close with Komando's.
         let workspace = cx.entity().downgrade();
         window.on_window_should_close(cx, move |_, cx| {
@@ -2157,6 +2158,39 @@ impl Workspace {
             },
         });
         cx.notify();
+    }
+
+    /// Closing the window into the notification area disconnects every Session, unless
+    /// that's switched off in Settings. Each keeps its output, to reconnect on return.
+    fn watch_close_to_tray(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(windows)]
+        if let Some(mut closes) = self.tray.as_ref().and_then(|tray| tray.closes()) {
+            use futures::StreamExt as _;
+            cx.spawn_in(window, async move |this, cx| {
+                while closes.next().await.is_some() {
+                    let closed = this.update_in(cx, |this, window, cx| {
+                        if this.settings.disconnect_on_close_to_tray {
+                            this.disconnect_all_sessions(window, cx);
+                        }
+                    });
+                    if closed.is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+        #[cfg(not(windows))]
+        let _ = (window, cx);
+    }
+
+    /// Disconnect every live Session, without asking about ones still printing output.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn disconnect_all_sessions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let live: Vec<usize> = self.sessions.iter().filter(|s| s.is_live()).map(|s| s.id()).collect();
+        for id in live {
+            self.disconnect_session(id, window, cx);
+        }
     }
 
     /// End a Session's connection but keep it, with its output, to reconnect or close later.

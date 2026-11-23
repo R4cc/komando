@@ -21,6 +21,8 @@ const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 pub struct Tray {
     state: Rc<State>,
     allowed: bool,
+    /// Taken by the Workspace once (see `closes`).
+    closes: Cell<Option<futures::channel::mpsc::UnboundedReceiver<()>>>,
 }
 
 struct State {
@@ -30,6 +32,9 @@ struct State {
     taskbar_created: u32,
     attached: Cell<bool>,
     exiting: Cell<bool>,
+    /// Told each time closing the window hid it in the notification area instead. Sent from
+    /// the window procedure; the Workspace acts on it later, outside of it.
+    closed: Option<futures::channel::mpsc::UnboundedSender<()>>,
 }
 
 impl Tray {
@@ -38,7 +43,9 @@ impl Tray {
         let RawWindowHandle::Win32(handle) = handle.as_raw() else {
             return None;
         };
+        let (closed, closes) = futures::channel::mpsc::unbounded();
         let state = Rc::new(State {
+            closed: Some(closed),
             hwnd: HWND(handle.hwnd.get() as *mut _),
             enabled: Cell::new(enabled && allowed),
             attached: Cell::new(true),
@@ -55,7 +62,13 @@ impl Tray {
         if state.enabled.get() {
             state.show_icon();
         }
-        Some(Self { state, allowed })
+        Some(Self { state, allowed, closes: Cell::new(Some(closes)) })
+    }
+
+    /// One message each time closing the window sends Komando to the notification area
+    /// rather than ending it. There is one receiver; later calls get `None`.
+    pub fn closes(&self) -> Option<futures::channel::mpsc::UnboundedReceiver<()>> {
+        self.closes.take()
     }
 
     pub fn set_enabled(&self, enabled: bool) {
@@ -220,6 +233,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 let _ = ShowWindow(hwnd, SW_MINIMIZE);
                 let _ = ShowWindow(hwnd, SW_HIDE);
             }
+            if let Some(closed) = &state.closed {
+                let _ = closed.unbounded_send(());
+            }
             return LRESULT(0);
         }
     } else if message == WM_SIZE && wparam.0 == SIZE_MINIMIZED as usize && state.enabled.get() {
@@ -255,9 +271,9 @@ mod tests {
     fn auxiliary_windows_cannot_enable_another_tray_icon() {
         let state = Rc::new(State {
             hwnd: HWND::default(), enabled: Cell::new(false), visible: Cell::new(false),
-            taskbar_created: 0, attached: Cell::new(false), exiting: Cell::new(false),
+            taskbar_created: 0, attached: Cell::new(false), exiting: Cell::new(false), closed: None,
         });
-        let tray = Tray { state: state.clone(), allowed: false };
+        let tray = Tray { state: state.clone(), allowed: false, closes: Cell::new(None) };
         tray.set_enabled(true);
         assert!(!state.enabled.get());
         assert!(!state.visible.get());
@@ -302,6 +318,7 @@ mod tests {
                 taskbar_created: 0,
                 attached: Cell::new(true),
                 exiting: Cell::new(exiting),
+                closed: None,
             });
             assert!(SetWindowSubclass(hwnd, Some(window_proc), SUBCLASS_ID, &*state as *const State as usize).as_bool());
             // Model the already-registered notification icon; exercise the real Win32 close

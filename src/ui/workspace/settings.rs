@@ -794,7 +794,7 @@ impl Workspace {
             behaviour_rows.push(setting_row(
                 p,
                 "Minimize to tray",
-                "Sessions keep running in the notification area when you minimize or close Komando.",
+                "Komando stays in the notification area when you minimize or close it.",
                 Self::setting_switch(
                     "minimize-to-tray",
                     "Minimize to tray",
@@ -805,6 +805,22 @@ impl Workspace {
                     Self::apply_minimize_to_tray,
                 ),
             ));
+            if self.settings.minimize_to_tray {
+                behaviour_rows.push(setting_row(
+                    p,
+                    "Disconnect when closed to tray",
+                    "Closing Komando's window disconnects all sessions; their output stays, to reconnect when you're back. Minimizing keeps them running.",
+                    Self::setting_switch(
+                        "disconnect-on-close-to-tray",
+                        "Disconnect when closed to tray",
+                        self.settings.disconnect_on_close_to_tray,
+                        p,
+                        cx,
+                        |s, on| s.disconnect_on_close_to_tray = on,
+                        Self::save_settings_and_notify,
+                    ),
+                ));
+            }
         }
 
         div()

@@ -12,6 +12,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- On Windows, closing Komando's window into the notification area now disconnects all
+  sessions; their output stays so you can reconnect when you're back. Minimizing still keeps
+  them running. Turn this off in Settings → Appearance under "Disconnect when closed to tray".
 - "Close all" in a host's menu closes all of its sessions at once, connected or not, instead of
   first offering "Disconnect all" and leaving them to be closed afterwards.
 
