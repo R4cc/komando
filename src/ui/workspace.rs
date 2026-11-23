@@ -368,8 +368,8 @@ enum ConfirmAction {
     Disconnect(usize),
     /// Close a Session (see `end_session`) whose command is still printing output.
     Close(usize),
-    /// Disconnect all of an item's Sessions, some still printing output.
-    DisconnectAll(ItemKey),
+    /// Close all of an item's Sessions, some still printing output.
+    CloseAll(ItemKey),
     /// Every Host's Command History (Settings → Security).
     DeleteAllHistory,
     /// A saved password or key (Settings → Vault).
@@ -2192,22 +2192,21 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Disconnect all of an item's Sessions (or close them once dropped), asking once first if
-    /// any is still printing output, unless `confirmed`.
+    /// Close all of an item's Sessions, live or dropped, asking once first if any is still
+    /// printing output, unless `confirmed`.
     fn end_item_sessions(&mut self, key: &ItemKey, confirmed: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !confirmed && self.modal_open(cx) {
             return;
         }
         match self.sessions.ending_all(key, confirmed) {
-            EndingAll::Disconnect(ids) => ids.into_iter().for_each(|id| self.disconnect_session(id, window, cx)),
             EndingAll::Remove(ids) => ids.into_iter().for_each(|id| self.remove_session(id, window, cx)),
-            EndingAll::Ask { printing, live } => {
+            EndingAll::Ask { printing, count } => {
                 let name = self.item_for_key(key).map(|item| item.label().to_string()).unwrap_or_default();
                 let printing = if printing == 1 { "One of them is".to_string() } else { format!("{printing} of them are") };
                 self.overlay = Some(Overlay::Confirm {
-                    title: if live == 1 { format!("Disconnect the session of {name}?") } else { format!("Disconnect all {live} sessions of {name}?") },
-                    body: format!("{printing} still printing output, so a command may be running. Disconnecting ends it; the output so far stays until you close the sessions."),
-                    action: ConfirmAction::DisconnectAll(key.clone()),
+                    title: if count == 1 { format!("Close the session of {name}?") } else { format!("Close all {count} sessions of {name}?") },
+                    body: format!("{printing} still printing output, so a command may be running. Closing the sessions ends it."),
+                    action: ConfirmAction::CloseAll(key.clone()),
                 });
                 cx.notify();
             }
@@ -2663,7 +2662,7 @@ impl Workspace {
                 self.end_session(*id, EndRequest::CloseNow, window, cx);
                 return;
             }
-            ConfirmAction::DisconnectAll(key) => {
+            ConfirmAction::CloseAll(key) => {
                 self.end_item_sessions(key, true, window, cx);
                 return;
             }
@@ -2724,7 +2723,7 @@ impl Workspace {
             | ConfirmAction::RestartForUpdate
             | ConfirmAction::Disconnect(_)
             | ConfirmAction::Close(_)
-            | ConfirmAction::DisconnectAll(_) => {}
+            | ConfirmAction::CloseAll(_) => {}
         }
         self.focus_active(window, cx);
         cx.notify();
@@ -3755,7 +3754,6 @@ impl Workspace {
     ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + Clone + 'static {
         let key = item.key();
         let ItemState { sessions, grouped, expanded, shown, main, linked, .. } = self.item_state(&key);
-        let any_live = sessions.iter().any(|s| s.is_live());
         let session_id = main.map(|s| s.id());
         let sessions_live = main.is_some_and(|s| s.is_live());
         let open_session = self.sessions.item_session(&key).and_then(|id| sessions.iter().find(|s| s.id() == id));
@@ -3767,9 +3765,8 @@ impl Workspace {
         let ws = cx.entity().downgrade();
         let menu_item_src = item.clone();
         let menu_key = key.clone();
-        // What "Disconnect all" / "Close all" acts on: the live Sessions while any is, else
-        // the dropped ones (see `end_item_sessions`).
-        let count = sessions.iter().filter(|s| s.is_live() == any_live).count();
+        // What "Close all" acts on: every Session, live or dropped (see `end_item_sessions`).
+        let count = sessions.len();
         // Beside the Session shown, unless that is the one this would show.
         let can_split = self.sessions.can_place(&key, None, Side::Right);
         let history = self.settings.command_history;
@@ -3823,7 +3820,7 @@ impl Workspace {
                         move |this, _, cx| this.toggle_item_sessions(&fold, cx),
                     ))
                     .item(menu_item(
-                        &if any_live { format!("Disconnect all {count}") } else { format!("Close all {count}") },
+                        &format!("Close all {count}"),
                         None,
                         &ws,
                         move |this, window, cx| this.end_item_sessions(&all, false, window, cx),
@@ -3947,7 +3944,9 @@ impl Workspace {
             _ => "Close session".into(),
         };
         let show_count = grouped && !expanded;
-        let trailing: f32 = [(show_status, 16.), (show_count, 14.), (grouped, 22.)]
+        // Room for every digit of the count, so 50 doesn't wrap onto two lines.
+        let count_width = (listed_count.to_string().len() as f32 * 7.).max(14.);
+        let trailing: f32 = [(show_status, 16.), (show_count, count_width), (grouped, 22.)]
             .iter()
             .filter(|(shown, _)| *shown)
             .map(|(_, w)| w + 4.)
@@ -4094,7 +4093,15 @@ impl Workspace {
                         })
                         .when(show_count, |el| {
                             el.child(
-                                div().w(px(14.)).text_size(px(11.)).text_color(p.text_faint).child(listed_count.to_string()),
+                                div()
+                                    .w(px(count_width))
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .justify_center()
+                                    .whitespace_nowrap()
+                                    .text_size(px(11.))
+                                    .text_color(p.text_faint)
+                                    .child(listed_count.to_string()),
                             )
                         })
                         // A group folds its Sessions away with the chevron, which is always there.
@@ -5031,8 +5038,8 @@ impl Workspace {
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx)))
                         .into_any_element(),
                     button("confirm-ok", match action {
-                        ConfirmAction::Disconnect(_) | ConfirmAction::DisconnectAll(_) => "Disconnect",
-                        ConfirmAction::Close(_) => "Close",
+                        ConfirmAction::Disconnect(_) => "Disconnect",
+                        ConfirmAction::Close(_) | ConfirmAction::CloseAll(_) => "Close",
                         ConfirmAction::InstallUpdate => "Update and restart",
                         ConfirmAction::RestartForUpdate => "Restart now",
                         _ => "Delete",

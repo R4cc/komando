@@ -77,12 +77,10 @@ pub(super) enum Question {
 /// What ending all of an item's Sessions comes to.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum EndingAll {
-    /// Disconnect these, the live ones.
-    Disconnect(Vec<usize>),
-    /// None is live: close these, all of them.
+    /// Close these, all of them.
     Remove(Vec<usize>),
-    /// Ask first: `printing` of the `live` Sessions are still printing output.
-    Ask { printing: usize, live: usize },
+    /// Ask first: `printing` of the `count` Sessions are still printing output.
+    Ask { printing: usize, count: usize },
 }
 
 /// How far the divider of a split can go: each pane keeps at least this share of the width.
@@ -712,16 +710,15 @@ impl<P> Sessions<P> {
         }
     }
 
-    /// Ending all of an item's Sessions: disconnect the live ones, or close them all once
-    /// none is live. Asks first if any is still printing output, unless `confirmed`.
+    /// Ending all of an item's Sessions: close them all in one go, live or dropped, rather
+    /// than disconnecting the live ones first and leaving them to close again. Asks first if
+    /// any is still printing output, unless `confirmed`.
     pub fn ending_all(&self, item: &ItemKey, confirmed: bool) -> EndingAll {
         let printing = self.of(item).filter(|s| s.is_live() && s.busy).count();
         if printing > 0 && !confirmed {
-            return EndingAll::Ask { printing, live: self.of(item).filter(|s| s.is_live()).count() };
+            return EndingAll::Ask { printing, count: self.of(item).count() };
         }
-        let any_live = self.of(item).any(|s| s.is_live());
-        let ids = self.of(item).filter(|s| s.is_live() == any_live).map(|s| s.id).collect();
-        if any_live { EndingAll::Disconnect(ids) } else { EndingAll::Remove(ids) }
+        EndingAll::Remove(self.of(item).map(|s| s.id).collect())
     }
 }
 
@@ -1330,13 +1327,11 @@ mod tests {
     }
 
     #[test]
-    fn ending_all_of_an_items_sessions_disconnects_the_live_ones_or_closes_the_dropped() {
+    fn ending_all_of_an_items_sessions_closes_live_and_dropped_ones_at_once() {
         let mut sessions = Sessions::default();
         let live = session_in(&mut sessions, ssh("web01"), true, false);
         let dropped = session_in(&mut sessions, ssh("web01"), false, false);
         let item = host("web01");
-        assert_eq!(sessions.ending_all(&item, false), EndingAll::Disconnect(vec![live]));
-        sessions.set_status(live, Status::Disconnected("gone".into()));
         assert_eq!(sessions.ending_all(&item, false), EndingAll::Remove(vec![live, dropped]));
     }
 
@@ -1345,10 +1340,10 @@ mod tests {
         let mut sessions = Sessions::default();
         let printing = session_in(&mut sessions, ssh("web01"), true, true);
         let quiet = session_in(&mut sessions, ssh("web01"), true, false);
-        session_in(&mut sessions, ssh("web01"), false, false);
+        let dropped = session_in(&mut sessions, ssh("web01"), false, false);
         let item = host("web01");
-        assert_eq!(sessions.ending_all(&item, false), EndingAll::Ask { printing: 1, live: 2 });
-        assert_eq!(sessions.ending_all(&item, true), EndingAll::Disconnect(vec![printing, quiet]));
+        assert_eq!(sessions.ending_all(&item, false), EndingAll::Ask { printing: 1, count: 3 });
+        assert_eq!(sessions.ending_all(&item, true), EndingAll::Remove(vec![printing, quiet, dropped]));
     }
 
     #[test]

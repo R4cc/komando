@@ -6,6 +6,15 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- "Close all" in a host's menu closes all of its sessions at once, connected or not, instead of
+  first offering "Disconnect all" and leaving them to be closed afterwards.
+
+### Fixed
+
+- A host with ten or more sessions open shows its session count on one line in the sidebar.
+
 ## [0.8.8] - 2026-11-23
 
 ### Added
