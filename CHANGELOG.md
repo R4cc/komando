@@ -10,6 +10,8 @@ All notable changes to Komando are listed here. The format follows
 
 - Quick connect marks hosts and shells that are already open with a "Switch to tab" badge.
   Picking one takes you to its open session; Ctrl+Enter still opens a new one.
+- When an SSH session reconnects, the terminal keeps two lines where it happened: when it
+  disconnected and why, and when it reconnected.
 
 ### Changed
 

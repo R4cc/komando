@@ -86,11 +86,21 @@ pub(crate) struct ConnectLog {
     lines: Arc<AtomicUsize>,
     /// This attempt's shell opened: its end is told below the shell's output (see `ended`).
     shell_open: Arc<AtomicBool>,
+    /// How the last open shell ended, shared by every attempt in this terminal: the attempt
+    /// that signs in again writes it, with the time it reconnected, where its log was.
+    last_end: Arc<std::sync::Mutex<Option<Ended>>>,
+}
+
+/// How an open shell's connection ended, and when.
+pub(crate) struct Ended {
+    kind: LogKind,
+    reason: String,
+    at: chrono::DateTime<chrono::Local>,
 }
 
 impl ConnectLog {
     pub(crate) fn new(term: SharedTerm, proxy: EventProxy) -> Self {
-        Self { term, lines: proxy.connect_log_lines(), proxy, shell_open: Arc::default() }
+        Self { term, lines: proxy.connect_log_lines(), last_end: proxy.connect_ended(), proxy, shell_open: Arc::default() }
     }
 
     /// The shell opened: from now on the Session is connected.
@@ -107,8 +117,10 @@ impl ConnectLog {
     /// input. A program that was running can't undo what it switched on any more, so the
     /// terminal leaves an editor's alternate screen and drops mouse reporting and the like;
     /// the next shell starts from plain settings. The lines are part of the log, so the next
-    /// attempt erases them once it has signed in.
+    /// attempt erases them once it has signed in, and leaves for good when it disconnected and
+    /// reconnected in their place (see `clear`).
     pub(crate) fn ended(&self, kind: LogKind, reason: &str) {
+        *self.last_end.lock().unwrap() = Some(Ended { kind, reason: reason.to_string(), at: chrono::Local::now() });
         {
             let mut term = self.term.lock();
             let mut parser: Processor = Processor::new();
@@ -132,22 +144,30 @@ impl ConnectLog {
         self.proxy.send_event(Event::Wakeup);
     }
 
-    /// Erase the lines written so far, as far as they are still on screen.
+    /// Signed in: erase the lines written so far, as far as they are still on screen. If an
+    /// open shell's connection ended before, say for good when it dropped and when it came
+    /// back, so the output shows where the reconnect happened.
     pub(crate) fn clear(&self) {
         let lines = self.lines.swap(0, Ordering::Relaxed);
-        if lines == 0 {
-            return;
-        }
         let mut term = self.term.lock();
         let rows = rows_above_cursor(&*term, lines);
-        if rows == 0 {
-            return;
-        }
-        // Back to the first log row, then erase from there to the end of the screen.
         let mut parser: Processor = Processor::new();
-        parser.advance(&mut *term, format!("\r\x1b[{rows}A\x1b[J").as_bytes());
+        if rows > 0 {
+            // Back to the first log row, then erase from there to the end of the screen.
+            parser.advance(&mut *term, format!("\r\x1b[{rows}A\x1b[J").as_bytes());
+        }
+        let ended = self.last_end.lock().unwrap().take();
+        if let Some(Ended { kind, reason, at }) = &ended {
+            // Not counted as log lines, so no later sign-in erases them.
+            let when = at.format("%H:%M:%S");
+            parser.advance(&mut *term, log_line(*kind, &format!("Disconnected at {when}: {reason}")).as_bytes());
+            let now = chrono::Local::now().format("%H:%M:%S");
+            parser.advance(&mut *term, log_line(LogKind::Good, &format!("Reconnected at {now}")).as_bytes());
+        }
         drop(term);
-        self.proxy.send_event(Event::Wakeup);
+        if rows > 0 || ended.is_some() {
+            self.proxy.send_event(Event::Wakeup);
+        }
     }
 }
 
@@ -1563,12 +1583,24 @@ mod tests {
 
         let log = ConnectLog::new(term.clone(), proxy.clone());
         log.ended(LogKind::Step, "Session closed.");
-        // The next attempt's sign-in erases the notice along with its own log.
+        // The next attempt's sign-in erases the notice along with its own log, and records
+        // for good when it dropped and when it came back.
         let next = ConnectLog::new(term.clone(), proxy.clone());
         next.line(LogKind::Good, "Signed in to web01 as ana");
         assert!(scrollback_text(&*term.lock()).contains("SSH · Disconnected: Session closed.\r\n"));
         next.clear();
-        assert_eq!(scrollback_text(&*term.lock()).trim_end(), "ana@web01:~$");
+        let text = scrollback_text(&*term.lock());
+        let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+        assert_eq!(lines[0], "ana@web01:~$");
+        assert!(lines[1].starts_with("SSH · Disconnected at ") && lines[1].ends_with(": Session closed."), "{lines:?}");
+        assert!(lines[2].starts_with("SSH ✓ Reconnected at "), "{lines:?}");
+        assert!(!text.contains("Press Enter"));
+
+        // A later sign-in in the same terminal leaves them be and adds nothing.
+        let again = ConnectLog::new(term.clone(), proxy.clone());
+        again.line(LogKind::Good, "Signed in to web01 as ana");
+        again.clear();
+        assert_eq!(scrollback_text(&*term.lock()), text);
     }
 
     #[test]

@@ -238,6 +238,9 @@ pub struct EventProxy {
     /// Connection log lines on screen and not yet erased (see `ssh::ConnectLog`), over every
     /// attempt in this terminal: signing in erases the lines of earlier attempts that failed too.
     connect_log: Arc<std::sync::atomic::AtomicUsize>,
+    /// How the last open shell in this terminal ended, kept until a later attempt signs in
+    /// and records it with the reconnect (see `ssh::ConnectLog::ended`).
+    connect_ended: Arc<Mutex<Option<ssh::Ended>>>,
     /// The text a Startup Command waits for, watched in the output as it arrives.
     wait: Arc<Mutex<Option<wait_for::WaitFor>>>,
     /// Whether `wait` holds one, so output is only looked at while something waits.
@@ -260,6 +263,7 @@ impl EventProxy {
             responder: Arc::new(Default::default()),
             reports: Arc::new(Mutex::new(Reports::default())),
             connect_log: Arc::default(),
+            connect_ended: Arc::default(),
             wait: Arc::default(),
             waiting: Arc::default(),
             window_active: tokio::sync::watch::channel(false).0,
@@ -300,6 +304,10 @@ impl EventProxy {
 
     pub(crate) fn connect_log_lines(&self) -> Arc<std::sync::atomic::AtomicUsize> {
         self.connect_log.clone()
+    }
+
+    pub(crate) fn connect_ended(&self) -> Arc<Mutex<Option<ssh::Ended>>> {
+        self.connect_ended.clone()
     }
 
     pub fn set_responder(&self, sink: InputSink) {
