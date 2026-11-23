@@ -3907,7 +3907,7 @@ impl Workspace {
     /// Live items are bright with a status dot; idle ones are dimmed; a dropped Session
     /// that still holds its output shows a hollow ring until it is reconnected or discarded.
     /// An item with several Sessions is a group: its row shows how many and folds them away,
-    /// and each Session has its own row with its own close button.
+    /// and each Session gets a card under it, with its own close button.
     fn render_item(&self, item: &SidebarItem, color: Hsla, indent: f32, p: AppPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let key = item.key();
         let ItemState { listed, grouped, expanded, main, beside, linked, status, live, busy, active, .. } = self.item_state(&key);
@@ -3928,9 +3928,9 @@ impl Workspace {
         // Shell identities stay clear while idle; their labels and status carry activity.
         let dim = !(active || live) && is_artwork(&icon) && matches!(item, SidebarItem::Host { .. });
         // The row's end: its state, and for a group how many Sessions and the fold chevron.
-        // Folded out, a group's Sessions show their own state, so the row only keeps its
-        // terminal's (when it is one) and the chevron.
-        let show_status = status.is_some() && (!grouped || main.is_some() || !expanded);
+        // Folded out, the row keeps the group's state (or its terminal's, when it is one): the
+        // Sessions' cards only mark what needs a look.
+        let show_status = status.is_some();
         // The Session the row itself stands for closes from the row: its status dot turns into
         // × on hover, and a middle-click closes it, as Settings → Close from the sidebar says.
         let quick_close = self.settings.quick_close;
@@ -4158,25 +4158,46 @@ impl Workspace {
                 .into_any_element(),
         );
         if expanded {
-            for session in &listed {
-                rows.push(self.render_session_row(item, session, color, indent, p, cx));
-            }
+            rows.push(self.render_session_cards(item, &listed, color, indent, p, cx));
         }
         rows
     }
 
-    /// One Session of an item listed under it: what it is (terminal or remote desktop), its
-    /// title, its state, and a button that disconnects it, or closes it once it has dropped.
-    /// Smaller than the item's row and hung off a guide line, so it never reads as a Host.
-    fn render_session_row(
+    /// An item's listed Sessions as a grid of cards under its row, hung off a guide line so they
+    /// never read as Hosts. Equal-width cards, three to a line (two in a narrow sidebar), wrapping
+    /// onto more lines as Sessions open.
+    fn render_session_cards(
         &self,
         item: &SidebarItem,
-        session: &SessionEntry,
+        listed: &[&SessionEntry],
         color: Hsla,
         indent: f32,
         p: AppPalette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // The guide hangs from the middle of the item's icon.
+        let guide = indent + 7.;
+        let columns = if self.sidebar_compact { 2 } else { 3 };
+        div()
+            .relative()
+            .ml(px(guide + 7.))
+            .mr(px(4.))
+            .pl(px(4.))
+            .py(px(3.))
+            .grid()
+            .grid_cols(columns)
+            .gap(px(5.))
+            .child(div().absolute().left(px(-7.)).top(px(-2.)).bottom(px(-2.)).w(px(1.)).bg(p.border))
+            .children(listed.iter().map(|session| self.render_session_card(item, session, color, p, cx)))
+            .into_any_element()
+    }
+
+    /// One Session of an item, as a card in the grid under its row: what it is (terminal or
+    /// remote desktop) and a short label, its number, its protocol or the name it was given. The
+    /// shown Session's card is raised; the rest lie flat. A corner mark appears only when
+    /// something needs a look (connecting, dropped, output out of sight), and × on hover
+    /// disconnects it, or closes it once it has dropped.
+    fn render_session_card(&self, item: &SidebarItem, session: &SessionEntry, color: Hsla, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let id = session.id();
         let active = Some(id) == self.sessions.active();
         let focused = self.nav_focus_on(&NavTarget::Session(id));
@@ -4184,59 +4205,76 @@ impl Workspace {
         let linked = self.sessions.split().and_then(|s| s.other(id));
         let dragged = self.dragged(item, Some(id), color);
         let live = session.is_live();
-        let desktop = desktop_protocol(session);
+        let busy = self.sessions.busy_out_of_sight(session);
         let own_window = session.own_window();
-        let title: SharedString = match desktop {
-            Some(_) => session.name().cloned().unwrap_or_else(|| "Remote desktop".into()),
-            None => session_title(session),
-        };
+        let (label, title) = session_card_text(session);
         let session_menu = self.session_menu(id, cx);
         // What the Session is: a Host's terminal or desktop by kind, a shell by its own icon.
-        let (icon, icon_size) = match (session.kind(), item) {
-            (SessionKind::Desktop { .. }, _) => ("monitor".to_string(), 13.),
-            (_, SidebarItem::Host { .. }) => ("square-terminal".to_string(), 13.),
-            (_, SidebarItem::Shell { .. }) => (item.icon(), 14.),
+        let icon = match (session.kind(), item) {
+            (SessionKind::Desktop { .. }, _) => "monitor".to_string(),
+            (_, SidebarItem::Host { .. }) => "square-terminal".to_string(),
+            (_, SidebarItem::Shell { .. }) => item.icon(),
         };
         let icon_color = match item {
             SidebarItem::Shell { .. } => item.icon_color(&icon, color, p),
-            SidebarItem::Host { .. } if active || live => color,
+            SidebarItem::Host { .. } if active => color,
             SidebarItem::Host { .. } => p.text_faint,
         };
-        // In a narrow sidebar the close button floats over the row's end on hover instead of
-        // keeping a place of its own, which the title needs more.
-        let compact = self.sidebar_compact;
+        let text_color = if active { p.active_text } else if live { p.text_muted } else { p.text_faint };
         let disconnects = live && self.settings.keep_disconnected_sessions && session.ui.view.desktop().is_none();
         let tip: SharedString = if disconnects { "Disconnect".into() } else { "Close session".into() };
-        let close = close_button(SharedString::from(format!("close-{id}")), 22., p)
+        let close = close_button(SharedString::from(format!("close-{id}")), 18., p)
             .aria_label(tip.clone())
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 cx.stop_propagation();
                 this.end_session(id, EndRequest::Close, window, cx);
             }));
-        // The guide hangs from the middle of the item's icon.
-        let guide = indent + 7.;
+        // Only a state that needs a look gets a mark: a live, quiet Session's is its plain card.
+        let mark: Option<AnyElement> = match session.status() {
+            Status::Connected if busy => Some(spinner(SharedString::from(format!("card-busy-{id}")), 9., p.success)),
+            Status::Connected => None,
+            Status::Connecting => Some(div().size(px(5.)).rounded_full().bg(p.warning).into_any_element()),
+            Status::Disconnected(_) => {
+                Some(div().size(px(6.)).rounded_full().border_1().border_color(p.text_faint).into_any_element())
+            }
+        };
+        let tooltip_text = title.clone();
         div()
             .id(SharedString::from(format!("session-{id}")))
-            .group("session-row")
+            .group("session-card")
             .role(gpui::Role::TreeItem)
             .aria_label(title.clone())
             .aria_level(3)
             .aria_selected(active)
-            .text_size(px(12.5))
             .relative()
+            .min_w_0()
             .h(px(28.))
-            .ml(px(guide + 7.))
-            .pl(px(8.))
-            .pr(px(4.))
+            .px(px(8.))
             .flex()
             .items_center()
-            .gap(px(8.))
+            .justify_center()
+            .gap(px(5.))
+            .text_size(px(11.5))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(text_color)
             .rounded(p.corner(7.))
             .cursor_pointer()
-            .when(active, |el| el.bg(p.active).text_color(p.active_text))
-            .when(!active, |el| el.hover(|s| s.bg(p.hover)))
-            .when(beside, |el| el.bg(p.hover))
+            .map(|el| {
+                if active {
+                    el.bg(p.active).border_1().border_color(p.border).shadow(vec![gpui::BoxShadow {
+                        color: gpui::black().opacity(if p.dark { 0.35 } else { 0.1 }),
+                        offset: gpui::point(px(0.), px(1.)),
+                        blur_radius: px(3.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
+                } else {
+                    el.bg(if beside { p.hover } else { p.hover.opacity(0.45) })
+                        .hover(|s| s.bg(p.hover).text_color(p.hover_text))
+                }
+            })
+            .tooltip(move |window, cx| Tooltip::new(tooltip_text.clone()).build(window, cx))
             .on_drag(dragged, self.drag_preview(cx))
             .when(self.settings.quick_close.on_middle_click(), |el| {
                 el.on_aux_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
@@ -4253,18 +4291,8 @@ impl Workspace {
                     this.reconnect(id, window, cx);
                 }
             }))
-            // The guide line, from the item's icon down past every Session of it.
-            .child(div().absolute().left(px(-7.)).top(px(-2.)).bottom(px(-2.)).w(px(1.)).bg(p.border))
-            .child(div().w(px(14.)).flex_shrink_0().flex().justify_center().child(icon_el(&icon, icon_size, icon_color)))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(if active { p.active_text } else if live { p.text } else { p.text_faint })
-                    .when(!active, |el| el.group_hover("session-row", |s| s.text_color(p.hover_text)))
-                    .child(title.clone()),
-            )
+            .child(icon_el(&icon, 12., icon_color))
+            .child(div().min_w_0().truncate().child(label))
             .children(linked.and_then(|partner| self.split_link(partner, if active { p.active_text.opacity(0.75) } else { p.text_faint })))
             .when(own_window, |el| {
                 el.child(
@@ -4272,40 +4300,24 @@ impl Workspace {
                         .id("session-own-window")
                         .flex_shrink_0()
                         .tooltip(|window, cx| Tooltip::new("In its own window").build(window, cx))
-                        .child(icon_el("app-window", 12., p.text_faint)),
+                        .child(icon_el("app-window", 11., p.text_faint)),
                 )
             })
-            // A terminal's number always shows: titles repeat (two shells in the same folder),
-            // and it is what tells sessions apart once the title is cut short. The icon already
-            // says terminal; a desktop's tag says which protocol.
-            .when(desktop.is_none(), |el| {
-                el.child(div().flex_shrink_0().text_size(px(11.)).text_color(p.text_faint).child(format!("#{}", session.number())))
+            .when_some(mark, |el, mark| {
+                el.child(div().id("session-status").absolute().top(px(3.)).right(px(3.)).group_hover("session-card", |s| s.invisible()).child(mark))
             })
-            .when_some(desktop, |el, protocol| el.child(protocol_tag(protocol.label(), p)))
+            // Over the card's end on hover, on the card's own colour so it covers a long label.
             .child(
                 div()
-                    .flex_shrink_0()
-                    .id("session-status")
-                    .child(status_indicator(Some(session.status()), self.sessions.busy_out_of_sight(session), p)),
+                    .absolute()
+                    .right(px(3.))
+                    .top(px(4.))
+                    .rounded(p.corner(5.))
+                    .bg(if active { p.active } else { p.sidebar })
+                    .invisible()
+                    .group_hover("session-card", |s| s.visible())
+                    .child(div().rounded(p.corner(5.)).bg(if active { p.active } else { p.hover }).child(close)),
             )
-            .map(|el| {
-                if compact {
-                    el.child(
-                        div()
-                            .absolute()
-                            .right(px(2.))
-                            .top(px(2.))
-                            .rounded(p.corner(7.))
-                            .bg(p.sidebar)
-                            .invisible()
-                            .group_hover("session-row", |s| s.visible())
-                            .child(div().rounded(p.corner(7.)).bg(if active { p.active } else { p.hover }).child(close)),
-                    )
-                } else {
-                    // A place of its own at the end, so the row's tag and state stay put.
-                    el.child(div().w(px(22.)).flex_shrink_0().invisible().group_hover("session-row", |s| s.visible()).child(close))
-                }
-            })
             .children(self.row_menu_anchor(NavTarget::Session(id), cx))
             .when(focused, |el| el.child(focus_ring(p.corner(7.), p)))
             .context_menu(session_menu)
@@ -5094,39 +5106,32 @@ fn status_indicator(status: Option<&Status>, busy: bool, p: AppPalette) -> AnyEl
     }
 }
 
-/// The protocol tag on a Remote Desktop's Session row ("RDP", "VNC").
-fn protocol_tag(label: &'static str, p: AppPalette) -> gpui::Div {
-    div()
-        .flex_shrink_0()
-        .px(px(5.))
-        .rounded(p.corner(4.))
-        .border_1()
-        .border_color(p.brand.opacity(0.45))
-        .bg(p.brand_soft)
-        .text_size(px(10.))
-        .line_height(px(14.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(p.brand)
-        .child(label)
-}
-
 /// The keyboard cursor's outline on a sidebar row. Drawn over the row rather than as its
 /// border, so the row's content doesn't move when the cursor arrives.
 fn focus_ring(radius: gpui::Pixels, p: AppPalette) -> gpui::Div {
     div().absolute().top_0().left_0().right_0().bottom_0().rounded(radius).border_2().border_color(p.focus)
 }
 
-/// What a Session's own row in the sidebar says: the name it was given, else the title its
-/// shell set, unless that only repeats the item's name or is the program's path (as Windows
-/// shells set it); otherwise "Session".
-fn session_title(session: &SessionEntry) -> SharedString {
+/// What a Session's card in the sidebar says, and its tooltip. The card: the name it was given,
+/// else a desktop's protocol or a terminal's number. The tooltip: the name, else the title its
+/// shell set unless that only repeats the item's name or is the program's path (as Windows
+/// shells set it), with what the Session is.
+fn session_card_text(session: &SessionEntry) -> (SharedString, SharedString) {
+    let kind = match desktop_protocol(session) {
+        Some(protocol) => format!("Remote desktop ({})", protocol.label()),
+        None => format!("Terminal #{}", session.number()),
+    };
     if let Some(name) = session.name() {
-        return name.clone();
+        return (name.clone(), format!("{name} · {kind}").into());
     }
+    let label: SharedString = match desktop_protocol(session) {
+        Some(protocol) => protocol.label().into(),
+        None => session.number().to_string().into(),
+    };
     let title = session.ui.title.trim();
     let useless = title.is_empty() || title == session.label().as_ref() || title.to_ascii_lowercase().ends_with(".exe");
-    // Its number shows beside it.
-    if useless { "Session".into() } else { title.to_string().into() }
+    let tip = if useless || desktop_protocol(session).is_some() { kind } else { format!("{title} · {kind}") };
+    (label, tip.into())
 }
 
 /// A segmented control: one choice of several.

@@ -27,6 +27,11 @@ All notable changes to Komando are listed here. The format follows
 - Closing a menu returns the keyboard to where it was before the menu opened.
 - When an SSH connection times out, its signal bars dim and a small red ✕ appears beside
   them, so a connection that never answered is easy to tell from one that was closed.
+- A host's open sessions show as compact cards under it in the sidebar instead of a row
+  each. The session you're on is raised, terminals show their number and remote desktops
+  their protocol, and the full title is in the tooltip. A card only shows a status mark
+  when it's connecting, dropped or has new output, and the host keeps one status dot for
+  all of them.
 
 ### Fixed
 
