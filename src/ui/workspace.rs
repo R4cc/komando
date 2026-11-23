@@ -106,6 +106,8 @@ const SIDEBAR_PEEK_OUTSIDE: f32 = 200.;
 /// Leave a usable terminal beside the navigation, including at the minimum window size.
 /// Where a Host's icon sits in the sidebar, from the left of its row.
 const NESTED_INDENT: f32 = 28.;
+/// The widest a Session card in the sidebar grows; past this, a line's cards leave room after them.
+const SESSION_CARD_MAX_WIDTH: f32 = 220.;
 /// How far a Host row's highlight starts inside its Project row's.
 const NESTED_INSET: f32 = 14.;
 
@@ -4164,8 +4166,8 @@ impl Workspace {
     }
 
     /// An item's listed Sessions as cards under its row, hung off a guide line so they never
-    /// read as Hosts. The cards always fill the sidebar's width: as many to a line as fit (see
-    /// `session_card_rows`), the lines balanced and each card stretched to share its line.
+    /// read as Hosts. As many cards to a line as fit (see `session_card_rows`), the lines
+    /// balanced and each card stretched to share its line, up to `SESSION_CARD_MAX_WIDTH`.
     fn render_session_cards(
         &self,
         item: &SidebarItem,
@@ -4180,7 +4182,8 @@ impl Workspace {
         let mut sessions = listed.iter();
         let rows = session_card_rows(listed.len(), self.sidebar_width_px, indent).into_iter().map(|count| {
             div().flex().gap(px(5.)).children(sessions.by_ref().take(count).map(|session| {
-                div().flex_1().flex_basis(px(0.)).min_w_0().child(self.render_session_card(item, session, color, p, cx))
+                // No wider than `SESSION_CARD_MAX_WIDTH`, so a lone card doesn't stretch into a bar.
+                div().flex_1().flex_basis(px(0.)).min_w_0().max_w(px(SESSION_CARD_MAX_WIDTH)).child(self.render_session_card(item, session, color, p, cx))
             }))
         });
         div()

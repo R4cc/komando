@@ -9,7 +9,8 @@ All notable changes to Komando are listed here. The format follows
 ### Changed
 
 - Session cards in the sidebar are wider, so they wrap onto a second line sooner instead of
-  squeezing many narrow cards onto one line.
+  squeezing many narrow cards onto one line. A card no longer stretches across the whole
+  sidebar when there are only one or two.
 
 ## [0.8.7] - 2026-11-23
 
