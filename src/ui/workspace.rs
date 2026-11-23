@@ -5125,7 +5125,7 @@ fn focus_ring(radius: gpui::Pixels, p: AppPalette) -> gpui::Div {
 /// and a narrow one two, never more than six. The lines are balanced (five cards three to a line
 /// go 3 + 2, not 3 + 1 + 1) and each line's cards share its whole width.
 fn session_card_rows(count: usize, sidebar_width: f32, indent: f32) -> Vec<usize> {
-    const MIN: f32 = 60.;
+    const MIN: f32 = 120.;
     const GAP: f32 = 5.;
     if count == 0 {
         return Vec::new();
@@ -5822,21 +5822,21 @@ mod session_card_rows_tests {
 
     #[test]
     fn fits_more_cards_as_the_sidebar_widens() {
-        assert_eq!(session_card_rows(6, 200., NESTED_INDENT), [2, 2, 2]);
-        assert_eq!(session_card_rows(6, 264., NESTED_INDENT), [3, 3]);
-        assert_eq!(session_card_rows(6, 400., NESTED_INDENT), [3, 3]);
-        assert_eq!(session_card_rows(6, 520., NESTED_INDENT), [6]);
+        assert_eq!(session_card_rows(6, 264., NESTED_INDENT), [2, 2, 2]);
+        assert_eq!(session_card_rows(6, 450., NESTED_INDENT), [3, 3]);
+        assert_eq!(session_card_rows(6, 600., NESTED_INDENT), [3, 3]);
+        assert_eq!(session_card_rows(6, 900., NESTED_INDENT), [6]);
         assert_eq!(session_card_rows(3, f32::NAN, NESTED_INDENT), [2, 1]);
     }
 
     #[test]
     fn cards_fill_every_line() {
-        assert!(session_card_rows(0, 264., NESTED_INDENT).is_empty());
-        assert_eq!(session_card_rows(1, 264., NESTED_INDENT), [1]);
-        assert_eq!(session_card_rows(2, 264., NESTED_INDENT), [2]);
-        assert_eq!(session_card_rows(4, 264., NESTED_INDENT), [2, 2]);
-        assert_eq!(session_card_rows(5, 264., NESTED_INDENT), [3, 2]);
-        assert_eq!(session_card_rows(7, 400., NESTED_INDENT), [4, 3]);
+        assert!(session_card_rows(0, 548., NESTED_INDENT).is_empty());
+        assert_eq!(session_card_rows(1, 548., NESTED_INDENT), [1]);
+        assert_eq!(session_card_rows(3, 548., NESTED_INDENT), [3]);
+        assert_eq!(session_card_rows(4, 548., NESTED_INDENT), [2, 2]);
+        assert_eq!(session_card_rows(5, 567., NESTED_INDENT), [3, 2]);
+        assert_eq!(session_card_rows(7, 600., NESTED_INDENT), [4, 3]);
     }
 }
 
