@@ -1546,6 +1546,16 @@ impl Workspace {
             .child(group(
                 p,
                 vec![
+                    // Where the code, issues and releases are (the repository updates come from).
+                    setting_row(
+                        p,
+                        "Source code",
+                        &format!("github.com/{}", crate::update::REPO),
+                        icon_text_button("open-repo", "external-link", "Open on GitHub", ButtonKind::Secondary, p)
+                            .flex_shrink_0()
+                            .on_click(|_: &ClickEvent, _, cx| cx.open_url(&format!("https://github.com/{}", crate::update::REPO)))
+                            .into_any_element(),
+                    ),
                     div()
                         .flex()
                         .items_center()

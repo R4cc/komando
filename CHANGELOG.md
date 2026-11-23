@@ -6,6 +6,10 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Settings → About links to Komando's source code on GitHub.
+
 ### Changed
 
 - "Close all" in a host's menu closes all of its sessions at once, connected or not, instead of
