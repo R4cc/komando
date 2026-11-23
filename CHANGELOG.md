@@ -6,7 +6,17 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Running transfers show their speed and about how long is left, or that they have stalled.
+
 ### Changed
+
+- The Transfers panel works from the keyboard: it takes focus when it opens, Tab reaches its
+  filters and buttons, and Escape closes it and returns to where you were. Screen readers
+  announce each transfer and its progress.
+- Transfer progress bars move smoothly between updates, and a transfer whose size isn't known
+  yet shows a moving bar instead of a fixed one.
 
 - When an SSH connection times out, its signal bars dim and a small red ✕ appears beside
   them, so a connection that never answered is easy to tell from one that was closed.

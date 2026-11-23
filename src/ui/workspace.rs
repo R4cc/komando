@@ -574,7 +574,7 @@ impl Workspace {
         crate::perf::startup("library loaded");
         let highlights = highlight::load(&data_dir);
         crate::perf::startup("highlights loaded");
-        let transfers = cx.new(|_| Transfers::new());
+        let transfers = cx.new(Transfers::new);
         let favorites = cx.new(|_| FavoriteStore::new(data_dir.clone()));
         let transfers_sub = cx.subscribe(&transfers, |_, _, _: &TransfersChanged, cx| cx.notify());
         // The ring on the Transfers entry follows the panel's progress ticks.
@@ -3615,6 +3615,7 @@ impl Workspace {
                     // Always available; the number is what needs a look.
                     .child(
                         footer_row("downloads", "arrow-down-up", "Transfers".into())
+                            .aria_expanded(downloads_open)
                             .when_some(ring_fraction, |el, fraction| {
                                 // Around the 15px icon (8px in, centred in the 32px row):
                                 // the combined progress of everything running.
@@ -3670,8 +3671,8 @@ impl Workspace {
                                         .child(attention.to_string()),
                                 )
                             })
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.transfers.update(cx, |t, cx| t.toggle(cx));
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.transfers.update(cx, |t, cx| t.toggle(window, cx));
                             })),
                     )
                     .child(
@@ -5605,6 +5606,9 @@ impl Render for Workspace {
                 this.last_activity = SystemTime::now();
                 if event.keystroke.key == "escape" && this.unlock_focused(window, cx) {
                     this.skip_unlock(window, cx);
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.transfers.read(cx).takes_escape(window, cx) {
+                    this.transfers.update(cx, |transfers, cx| transfers.close_in(window, cx));
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.overlay.is_some() {
                     this.close_overlay(window, cx);

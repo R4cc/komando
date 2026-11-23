@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Local};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, ClickEvent, Context, EventEmitter, FontWeight, IntoElement, MouseDownEvent, SharedString, WeakEntity, Window, div,
-    prelude::*, px,
+    AnyElement, ClickEvent, Context, EventEmitter, FocusHandle, FontWeight, IntoElement, MouseDownEvent, SharedString, WeakEntity,
+    Window, div, prelude::*, px,
 };
 use gpui_component::tooltip::Tooltip;
 
@@ -18,7 +18,7 @@ use crate::sftp::{self, ErrorKind, OpError, Progress, Remote, format_size};
 use crate::theme::{AppPalette, Appearance};
 use crate::ui::file_browser::FileBrowser;
 use crate::ui::popup::{self, Popup};
-use crate::ui::widgets::icon_el;
+use crate::ui::widgets::{focus_outline, icon_el, progress_bar};
 
 #[derive(Clone, Debug)]
 pub enum Job {
@@ -51,6 +51,81 @@ pub struct Transfer {
     /// Part of the current burst of transfers, whose combined progress the Transfers entry
     /// shows. A burst starts when a transfer starts while none is running.
     in_burst: bool,
+    /// How fast it is going while it runs.
+    rate: Rate,
+}
+
+/// A running transfer's speed, smoothed so the speed and time left shown don't jump about.
+/// Counting starts with the first bytes: time spent queued or listing a folder isn't speed.
+#[derive(Default)]
+struct Rate {
+    /// When the first bytes moved.
+    first: Option<Instant>,
+    /// The latest sample: when, and the bytes done by then.
+    last: Option<(Instant, u64)>,
+    /// When the bytes done last went up.
+    moved: Option<Instant>,
+    /// Bytes per second.
+    smoothed: Option<f64>,
+}
+
+impl Rate {
+    /// How many seconds of samples the smoothed speed mostly reflects.
+    const SMOOTHING: f64 = 3.;
+    /// Bytes have moved for this long before a speed is shown: a first reading is mostly noise.
+    const WARM_UP: Duration = Duration::from_secs(1);
+    /// No bytes for this long, and the transfer is stalled rather than slow.
+    const STALLED: Duration = Duration::from_secs(5);
+
+    fn sample(&mut self, done: u64, now: Instant) {
+        let Some((at, before)) = self.last else {
+            if done > 0 {
+                (self.first, self.last, self.moved) = (Some(now), Some((now, done)), Some(now));
+            }
+            return;
+        };
+        let elapsed = now.saturating_duration_since(at).as_secs_f64();
+        if elapsed < 0.05 {
+            return;
+        }
+        let speed = done.saturating_sub(before) as f64 / elapsed;
+        self.smoothed = Some(match self.smoothed {
+            None => speed,
+            Some(smoothed) => smoothed + (speed - smoothed) * (1. - (-elapsed / Self::SMOOTHING).exp()),
+        });
+        if done > before {
+            self.moved = Some(now);
+        }
+        self.last = Some((now, done));
+    }
+
+    fn stalled(&self, now: Instant) -> bool {
+        self.moved.is_some_and(|moved| now.saturating_duration_since(moved) >= Self::STALLED)
+    }
+
+    /// Bytes per second, once it has been measured for long enough.
+    fn speed(&self, now: Instant) -> Option<f64> {
+        let warm = self.first.is_some_and(|first| now.saturating_duration_since(first) >= Self::WARM_UP);
+        self.smoothed.filter(|speed| warm && *speed >= 1. && !self.stalled(now))
+    }
+}
+
+/// "5 s left", "about 3 min left", "about 1 h 20 min left": rounder the further off it is, so
+/// it doesn't flicker between close values.
+fn time_left(remaining: u64, speed: f64) -> String {
+    let secs = (remaining as f64 / speed).ceil() as u64;
+    match secs {
+        0..=9 => "a few seconds left".into(),
+        10..=59 => format!("{} s left", secs.div_ceil(5) * 5),
+        60..=3599 => format!("about {} min left", secs.div_ceil(60)),
+        _ => {
+            let mins = secs.div_ceil(60);
+            match mins % 60 {
+                0 => format!("about {} h left", mins / 60),
+                m => format!("about {} h {m} min left", mins / 60),
+            }
+        }
+    }
 }
 
 impl Transfer {
@@ -117,6 +192,11 @@ pub struct Transfers {
     /// What the Transfers entry showed at the last repaint from a tick.
     ticked: Activity,
     popup: Popup,
+    /// The panel's own focus: it takes the keyboard when it opens, so Tab reaches its controls
+    /// and Escape closes it.
+    focus: FocusHandle,
+    /// What had the keyboard before the panel opened, given it back when the panel closes.
+    return_focus: Option<FocusHandle>,
 }
 
 impl EventEmitter<TransfersChanged> for Transfers {}
@@ -144,8 +224,19 @@ fn mark_from_internet(path: &std::path::Path) {
 fn mark_from_internet(_path: &std::path::Path) {}
 
 impl Transfers {
-    pub fn new() -> Self {
-        Self { items: vec![], next_id: 1, open: false, closed_at: None, filter: Filter::All, ticking: false, ticked: Activity::Idle, popup: Popup::default() }
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        Self {
+            items: vec![],
+            next_id: 1,
+            open: false,
+            closed_at: None,
+            filter: Filter::All,
+            ticking: false,
+            ticked: Activity::Idle,
+            popup: Popup::default(),
+            focus: cx.focus_handle(),
+            return_focus: None,
+        }
     }
 
     pub fn is_open(&self) -> bool {
@@ -193,14 +284,38 @@ impl Transfers {
         self.items.iter().any(|t| matches!(t.state, State::Active))
     }
 
-    pub fn toggle(&mut self, cx: &mut Context<Self>) {
-        let just_closed = self.closed_at.is_some_and(|at| at.elapsed() < Duration::from_millis(300));
-        self.open = !self.open && !just_closed;
+    pub fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.open {
-            self.mark_seen();
+            self.close_in(window, cx);
+            return;
         }
+        if self.closed_at.is_some_and(|at| at.elapsed() < Duration::from_millis(300)) {
+            return;
+        }
+        self.open = true;
+        self.mark_seen();
+        self.return_focus = window.focused(cx);
+        window.focus(&self.focus, cx);
         cx.emit(TransfersChanged);
         cx.notify();
+    }
+
+    /// Escape is the panel's: it is open, has the keyboard, and no menu of its own is open.
+    pub fn takes_escape(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.open && !self.popup.is_open() && self.focus.contains_focused(window, cx)
+    }
+
+    /// Close the panel and give the keyboard back to what had it before, unless something
+    /// else took it meanwhile (a click outside the panel lands where it was aimed).
+    pub fn close_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close(cx);
+        cx.defer_in(window, |this, window, cx| {
+            if this.focus.contains_focused(window, cx)
+                && let Some(handle) = this.return_focus.take()
+            {
+                window.focus(&handle, cx);
+            }
+        });
     }
 
     pub fn close(&mut self, cx: &mut Context<Self>) {
@@ -235,7 +350,19 @@ impl Transfers {
         // Newest first.
         self.items.insert(
             0,
-            Transfer { id, job, name, host, is_dir, source, progress: Arc::default(), state: State::Active, seen: false, in_burst: false },
+            Transfer {
+                id,
+                job,
+                name,
+                host,
+                is_dir,
+                source,
+                progress: Arc::default(),
+                state: State::Active,
+                seen: false,
+                in_burst: false,
+                rate: Rate::default(),
+            },
         );
         self.run(id, remote, cx);
     }
@@ -251,6 +378,7 @@ impl Transfers {
         t.in_burst = true;
         let progress = Arc::new(Progress::default());
         t.progress = progress.clone();
+        t.rate = Rate::default();
         t.state = State::Active;
         t.seen = false;
         let job = t.job.clone();
@@ -320,6 +448,10 @@ impl Transfers {
                 cx.background_executor().timer(Duration::from_millis(250)).await;
                 let active = this
                     .update(cx, |this, cx| {
+                        let now = Instant::now();
+                        for t in this.items.iter_mut().filter(|t| matches!(t.state, State::Active)) {
+                            t.rate.sample(t.progress.done.load(Ordering::Relaxed), now);
+                        }
                         // Each repaint redraws the whole window, so only repaint when something
                         // shown moved: the open panel's byte counts, or the ring by a percent.
                         let activity = this.activity();
@@ -366,24 +498,24 @@ impl Transfers {
         }
     }
 
-    pub fn remove(&mut self, id: usize, cx: &mut Context<Self>) {
+    pub fn remove(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.items.retain(|t| t.id != id || matches!(t.state, State::Active));
         if self.items.is_empty() {
-            self.open = false;
+            self.close_in(window, cx);
         }
         cx.emit(TransfersChanged);
         cx.notify();
     }
 
     /// Forget finished transfers. Downloaded files stay where they are.
-    pub fn clear_finished(&mut self, cx: &mut Context<Self>) {
+    pub fn clear_finished(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.items.retain(|t| match self.filter {
             Filter::All => matches!(t.state, State::Active),
             Filter::Successful => !matches!(t.state, State::Done { .. }),
             Filter::Failed => !matches!(t.state, State::Failed { .. }),
         });
         if self.items.is_empty() {
-            self.open = false;
+            self.close_in(window, cx);
         }
         cx.emit(TransfersChanged);
         cx.notify();
@@ -407,7 +539,7 @@ impl Transfers {
         let _ = cx;
     }
 
-    fn show_on_server(&mut self, id: usize, cx: &mut Context<Self>) {
+    fn show_on_server(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(t) = self.items.iter().find(|t| t.id == id) else { return };
         let path = match &t.state {
             State::Done { remote: Some(remote), .. } => remote.clone(),
@@ -416,13 +548,7 @@ impl Transfers {
         if let Some(browser) = t.source.upgrade() {
             browser.update(cx, |b, cx| b.reveal(&path, cx));
         }
-        self.close(cx);
-    }
-}
-
-impl Default for Transfers {
-    fn default() -> Self {
-        Self::new()
+        self.close_in(window, cx);
     }
 }
 
@@ -437,9 +563,15 @@ fn ago(at: DateTime<Local>) -> String {
     }
 }
 
+/// A compact icon button for the panel's rows and header: `icon_button`'s keyboard focus and
+/// label at the rows' smaller size.
 fn row_button(id: impl Into<gpui::ElementId>, icon: &str, tip: &'static str, p: AppPalette) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(tip)
+        .tab_index(0)
+        .focus_visible(move |s| focus_outline(s, p.focus))
         .size(px(24.))
         .flex()
         .flex_shrink_0()
@@ -469,12 +601,22 @@ impl Transfers {
             _ => None,
         };
         let waiting = done == 0 && t.progress.waiting.load(Ordering::Relaxed) > 0;
+        let now = Instant::now();
+        // While it runs: how fast, and how long until it's done once the size is known.
+        let pace = match (t.rate.speed(now), t.rate.stalled(now)) {
+            (_, true) => " · stalled".to_string(),
+            (Some(speed), _) if total > done => {
+                format!(" · {}/s · {}", format_size(speed.round() as u64), time_left(total - done, speed))
+            }
+            (Some(speed), _) => format!(" · {}/s", format_size(speed.round() as u64)),
+            (None, _) => String::new(),
+        };
         let detail: SharedString = match &t.state {
             State::Active if waiting => format!("Waiting for other transfers · {}", t.host).into(),
             State::Active if total > 0 => {
-                format!("{} of {} · {}", format_size(done), format_size(total), t.host).into()
+                format!("{} of {}{pace} · {}", format_size(done), format_size(total), t.host).into()
             }
-            State::Active => format!("{} · {}", format_size(done), t.host).into(),
+            State::Active => format!("{}{pace} · {}", format_size(done), t.host).into(),
             State::Done { at, .. } if local_exists == Some(false) => {
                 format!("Moved or deleted · {verb} {}", ago(*at)).into()
             }
@@ -512,7 +654,7 @@ impl Transfers {
             }
             State::Done { remote: Some(_), .. } => {
                 actions = actions.child(row_button(("show", id), "folder-open", "Show on server", p).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _, cx| this.show_on_server(id, cx),
+                    move |this, _: &ClickEvent, window, cx| this.show_on_server(id, window, cx),
                 )));
             }
             State::Failed { .. } => {
@@ -521,7 +663,7 @@ impl Transfers {
                         move |this, _: &ClickEvent, _, cx| this.retry(id, cx),
                     )))
                     .child(row_button(("remove", id), "trash", "Remove from list", p).on_click(cx.listener(
-                        move |this, _: &ClickEvent, _, cx| this.remove(id, cx),
+                        move |this, _: &ClickEvent, window, cx| this.remove(id, window, cx),
                     )));
             }
             _ => {}
@@ -559,8 +701,8 @@ impl Transfers {
                         }));
                     }
                     if !active {
-                        menu = menu.separator().item(popup::item("Remove from list", None, &view, move |this, _, cx| {
-                            this.remove(id, cx)
+                        menu = menu.separator().item(popup::item("Remove from list", None, &view, move |this, window, cx| {
+                            this.remove(id, window, cx)
                         }));
                     }
                     menu
@@ -569,9 +711,14 @@ impl Transfers {
             },
         )));
 
-        let fraction = if total > 0 { (done as f32 / total as f32).clamp(0., 1.) } else { 0. };
+        let fraction = (total > 0).then(|| (done as f32 / total as f32).clamp(0., 1.));
+        // Read out as one item: its name and how it is doing; its buttons follow.
+        let label = format!("{}, {detail}", t.name);
+        let reduce_motion = cx.reduce_motion();
         div()
             .id(("transfer", id))
+            .role(gpui::Role::ListItem)
+            .aria_label(label)
             .flex_shrink_0()
             .px(px(8.))
             .py(px(10.))
@@ -608,10 +755,18 @@ impl Transfers {
                             .child(detail),
                     )
                     .when(active, |el| {
+                        // Queued behind other transfers, nothing moves: the bar sits empty.
+                        let shown = if waiting { Some(0.) } else { fraction };
                         el.child(
-                            div().mt(px(3.)).h(px(3.)).w_full().rounded_full().bg(p.hover).child(
-                                div().h_full().rounded_full().bg(p.brand).w(gpui::relative(if total > 0 { fraction } else { 0.15 })),
-                            ),
+                            div()
+                                .id(("transfer-progress", id))
+                                .role(gpui::Role::ProgressIndicator)
+                                .aria_label(if t.is_upload() { "Upload progress" } else { "Download progress" })
+                                .aria_min_numeric_value(0.)
+                                .aria_max_numeric_value(100.)
+                                .when_some(shown, |el, f| el.aria_numeric_value((f64::from(f) * 100.).round()))
+                                .mt(px(3.))
+                                .child(progress_bar(("transfer-bar", id), shown, 3., p.hover, p.brand, reduce_motion)),
                         )
                     }),
             )
@@ -631,6 +786,11 @@ impl Render for Transfers {
             let selected = self.filter == filter;
             div()
                 .id(id)
+                .role(gpui::Role::RadioButton)
+                .aria_label(format!("{label}, {count}"))
+                .aria_toggled(if selected { gpui::Toggled::True } else { gpui::Toggled::False })
+                .tab_index(0)
+                .focus_visible(move |s| focus_outline(s, p.focus))
                 .h(px(24.))
                 .px(px(9.))
                 .flex()
@@ -677,6 +837,9 @@ impl Render for Transfers {
         });
         div()
             .id("transfers-panel")
+            .track_focus(&self.focus)
+            .role(gpui::Role::Dialog)
+            .aria_label("Transfers")
             .occlude()
             .w_full()
             .flex()
@@ -685,9 +848,9 @@ impl Render for Transfers {
             .bg(p.surface.opacity(1.))
             .border_1()
             .border_color(p.border)
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
                 if !this.popup.is_open() {
-                    this.close(cx);
+                    this.close_in(window, cx);
                 }
             }))
             .child(
@@ -703,11 +866,14 @@ impl Render for Transfers {
                     .child(div().flex_1().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Transfers"))
                     .child(
                         row_button("transfers-close", "x", "Close", p)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx))),
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_in(window, cx))),
                     ),
             )
             .child(
                 div()
+                    .id("transfers-filter")
+                    .role(gpui::Role::RadioGroup)
+                    .aria_label("Show")
                     .px(px(12.))
                     .pb(px(8.))
                     .flex()
@@ -720,6 +886,8 @@ impl Render for Transfers {
             .child(
                 div()
                     .id("transfers-list")
+                    .role(gpui::Role::List)
+                    .aria_label("Transfers")
                     .max_h(px(list_height))
                     .overflow_y_scroll()
                     .p(px(4.))
@@ -738,15 +906,21 @@ impl Render for Transfers {
                     Filter::Failed => "Clear failed",
                 };
                 el.child(div().h(px(1.)).bg(p.border)).child(
-                    div().px(px(12.)).py(px(7.)).flex().items_center().child(
+                    div().px(px(8.)).py(px(7.)).flex().items_center().child(
                         div()
                             .id("transfers-clear")
+                            .role(gpui::Role::Button)
+                            .aria_label(label)
+                            .tab_index(0)
+                            .focus_visible(move |s| focus_outline(s, p.focus))
+                            .px(px(4.))
+                            .rounded(p.corner(5.))
                             .text_size(px(11.5))
                             .text_color(p.text_faint)
                             .cursor_pointer()
                             .hover(|s| s.text_color(p.text))
                             .tooltip(|window, cx| Tooltip::new("Removes them from this list. Downloaded files are kept.").build(window, cx))
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.clear_finished(cx)))
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.clear_finished(window, cx)))
                             .child(label),
                     ),
                 )
@@ -773,6 +947,56 @@ mod tests {
         let text = std::fs::read_to_string(&stream).expect("zone stream is readable");
         assert!(text.contains("[ZoneTransfer]") && text.contains("ZoneId=3"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn speed_shows_once_bytes_have_moved_for_a_second_and_smooths_out_bursts() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut rate = Rate::default();
+        // Queued or listing: no bytes, no speed, and not stalled either.
+        rate.sample(0, at(0));
+        rate.sample(0, at(3000));
+        assert_eq!(rate.speed(at(3000)), None);
+        assert!(!rate.stalled(at(3000)));
+        // 1 MB every 250 ms is 4 MB/s, shown only after a second of it.
+        let mb = 1_000_000;
+        for i in 0..=3 {
+            rate.sample(mb * (i + 1), at(3000 + 250 * i));
+        }
+        assert_eq!(rate.speed(at(3750)), None);
+        rate.sample(5 * mb, at(4000));
+        let steady = rate.speed(at(4000)).unwrap();
+        assert!((steady - 4e6).abs() < 1., "{steady}");
+        // One burst of ten times as much moves it only part of the way there.
+        rate.sample(15 * mb, at(4250));
+        let after = rate.speed(at(4250)).unwrap();
+        assert!(after > steady && after < 1e7, "{after}");
+    }
+
+    #[test]
+    fn a_transfer_with_no_bytes_for_five_seconds_is_stalled() {
+        let start = Instant::now();
+        let mut rate = Rate::default();
+        rate.sample(100, start);
+        rate.sample(200, start + Duration::from_secs(1));
+        assert!(!rate.stalled(start + Duration::from_secs(5)));
+        rate.sample(200, start + Duration::from_secs(6));
+        assert!(rate.stalled(start + Duration::from_secs(6)));
+        assert_eq!(rate.speed(start + Duration::from_secs(6)), None);
+        // Bytes again: going once more.
+        rate.sample(300, start + Duration::from_secs(7));
+        assert!(!rate.stalled(start + Duration::from_secs(7)));
+    }
+
+    #[test]
+    fn time_left_gets_rounder_the_further_off_it_is() {
+        assert_eq!(time_left(5, 1.), "a few seconds left");
+        assert_eq!(time_left(11, 1.), "15 s left");
+        assert_eq!(time_left(60, 1.), "about 1 min left");
+        assert_eq!(time_left(61, 1.), "about 2 min left");
+        assert_eq!(time_left(3600, 1.), "about 1 h left");
+        assert_eq!(time_left(4800, 1.), "about 1 h 20 min left");
     }
 
     #[test]

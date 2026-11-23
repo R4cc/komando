@@ -526,7 +526,7 @@ pub fn progress_ring(id: impl Into<ElementId>, fraction: Option<f32>, size: f32,
             .size(px(size))
             .child(
                 gpui::canvas(
-                    move |_, window, cx| RingFill::shown(id, fraction.clamp(0., 1.), window, cx),
+                    move |_, window, cx| GlidingFill::shown(id, fraction.clamp(0., 1.), window, cx),
                     move |bounds, shown, window, _| paint(bounds, 0., shown, window),
                 )
                 .size(px(size)),
@@ -541,13 +541,54 @@ pub fn progress_ring(id: impl Into<ElementId>, fraction: Option<f32>, size: f32,
     }
 }
 
-/// How full a determinate `progress_ring` is drawn, kept from frame to frame.
-struct RingFill {
+/// A thin progress bar: a faint track, and over it a fill from the left to `fraction` (0 to 1)
+/// that glides to new progress like `progress_ring`'s arc. `None`: the amount isn't known, so
+/// a short segment sweeps along the track instead, or rests at its start with reduced motion.
+pub fn progress_bar(id: impl Into<ElementId>, fraction: Option<f32>, height: f32, track: Hsla, color: Hsla, reduce_motion: bool) -> AnyElement {
+    /// How much of the track the sweeping segment covers.
+    const SEGMENT: f32 = 0.3;
+    let radius = px(height / 2.);
+    let paint = move |bounds: gpui::Bounds<gpui::Pixels>, from: f32, to: f32, window: &mut gpui::Window| {
+        window.paint_quad(gpui::fill(bounds, track).corner_radii(radius));
+        let width = f32::from(bounds.size.width);
+        let (start, end) = (from.clamp(0., 1.) * width, to.clamp(0., 1.) * width);
+        if end - start >= 0.5 {
+            let filled = gpui::Bounds::new(point(bounds.origin.x + px(start), bounds.origin.y), gpui::size(px(end - start), bounds.size.height));
+            window.paint_quad(gpui::fill(filled, color).corner_radii(radius));
+        }
+    };
+    let id = id.into();
+    let bar = div().w_full().h(px(height));
+    match fraction {
+        Some(fraction) => bar
+            .child(
+                gpui::canvas(
+                    move |_, window, cx| GlidingFill::shown(id, fraction.clamp(0., 1.), window, cx),
+                    move |bounds, shown, window, _| paint(bounds, 0., shown, window),
+                )
+                .size_full(),
+            )
+            .into_any_element(),
+        None if reduce_motion => {
+            bar.child(gpui::canvas(|_, _, _| {}, move |bounds, _, window, _| paint(bounds, 0., SEGMENT, window)).size_full()).into_any_element()
+        }
+        None => bar
+            .with_animation(id, Animation::new(Duration::from_millis(1400)).repeat(), move |el, delta| {
+                // In from beyond the left edge and out past the right one, so it never jumps.
+                let start = -SEGMENT + (1. + SEGMENT) * gpui::ease_in_out(delta);
+                el.child(gpui::canvas(|_, _, _| {}, move |bounds, _, window, _| paint(bounds, start, start + SEGMENT, window)).size_full())
+            })
+            .into_any_element(),
+    }
+}
+
+/// How full a determinate `progress_ring` or `progress_bar` is drawn, kept from frame to frame.
+struct GlidingFill {
     shown: f32,
     at: std::time::Instant,
 }
 
-impl RingFill {
+impl GlidingFill {
     /// How long the fill takes to cover about two thirds of the way to new progress. Close to
     /// how often progress is redrawn, so a steady download fills at a steady pace.
     const LAG: f32 = 0.18;
@@ -555,7 +596,7 @@ impl RingFill {
     /// The fraction to draw this frame for a ring showing `target`, asking for the next frame
     /// while it is still on its way there.
     fn shown(id: ElementId, target: f32, window: &mut gpui::Window, cx: &mut gpui::App) -> f32 {
-        let state = window.use_keyed_state(id, cx, |_, _| RingFill { shown: 0., at: std::time::Instant::now() });
+        let state = window.use_keyed_state(id, cx, |_, _| GlidingFill { shown: 0., at: std::time::Instant::now() });
         let now = std::time::Instant::now();
         let shown = state.update(cx, |fill, _| {
             let elapsed = now.duration_since(fill.at).as_secs_f32();
