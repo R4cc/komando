@@ -63,6 +63,16 @@ pub enum Status {
     Disconnected(String),
 }
 
+/// How a [`Status::Disconnected`] reason begins when reaching a Host took too long.
+pub const TIMED_OUT: &str = "Timed out connecting to ";
+
+impl Status {
+    /// The connection ended because a Host didn't answer in time.
+    pub fn timed_out(&self) -> bool {
+        matches!(self, Status::Disconnected(reason) if reason.starts_with(TIMED_OUT))
+    }
+}
+
 /// Where one hop of a connection is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HopStep {
@@ -645,6 +655,15 @@ pub fn tidy_export(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_connection_that_ran_out_of_time_counts_as_timed_out() {
+        use super::{Status, TIMED_OUT};
+        assert!(Status::Disconnected(format!("{TIMED_OUT}example.com:22.")).timed_out());
+        assert!(!Status::Disconnected("Connection refused (os error 111)".into()).timed_out());
+        assert!(!Status::Disconnected(String::new()).timed_out());
+        assert!(!Status::Connecting.timed_out());
+    }
+
     #[test]
     fn cursor_defaults_blink_as_a_line_and_respect_program_requests() {
         use alacritty_terminal::vte::ansi::{CursorShape, Processor};

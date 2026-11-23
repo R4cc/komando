@@ -656,7 +656,7 @@ async fn run(
             clock: clock.clone(),
             remote_forwards: if index + 1 == target.hops.len() { remote_forwards.clone() } else { Default::default() },
         };
-        let timed_out = || anyhow!("Timed out connecting to {}:{}.", hop.address, hop.port);
+        let timed_out = || anyhow!("{}{}:{}.", super::TIMED_OUT, hop.address, hop.port);
         let is_jump = index + 1 < target.hops.len();
         let mut handle = match handles.last() {
             None => clock

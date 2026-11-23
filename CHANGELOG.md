@@ -6,6 +6,11 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- When an SSH connection times out, its signal bars dim and a small red ✕ appears beside
+  them, so a connection that never answered is easy to tell from one that was closed.
+
 ## [0.8.5] - 2026-11-18
 
 ### Changed

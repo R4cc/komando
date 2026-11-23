@@ -696,6 +696,13 @@ pub fn status_dot(color: Hsla) -> impl IntoElement {
     div().size(px(7.)).rounded_full().flex_shrink_0().bg(color)
 }
 
+/// A small ✕ drawn for the corner of the connection bars: thicker strokes than the 24px
+/// `x` icon, which turns into a hairline at this size.
+const TIMED_OUT_MARK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" fill="none" stroke="black" stroke-width="2.6" stroke-linecap="round"/></svg>"#;
+
+/// How long the ✕ of a timed-out connection takes to settle in.
+const TIMED_OUT_ENTER: Duration = Duration::from_millis(260);
+
 /// One pass of the searching bars, including the rest before the next.
 const SEARCH_CYCLE: Duration = Duration::from_millis(1600);
 
@@ -750,8 +757,10 @@ pub fn connection_indicator(
     };
     // The final hop's round trip includes the whole route through any Jump Hosts.
     let target = hops.iter().max_by_key(|hop| hop.hop).and_then(|hop| hop.round_trip);
+    let timed_out = status.timed_out();
     let tip: SharedString = match (status, weakest.map(|hop| hop.state)) {
         (Status::Connecting, _) => "Connecting…".into(),
+        _ if timed_out => "Connection timed out".into(),
         (Status::Disconnected(_), _) => "Disconnected".into(),
         _ if searching => "Measuring latency…".into(),
         (_, Some(ReplyState::Unresponsive)) => "No reply for over 5 s".into(),
@@ -763,6 +772,7 @@ pub fn connection_indicator(
         },
     };
     let label = match (status, weakest) {
+        _ if timed_out => "SSH connection: timed out".to_string(),
         (Status::Disconnected(_), _) => "SSH connection: disconnected".to_string(),
         _ if searching => "SSH connection: measuring latency".to_string(),
         (_, Some(hop)) => format!("SSH connection: {bars} of 4 bars · {}", hop.description(Instant::now())),
@@ -782,6 +792,34 @@ pub fn connection_indicator(
             .into_any_element()
     } else if searching {
         meter.children((0..4).map(|index| bar(index).bg(p.text_muted.opacity(0.35)))).into_any_element()
+    } else if timed_out {
+        // Like a phone without service: the bars go quiet and a ✕ sits in the empty corner
+        // above the short ones, settling in from slightly smaller.
+        let mark = svg()
+            .data(TIMED_OUT_MARK)
+            .absolute()
+            .left(px(-1.))
+            .top(px(-1.))
+            .size(px(7.))
+            .text_color(p.danger);
+        let mark = if reduce_motion {
+            mark.into_any_element()
+        } else {
+            mark.with_animation(
+                "connection-timed-out",
+                Animation::new(TIMED_OUT_ENTER).with_easing(gpui::ease_out_quint()),
+                |mark, t| {
+                    let scale = 0.55 + 0.45 * t;
+                    mark.opacity(t).with_transformation(Transformation::scale(gpui::size(scale, scale)))
+                },
+            )
+            .into_any_element()
+        };
+        meter
+            .relative()
+            .children((0..4).map(|index| bar(index).bg(p.text_faint.opacity(0.28))))
+            .child(mark)
+            .into_any_element()
     } else {
         meter
             .children((0..4).map(|index| bar(index).bg(if index < bars as usize { color } else { color.opacity(0.25) })))
@@ -840,6 +878,12 @@ mod tests {
             assert!(levels.windows(2).all(|pair| pair[0] >= pair[1]), "{delta}: {levels:?}");
             assert!(levels[0] == 1. && levels[3] < 1.);
         }
+    }
+
+    #[test]
+    fn the_timed_out_mark_decodes_in_the_actual_svg_renderer() {
+        let renderer = gpui::SvgRenderer::new(std::sync::Arc::new(gpui_kit_assets::AllAssets));
+        renderer.render_single_frame(TIMED_OUT_MARK, 1.).unwrap();
     }
 
     #[test]
