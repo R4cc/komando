@@ -200,6 +200,8 @@ fn main() {
     let local_shell = komando::model::default_shells().remove(0).name;
     let mut open = vec![
         ("Atlas Production".into(), "web01".into()),
+        // A second terminal on web01, so the sidebar shows its Sessions as cards.
+        ("Atlas Production".into(), "web01".into()),
         ("Atlas Production".into(), "db01".into()),
         ("Atlas Staging".into(), "web-stg01".into()),
         (String::new(), local_shell),
