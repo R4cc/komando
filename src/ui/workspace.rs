@@ -4164,8 +4164,8 @@ impl Workspace {
     }
 
     /// An item's listed Sessions as a grid of cards under its row, hung off a guide line so they
-    /// never read as Hosts. Equal-width cards, three to a line (two in a narrow sidebar), wrapping
-    /// onto more lines as Sessions open.
+    /// never read as Hosts. Equal-width cards, as many to a line as the sidebar's width fits
+    /// (see `session_card_columns`), wrapping onto more lines as Sessions open.
     fn render_session_cards(
         &self,
         item: &SidebarItem,
@@ -4177,7 +4177,7 @@ impl Workspace {
     ) -> AnyElement {
         // The guide hangs from the middle of the item's icon.
         let guide = indent + 7.;
-        let columns = if self.sidebar_compact { 2 } else { 3 };
+        let columns = session_card_columns(self.sidebar_width_px, indent);
         div()
             .relative()
             .ml(px(guide + 7.))
@@ -4218,12 +4218,12 @@ impl Workspace {
         let icon_color = match item {
             SidebarItem::Shell { .. } => item.icon_color(&icon, color, p),
             SidebarItem::Host { .. } if active => color,
-            SidebarItem::Host { .. } => p.text_faint,
+            SidebarItem::Host { .. } => p.text_muted,
         };
         let text_color = if active { p.active_text } else if live { p.text_muted } else { p.text_faint };
         let disconnects = live && self.settings.keep_disconnected_sessions && session.ui.view.desktop().is_none();
         let tip: SharedString = if disconnects { "Disconnect".into() } else { "Close session".into() };
-        let close = close_button(SharedString::from(format!("close-{id}")), 18., p)
+        let close = close_button(SharedString::from(format!("close-{id}")), 20., p)
             .aria_label(tip.clone())
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
@@ -4232,7 +4232,7 @@ impl Workspace {
             }));
         // Only a state that needs a look gets a mark: a live, quiet Session's is its plain card.
         let mark: Option<AnyElement> = match session.status() {
-            Status::Connected if busy => Some(spinner(SharedString::from(format!("card-busy-{id}")), 9., p.success)),
+            Status::Connected if busy => Some(spinner(SharedString::from(format!("card-busy-{id}")), 10., p.success)),
             Status::Connected => None,
             Status::Connecting => Some(div().size(px(5.)).rounded_full().bg(p.warning).into_any_element()),
             Status::Disconnected(_) => {
@@ -4249,29 +4249,27 @@ impl Workspace {
             .aria_selected(active)
             .relative()
             .min_w_0()
-            .h(px(28.))
+            .h(px(40.))
             .px(px(8.))
             .flex()
             .items_center()
             .justify_center()
-            .gap(px(5.))
-            .text_size(px(11.5))
+            .gap(px(6.))
+            .text_size(px(12.5))
             .font_weight(FontWeight::MEDIUM)
             .text_color(text_color)
-            .rounded(p.corner(7.))
+            .rounded(p.corner(10.))
             .cursor_pointer()
+            // Like a pinned tab: a filled tile with a hairline edge, and the shown one ringed in
+            // the item's colour.
             .map(|el| {
                 if active {
-                    el.bg(p.active).border_1().border_color(p.border).shadow(vec![gpui::BoxShadow {
-                        color: gpui::black().opacity(if p.dark { 0.35 } else { 0.1 }),
-                        offset: gpui::point(px(0.), px(1.)),
-                        blur_radius: px(3.),
-                        spread_radius: px(0.),
-                        inset: false,
-                    }])
+                    el.bg(p.active).border_2().border_color(color)
                 } else {
-                    el.bg(if beside { p.hover } else { p.hover.opacity(0.45) })
-                        .hover(|s| s.bg(p.hover).text_color(p.hover_text))
+                    el.bg(p.hover)
+                        .border_1()
+                        .border_color(if beside { color.opacity(0.5) } else { p.border })
+                        .hover(|s| s.border_color(p.text_faint).text_color(p.hover_text))
                 }
             })
             .tooltip(move |window, cx| Tooltip::new(tooltip_text.clone()).build(window, cx))
@@ -4291,7 +4289,7 @@ impl Workspace {
                     this.reconnect(id, window, cx);
                 }
             }))
-            .child(icon_el(&icon, 12., icon_color))
+            .child(icon_el(&icon, 16., icon_color))
             .child(div().min_w_0().truncate().child(label))
             .children(linked.and_then(|partner| self.split_link(partner, if active { p.active_text.opacity(0.75) } else { p.text_faint })))
             .when(own_window, |el| {
@@ -4300,26 +4298,27 @@ impl Workspace {
                         .id("session-own-window")
                         .flex_shrink_0()
                         .tooltip(|window, cx| Tooltip::new("In its own window").build(window, cx))
-                        .child(icon_el("app-window", 11., p.text_faint)),
+                        .child(icon_el("app-window", 13., p.text_faint)),
                 )
             })
             .when_some(mark, |el, mark| {
-                el.child(div().id("session-status").absolute().top(px(3.)).right(px(3.)).group_hover("session-card", |s| s.invisible()).child(mark))
+                el.child(div().id("session-status").absolute().top(px(5.)).right(px(5.)).group_hover("session-card", |s| s.invisible()).child(mark))
             })
             // Over the card's end on hover, on the card's own colour so it covers a long label.
             .child(
                 div()
                     .absolute()
-                    .right(px(3.))
-                    .top(px(4.))
-                    .rounded(p.corner(5.))
+                    .right(px(5.))
+                    .top(px(10.))
+                    .rounded(p.corner(6.))
                     .bg(if active { p.active } else { p.sidebar })
                     .invisible()
                     .group_hover("session-card", |s| s.visible())
-                    .child(div().rounded(p.corner(5.)).bg(if active { p.active } else { p.hover }).child(close)),
+                    
+                    .child(div().rounded(p.corner(6.)).bg(if active { p.active } else { p.hover }).child(close)),
             )
             .children(self.row_menu_anchor(NavTarget::Session(id), cx))
-            .when(focused, |el| el.child(focus_ring(p.corner(7.), p)))
+            .when(focused, |el| el.child(focus_ring(p.corner(10.), p)))
             .context_menu(session_menu)
             .into_any_element()
     }
@@ -5116,6 +5115,17 @@ fn focus_ring(radius: gpui::Pixels, p: AppPalette) -> gpui::Div {
 /// else a desktop's protocol or a terminal's number. The tooltip: the name, else the title its
 /// shell set unless that only repeats the item's name or is the program's path (as Windows
 /// shells set it), with what the Session is.
+/// How many Session cards fit on a line of the sidebar at its width, under an item indented by
+/// `indent`: a card stays at least `MIN` wide, so a wide sidebar fits more of them and a narrow
+/// one two. Never more than six, so a few Sessions don't stretch into a thin strip.
+fn session_card_columns(sidebar_width: f32, indent: f32) -> u16 {
+    const MIN: f32 = 60.;
+    const GAP: f32 = 5.;
+    // The list's own padding, the guide line's inset and the grid's margins.
+    let room = sidebar_width - (16. + indent + 14. + 8.);
+    (((room + GAP) / (MIN + GAP)).floor() as u16).clamp(2, 6)
+}
+
 fn session_card_text(session: &SessionEntry) -> (SharedString, SharedString) {
     let kind = match desktop_protocol(session) {
         Some(protocol) => format!("Remote desktop ({})", protocol.label()),
@@ -5791,6 +5801,20 @@ impl Render for Workspace {
             .children(toast)
             .children(frame)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod session_card_columns_tests {
+    use super::{NESTED_INDENT, session_card_columns};
+
+    #[test]
+    fn fits_more_cards_as_the_sidebar_widens() {
+        assert_eq!(session_card_columns(200., NESTED_INDENT), 2);
+        assert_eq!(session_card_columns(264., NESTED_INDENT), 3);
+        assert_eq!(session_card_columns(400., NESTED_INDENT), 5);
+        assert_eq!(session_card_columns(520., NESTED_INDENT), 6);
+        assert_eq!(session_card_columns(f32::NAN, NESTED_INDENT), 2);
     }
 }
 
