@@ -292,8 +292,45 @@ impl DesktopView {
                             .min_w(px(520.)),
                     )
                 } else {
-                    // A small handle says where it is.
-                    el.child(div().mt(px(3.)).w(px(56.)).h(px(4.)).rounded_full().bg(p.text_faint.opacity(0.5)))
+                    // A tab hanging from the top edge says where it is, standing out on any
+                    // desktop; pointing at it brings the toolbar out too.
+                    let corner = p.corner(10.);
+                    el.child(
+                        div()
+                            .id("rd-toolbar-handle")
+                            .occlude()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .h(px(26.))
+                            .pl(px(10.))
+                            .pr(px(12.))
+                            .rounded_bl(corner)
+                            .rounded_br(corner)
+                            .border_1()
+                            .border_t_0()
+                            .border_color(p.border)
+                            .bg(p.surface)
+                            .shadow(vec![gpui::BoxShadow {
+                                color: gpui::black().opacity(0.35),
+                                offset: gpui::point(px(0.), px(2.)),
+                                blur_radius: px(8.),
+                                spread_radius: px(0.),
+                                inset: false,
+                            }])
+                            .cursor_pointer()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(p.text)
+                            .child(crate::ui::widgets::icon_el("chevron-down", 14., p.brand))
+                            .child("Toolbar")
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                if *hovered && !this.toolbar_out {
+                                    this.toolbar_out = true;
+                                    cx.notify();
+                                }
+                            })),
+                    )
                 }
             })
             .into_any_element()

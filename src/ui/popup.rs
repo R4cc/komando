@@ -23,9 +23,17 @@ impl Popup {
         cx: &mut Context<V>,
         build: impl FnOnce(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu,
     ) -> Popup {
+        // Opened from a button or a list: the keyboard goes back there once the menu closes.
+        let previous = window.focused(cx);
         let menu = PopupMenu::build(window, cx, build);
         menu.focus_handle(cx).focus(window, cx);
-        let subscription = cx.subscribe_in(&menu, window, move |this: &mut V, _, _: &DismissEvent, _, cx| {
+        let subscription = cx.subscribe_in(&menu, window, move |this: &mut V, menu, _: &DismissEvent, window, cx| {
+            // Unless the chosen entry moved it on, to a field or dialog it opened.
+            if menu.focus_handle(cx).contains_focused(window, cx)
+                && let Some(previous) = &previous
+            {
+                window.focus(previous, cx);
+            }
             *field(this) = Popup::default();
             cx.notify();
         });

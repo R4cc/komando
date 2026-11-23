@@ -27,7 +27,7 @@ use crate::sftp::{self, Access, Allowed, Entry, ErrorKind, Identity, Kind, Listi
 use crate::theme::{AppPalette, Appearance};
 use crate::ui::popup::{self, Popup};
 use crate::ui::transfers::{self, Job, Transfers};
-use crate::ui::widgets::{Busy, BusyPhase, ButtonKind, busy_done, after_delay, button, icon_el, plural, spinner};
+use crate::ui::widgets::{Busy, BusyPhase, ButtonKind, busy_done, after_delay, button, focus_outline, icon_el, plural, spinner, status_dot};
 
 const ROW_HEIGHT: f32 = 30.;
 
@@ -204,6 +204,12 @@ pub struct FileBrowser {
     refresh_after_load: bool,
     edit: Option<Edit>,
     favorites_open: bool,
+    /// The favorites list's own focus: it takes the keyboard when the list opens, so Tab
+    /// goes on into its rows rather than past the rest of the browser first.
+    favorites_focus: FocusHandle,
+    /// When a click outside last closed the favorites list, so the click that closed it
+    /// doesn't open it again when it lands on the star.
+    favorites_closed_at: Option<std::time::Instant>,
     favorite_rename: Option<(String, Entity<InputState>, Subscription)>,
     dialog: Option<Dialog>,
     popup: Popup,
@@ -290,6 +296,8 @@ impl FileBrowser {
             refresh_after_load: false,
             edit: None,
             favorites_open: false,
+            favorites_focus: cx.focus_handle(),
+            favorites_closed_at: None,
             favorite_rename: None,
             dialog: None,
             popup: Popup::default(),
@@ -1223,21 +1231,24 @@ impl FileBrowser {
         self.notify_info(format!("Added {name} to favorites {scope}."), cx);
     }
 
-    fn open_favorite(&mut self, path: String, cx: &mut Context<Self>) {
-        self.favorites_open = false;
-        self.favorite_rename = None;
+    fn open_favorite(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_favorites(window, cx);
         self.navigate(path, cx);
     }
 
     fn start_favorite_rename(&mut self, id: String, name: String, window: &mut Window, cx: &mut Context<Self>) {
         let input = cx.new(|cx| InputState::new(window, cx).default_value(name));
         let fav_id = id.clone();
-        let subscription = cx.subscribe_in(&input, window, move |this, input, event: &InputEvent, _, cx| match event {
+        let subscription = cx.subscribe_in(&input, window, move |this, input, event: &InputEvent, window, cx| match event {
             InputEvent::PressEnter { .. } | InputEvent::Blur => {
                 let name = input.read(cx).value().to_string();
                 let id = fav_id.clone();
                 this.favorite_rename = None;
                 this.favorites.update(cx, |store, cx| store.change(|f| f.rename(&id, &name), cx));
+                // Renamed with Enter: the keyboard stays in the favorites list.
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    window.focus(&this.favorites_focus, cx);
+                }
                 cx.notify();
             }
             _ => {}
@@ -1265,9 +1276,9 @@ impl FileBrowser {
             } else if self.favorite_rename.is_some() {
                 // Renaming a favorite: Escape ends the rename, not the whole list.
                 self.favorite_rename = None;
-                window.focus(&self.focus, cx);
+                window.focus(&self.favorites_focus, cx);
             } else if self.favorites_open {
-                self.favorites_open = false;
+                self.close_favorites(window, cx);
             } else if self.editing_path {
                 self.editing_path = false;
                 window.focus(&self.focus, cx);
@@ -1360,11 +1371,78 @@ impl FileBrowser {
                 self.set_show_hidden(!self.show_hidden, cx);
                 true
             }
+            ("f10", false, false, true) | ("menu", false, false, false) => {
+                self.open_menu_from_keyboard(window, cx);
+                true
+            }
             _ => false,
         };
         if handled {
             cx.stop_propagation();
         }
+    }
+
+    /// The keyboard is in the list and was last used: the row it is on wears the focus ring,
+    /// or the list does until the keyboard is on a row.
+    fn keyboard_in_list(&self, window: &Window) -> bool {
+        self.focus.is_focused(window) && window.last_input_was_keyboard()
+    }
+
+    /// A click on a toolbar button leaves the keyboard in the list, as before the buttons
+    /// could take focus: arrows still move through the files afterwards. The path field
+    /// keeps it while it is being typed in.
+    fn keep_list_focus(&mut self, _: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.editing_path {
+            window.focus(&self.focus, cx);
+        }
+    }
+
+    /// Close the favorites list; the keyboard goes back to the files if it was in the list.
+    fn close_favorites(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.favorites_open = false;
+        self.favorite_rename = None;
+        if self.favorites_focus.contains_focused(window, cx) {
+            window.focus(&self.focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// The menu of the selected rows (or of the folder, with none), from the keyboard: beside
+    /// the row the keyboard is on, or at the top of the list.
+    fn open_menu_from_keyboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (bounds, offset) = {
+            let state = self.scroll.0.borrow();
+            (state.base_handle.bounds(), state.base_handle.offset())
+        };
+        let row = self.cursor.as_ref().or(self.anchor.as_ref()).filter(|p| self.selected.contains(*p)).and_then(|p| self.visible_index(p));
+        let y = match row {
+            Some(ix) => bounds.top() + offset.y + px(4. + ROW_HEIGHT * (ix + self.has_parent() as usize + 1) as f32),
+            None => bounds.top() + px(4.),
+        };
+        let position = gpui::point(bounds.left() + px(36.), y.clamp(bounds.top(), bounds.bottom().max(bounds.top())));
+        if self.selected.is_empty() {
+            let view = cx.entity().downgrade();
+            let (cwd, show_hidden, connected) = (self.cwd.clone(), self.show_hidden, self.remote().is_some());
+            self.popup = Popup::open(position, |this: &mut Self| &mut this.popup, window, cx, move |menu, _, _| {
+                folder_menu(menu, &view, cwd, show_hidden, connected)
+            });
+        } else {
+            self.open_entry_menu(position, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The menu of the selected rows at `position`.
+    fn open_entry_menu(&mut self, position: gpui::Point<gpui::Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.entity().downgrade();
+        let targets = self.selection();
+        let dir_write = self.dir_access.write;
+        let favorites = self.favorites.read(cx).data.clone();
+        let host = self.host_id.clone();
+        let extras = self.menu_extras;
+        self.popup = Popup::open(position, |this: &mut Self| &mut this.popup, window, cx, move |menu, _, _| {
+            entry_menu(menu, &view, targets, dir_write, &favorites, &host, extras)
+        });
     }
 
     fn edit_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1525,9 +1603,45 @@ fn file_icon(entry: &Entry) -> &'static str {
 
 // ---- rendering --------------------------------------------------------------------
 
-fn tool_button(id: impl Into<gpui::ElementId>, icon: &str, tip: &'static str, enabled: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+/// The focus ring of the list's keyboard row, inside its edge so the columns don't move.
+fn keyboard_ring(p: AppPalette) -> Vec<gpui::BoxShadow> {
+    vec![gpui::BoxShadow {
+        color: p.focus,
+        offset: gpui::point(px(0.), px(0.)),
+        blur_radius: px(0.),
+        spread_radius: px(1.5),
+        inset: true,
+    }]
+}
+
+/// How a control that can't be used right now draws its icon and label.
+fn disabled_color(p: AppPalette) -> Hsla {
+    p.text_faint.opacity(0.55)
+}
+
+/// What every control in the browser shares: a button for screen readers, named `label`, and
+/// a Tab stop with the focus ring while it can be used. One that can't is skipped by Tab.
+fn control(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, enabled: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .when(enabled, |el| el.tab_index(0).focus_visible(move |s| focus_outline(s, p.focus)))
+}
+
+/// A tooltip's name and the shortcut in its brackets: "Refresh (F5)" is ("Refresh", Some("F5")).
+/// Screen readers announce the shortcut on its own, after the name.
+fn split_shortcut(tip: &str) -> (&str, Option<&str>) {
+    match tip.strip_suffix(')').and_then(|t| t.rsplit_once(" (")) {
+        Some((name, keys)) => (name, Some(keys)),
+        None => (tip, None),
+    }
+}
+
+fn tool_button(id: impl Into<gpui::ElementId>, icon: &str, tip: &'static str, enabled: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+    let (label, keys) = split_shortcut(tip);
+    control(id, label, enabled, p)
+        .when_some(keys, |el, keys| el.aria_keyshortcuts(keys))
         .size(px(28.))
         .flex()
         .flex_shrink_0()
@@ -1536,7 +1650,7 @@ fn tool_button(id: impl Into<gpui::ElementId>, icon: &str, tip: &'static str, en
         .rounded(p.corner(7.))
         .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
         .when(enabled, |el| el.cursor_pointer().hover(move |s| s.bg(p.hover)))
-        .child(icon_el(icon, 15., if enabled { p.text_muted } else { p.text_faint.opacity(0.5) }))
+        .child(icon_el(icon, 15., if enabled { p.text_muted } else { disabled_color(p) }))
 }
 
 /// A bordered toolbar button with an icon and, when there is room, a label.
@@ -1548,9 +1662,8 @@ fn labeled_button(
     enabled: bool,
     p: AppPalette,
 ) -> gpui::Stateful<gpui::Div> {
-    let fg = if enabled { p.text } else { p.text_faint };
-    div()
-        .id(id)
+    let fg = if enabled { p.text } else { disabled_color(p) };
+    control(id, label, enabled, p)
         .h(px(30.))
         .px(px(if show_label { 10. } else { 7. }))
         .flex()
@@ -1566,7 +1679,7 @@ fn labeled_button(
         .text_color(fg)
         .when(enabled, |el| el.cursor_pointer().hover(move |s| s.bg(p.active)))
         .when(!show_label, |el| el.tooltip(move |window, cx| Tooltip::new(label).build(window, cx)))
-        .child(icon_el(icon, 14., if enabled { p.text_muted } else { p.text_faint }))
+        .child(icon_el(icon, 14., if enabled { p.text_muted } else { disabled_color(p) }))
         .when(show_label, |el| el.child(label))
 }
 
@@ -1588,6 +1701,7 @@ impl FileBrowser {
             .flex()
             .items_center()
             .gap(px(10.))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::keep_list_focus))
             .child(
                 div()
                     .size(px(30.))
@@ -1622,7 +1736,13 @@ impl FileBrowser {
                                     .text_color(p.text)
                                     .child(format!("SFTP — {}", self.host_label)),
                             )
-                            .child(div().size(px(7.)).flex_shrink_0().rounded_full().bg(dot)),
+                            .child(
+                                div()
+                                    .id("sftp-state")
+                                    .role(gpui::Role::Status)
+                                    .aria_label(format!("SFTP: {}", state.to_lowercase()))
+                                    .child(status_dot(dot)),
+                            ),
                     )
                     .child(div().truncate().text_size(px(11.5)).text_color(p.text_faint).child(self.target.clone())),
             )
@@ -1690,8 +1810,7 @@ impl FileBrowser {
                 let target = full.clone();
                 let last = i + 1 == segments.len();
                 crumbs.push(
-                    div()
-                        .id(("crumb", i))
+                    control(("crumb", i), if name == "/" { "Go to /".to_string() } else { format!("Go to {full}") }, true, p)
                         .px(px(4.))
                         .h(px(22.))
                         .flex()
@@ -1742,6 +1861,7 @@ impl FileBrowser {
             .flex()
             .items_center()
             .gap(px(6.))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::keep_list_focus))
             .child(
                 div()
                     .flex()
@@ -1761,8 +1881,8 @@ impl FileBrowser {
             )
             .child(path_field)
             .child(
-                div()
-                    .id("sftp-favorites")
+                control("sftp-favorites", "Favorites", connected, p)
+                    .aria_expanded(self.favorites_open)
                     .size(px(30.))
                     .flex()
                     .flex_shrink_0()
@@ -1776,14 +1896,28 @@ impl FileBrowser {
                     .tooltip(move |window, cx| {
                         Tooltip::new(if is_favorite { "Favorites (this folder is one)" } else { "Favorites" }).build(window, cx)
                     })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        if connected {
-                            this.favorites_open = !this.favorites_open;
-                            this.favorite_rename = None;
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        let just_closed = this.favorites_closed_at.is_some_and(|at| at.elapsed() < Duration::from_millis(300));
+                        if connected && !just_closed {
+                            if this.favorites_open {
+                                this.close_favorites(window, cx);
+                            } else {
+                                this.favorites_open = true;
+                                this.favorite_rename = None;
+                                window.focus(&this.favorites_focus, cx);
+                            }
                             cx.notify();
                         }
                     }))
-                    .child(icon_el("star", 15., if is_favorite { p.warning } else { p.text_muted })),
+                    .child(icon_el(
+                        "star",
+                        15.,
+                        match (connected, is_favorite) {
+                            (false, _) => disabled_color(p),
+                            (true, true) => p.warning,
+                            (true, false) => p.text_muted,
+                        },
+                    )),
             )
             .child(tool_button("sftp-refresh", "refresh-cw", "Refresh (F5)", connected, p).on_click(cx.listener(
                 |this, _: &ClickEvent, _, cx| this.refresh(cx),
@@ -1820,8 +1954,15 @@ impl FileBrowser {
     fn render_columns(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let (key, asc) = self.sort;
         let column = |id: &'static str, label: &'static str, k: SortKey, cx: &mut Context<Self>| {
-            div()
-                .id(id)
+            let sorted = match (key == k, asc) {
+                (false, _) => String::new(),
+                (true, true) => ", sorted ascending".into(),
+                (true, false) => ", sorted descending".into(),
+            };
+            control(id, format!("Sort by {}{sorted}", label.to_lowercase()), true, p)
+                .px(px(3.))
+                .mx(px(-3.))
+                .rounded(p.corner(4.))
                 .flex()
                 .items_center()
                 .gap(px(4.))
@@ -1858,7 +1999,7 @@ impl FileBrowser {
         (self.width >= 430., self.width >= 540.)
     }
 
-    fn render_rows(&mut self, range: Range<usize>, _window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_rows(&mut self, range: Range<usize>, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let p = cx.global::<Appearance>().app;
         let mono: SharedString = cx.global::<Appearance>().font_family.clone();
         let (show_modified, show_perms) = self.columns();
@@ -1868,6 +2009,10 @@ impl FileBrowser {
         let me = cx.entity_id();
         // What a drag from a selected row carries; worked out once, not once per row.
         let mut selection: Option<Vec<String>> = None;
+        // The row the keyboard is on, which a screen reader reads out as the arrows move.
+        let keyboard_row = self.cursor.clone().or_else(|| self.anchor.clone());
+        let ringed = self.keyboard_in_list(window);
+        let set_size = self.rows.len() + has_parent as usize;
         let mut out = vec![];
         for ix in range {
             if has_parent && ix == 0 {
@@ -1928,15 +2073,39 @@ impl FileBrowser {
             let label: SharedString =
                 if dragged.len() == 1 { entry.name.clone().into() } else { format!("{} items", dragged.len()).into() };
             let drag = DraggedFiles { source: cx.entity_id(), paths: dragged, label };
-            let menu_view = view.clone();
             let click_path = path.clone();
             let right_path = path.clone();
             let more_path = path.clone();
             let is_dir = entry.is_dir();
             let drop_dir = entry.path.clone();
             let drop_dir_ext = entry.path.clone();
+            let description = {
+                let mut text = match (entry.kind, entry.size) {
+                    (Kind::Dir, _) => format!("{}, folder", entry.name),
+                    (_, Some(size)) => format!("{}, {}", entry.name, format_size(size)),
+                    (_, None) => entry.name.clone(),
+                };
+                if entry.mtime.is_some() {
+                    text.push_str(&format!(", modified {}", format_time(entry.mtime)));
+                }
+                if locked {
+                    text.push_str(", no access");
+                }
+                if entry.broken_link {
+                    text.push_str(", broken link");
+                }
+                text
+            };
             let row = div()
                 .id(("sftp-row", ix))
+                .role(gpui::Role::ListBoxOption)
+                .aria_label(description)
+                .aria_selected(selected)
+                .aria_position_in_set(ix + 1)
+                .aria_size_of_set(set_size)
+                .when(keyboard_row.as_deref() == Some(entry.path.as_str()), |el| {
+                    el.aria_active_descendant().when(ringed, |el| el.shadow(keyboard_ring(p)))
+                })
                 .group("sftp-row")
                 .h(px(ROW_HEIGHT))
                 // A list item is as wide as its content unless told otherwise; full width
@@ -2023,15 +2192,7 @@ impl FileBrowser {
                         .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                             cx.stop_propagation();
                             this.right_click_row(more_path.clone(), window, cx);
-                            let view = menu_view.clone();
-                            let targets = this.selection();
-                            let dir_write = this.dir_access.write;
-                            let favorites = this.favorites.read(cx).data.clone();
-                            let host = this.host_id.clone();
-                            let extras = this.menu_extras;
-                            this.popup = Popup::open(event.position(), |this: &mut Self| &mut this.popup, window, cx, move |menu, _, _| {
-                                entry_menu(menu, &view, targets, dir_write, &favorites, &host, extras)
-                            });
+                            this.open_entry_menu(event.position(), window, cx);
                             cx.notify();
                         }))
                         .child(icon_el("ellipsis-vertical", 14., p.text_muted)),
@@ -2058,6 +2219,11 @@ impl FileBrowser {
         let me = cx.entity_id();
         div()
             .id("sftp-parent")
+            .role(gpui::Role::ListBoxOption)
+            .aria_label("Parent folder")
+            .aria_selected(false)
+            .aria_position_in_set(1)
+            .aria_size_of_set(self.rows.len() + 1)
             .h(px(ROW_HEIGHT))
             .w_full()
             .px(px(10.))
@@ -2241,11 +2407,30 @@ impl FileBrowser {
             .border_color(p.border)
             .text_size(px(11.5))
             .text_color(p.text_faint)
-            .child(div().flex_1().min_w_0().truncate().child(if self.cwd.is_some() { text } else { String::new() }))
+            .child(
+                div()
+                    .id("sftp-summary")
+                    .role(gpui::Role::Status)
+                    .aria_label(text.clone())
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(if self.cwd.is_some() { text } else { String::new() }),
+            )
             .children(status)
             .child(
                 div()
                     .id("sftp-hidden-toggle")
+                    .role(gpui::Role::Switch)
+                    .aria_label("Show hidden files")
+                    .aria_toggled(if show { gpui::Toggled::True } else { gpui::Toggled::False })
+                    .aria_keyshortcuts("Ctrl+H")
+                    .tab_index(0)
+                    .focus_visible(move |s| focus_outline(s, p.focus))
+                    .h(px(20.))
+                    .px(px(4.))
+                    .mr(px(-4.))
+                    .rounded(p.corner(5.))
                     .flex()
                     .items_center()
                     .gap(px(5.))
@@ -2268,10 +2453,14 @@ impl FileBrowser {
         };
         Some(
             div()
+                .id("sftp-notice")
+                .role(if notice.error { gpui::Role::Alert } else { gpui::Role::Status })
+                .aria_label(notice.text.clone())
                 .mx(px(10.))
                 .mb(px(6.))
-                .px(px(10.))
-                .py(px(6.))
+                .pl(px(10.))
+                .pr(px(4.))
+                .py(px(4.))
                 .flex()
                 .items_start()
                 .gap(px(8.))
@@ -2280,13 +2469,18 @@ impl FileBrowser {
                 .text_size(px(12.))
                 .line_height(px(17.))
                 .text_color(if notice.error { fg } else { p.text })
-                .child(div().pt(px(1.)).child(icon_el(icon, 13., fg)))
-                .child(div().flex_1().min_w_0().child(notice.text.clone()))
+                .child(div().pt(px(3.)).child(icon_el(icon, 13., fg)))
+                .child(div().flex_1().min_w_0().py(px(2.)).child(notice.text.clone()))
                 .child(
-                    div()
-                        .id("notice-close")
+                    control("notice-close", "Dismiss", true, p)
+                        .size(px(21.))
+                        .flex()
                         .flex_shrink_0()
+                        .items_center()
+                        .justify_center()
+                        .rounded(p.corner(5.))
                         .cursor_pointer()
+                        .hover(|s| s.bg(p.hover))
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.notice = None;
                             cx.notify();
@@ -2320,9 +2514,12 @@ impl FileBrowser {
             let name = f.name.clone();
             let path = f.path.clone();
             let current = cwd.as_deref() == Some(f.path.as_str());
+            // For the pointer; the keyboard has F2, Delete and Alt+arrows on the row instead.
             let small = |id: (&'static str, usize), icon: &str, tip: &'static str| {
                 div()
                     .id(id)
+                    .role(gpui::Role::Button)
+                    .aria_label(tip)
                     .size(px(22.))
                     .flex()
                     .items_center()
@@ -2335,8 +2532,34 @@ impl FileBrowser {
                     .child(icon_el(icon, 12., p.text_muted))
             };
             let key = f.id.bytes().fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize));
+            let editing = renaming.is_some();
+            let (key_id, key_host, key_name) = (f.id.clone(), host_id.clone(), f.name.clone());
             div()
                 .id(("fav", key))
+                .role(gpui::Role::Button)
+                .aria_label(format!("{}, {}{}", f.name, f.path, if current { ", current folder" } else { "" }))
+                .aria_description("F2 renames, Delete removes, Alt+Up and Alt+Down move it")
+                .when(!editing, |el| {
+                    el.tab_index(0).focus_visible(move |s| focus_outline(s, p.focus)).on_key_down(cx.listener(
+                        move |this, event: &KeyDownEvent, window, cx| {
+                            let (key, mods) = (event.keystroke.key.as_str(), event.keystroke.modifiers);
+                            let (id, host) = (key_id.clone(), key_host.clone());
+                            match (key, mods.alt, mods.modified()) {
+                                ("f2", _, false) => this.start_favorite_rename(id, key_name.clone(), window, cx),
+                                ("delete", _, false) => {
+                                    this.favorites.update(cx, |s, cx| s.change(|f| f.remove(&id), cx));
+                                    // The row is gone: the keyboard stays in the list.
+                                    window.focus(&this.favorites_focus, cx);
+                                }
+                                ("up" | "down", true, _) => {
+                                    this.favorites.update(cx, |s, cx| s.change(|f| f.shift(&id, &host, key == "up"), cx));
+                                }
+                                _ => return,
+                            }
+                            cx.stop_propagation();
+                        },
+                    ))
+                })
                 .group("fav-row")
                 .relative()
                 .h(px(40.))
@@ -2348,7 +2571,7 @@ impl FileBrowser {
                 .cursor_pointer()
                 .when(current, |el| el.bg(p.hover))
                 .hover(|s| s.bg(p.hover))
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_favorite(path.clone(), cx)))
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_favorite(path.clone(), window, cx)))
                 .child(icon_el(if shared { "globe" } else { "server" }, 13., if current { p.brand } else { p.text_faint }))
                 .child(match renaming {
                     Some(input) => div()
@@ -2435,8 +2658,13 @@ impl FileBrowser {
         }
         let add = |id: &'static str, label: &'static str, icon: &str, host_only: bool, done: bool, cx: &mut Context<Self>| {
             let cwd = cwd.clone();
-            div()
-                .id(id)
+            let spoken = match (done, host_only) {
+                (true, true) => "Already a favorite for this host",
+                (true, false) => "Already a favorite for all hosts",
+                (false, true) => "Add to favorites for this host",
+                (false, false) => "Add to favorites for all hosts",
+            };
+            control(id, spoken, !done && cwd.is_some(), p)
                 .flex_1()
                 .h(px(28.))
                 .px(px(8.))
@@ -2464,6 +2692,9 @@ impl FileBrowser {
         Some(
             div()
                 .id("sftp-favorites-dropdown")
+                .track_focus(&self.favorites_focus)
+                .role(gpui::Role::Dialog)
+                .aria_label("Favorites")
                 .absolute()
                 .top(px(96.))
                 .right(px(16.))
@@ -2475,9 +2706,17 @@ impl FileBrowser {
                 .bg(p.surface.opacity(1.))
                 .border_1()
                 .border_color(p.border)
-                .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
                     this.favorites_open = false;
                     this.favorite_rename = None;
+                    this.favorites_closed_at = Some(std::time::Instant::now());
+                    // The click lands where it was aimed; when that takes no focus, the
+                    // keyboard goes back to the files rather than staying in the closed list.
+                    cx.defer_in(window, |this, window, cx| {
+                        if this.favorites_focus.contains_focused(window, cx) {
+                            window.focus(&this.focus, cx);
+                        }
+                    });
                     cx.notify();
                 }))
                 .child(
@@ -2650,6 +2889,9 @@ impl FileBrowser {
                 .bg(crate::theme::alpha(0x000000, if p.dark { 0.4 } else { 0.15 }))
                 .child(
                     div()
+                        .id("sftp-dialog-card")
+                        .role(gpui::Role::Dialog)
+                        .aria_label(title.clone())
                         .w_full()
                         .max_w(px(380.))
                         .p(px(16.))
@@ -2807,7 +3049,7 @@ fn folder_menu(menu: PopupMenu, view: &WeakEntity<FileBrowser>, cwd: Option<Stri
 }
 
 impl Render for FileBrowser {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count("file browser render");
         let p = cx.global::<Appearance>().app;
         let state = self.render_state(p, cx);
@@ -2825,6 +3067,9 @@ impl Render for FileBrowser {
                 .into_any_element()
         });
         let ready = self.remote().is_some() && self.cwd.is_some();
+        // Tabbed into the list before the keyboard is on any row: the list itself wears the ring.
+        let on_row = self.cursor.as_ref().or(self.anchor.as_ref()).and_then(|path| self.visible_index(path)).is_some();
+        let ring_list = list.is_some() && !on_row && self.keyboard_in_list(window);
         let cwd = self.cwd.clone();
         let show_hidden = self.show_hidden;
         let connected = self.remote().is_some();
@@ -2832,6 +3077,8 @@ impl Render for FileBrowser {
             .id("file-browser")
             .key_context("FileBrowser")
             .track_focus(&self.focus)
+            // Tab comes back to the files from the buttons (see `keyboard_ring`).
+            .tab_index(0)
             .size_full()
             .relative()
             .flex()
@@ -2856,6 +3103,11 @@ impl Render for FileBrowser {
             .child(
                 div()
                     .id("sftp-body")
+                    .when(list.is_some(), |el| {
+                        el.role(gpui::Role::ListBox)
+                            .aria_label(format!("Files in {}", cwd.as_deref().unwrap_or("this folder")))
+                    })
+                    .when(ring_list, |el| el.rounded(p.corner(8.)).shadow(keyboard_ring(p)))
                     .flex_1()
                     .min_h_0()
                     .flex()
@@ -2887,6 +3139,14 @@ mod tests {
         assert_eq!(cd_command("/tmp/it's"), "cd '/tmp/it'\\''s'");
         assert_eq!(cd_command("/tmp/$(rm -rf x)"), "cd '/tmp/$(rm -rf x)'");
         assert_eq!(cd_command("-odd"), "cd -- -odd");
+    }
+
+    #[test]
+    fn tool_buttons_are_named_without_their_shortcut() {
+        assert_eq!(split_shortcut("Refresh (F5)"), ("Refresh", Some("F5")));
+        assert_eq!(split_shortcut("Close file browser (Ctrl+Shift+E)"), ("Close file browser", Some("Ctrl+Shift+E")));
+        assert_eq!(split_shortcut("More"), ("More", None));
+        assert_eq!(split_shortcut("Size (bytes) of it"), ("Size (bytes) of it", None));
     }
 
     #[test]

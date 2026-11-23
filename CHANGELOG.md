@@ -17,9 +17,21 @@ All notable changes to Komando are listed here. The format follows
   announce each transfer and its progress.
 - Transfer progress bars move smoothly between updates, and a transfer whose size isn't known
   yet shows a moving bar instead of a fixed one.
-
+- In full screen, a remote desktop shows a clear "Toolbar" tab at the top instead of a faint
+  grey line, and pointing at the tab opens the toolbar.
+- The SFTP file browser works from the keyboard: Tab reaches every button, the path and the
+  column headers, and comes back to the file list, where the row you're on is outlined.
+  Shift+F10 or the Menu key opens a file's menu. In Favorites, F2 renames, Delete removes and
+  Alt+Up or Alt+Down moves a favorite. Screen readers announce each file and its details,
+  the selection, and messages as they appear.
+- Closing a menu returns the keyboard to where it was before the menu opened.
 - When an SSH connection times out, its signal bars dim and a small red ✕ appears beside
   them, so a connection that never answered is easy to tell from one that was closed.
+
+### Fixed
+
+- Clicking the star in the SFTP file browser now closes Favorites when they are open,
+  instead of opening them again.
 
 ## [0.8.5] - 2026-11-18
 
