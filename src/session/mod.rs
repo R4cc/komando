@@ -484,7 +484,13 @@ pub(crate) fn compact_rows_until<T>(term: &FairMutex<Term<T>>, cols: usize, canc
         let mut term = term.lock();
         let grid = term.grid_mut();
         let total = grid.total_lines();
-        if cancelled.load(Ordering::Relaxed) || grid.columns() != cols || done >= total {
+        if cancelled.load(Ordering::Relaxed) || grid.columns() != cols {
+            return;
+        }
+        if done >= total {
+            // The rows' old allocations, from before the resize and from here, are free now.
+            drop(term);
+            crate::memory::release_soon();
             return;
         }
         let top = -(grid.history_size() as i32);

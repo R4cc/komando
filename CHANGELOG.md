@@ -31,6 +31,10 @@ All notable changes to Komando are listed here. The format follows
 ### Fixed
 
 - A host with ten or more sessions open shows its session count on one line in the sidebar.
+- On Linux, Komando gives memory back after you close sessions with long output or resize the
+  window. Closing five sessions full of logs used to leave Komando about 280 MB larger than
+  before they opened, and resizing a window with a full Scrollback a few times could triple
+  its memory.
 
 ## [0.8.8] - 2026-11-23
 

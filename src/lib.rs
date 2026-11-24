@@ -18,6 +18,7 @@ pub mod keys;
 pub mod links;
 pub mod logging;
 pub mod marks;
+pub mod memory;
 pub mod model;
 pub mod perf;
 pub mod platform;

@@ -131,9 +131,12 @@ impl RowSource<Cell> for RowPool {
 }
 
 impl Drop for RowPool {
+    /// The pool lives as long as its terminal's grid, so this is also when a closed Session's
+    /// Scrollback is freed: the allocator is asked to hand that memory back.
     fn drop(&mut self) {
         self.shared.lock().closed = true;
         self.shared.wake.notify_one();
+        crate::memory::release_soon();
     }
 }
 
