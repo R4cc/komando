@@ -56,6 +56,9 @@ pub struct Project {
     /// Port Forwards every Host's SSH Session opens, before the Host's own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub port_forwards: Vec<PortForward>,
+    /// Agent Forwarding for its Hosts, unless a Host sets its own. Off unless switched on.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub forward_agent: bool,
     /// Hosts in this Project, in sidebar order. A Host may appear in several Projects.
     #[serde(default)]
     pub hosts: Vec<HostId>,
@@ -85,6 +88,7 @@ impl Project {
             legacy_jump_host: None,
             startup_commands: vec![],
             port_forwards: vec![],
+            forward_agent: false,
             hosts: vec![],
             shells: vec![],
             highlight: true,
@@ -182,6 +186,55 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Inherited<T> {
     }
 }
 
+/// Which of the SSH Agent's keys a Host signs in with (see `session::agent`).
+///
+/// In `library.toml` the default is left out, a single key is written as its fingerprint
+/// (`agent = "SHA256:…"`), and no agent as `agent = false`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum AgentUse {
+    /// Every key the agent offers, until the server takes one.
+    #[default]
+    Any,
+    /// Only the key with this SHA-256 fingerprint (`SHA256:…`): a server that counts each key
+    /// offered as a failed try (OpenSSH's `MaxAuthTries`) refuses after a few.
+    Key(String),
+    /// Not the agent at all.
+    Off,
+}
+
+impl AgentUse {
+    pub fn is_any(&self) -> bool {
+        *self == AgentUse::Any
+    }
+}
+
+impl Serialize for AgentUse {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            AgentUse::Any => serializer.serialize_bool(true),
+            AgentUse::Key(fingerprint) => serializer.serialize_str(fingerprint),
+            AgentUse::Off => serializer.serialize_bool(false),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentUse {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Switch(bool),
+            Key(String),
+        }
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Switch(true) => AgentUse::Any,
+            Repr::Switch(false) => AgentUse::Off,
+            Repr::Key(key) if key.trim().is_empty() => AgentUse::Any,
+            Repr::Key(key) => AgentUse::Key(key.trim().to_string()),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Host {
     pub id: HostId,
@@ -193,6 +246,12 @@ pub struct Host {
     pub user: Inherited<String>,
     #[serde(default, skip_serializing_if = "Inherited::is_project")]
     pub credential: Inherited<CredentialId>,
+    /// Which of the SSH Agent's keys it signs in with, if any.
+    #[serde(default, skip_serializing_if = "AgentUse::is_any")]
+    pub agent: AgentUse,
+    /// Agent Forwarding on or off for this Host; `None` takes the Project's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_agent: Option<bool>,
     /// Go through the Project's Jump Hosts first, before the Host's own.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub use_project_jump_hosts: bool,
@@ -476,6 +535,8 @@ impl Host {
             port: default_port(),
             user: Inherited::Project,
             credential: Inherited::Project,
+            agent: AgentUse::Any,
+            forward_agent: None,
             use_project_jump_hosts: true,
             jump_hosts: vec![],
             legacy_jump_host: Inherited::Project,
@@ -818,6 +879,10 @@ pub struct ResolvedHost {
     pub credential: Option<CredentialId>,
     /// Where the credential came from, so "save password" can offer the right target.
     pub credential_source: CredentialSource,
+    /// Which of the SSH Agent's keys it signs in with.
+    pub agent: AgentUse,
+    /// Agent Forwarding: the Host's own choice, else the Project's.
+    pub forward_agent: bool,
     /// The Jump Hosts to sign in to first, in order: the Project's (unless the Host
     /// switches them off), then the Host's own. Empty: connect directly.
     pub jump_hosts: Vec<RouteJump>,
@@ -867,6 +932,8 @@ pub fn resolve(host: &Host, project: &Project) -> ResolvedHost {
         user: host.user.or_project(project.default_user.as_ref()).cloned(),
         credential,
         credential_source,
+        agent: host.agent.clone(),
+        forward_agent: host.forward_agent.unwrap_or(project.forward_agent),
         jump_hosts: project_jumps.chain(own_jumps).collect(),
         startup_commands,
         port_forwards,
@@ -1335,6 +1402,10 @@ pub struct Settings {
     /// Send the usage ping: once a day, an anonymous event so the developers can estimate how
     /// many people use Komando (see `crate::usage`). On unless switched off.
     pub usage_ping: bool,
+    /// Where the SSH Agent is (see `session::agent::Agent::from_setting`): empty finds the
+    /// usual one, `none` switches it off, `pageant` picks Pageant, anything else is a socket or
+    /// pipe path.
+    pub ssh_agent: String,
     /// Width of the SFTP file browser beside the terminal, in pixels.
     pub sftp_width: f32,
     /// Preferred sidebar width in logical pixels, adjusted by dragging its divider.
@@ -1537,6 +1608,7 @@ impl Default for Settings {
             background_blur_intensity: 60,
             check_for_updates: true,
             usage_ping: true,
+            ssh_agent: String::new(),
             sftp_width: 540.,
             sidebar_width: 264.,
             sidebar_auto_hide: false,
@@ -2019,6 +2091,7 @@ mod tests {
             legacy_jump_host: None,
             startup_commands: vec![],
             port_forwards: vec![],
+            forward_agent: false,
             hosts: vec!["h1".into()],
             shells: vec![],
             highlight: true,
@@ -2037,6 +2110,8 @@ mod tests {
             port: 22,
             user: own(user),
             credential: own(credential),
+            agent: AgentUse::Any,
+            forward_agent: None,
             use_project_jump_hosts: true,
             jump_hosts: vec![],
             legacy_jump_host: Inherited::Project,
@@ -2053,6 +2128,40 @@ mod tests {
             opens: Protocol::Ssh,
             highlight: true,
         }
+    }
+
+    #[test]
+    fn a_hosts_agent_choice_is_written_only_when_it_isnt_the_default() {
+        let mut library = Library { projects: vec![project(None, None)], hosts: vec![host(None, None, None)], ..Default::default() };
+        let text = toml::to_string(&library).unwrap();
+        assert!(!text.contains("agent"), "{text}");
+        library.hosts[0].agent = AgentUse::Key("SHA256:abc".into());
+        library.hosts[0].forward_agent = Some(false);
+        library.projects[0].forward_agent = true;
+        let text = toml::to_string(&library).unwrap();
+        assert!(text.contains("agent = \"SHA256:abc\""), "{text}");
+        assert!(text.contains("forward_agent = false"), "{text}");
+        assert_eq!(toml::from_str::<Library>(&text).unwrap(), library);
+        library.hosts[0].agent = AgentUse::Off;
+        let text = toml::to_string(&library).unwrap();
+        assert!(text.contains("agent = false"), "{text}");
+        assert_eq!(toml::from_str::<Library>(&text).unwrap(), library);
+        // Komando 0.8 and older read the file too, and skip what they don't know.
+        assert!(toml_0_8::from_str::<toml_0_8::Value>(&text).is_ok());
+    }
+
+    #[test]
+    fn agent_forwarding_comes_from_the_project_unless_the_host_says() {
+        let mut project = project(None, None);
+        let mut host = host(None, None, None);
+        assert!(!resolve(&host, &project).forward_agent, "off unless switched on");
+        project.forward_agent = true;
+        assert!(resolve(&host, &project).forward_agent);
+        host.forward_agent = Some(false);
+        assert!(!resolve(&host, &project).forward_agent);
+        project.forward_agent = false;
+        host.forward_agent = Some(true);
+        assert!(resolve(&host, &project).forward_agent);
     }
 
     /// A Host with only an id and a name, for routing tests.

@@ -28,9 +28,11 @@ use russh::client::KeyboardInteractiveAuthResponse;
 use russh::{ChannelMsg, Disconnect, MethodKind, MethodSet, Pty};
 use tokio::sync::mpsc;
 
+use super::agent::Agent;
 use super::pace::Pace;
 use super::sudo::SudoPassword;
 use super::{Answer, EventProxy, GridSize, HopStep, InputSink, Prompt, Remembered, SessionEvent, SharedTerm, Status};
+use crate::model::AgentUse;
 use crate::vault::Secret;
 use zeroize::Zeroizing;
 
@@ -46,6 +48,7 @@ pub enum Command {
 }
 
 /// Everything a connection needs, resolved on the UI thread before it starts.
+#[derive(Default)]
 pub struct Target {
     /// The Hosts to sign in to, in order: Jump Hosts first, the Host with the shell last.
     pub hops: Vec<Hop>,
@@ -53,6 +56,13 @@ pub struct Target {
     pub known_hosts: PathBuf,
     /// Port Forwards opened on the last hop's connection once every hop has signed in.
     pub forwards: Vec<crate::model::PortForward>,
+    /// The SSH Agent every hop may sign in with; `None`: no agent.
+    pub agent: Option<Agent>,
+    /// Which of the agent's keys the Host itself (the last hop) signs in with. Jump Hosts
+    /// offer every key, as `ssh -J` does.
+    pub host_agent: AgentUse,
+    /// Agent Forwarding to the Host itself. Never to its Jump Hosts.
+    pub forward_agent: bool,
 }
 
 /// One Host on the way.
@@ -476,10 +486,35 @@ pub(crate) struct Client {
     clock: ConnectClock,
     /// The Remote forwards this connection asked the server for. Empty on Jump Hosts.
     remote_forwards: super::forward::RemoteForwards,
+    /// Agent Forwarding is on for this connection: the agent its channels go to. Only ever
+    /// the Host's own connection.
+    forward_agent: Option<Agent>,
+    /// The connection's key exchange, for the agent to know which server forwarded requests
+    /// come through. Set once connected.
+    binding: Arc<OnceLock<russh::keys::agent::AgentSessionBinding>>,
 }
 
 impl client::Handler for Client {
     type Error = anyhow::Error;
+
+    /// The server opens a channel to the SSH Agent (Agent Forwarding): carried to the agent
+    /// here when forwarding is on for this Host, refused otherwise.
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        match self.forward_agent.clone() {
+            Some(agent) => {
+                reply.accept().await;
+                let binding = self.binding.get().cloned();
+                tokio::spawn(async move { agent.relay(channel, binding).await });
+            }
+            None => reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await,
+        }
+        Ok(())
+    }
 
     /// A connection to a Remote forward's port on the server: carried to its address here.
     /// One for a port Komando didn't ask for is refused.
@@ -666,6 +701,8 @@ async fn run(
             _ => log.line(LogKind::Step, &format!("Opening a tunnel to {} through {}", describe(hop), target.hops[index - 1].name)),
         }
         let clock = ConnectClock::new();
+        let is_host = index + 1 == target.hops.len();
+        let binding = Arc::new(OnceLock::new());
         let handler = Client {
             host: hop.address.clone(),
             port: hop.port,
@@ -674,7 +711,9 @@ async fn run(
             log: log.clone(),
             hop: index,
             clock: clock.clone(),
-            remote_forwards: if index + 1 == target.hops.len() { remote_forwards.clone() } else { Default::default() },
+            remote_forwards: if is_host { remote_forwards.clone() } else { Default::default() },
+            forward_agent: if is_host && target.forward_agent { target.agent.clone() } else { None },
+            binding: binding.clone(),
         };
         let timed_out = || anyhow!("{}{}:{}.", super::TIMED_OUT, hop.address, hop.port);
         let is_jump = index + 1 < target.hops.len();
@@ -710,6 +749,9 @@ async fn run(
                     .ok_or_else(timed_out)??
             }
         };
+        if let Some(context) = handle.agent_session_binding() {
+            let _ = binding.set(context.clone());
+        }
         let (user, remember_user) = match hop.user.clone() {
             Some(user) => (user, false),
             None => {
@@ -723,7 +765,9 @@ async fn run(
         proxy.send(SessionEvent::Hop { index, step: HopStep::SigningIn });
         // Saved only once it signed in, so a mistyped user name is not remembered. Before the
         // password, so the password's vault entry is labelled with it.
-        let signed_in = authenticate(&mut handle, &user, &hop.address, hop.secret.as_ref(), &proxy, &log).await?;
+        let agent_use = if is_host { target.host_agent.clone() } else { AgentUse::Any };
+        let agent = target.agent.as_ref().filter(|_| agent_use != AgentUse::Off);
+        let signed_in = authenticate(&mut handle, &user, &hop.address, hop.secret.as_ref(), agent, &agent_use, &proxy, &log).await?;
         log.line(LogKind::Good, &format!("Signed in to {} as {user}", hop.name));
         if remember_user {
             proxy.send(SessionEvent::Remember { hop: index, what: Remembered::User(user.clone()) });
@@ -760,7 +804,11 @@ async fn run(
     }
     // Dropped with the Session, which closes every listener and connection.
     let forwards = start_forwards(handle, &target.forwards, &remote_forwards, &proxy);
-    let result = shell(handle, &mut size, &term, &proxy, &log, &mut commands, sudo, host_window).await;
+    if target.forward_agent && target.agent.is_none() {
+        log::info!("agent forwarding is on, but there is no SSH agent to forward");
+    }
+    let forward_agent = target.forward_agent && target.agent.is_some();
+    let result = shell(handle, &mut size, &term, &proxy, &log, &mut commands, sudo, host_window, forward_agent).await;
     drop(forwards);
     monitors.shutdown().await;
     // Always end the connection with the terminal, so SFTP channels opened on it end too.
@@ -782,6 +830,7 @@ async fn shell(
     commands: &mut mpsc::UnboundedReceiver<Command>,
     mut sudo: Option<SudoPassword>,
     max_window: u32,
+    forward_agent: bool,
 ) -> Result<String> {
     // The shell's window follows the link (see `pace`), so output doesn't pile up in a queue
     // that still scrolls past after Ctrl+C. Opening the channel with it keeps the server from
@@ -811,6 +860,11 @@ async fn shell(
     // Most servers only accept LANG and LC_* (sshd's AcceptEnv); the rest are dropped
     // silently, so asking costs nothing.
     channel.set_env(false, "COLORTERM", "truecolor").await?;
+    if forward_agent {
+        // Without a reply, as OpenSSH's client asks: a server that doesn't allow it just never
+        // opens an agent channel.
+        channel.agent_forward(false).await?;
+    }
     channel.request_shell(true).await?;
     log.shell_opened();
     proxy.send(SessionEvent::Status(Status::Connected));
@@ -1148,6 +1202,9 @@ struct PasswordState<'a> {
     remember: bool,
     /// Why the last try failed, shown with the next question.
     last_error: Option<String>,
+    /// A rejected saved password ends the method rather than asking for one: the SSH Agent's
+    /// keys come before a typed password.
+    agent_next: bool,
     signed_in: SignedIn,
 }
 
@@ -1167,15 +1224,24 @@ const TRIES: usize = 3;
 /// `address` names the machine in the password question, so a Jump Host's (perhaps from a
 /// shared Project) can't pass for another's.
 ///
-/// After a saved key, the server says which methods it takes next. Of those, keyboard-
-/// interactive goes first, as in OpenSSH: network gear and servers with one-time codes
-/// (RADIUS, TACACS+, PAM) often take passwords only that way. A plain "Password:" question
-/// looks the same as with the password method, saved password and "Remember" included.
+/// The order: a saved key, then the SSH Agent's keys (`agent_use` of them), then passwords.
+/// A saved password goes before the agent's keys, though: a server counts every key offered
+/// as a failed try, and an agent with many keys would use them up before the password that
+/// was saved for it. The agent comes after it only if the server asks for a key as well, or
+/// takes nothing but keys.
+///
+/// After a key, the server says which methods it takes next. Of those, keyboard-interactive
+/// goes first, as in OpenSSH: network gear and servers with one-time codes (RADIUS, TACACS+,
+/// PAM) often take passwords only that way. A plain "Password:" question looks the same as
+/// with the password method, saved password and "Remember" included.
+#[allow(clippy::too_many_arguments)]
 async fn authenticate(
     handle: &mut Handle<Client>,
     user: &str,
     address: &str,
     secret: Option<&Secret>,
+    agent: Option<&Agent>,
+    agent_use: &AgentUse,
     proxy: &EventProxy,
     log: &ConnectLog,
 ) -> Result<SignedIn> {
@@ -1183,7 +1249,8 @@ async fn authenticate(
         Some(Secret::Password { password }) => Some(password.as_str()),
         _ => None,
     };
-    let mut state = PasswordState { saved, remember: false, last_error: None, signed_in: SignedIn { password: None, remember: false } };
+    let mut state =
+        PasswordState { saved, remember: false, last_error: None, agent_next: false, signed_in: SignedIn { password: None, remember: false } };
     let mut methods = None;
     if let Some(Secret::PrivateKey { key, passphrase }) = secret {
         log.line(LogKind::Step, &format!("Signing in as {user} with the saved key"));
@@ -1228,9 +1295,32 @@ async fn authenticate(
             AuthResult::Failure { remaining_methods, .. } => remaining_methods,
         },
     };
-    // A server asks for at most a few things in turn (a key, a password, a code).
-    for _ in 0..4 {
+    let mut agent = agent;
+    // A server asks for at most a few things in turn (a key, a password, a code), and the
+    // agent's keys take a turn of their own.
+    for _ in 0..5 {
         let interactive = methods.contains(&MethodKind::KeyboardInteractive);
+        // An empty list is a server that didn't say: it may take either.
+        let takes_password = interactive || methods.contains(&MethodKind::Password) || methods.is_empty();
+        let takes_key = methods.contains(&MethodKind::PublicKey) || methods.is_empty();
+        if takes_key
+            && (state.saved.is_none() || !takes_password)
+            && let Some(agent) = agent.take()
+        {
+            match agent_keys(handle, user, address, agent, agent_use, log).await? {
+                // Nothing to offer: on to the rest.
+                None => {}
+                Some(Step::Done) => return Ok(state.signed_in),
+                Some(Step::More(next)) => {
+                    log.line(LogKind::Step, "The key was accepted; the server asks for more");
+                    methods = next;
+                    continue;
+                }
+                Some(Step::Refused(next)) => methods = next,
+            }
+            continue;
+        }
+        state.agent_next = agent.is_some();
         let step = if interactive {
             keyboard_interactive(handle, user, address, &mut state, proxy, log).await?
         } else if methods.contains(&MethodKind::Password) || methods.is_empty() {
@@ -1238,7 +1328,12 @@ async fn authenticate(
             password(handle, user, address, &mut state, proxy, log).await?
         } else {
             let names: Vec<&str> = methods.iter().map(<&str>::from).collect();
-            return Err(anyhow!("{address} takes no password, only: {}.", names.join(", ")));
+            let hint = if methods.contains(&MethodKind::PublicKey) {
+                " Save a key for this host, or add one to your SSH agent."
+            } else {
+                ""
+            };
+            return Err(anyhow!("{address} takes no password, only: {}.{hint}", names.join(", ")));
         };
         match step {
             Step::Done => return Ok(state.signed_in),
@@ -1246,6 +1341,8 @@ async fn authenticate(
                 log.line(LogKind::Step, "Accepted; the server asks for more");
                 methods = next;
             }
+            // The saved password was rejected: the agent's keys before asking for one.
+            Step::Refused(next) if agent.is_some() && next.contains(&MethodKind::PublicKey) => methods = next,
             // Keyboard-interactive turned down: the password method, if the server takes it too.
             Step::Refused(mut next) if interactive && next.contains(&MethodKind::Password) => {
                 next.remove(MethodKind::KeyboardInteractive);
@@ -1255,6 +1352,84 @@ async fn authenticate(
         }
     }
     Err(anyhow!("Authentication failed."))
+}
+
+/// Sign in with the SSH Agent's keys, one after another, until the server takes one. `None`:
+/// there was no key to offer (no agent running, or not the key chosen for this Host).
+async fn agent_keys(
+    handle: &mut Handle<Client>,
+    user: &str,
+    address: &str,
+    agent: &Agent,
+    agent_use: &AgentUse,
+    log: &ConnectLog,
+) -> Result<Option<Step>> {
+    let opened = match agent.open(handle.agent_session_binding()).await {
+        Ok(Some(opened)) => opened,
+        Ok(None) => return Ok(None),
+        Err(err) => {
+            log.line(LogKind::Warn, &format!("{err:#}"));
+            return Ok(None);
+        }
+    };
+    let super::agent::Opened { mut client, keys, agent } = opened;
+    let keys: Vec<_> = match agent_use {
+        AgentUse::Key(fingerprint) => {
+            let chosen: Vec<_> = keys.into_iter().filter(|key| super::agent::fingerprint(key) == *fingerprint).collect();
+            if chosen.is_empty() {
+                log.line(LogKind::Warn, &format!("{} doesn't hold the key chosen for this host ({fingerprint})", agent.label()));
+            }
+            chosen
+        }
+        _ => keys,
+    };
+    if keys.is_empty() {
+        return Ok(None);
+    }
+    match keys.as_slice() {
+        [key] => {
+            let key = super::agent::Key::of(key);
+            log.line(LogKind::Step, &format!("Signing in as {user} with the SSH agent's key {}", key.label()));
+        }
+        _ => log.line(LogKind::Step, &format!("Signing in as {user} with the SSH agent's keys ({})", keys.len())),
+    }
+    let hash = handle.best_supported_rsa_hash().await?.flatten();
+    let mut refused = None;
+    let mut offered = 0;
+    for key in &keys {
+        if handle.is_closed() {
+            break;
+        }
+        offered += 1;
+        let result = match key {
+            russh::keys::agent::AgentIdentity::PublicKey { key, .. } => {
+                handle.authenticate_publickey_with(user, key.clone(), hash, &mut client).await
+            }
+            russh::keys::agent::AgentIdentity::Certificate { certificate, .. } => {
+                handle.authenticate_certificate_with(user, certificate.clone(), hash, &mut client).await
+            }
+        };
+        match result {
+            Ok(AuthResult::Success) => return Ok(Some(Step::Done)),
+            Ok(AuthResult::Failure { remaining_methods, partial_success: true }) => return Ok(Some(Step::More(remaining_methods))),
+            Ok(AuthResult::Failure { remaining_methods, partial_success: false }) => refused = Some(remaining_methods),
+            // Declined on the agent's side (a 1Password approval, a YubiKey not touched):
+            // the next key may still do.
+            // The server hung up (too many keys): not the agent's doing.
+            Err(_) if handle.is_closed() => break,
+            Err(err) => {
+                let key = super::agent::Key::of(key);
+                log.line(LogKind::Warn, &format!("The SSH agent didn't sign with {}: {err}", key.label()));
+            }
+        }
+    }
+    if handle.is_closed() {
+        return Err(anyhow!(
+            "{address} closed the connection after {offered} of the SSH agent's keys. Choose the key for this host in its sign-in settings, or turn the agent off there."
+        ));
+    }
+    log.line(LogKind::Warn, if keys.len() == 1 { "The server rejected the agent's key." } else { "The server rejected the agent's keys." });
+    Ok(refused.map(Step::Refused))
 }
 
 /// The password method: the saved password, then up to [`TRIES`] typed ones.
@@ -1281,6 +1456,9 @@ async fn password(
             AuthResult::Failure { remaining_methods, partial_success: false } => {
                 log.line(LogKind::Warn, "The saved password was rejected.");
                 state.last_error = Some("The saved password was rejected.".to_string());
+                if state.agent_next {
+                    return Ok(Step::Refused(remaining_methods));
+                }
                 refused = remaining_methods;
             }
         }
@@ -1347,6 +1525,9 @@ async fn keyboard_interactive(
                 };
                 log.line(LogKind::Warn, line);
                 state.last_error = Some(error.to_string());
+                if !typed && matches!(given, Some((_, false))) && state.agent_next {
+                    return Ok(Step::Refused(remaining_methods));
+                }
                 if typed {
                     failures += 1;
                 }

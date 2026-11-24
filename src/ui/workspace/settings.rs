@@ -249,6 +249,23 @@ impl Workspace {
             self._subscriptions.push(sub);
             self.word_separators_input = Some(input);
         }
+        if self.ssh_agent_input.is_none() {
+            let value = self.settings.ssh_agent.clone();
+            let placeholder = if cfg!(windows) { crate::session::agent::OPENSSH_PIPE } else { "$SSH_AUTH_SOCK" };
+            let input = cx.new(|cx| InputState::new(window, cx).default_value(value).placeholder(placeholder));
+            let sub = cx.subscribe_in(&input, window, |this, input, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    let value = input.read(cx).value().trim().to_string();
+                    if value != this.settings.ssh_agent {
+                        // Sessions connected from now on use it.
+                        this.settings.ssh_agent = value;
+                        this.save_settings_and_notify(cx);
+                    }
+                }
+            });
+            self._subscriptions.push(sub);
+            self.ssh_agent_input = Some(input);
+        }
         if self.font_input.is_none() {
             let family = self.settings.font_family.clone();
             let input = cx.new(|cx| InputState::new(window, cx).default_value(family).placeholder(crate::theme::TERMINAL_FONT));
@@ -1470,6 +1487,14 @@ impl Workspace {
         };
         let saved = self.vault.as_ref().map(|v| v.list().count());
         let known_hosts = self.data_dir.join("known_hosts");
+        let agent_hint = if cfg!(windows) {
+            "Empty uses the OpenSSH agent (where 1Password answers too), then Pageant. Type another agent's pipe, \
+             pageant for Pageant only, or none to sign in without one."
+        } else {
+            "Empty uses SSH_AUTH_SOCK. Type the socket of another agent, such as 1Password, Bitwarden or Secretive, \
+             or none to sign in without one."
+        };
+        let agent_input = self.ssh_agent_input.clone().map(|i| Input::new(&i).font_family(p.mono_family).into_any_element());
         let history = self.settings.command_history;
         let history_hosts = crate::history::hosts_with_history(&self.data_dir);
         group(
@@ -1490,6 +1515,7 @@ impl Workspace {
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_settings(SettingsSection::Vault, window, cx)))
                         .into_any_element(),
                 ),
+                setting_row(p, "SSH agent", agent_hint, div().w(px(260.)).children(agent_input).into_any_element()),
                 setting_row(
                     p,
                     "Trusted server keys",

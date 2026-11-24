@@ -11,7 +11,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::import::{Found, FoundGroup, FoundHost};
-use crate::model::{Host, Inherited, JumpHost, Library, PortForward, Project, StartupCommand, resolve};
+use crate::model::{AgentUse, Host, Inherited, JumpHost, Library, PortForward, Project, StartupCommand, resolve};
 
 /// The file name extension of a Project File.
 pub const EXTENSION: &str = "komando";
@@ -46,6 +46,8 @@ struct SharedProject {
     jump_hosts: Vec<SharedJump>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     port_forwards: Vec<PortForward>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    forward_agent: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -73,6 +75,13 @@ struct SharedHost {
     use_project_forwards: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     port_forwards: Vec<PortForward>,
+    /// Left out: the Project's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    forward_agent: Option<bool>,
+    /// Signs in without the SSH Agent. Which of the agent's keys a Host takes is not shared:
+    /// the person importing it has keys of their own.
+    #[serde(default, skip_serializing_if = "is_false")]
+    agent_off: bool,
 }
 
 /// A Jump Host without its password: asked when connecting, like any Jump Host without one.
@@ -107,6 +116,10 @@ fn is_true(value: &bool) -> bool {
     *value
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Startup Commands without any that answer a password question: their command would be a
 /// password. Forms refuse those, but a hand-edited `library.toml` or file may have one.
 fn shareable(commands: &[StartupCommand]) -> Vec<StartupCommand> {
@@ -128,6 +141,7 @@ pub fn write(library: &Library, project_id: &str) -> Option<String> {
             startup_commands: shareable(&project.startup_commands),
             jump_hosts: project.jump_hosts.iter().map(SharedJump::from_jump).collect(),
             port_forwards: project.port_forwards.clone(),
+            forward_agent: project.forward_agent,
         },
         hosts: library
             .hosts_of(project)
@@ -144,6 +158,8 @@ pub fn write(library: &Library, project_id: &str) -> Option<String> {
                 jump_hosts: host.jump_hosts.iter().map(SharedJump::from_jump).collect(),
                 use_project_forwards: host.use_project_forwards,
                 port_forwards: host.port_forwards.clone(),
+                forward_agent: host.forward_agent,
+                agent_off: host.agent == AgentUse::Off,
             })
             .collect(),
     };
@@ -184,6 +200,7 @@ pub fn read(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
     project.jump_hosts = shared.jump_hosts.iter().map(SharedJump::to_jump).filter(|j| !j.address.is_empty()).collect();
     project.startup_commands = shareable(&shared.startup_commands);
     project.port_forwards = shared.port_forwards.iter().filter(|f| usable(f)).cloned().collect();
+    project.forward_agent = shared.forward_agent;
 
     let mut notes = vec![];
     let mut hosts = vec![];
@@ -204,6 +221,7 @@ pub fn read(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
         host.jump_hosts = shared_host.jump_hosts.iter().map(SharedJump::to_jump).filter(|j| !j.address.is_empty()).collect();
         host.use_project_forwards = shared_host.use_project_forwards;
         host.port_forwards = shared_host.port_forwards.iter().filter(|f| usable(f)).cloned().collect();
+        host.forward_agent = shared_host.forward_agent;
         let resolved = resolve(&host, &project);
         hosts.push(FoundHost {
             name: host.name,
@@ -215,6 +233,8 @@ pub fn read(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
             jump_hosts: Some(resolved.jump_hosts.into_iter().map(|r| r.jump).collect()),
             startup_commands: Some(resolved.startup_commands),
             port_forwards: Some(resolved.port_forwards),
+            forward_agent: resolved.forward_agent,
+            agent_off: shared_host.agent_off,
             left_out: vec![],
             ..Default::default()
         });
@@ -342,6 +362,23 @@ mod tests {
         let broken = text.replace("[[project.port_forwards]]\nkind = \"socks\"\nport = 1080", "[[project.port_forwards]]\nkind = \"local\"\nport = 1080");
         assert_ne!(broken, text);
         assert!(read(&broken, &any_icon).unwrap().groups[0].port_forwards.is_empty());
+    }
+
+    #[test]
+    fn agent_forwarding_travels_but_not_which_agent_key() {
+        let mut lib = library();
+        lib.projects[0].forward_agent = true;
+        let db = lib.hosts.iter_mut().find(|h| h.name == "db").unwrap();
+        db.forward_agent = Some(false);
+        db.agent = AgentUse::Off;
+        let web = lib.hosts.iter_mut().find(|h| h.name == "web").unwrap();
+        web.agent = AgentUse::Key("SHA256:abc".into());
+        let text = write(&lib, &lib.projects[0].id).unwrap();
+        assert!(!text.contains("SHA256"), "{text}");
+        let found = read(&text, &any_icon).unwrap();
+        let [web, db] = found.groups[0].hosts.as_slice() else { panic!("two hosts") };
+        assert!(web.forward_agent && !web.agent_off);
+        assert!(!db.forward_agent && db.agent_off);
     }
 
     #[test]

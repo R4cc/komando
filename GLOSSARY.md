@@ -19,8 +19,8 @@ not a Host. A Host can be reached through several Jump Hosts, signed in to one a
 _Avoid_: Bastion, proxy, ProxyJump, gateway
 
 **Project Default**:
-A setting a Project gives its Hosts: user, Project Credential, Jump Hosts, Port Forwards,
-Startup Commands. Each Host takes it, sets its own, or switches it off. Jump Hosts, Port
+A setting a Project gives its Hosts: user, Project Credential, Agent Forwarding, Jump Hosts,
+Port Forwards, Startup Commands. Each Host takes it, sets its own, or switches it off. Jump Hosts, Port
 Forwards and Startup Commands add up instead: a Host goes through the Project's Jump Hosts first (unless it switches them off), then
 its own.
 _Avoid_: Inherited setting, project setting
@@ -121,6 +121,18 @@ _Avoid_: Secret, login, identity
 **Project Credential**:
 The Credential a Project's Hosts use by default unless a Host sets its own.
 _Avoid_: Project password, default login
+
+**SSH Agent**:
+A program on this computer that holds private keys and signs with them for Komando, which never
+sees the keys: `ssh-agent`, Pageant, 1Password, Bitwarden, KeePassXC, Secretive or a hardware
+key's. Komando offers its keys after a saved key and before passwords. A Host can offer any of
+them, only one, or none. Its keys are not Credentials and are not in the Vault.
+_Avoid_: Identity agent, key agent, keychain
+
+**Agent Forwarding**:
+Letting programs on a Host (`git`, `ssh`) sign in with the SSH Agent's keys while its SSH
+Session is connected. Off unless the Project or Host switches it on; never to Jump Hosts.
+_Avoid_: `-A`, ForwardAgent
 
 ## Appearance
 

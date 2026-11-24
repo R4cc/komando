@@ -8,7 +8,7 @@
 //! into and which hosts are already there. `apply` adds the hosts the user picked. Secrets
 //! never come over (see docs/adr/0008-importing-from-tabby.md).
 
-use crate::model::{Desktop, Host, Inherited, JumpHost, Library, PortForward, Project, ProjectId, Protocol, StartupCommand, resolve};
+use crate::model::{AgentUse, Desktop, Host, Inherited, JumpHost, Library, PortForward, Project, ProjectId, Protocol, StartupCommand, resolve};
 use crate::theme::PROJECT_COLORS;
 
 pub mod mobaxterm;
@@ -65,6 +65,10 @@ pub struct FoundHost {
     pub startup_commands: Option<Vec<StartupCommand>>,
     /// Every Port Forward the host opens, the Project's included. None: not known.
     pub port_forwards: Option<Vec<PortForward>>,
+    /// Agent Forwarding is on for it.
+    pub forward_agent: bool,
+    /// It signs in without the SSH Agent (`IdentityAgent none`).
+    pub agent_off: bool,
     /// Settings the user set in the other client that Komando does not take over.
     pub left_out: Vec<LeftOut>,
 }
@@ -362,6 +366,13 @@ pub fn apply(found: &Found, plan: &Plan, picked: &[Vec<bool>], library: &mut Lib
             }
             if let Some(forwards) = found.port_forwards.as_ref().filter(|_| found.protocol.is_ssh()) {
                 (host.use_project_forwards, host.port_forwards) = split_off_project(forwards, &project_forwards);
+            }
+            if found.protocol.is_ssh() {
+                // On for the Host itself, whatever its Project says; left to the Project otherwise.
+                host.forward_agent = found.forward_agent.then_some(true);
+                if found.agent_off {
+                    host.agent = AgentUse::Off;
+                }
             }
             library.projects[index].hosts.push(host.id.clone());
             library.hosts.push(host);

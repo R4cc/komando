@@ -168,6 +168,9 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 - **Server fingerprints checked.** New hosts ask for trust, changed keys are blocked, and your
   OpenSSH `known_hosts` is honoured.
 - **OpenSSH and PuTTY (`.ppk`) keys** both work.
+- **SSH agents** sign you in with keys that stay in `ssh-agent`, Pageant, 1Password, Bitwarden,
+  KeePassXC, Secretive or a YubiKey. Agent forwarding is off unless you switch it on for a project
+  or host.
 
 ### Make it yours
 

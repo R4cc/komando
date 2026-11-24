@@ -195,6 +195,7 @@ pub fn parse(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
             icon: text_of(profile.get("icon")).and_then(|i| lucide_icon(i, is_icon)),
             startup_commands,
             port_forwards: Some(port_forwards),
+            forward_agent: options.and_then(|o| o.get("agentForward")).is_some_and(|v| v.as_bool() == Some(true)),
             left_out: left,
             ..Default::default()
         };
@@ -310,8 +311,6 @@ fn left_out(user: &Value, builtin: &Value, profiles: &[&Map<String, Value>]) -> 
         opt("privateKeys").and_then(Value::as_array).into_iter().flatten().filter_map(|k| text_of(Some(k))).map(key_label).collect();
     if !keys.is_empty() {
         out.push(LeftOut::new(if keys.len() == 1 { "Private key" } else { "Private keys" }, keys.join(", ")));
-    } else if opt("auth").and_then(|v| text_of(Some(v))) == Some("agent") {
-        out.push(LeftOut::new("Sign-in", "SSH agent"));
     }
     if opt("password").and_then(|v| text_of(Some(v))).is_some() {
         out.push(LeftOut::new("Password", "saved in Tabby"));
@@ -330,9 +329,6 @@ fn left_out(user: &Value, builtin: &Value, profiles: &[&Map<String, Value>]) -> 
     }
     if opt("x11").is_some_and(|v| v.as_bool() == Some(true)) {
         out.push(LeftOut::new("X11 forwarding", "on"));
-    }
-    if opt("agentForward").is_some_and(|v| v.as_bool() == Some(true)) {
-        out.push(LeftOut::new("Agent forwarding", "on"));
     }
     if let Some(cwd) = opt("cwd").and_then(|v| text_of(Some(v))) {
         out.push(LeftOut::new("Starting folder", cwd));

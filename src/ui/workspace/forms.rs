@@ -13,7 +13,8 @@ use gpui_component::tooltip::Tooltip;
 
 use super::settings::{group, setting_row, settings_block};
 use super::{FIRST_PROJECT_COLOR, FIRST_PROJECT_NAME, Overlay, Workspace, form_field, icon_picker, kbd, segmented, switch};
-use crate::model::{CredentialId, Desktop, ForwardKind, Host, Inherited, JumpHost, Library, PortForward, Project, Protocol, StartupCommand};
+use crate::model::{AgentUse, CredentialId, Desktop, ForwardKind, Host, Inherited, JumpHost, Library, PortForward, Project, Protocol, StartupCommand};
+use crate::session::agent::{self, Agent};
 use crate::theme::{AppPalette, project_color};
 use crate::ui::widgets::{ButtonKind, badge, button, icon_button, icon_el, icon_text_button};
 use crate::vault::{Credential, Secret};
@@ -35,6 +36,21 @@ impl Source {
         }
     }
 }
+
+/// Which of the SSH Agent's keys a Host signs in with, as picked in the host form.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum AgentChoice {
+    Any,
+    One,
+    Off,
+}
+
+/// The agent's keys as the host form lists them: `None` while the agent is asked.
+type AgentKeys = Option<Result<Vec<agent::Key>, String>>;
+
+/// Under Agent Forwarding when it is on: what it lets the server do.
+const FORWARD_AGENT_WARNING: &str = "git and ssh on the host can sign in with your agent's keys while you're connected. \
+    So can anyone with root there: forward only to hosts you trust.";
 
 /// How a Host or Project signs in, as picked in a form.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -125,6 +141,12 @@ pub(super) struct HostForm {
     commands: Vec<CommandRow>,
     user_source: Source,
     sign_in: SignIn,
+    agent: AgentChoice,
+    /// The key for [`AgentChoice::One`], by fingerprint.
+    agent_key: Option<String>,
+    agent_keys: AgentKeys,
+    /// Agent Forwarding: the Project's (Project), on (Own) or off.
+    forward_agent: Source,
     /// Go through the Project's Jump Hosts first.
     use_project_jumps: bool,
     jumps: Vec<JumpRow>,
@@ -175,6 +197,8 @@ pub(super) struct ProjectForm {
     default_user: Entity<InputState>,
     sign_in: SignIn,
     key_path: Entity<InputState>,
+    /// Agent Forwarding for its hosts.
+    forward_agent: bool,
     jumps: Vec<JumpRow>,
     forwards: Vec<ForwardRow>,
     commands: Vec<CommandRow>,
@@ -406,6 +430,16 @@ impl Workspace {
             Inherited::Own(_) => SignIn::Saved,
             Inherited::Off => SignIn::Ask,
         };
+        let (agent, agent_key) = match &h.agent {
+            AgentUse::Any => (AgentChoice::Any, None),
+            AgentUse::Key(fingerprint) => (AgentChoice::One, Some(fingerprint.clone())),
+            AgentUse::Off => (AgentChoice::Off, None),
+        };
+        let forward_agent = match h.forward_agent {
+            None => Source::Project,
+            Some(true) => Source::Own,
+            Some(false) => Source::Off,
+        };
         let icon_query = self.new_icon_query(window, cx);
         let desktops = [Protocol::Rdp, Protocol::Vnc].map(|protocol| {
             let mut row = self.desktop_row(protocol, h.desktop(protocol), window, cx);
@@ -423,6 +457,10 @@ impl Workspace {
             commands,
             user_source: Source::of(&h.user),
             sign_in,
+            agent,
+            agent_key,
+            agent_keys: None,
+            forward_agent,
             use_project_jumps: h.use_project_jump_hosts,
             jumps,
             use_project_forwards: h.use_project_forwards,
@@ -437,7 +475,33 @@ impl Workspace {
             tab: FormTab::General,
             error: None,
         }));
+        self.list_agent_keys(cx);
         cx.notify();
+    }
+
+    /// Ask the SSH Agent for its keys, for the host form's "One key".
+    fn list_agent_keys(&mut self, cx: &mut Context<Self>) {
+        let Some(agent) = Agent::from_setting(&self.settings.ssh_agent) else {
+            if let Some(form) = self.host_form() {
+                form.agent_keys = Some(Ok(vec![]));
+            }
+            return;
+        };
+        let listing = crate::session::ssh::runtime().spawn(async move { agent.keys().await });
+        cx.spawn(async move |this, cx| {
+            let keys = match listing.await {
+                Ok(Ok(keys)) => Ok(keys),
+                Ok(Err(err)) => Err(format!("{err:#}")),
+                Err(err) => Err(format!("Couldn't ask the SSH agent: {err}")),
+            };
+            let _ = this.update(cx, |this, cx| {
+                if let Some(form) = this.host_form() {
+                    form.agent_keys = Some(keys);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// A one-line form field; Enter in it submits the open form.
@@ -682,6 +746,19 @@ impl Workspace {
             Source::Own if user.is_empty() => return Err(on_tab(FormTab::SignIn)("Type a user name, or take the project's.".into())),
             Source::Own => Inherited::Own(user),
         };
+        let agent = match (form.agent, &form.agent_key) {
+            (AgentChoice::Any, _) => AgentUse::Any,
+            (AgentChoice::Off, _) => AgentUse::Off,
+            (AgentChoice::One, Some(fingerprint)) => AgentUse::Key(fingerprint.clone()),
+            (AgentChoice::One, None) => {
+                return Err(on_tab(FormTab::SignIn)("Pick one of the SSH agent's keys, or let the host offer any of them.".into()));
+            }
+        };
+        let forward_agent = match form.forward_agent {
+            Source::Project => None,
+            Source::Own => Some(true),
+            Source::Off => Some(false),
+        };
         let jumps = read_jump_rows(&form.jumps, cx).map_err(on_tab(FormTab::JumpHosts))?;
         let use_project_jumps = form.use_project_jumps;
         let use_project_forwards = form.use_project_forwards;
@@ -717,6 +794,8 @@ impl Workspace {
         host.address = address;
         host.port = port;
         host.user = user;
+        host.agent = agent;
+        host.forward_agent = forward_agent;
         host.use_project_jump_hosts = use_project_jumps;
         host.use_project_forwards = use_project_forwards;
         host.port_forwards = port_forwards;
@@ -878,7 +957,137 @@ impl Workspace {
     }
 
     fn host_sign_in_pane(&self, form: &HostForm, host: Option<&Host>, project: Option<&Project>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        group(p, vec![self.host_user_field(form, project, p, cx), self.host_credential_field(form, host, project, p, cx)])
+        group(
+            p,
+            vec![
+                self.host_user_field(form, project, p, cx),
+                self.host_credential_field(form, host, project, p, cx),
+                self.host_agent_field(form, p, cx),
+                self.host_forward_agent_field(form, project, p, cx),
+            ],
+        )
+    }
+
+    fn host_agent_field(&self, form: &HostForm, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        const OPTIONS: [(&str, AgentChoice); 3] = [("Any key", AgentChoice::Any), ("One key", AgentChoice::One), ("Off", AgentChoice::Off)];
+        let labels = OPTIONS.map(|(label, choice)| (label, choice == form.agent));
+        let choice = segmented("hf-agent", &labels, p, cx, |this, i, _, cx| {
+            if let Some(form) = this.host_form() {
+                form.agent = OPTIONS[i].1;
+                // The only key there is needs no picking.
+                if form.agent == AgentChoice::One
+                    && form.agent_key.is_none()
+                    && let Some(Ok([key])) = form.agent_keys.as_ref().map(|keys| keys.as_ref().map(Vec::as_slice))
+                {
+                    form.agent_key = Some(key.fingerprint.clone());
+                }
+                form.error = None;
+            }
+            cx.notify();
+        });
+        let no_agent = Agent::from_setting(&self.settings.ssh_agent).is_none();
+        let hint = match form.agent {
+            AgentChoice::Off => "The SSH agent isn't used for this host.",
+            _ if no_agent => "There is no SSH agent to use: Settings → Security says where Komando looks for one.",
+            AgentChoice::Any => {
+                "Signs in with the keys your SSH agent holds, such as 1Password's or a YubiKey's. A key or password saved for the host goes first."
+            }
+            AgentChoice::One => {
+                "Only this key is offered, so a server that counts each key as a failed try doesn't turn you away first."
+            }
+        };
+        stacked("SSH agent", hint, p)
+            .child(div().flex().child(choice))
+            .when(form.agent == AgentChoice::One && !no_agent, |el| el.child(self.agent_key_list(form, p, cx)))
+            .into_any_element()
+    }
+
+    /// The agent's keys to pick the Host's one from, and the one it has if the agent doesn't
+    /// hold it now.
+    fn agent_key_list(&self, form: &HostForm, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let keys = match &form.agent_keys {
+            None => return hint_text("Asking the SSH agent for its keys…".into(), p),
+            Some(Err(err)) => return hint_text(err.clone(), p),
+            Some(Ok(keys)) => keys,
+        };
+        let mut rows: Vec<(agent::Key, bool)> = keys.iter().map(|key| (key.clone(), true)).collect();
+        if let Some(chosen) = &form.agent_key
+            && !keys.iter().any(|key| &key.fingerprint == chosen)
+        {
+            let missing = agent::Key { fingerprint: chosen.clone(), algorithm: String::new(), comment: String::new(), certificate: false };
+            rows.insert(0, (missing, false));
+        }
+        if rows.is_empty() {
+            return hint_text("The SSH agent holds no keys. Add one to it, then open this form again.".into(), p);
+        }
+        let items = rows.into_iter().enumerate().map(|(i, (key, held))| {
+            let selected = form.agent_key.as_ref() == Some(&key.fingerprint);
+            let label = if held { key.label().to_string() } else { "Not in the agent now".to_string() };
+            let mut detail = key.algorithm.clone();
+            if key.certificate {
+                detail.push_str(" certificate");
+            }
+            // Without a comment the label is the fingerprint already.
+            if !held || !key.comment.trim().is_empty() {
+                if !detail.is_empty() {
+                    detail.push_str(" · ");
+                }
+                detail.push_str(&key.fingerprint);
+            }
+            let fingerprint = key.fingerprint.clone();
+            div()
+                .id(("hf-agent-key", i))
+                .role(gpui::Role::RadioButton)
+                .aria_label(SharedString::from(label.clone()))
+                .aria_toggled(if selected { gpui::Toggled::True } else { gpui::Toggled::False })
+                .tab_index(0)
+                .focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(10.))
+                .py(px(7.))
+                .rounded(p.corner(8.))
+                .border_1()
+                .border_color(if selected { p.brand } else { p.border })
+                .cursor_pointer()
+                .when(selected, |el| el.bg(p.brand_soft))
+                .when(!selected, |el| el.hover(|s| s.bg(p.hover)))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    if let Some(form) = this.host_form() {
+                        form.agent_key = Some(fingerprint.clone());
+                        form.error = None;
+                    }
+                    cx.notify();
+                }))
+                .child(icon_el("key-round", 14., if held { p.text_muted } else { p.text_faint }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(div().truncate().text_size(px(13.)).text_color(if held { p.text } else { p.text_muted }).child(label))
+                        .when(!detail.is_empty(), |el| {
+                            el.child(div().truncate().text_size(px(11.5)).font_family(p.mono_family).text_color(p.text_muted).child(detail))
+                        }),
+                )
+                .when(selected, |el| el.child(icon_el("check", 14., p.brand)))
+        });
+        div().flex().flex_col().gap(px(6.)).children(items).into_any_element()
+    }
+
+    fn host_forward_agent_field(&self, form: &HostForm, project: Option<&Project>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let options = [("From project", Source::Project), ("On", Source::Own), ("Off", Source::Off)];
+        let choice = source_choice("hf-forward-agent", &options, form.forward_agent, p, cx, |form, source| form.forward_agent = source);
+        let hint = match (form.forward_agent, project.is_some_and(|pr| pr.forward_agent)) {
+            (Source::Project, false) => "The project doesn't forward the SSH agent.".to_string(),
+            (Source::Project, true) => format!("The project forwards the SSH agent. {FORWARD_AGENT_WARNING}"),
+            (Source::Own, _) => FORWARD_AGENT_WARNING.to_string(),
+            (Source::Off, _) => "Not forwarded, even if the project forwards it.".to_string(),
+        };
+        stacked("Agent forwarding", &hint, p).child(div().flex().child(choice)).into_any_element()
     }
 
     fn host_user_field(&self, form: &HostForm, project: Option<&Project>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -1736,6 +1945,7 @@ impl Workspace {
             default_user,
             sign_in: if pr.credential.is_some() { SignIn::Saved } else { SignIn::Ask },
             key_path,
+            forward_agent: pr.forward_agent,
             jumps,
             forwards,
             commands,
@@ -1774,8 +1984,8 @@ impl Workspace {
             clash_with_hosts(&port_forwards, &hosts).map_err(on_tab(FormTab::Forwards))?;
         }
         let startup_commands = read_command_rows(&form.commands, cx).map_err(on_tab(FormTab::Terminal))?;
-        let (editing, color, icon, sign_in, highlight) =
-            (form.editing.clone(), form.color.clone(), form.icon.clone(), form.sign_in, form.highlight);
+        let (editing, color, icon, sign_in, highlight, forward_agent) =
+            (form.editing.clone(), form.color.clone(), form.icon.clone(), form.sign_in, form.highlight, form.forward_agent);
 
         let mut project = editing
             .as_deref()
@@ -1799,6 +2009,7 @@ impl Workspace {
         project.default_user = (!default_user.is_empty()).then_some(default_user);
         project.startup_commands = startup_commands;
         project.port_forwards = port_forwards;
+        project.forward_agent = forward_agent;
         project.highlight = highlight;
         let before = std::mem::take(&mut project.jump_hosts);
 
@@ -1939,6 +2150,25 @@ impl Workspace {
                     .child(div().flex().child(choice))
                     .when(form.sign_in == SignIn::KeyFile, |el| el.child(key_file_row(&form.key_path, "pf", p, cx)))
                     .children(reach_note(hosts, |h| matches!(h.credential, Inherited::Project), p))
+                    .into_any_element(),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .child(setting_row(
+                        p,
+                        "Agent forwarding",
+                        if form.forward_agent { FORWARD_AGENT_WARNING } else { "Off: the SSH agent stays on this PC." },
+                        switch("pf-forward-agent".into(), "Agent forwarding", form.forward_agent, p)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                if let Some(form) = this.project_form() {
+                                    form.forward_agent = !form.forward_agent;
+                                }
+                                cx.notify();
+                            }))
+                            .into_any_element(),
+                    ))
+                    .children(reach_note(hosts, |h| h.forward_agent.is_none(), p))
                     .into_any_element(),
             ],
         )

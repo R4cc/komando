@@ -17,15 +17,15 @@ Default would apply to every Host in the Project, while a pattern applies only t
 matches. The resolved values are what the user gets from `ssh` today.
 
 What comes over: `HostName` (with `%h`), `Port`, `User`, `ProxyJump` as typed-in Jump Hosts
-(ADR 0007), and `LocalForward`, `RemoteForward` and `DynamicForward` as Port Forwards
-(ADR 0015). `ProxyJump` is resolved like `ssh -J`: each jump's name is looked up in the same
+(ADR 0007), `LocalForward`, `RemoteForward` and `DynamicForward` as Port Forwards
+(ADR 0015), and `ForwardAgent yes` and `IdentityAgent none` (ADR 0017). `ProxyJump` is resolved like `ssh -J`: each jump's name is looked up in the same
 file. The first jump's own `ProxyJump` comes before it. Later jumps are reached through the
 one before them, which overrides theirs.
 
 What stays in the file, listed per host in the review: `IdentityFile` and `CertificateFile`
 (keys stay where they are; importing them into the Vault means asking for each passphrase,
-which belongs in the host form), `ProxyCommand`, `ForwardAgent` (until agent support), X11
-forwarding, `RemoteCommand`, `LocalCommand`, `SetEnv`, keep-alives, and forwards Komando can't
+which belongs in the host form), `ProxyCommand`, an `IdentityAgent` path or a `ForwardAgent`
+socket (Komando uses the agent set in its Settings), X11 forwarding, `RemoteCommand`, `LocalCommand`, `SetEnv`, keep-alives, and forwards Komando can't
 represent (Unix sockets, a reverse SOCKS proxy, a specific bind address). A Jump Host's own
 key, certificate or proxy command is listed with the host that goes through it ("Private key
 of jump host bastion"), since a Jump Host's sign-in is typed in, not imported.

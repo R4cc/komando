@@ -476,6 +476,8 @@ pub struct Workspace {
     theme_preview: Option<settings::ThemePreview>,
     /// Settings → Mouse & clipboard: the characters that end a double-clicked word.
     word_separators_input: Option<Entity<InputState>>,
+    /// Settings → Security's "SSH agent" path.
+    ssh_agent_input: Option<Entity<InputState>>,
     /// Settings → Terminal: the regular and bold font weight fields.
     weight_inputs: Option<[Entity<InputState>; 2]>,
     /// Settings → Local shells: the form that adds a shell or edits one.
@@ -628,6 +630,7 @@ impl Workspace {
             presentation: None,
             font_input: None,
             word_separators_input: None,
+            ssh_agent_input: None,
             appearance_other_mode: false,
             theme_preview: None,
             weight_inputs: None,
@@ -1654,7 +1657,14 @@ impl Workspace {
                     port: host.port,
                     user: host.user,
                 });
-                let target = ssh::Target { hops, known_hosts: self.data_dir.join("known_hosts"), forwards: host.port_forwards };
+                let target = ssh::Target {
+                    hops,
+                    known_hosts: self.data_dir.join("known_hosts"),
+                    forwards: host.port_forwards,
+                    agent: session::agent::Agent::from_setting(&self.settings.ssh_agent),
+                    host_agent: host.agent,
+                    forward_agent: host.forward_agent,
+                };
                 Some(ssh::spawn(target, size, term, proxy))
             }
             SessionKind::Desktop { .. } => return,

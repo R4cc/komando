@@ -8,6 +8,16 @@ All notable changes to Komando are listed here. The format follows
 
 ### Added
 
+- Sign in with keys from your SSH agent: `ssh-agent`, Pageant, the Windows OpenSSH agent,
+  1Password, Bitwarden, KeePassXC, Secretive or a hardware key. Komando uses the agent
+  automatically, after a key saved for the host and before asking for a password; a saved
+  password still goes first. In a host's Sign-in settings you can offer only one of the agent's
+  keys, for servers that turn you away after a few, or not use the agent at all. Settings →
+  Security says where the agent is, if it isn't the usual one.
+- Agent forwarding, so `git` and `ssh` on a server can use your agent's keys. It is off unless
+  you switch it on for a project or a host, and it never goes to jump hosts.
+- Importing from `~/.ssh/config` takes `ForwardAgent yes` and `IdentityAgent none`, and
+  importing from Tabby takes agent forwarding.
 - Settings → About links to Komando's source code on GitHub.
 
 ### Changed

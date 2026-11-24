@@ -8,9 +8,10 @@
 //!
 //! Komando takes over the name, `HostName` (with `%h`), `Port`, `User`, `ProxyJump` (as Jump
 //! Hosts, each looked up in the same file, as `ssh` does) and `LocalForward`, `RemoteForward`
-//! and `DynamicForward` (as Port Forwards). Settings that change how `ssh` connects but don't
-//! come over are listed per host, such as `IdentityFile` (keys stay where they are, see
-//! docs/adr/0016-importing-from-the-ssh-config.md), `ProxyCommand` and `ForwardAgent`.
+//! and `DynamicForward` (as Port Forwards), `ForwardAgent yes` and `IdentityAgent none`. Settings
+//! that change how `ssh` connects but don't come over are listed per host, such as
+//! `IdentityFile` (keys stay where they are, see docs/adr/0016-importing-from-the-ssh-config.md)
+//! and `ProxyCommand`.
 //! `Match` blocks count when they depend only on the name (`all`, `host`, `originalhost`,
 //! `final`); one that depends on the user, a command or the network is left out with a note.
 
@@ -565,8 +566,13 @@ fn left_out(settings: &Settings) -> Vec<LeftOut> {
         let full = settings.values.iter().find(|(k, _)| k == "proxycommand").map(|(_, a)| a.join(" ")).unwrap_or_else(|| command.to_string());
         out.push(LeftOut::new("Proxy command", full));
     }
-    if settings.is_yes("forwardagent") {
-        out.push(LeftOut::new("Agent forwarding", "on"));
+    // `yes` comes over (see `found`). A socket or an environment variable names another
+    // agent than the one Komando uses.
+    if let Some(forward) = settings.first("forwardagent").filter(|v| !["yes", "no"].iter().any(|w| v.eq_ignore_ascii_case(w))) {
+        out.push(LeftOut::new("Agent forwarding", forward));
+    }
+    if let Some(agent) = settings.first("identityagent").filter(|v| !v.eq_ignore_ascii_case("none") && !["SSH_AUTH_SOCK", "$SSH_AUTH_SOCK"].contains(v)) {
+        out.push(LeftOut::new("SSH agent", format!("{agent}: Komando uses the one set in Settings")));
     }
     if settings.is_yes("forwardx11") || settings.is_yes("forwardx11trusted") {
         out.push(LeftOut::new("X11 forwarding", "on"));
@@ -626,6 +632,8 @@ fn found(lines: &[Line]) -> Found {
             user,
             jump_hosts: Some(jump_hosts),
             port_forwards: Some(port_forwards),
+            forward_agent: settings.is_yes("forwardagent"),
+            agent_off: settings.first("identityagent").is_some_and(|v| v.eq_ignore_ascii_case("none")),
             left_out: left,
             ..Default::default()
         });
@@ -791,8 +799,35 @@ mod tests {
             [
                 LeftOut::new("Private keys", "id_work and id_ed25519"),
                 LeftOut::new("Proxy command", "nc -X 5 -x proxy:1080 %h %p"),
-                LeftOut::new("Agent forwarding", "on"),
                 LeftOut::new("Keep-alive", "every 30 s"),
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_forwarding_and_turning_the_agent_off_come_over() {
+        let found = parse(
+            "Host web
+  ForwardAgent yes
+Host db
+  IdentityAgent none
+Host other
+  ForwardAgent $MY_AGENT
+  IdentityAgent ~/.1password/agent.sock
+",
+        );
+        let web = host(&found, "web");
+        assert!(web.forward_agent && !web.agent_off);
+        assert_eq!(web.left_out, []);
+        let db = host(&found, "db");
+        assert!(!db.forward_agent && db.agent_off);
+        let other = host(&found, "other");
+        assert!(!other.forward_agent && !other.agent_off);
+        assert_eq!(
+            other.left_out,
+            [
+                LeftOut::new("Agent forwarding", "$MY_AGENT"),
+                LeftOut::new("SSH agent", "~/.1password/agent.sock: Komando uses the one set in Settings"),
             ]
         );
     }

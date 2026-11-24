@@ -463,7 +463,7 @@ impl LocalSshd {
 
     fn connect(&self, hops: Vec<komando::session::ssh::Hop>, size: GridSize) -> Running {
         let (term, proxy, events) = Running::new(size);
-        let target = komando::session::ssh::Target { hops, known_hosts: self.dir.join("known_hosts"), forwards: vec![] };
+        let target = komando::session::ssh::Target { hops, known_hosts: self.dir.join("known_hosts"), forwards: vec![], ..Default::default() };
         let sink = komando::session::ssh::spawn(target, size, term.clone(), proxy.clone());
         Running { term, proxy, sink, events, size, ended: false, hops: vec![] }
     }

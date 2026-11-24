@@ -169,7 +169,7 @@ impl Connected {
             user: Some("alice".into()),
             secret: Some(Secret::Password { password: PASSWORD.into() }),
         };
-        let target = komando::session::ssh::Target { hops: vec![hop], known_hosts: dir.join("known_hosts"), forwards };
+        let target = komando::session::ssh::Target { hops: vec![hop], known_hosts: dir.join("known_hosts"), forwards, ..Default::default() };
         let sink = komando::session::ssh::spawn(target, size, term, proxy);
         Self { sink, events, seen: vec![], dir }
     }
