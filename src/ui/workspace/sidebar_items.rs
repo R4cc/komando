@@ -639,7 +639,6 @@ impl Workspace {
                     .bg(if active { p.active } else { p.sidebar })
                     .invisible()
                     .group_hover("session-card", |s| s.visible())
-                    
                     .child(div().rounded(p.corner(6.)).bg(if active { p.active } else { p.hover }).child(close)),
             )
             .children(self.row_menu_anchor(NavTarget::Session(id), cx))
