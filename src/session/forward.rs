@@ -312,6 +312,8 @@ fn describe_io(err: &std::io::Error) -> String {
 /// How long a SOCKS client has to say where it wants to go. A program using the proxy says so
 /// at once; one that connects and stays silent would otherwise hold a socket and a task for as
 /// long as the Session runs, and enough of them run this computer out of sockets.
+// Shortened only for this crate's unit tests; integration tests (`tests/forwards.rs`) link the
+// library as the app does and get the full timeout.
 const HANDSHAKE_TIMEOUT: std::time::Duration =
     if cfg!(test) { std::time::Duration::from_millis(300) } else { std::time::Duration::from_secs(10) };
 

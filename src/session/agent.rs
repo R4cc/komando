@@ -144,6 +144,8 @@ impl Agent {
             Agent::Pageant => {
                 Ok(AgentClient::connect_pageant().await.map_err(|err| anyhow!("Couldn't reach Pageant: {err}"))?.dynamic())
             }
+            // Not reached: only `client` calls this, and it picks the agent for `Agent::Windows`
+            // itself. Kept so the match stays whole.
             #[cfg(windows)]
             Agent::Windows => Err(anyhow!("No agent chosen.")),
             #[cfg(not(windows))]

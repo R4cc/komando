@@ -700,7 +700,6 @@ fn replace_known_host(host: &str, port: u16, key: &PublicKey, path: &std::path::
     }
 }
 
-/// Ask the user, with `clock` stopped until they answer.
 /// The `@cert-authority` lines of Komando's known_hosts and then the user's OpenSSH one.
 fn known_authorities(own: &std::path::Path) -> Vec<super::host_cert::Authority> {
     let mut authorities = super::host_cert::read(own);
@@ -735,6 +734,7 @@ impl Client {
     }
 }
 
+/// Ask the user, with `clock` stopped until they answer.
 async fn ask(
     proxy: &EventProxy,
     clock: &ConnectClock,
@@ -1696,6 +1696,8 @@ async fn ask_password(user: &str, address: &str, state: &mut PasswordState<'_>, 
 /// A hidden question that asks for the password, which a saved password may answer. Servers
 /// word it "Password:", "Password for alice:", "alice@host's password:" and the like; a
 /// question for a code or a "passcode" is not one.
+// Narrower than `password_prompt::mentions_password` on purpose: that one also counts "PIN" and
+// "passphrase", which ask for a code or a key's secret, and a saved password must not answer those.
 fn is_password_question(prompt: &str, echo: bool) -> bool {
     !echo && prompt.to_lowercase().contains("password")
 }

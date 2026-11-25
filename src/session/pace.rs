@@ -210,12 +210,15 @@ impl Pace {
         let rate = self.rates.iter().map(|(_, rate)| *rate).fold(0.0, f64::max);
         let window = window.max(rate * FLOOR.as_secs_f64());
         self.window = (window.min(u32::MAX as f64) as u32).clamp(MIN_WINDOW, self.max);
-        #[cfg(test)]
-        if std::env::var_os("KOMANDO_PACE_DEBUG").is_some() {
+        if *PACE_DEBUG {
             eprintln!("pace: rtt {rtt:?} received {received} queueing {queueing:?} target {target:?} -> window {}", self.window);
         }
     }
 }
+
+/// `KOMANDO_PACE_DEBUG` set: print each ping the pacing takes into account, to follow it in a
+/// benchmark (`tests/throughput.rs`, which links the library as the app does). Read once.
+static PACE_DEBUG: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("KOMANDO_PACE_DEBUG").is_some());
 
 #[cfg(test)]
 mod tests {
