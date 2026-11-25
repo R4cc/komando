@@ -887,6 +887,14 @@ pub struct ResolvedHost {
     pub icon: String,
 }
 
+impl ResolvedHost {
+    /// Whether connecting reads the Vault: the Host or one of its Jump Hosts signs in with a
+    /// saved Credential. Opening and reconnecting both unlock it first when it's locked.
+    pub fn signs_in_with_vault(&self) -> bool {
+        self.credential.is_some() || self.jump_hosts.iter().any(|j| j.jump.credential.is_some())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialSource {
     Host,
@@ -2808,6 +2816,27 @@ startup_commands = [\"uptime\"]
         let r = resolve(&host(None, None, None), &project(None, None));
         assert_eq!(r.credential, None);
         assert_eq!(r.credential_source, CredentialSource::None);
+        assert!(!r.signs_in_with_vault());
+    }
+
+    #[test]
+    fn a_saved_credential_anywhere_on_the_way_needs_the_vault() {
+        assert!(resolve(&host(Some("own"), None, None), &project(None, None)).signs_in_with_vault());
+        assert!(resolve(&host(None, None, None), &project(Some("shared"), None)).signs_in_with_vault());
+
+        let mut h = host(None, None, None);
+        h.jump_hosts = vec![jump("bastion.lan")];
+        assert!(!resolve(&h, &project(None, None)).signs_in_with_vault(), "jump host asks for its password");
+        h.jump_hosts[0].credential = Some("bastion-key".into());
+        assert!(resolve(&h, &project(None, None)).signs_in_with_vault());
+
+        // A Project's Jump Host counts too, unless the Host switches them off.
+        let mut p = project(None, None);
+        p.jump_hosts = vec![JumpHost { credential: Some("gate".into()), ..jump("gate.lan") }];
+        let mut h = host(None, None, None);
+        assert!(resolve(&h, &p).signs_in_with_vault());
+        h.use_project_jump_hosts = false;
+        assert!(!resolve(&h, &p).signs_in_with_vault());
     }
 
     #[test]

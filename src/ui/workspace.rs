@@ -383,6 +383,8 @@ enum ConfirmAction {
 /// What waits for the Vault: done once the master password is entered.
 enum Pending {
     Open { project_id: String, host_id: String },
+    /// Reconnect a dropped SSH Session that signs in with a saved Credential.
+    Reconnect { session: usize },
     /// Connect a Remote Desktop Session whose password is in the Vault.
     Desktop { session: usize },
     /// Save a Remote Desktop's password typed in with "Remember" ticked.
@@ -1162,6 +1164,7 @@ impl Workspace {
                 for job in pending {
                     match job {
                         Pending::Open { project_id, host_id } => self.open_host(&project_id, &host_id, window, cx),
+                        Pending::Reconnect { session } => self.reconnect(session, window, cx),
                         Pending::Desktop { session } => self.connect_desktop(session, window, cx),
                         Pending::SaveDesktop { host_id, protocol, user, password } => {
                             self.save_desktop_password(&host_id, protocol, user, password, cx)
@@ -1190,6 +1193,7 @@ impl Workspace {
         for job in std::mem::take(&mut self.pending) {
             match job {
                 Pending::Open { project_id, host_id } => self.open_host_session(&project_id, &host_id, window, cx),
+                Pending::Reconnect { session } => self.reconnect_with(session, false, window, cx),
                 // Connects without the saved password: the desktop asks for one.
                 Pending::Desktop { session } => self.connect_desktop_without_vault(session, window, cx),
                 Pending::Form => self.show_form_error(
@@ -1531,17 +1535,24 @@ impl Workspace {
     /// Open a new Session for a Host. If any Host on the way has a saved Credential, the
     /// Vault is unlocked first (or skipped, and passwords are asked instead).
     fn open_host(&mut self, project_id: &str, host_id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let needs_vault = self
-            .library
-            .resolve(project_id, host_id)
-            .is_some_and(|host| host.credential.is_some() || host.jump_hosts.iter().any(|j| j.jump.credential.is_some()));
-        if needs_vault && self.vault.is_none() {
+        if self.host_needs_unlock(project_id, host_id) {
             self.pending.push(Pending::Open { project_id: project_id.into(), host_id: host_id.into() });
-            let name = self.library.host(host_id).map(|h| h.name.clone()).unwrap_or_else(|| "This host".into());
-            self.show_unlock(format!("{name} signs in with a password or key saved in your vault."), window, cx);
+            self.show_host_unlock(host_id, window, cx);
             return;
         }
         self.open_host_session(project_id, host_id, window, cx);
+    }
+
+    /// Connecting to the Host from this Project would read the locked Vault (see
+    /// `ResolvedHost::signs_in_with_vault`). Opening and reconnecting both ask first.
+    fn host_needs_unlock(&self, project_id: &str, host_id: &str) -> bool {
+        self.vault.is_none() && self.library.resolve(project_id, host_id).is_some_and(|host| host.signs_in_with_vault())
+    }
+
+    /// Ask for the Master Password to connect to a Host, once its job is in `pending`.
+    fn show_host_unlock(&mut self, host_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.library.host(host_id).map(|h| h.name.clone()).unwrap_or_else(|| "This host".into());
+        self.show_unlock(format!("{name} signs in with a password or key saved in your vault."), window, cx);
     }
 
     fn open_host_session(&mut self, project_id: &str, host_id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1677,16 +1688,33 @@ impl Workspace {
         });
     }
 
-    /// Start a new connection in the same terminal: the earlier output stays above.
+    /// Start a new connection in the same terminal: the earlier output stays above. Like
+    /// opening, it unlocks the Vault first when the Host signs in with a saved Credential.
     fn reconnect(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.reconnect_with(id, true, window, cx);
+    }
+
+    /// `use_vault` false: the Vault stayed locked, so reconnect and ask for passwords instead.
+    fn reconnect_with(&mut self, id: usize, use_vault: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_completion_notification(id);
         let Some(entry) = self.sessions.get(id) else { return };
         let (view, kind, project_id) = (entry.ui.view.clone(), entry.kind().clone(), entry.project_id().map(str::to_string));
         let SessionView::Terminal(view) = view else {
+            // Remote Desktops ask for the Vault themselves.
             self.connect_desktop(id, window, cx);
             self.focus_active(window, cx);
             return;
         };
+        if let (true, SessionKind::Ssh { host_id }, Some(project_id)) = (use_vault, &kind, project_id.as_deref()) {
+            if self.host_needs_unlock(project_id, host_id) {
+                // Clicked again while the prompt is up: reconnect once, not twice.
+                if !self.pending.iter().any(|job| matches!(job, Pending::Reconnect { session } if *session == id)) {
+                    self.pending.push(Pending::Reconnect { session: id });
+                }
+                self.show_host_unlock(host_id, window, cx);
+                return;
+            }
+        }
         view.update(cx, |v, _| v.close());
         self.start_backend(&view, &kind, project_id.as_deref(), cx);
         self.focus_active(window, cx);
@@ -2933,7 +2961,7 @@ impl Workspace {
         let p = p.panel();
         let creating = state.creating;
         let waiting = !self.pending.is_empty();
-        let skip_label = if self.pending.iter().any(|job| matches!(job, Pending::Open { .. })) {
+        let skip_label = if self.pending.iter().any(|job| matches!(job, Pending::Open { .. } | Pending::Reconnect { .. })) {
             "Use server password"
         } else {
             "Not now"
