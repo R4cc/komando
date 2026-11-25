@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use futures::StreamExt;
-use russh::server::{self, Msg, Server as _, Session};
+use russh::server::{self, Msg, Session};
 use russh::{Channel, ChannelId};
 use tokio::sync::Mutex;
 
@@ -29,6 +29,8 @@ use komando::theme::TerminalPalette;
 mod delay_proxy;
 #[path = "support/log_line.rs"]
 mod log_line;
+#[path = "support/ssh_server.rs"]
+mod ssh_server;
 
 use delay_proxy::DelayProxy;
 use log_line::log_line;
@@ -259,23 +261,8 @@ fn start_jump_server(connect_delay: Duration) -> (u16, tokio::runtime::Runtime) 
     start(LogServer { connect_delay, ..LogServer::new(0, 0) }, 2)
 }
 
-fn start(mut server: LogServer, threads: usize) -> (u16, tokio::runtime::Runtime) {
-    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(threads).enable_all().build().unwrap();
-    let key = russh::keys::PrivateKey::from(russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[7; 32]));
-    let config = Arc::new(server::Config {
-        keys: vec![key],
-        auth_rejection_time: Duration::ZERO,
-        auth_rejection_time_initial: Some(Duration::ZERO),
-        inactivity_timeout: None,
-        nodelay: true,
-        ..Default::default()
-    });
-    let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    runtime.spawn(async move {
-        let _ = server.run_on_socket(config, &listener).await;
-    });
-    (port, runtime)
+fn start(server: LogServer, threads: usize) -> (u16, tokio::runtime::Runtime) {
+    ssh_server::start(server, server::Config { inactivity_timeout: None, nodelay: true, ..ssh_server::config(7) }, threads)
 }
 
 /// What was uploaded to the benchmark server, by path: how far the writes to each file reached.

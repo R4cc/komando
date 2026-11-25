@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use russh::server::{self, Msg, Server as _, Session};
+use russh::server::{self, Msg, Session};
 use russh::{Channel, ChannelId, MethodKind, MethodSet};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -14,6 +14,9 @@ use komando::model::PortForward;
 use komando::session::forward::{ForwardState, ForwardStatus};
 use komando::session::{EventProxy, GridSize, Prompt, SessionEvent, new_term};
 use komando::vault::Secret;
+
+#[path = "support/ssh_server.rs"]
+mod ssh_server;
 
 const PASSWORD: &str = "secret";
 
@@ -107,22 +110,8 @@ impl server::Handler for TestServer {
 
 /// Starts a server on its own runtime and returns its port.
 fn start(server: TestServer) -> (u16, tokio::runtime::Runtime) {
-    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-    let key = russh::keys::PrivateKey::from(russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[7; 32]));
-    let config = Arc::new(server::Config {
-        keys: vec![key],
-        methods: MethodSet::from(&[MethodKind::Password][..]),
-        auth_rejection_time: Duration::ZERO,
-        auth_rejection_time_initial: Some(Duration::ZERO),
-        ..Default::default()
-    });
-    let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let mut server = server;
-    runtime.spawn(async move {
-        let _ = server.run_on_socket(config, &listener).await;
-    });
-    (port, runtime)
+    let config = server::Config { methods: MethodSet::from(&[MethodKind::Password][..]), ..ssh_server::config(7) };
+    ssh_server::start(server, config, 2)
 }
 
 /// An echo server on its own runtime, and its port.

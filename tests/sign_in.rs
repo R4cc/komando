@@ -4,14 +4,16 @@
 //! (`session::ssh::spawn`), answering its questions the way a person would.
 
 use std::borrow::Cow;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use russh::server::{self, Msg, Response, Server as _, Session};
+use russh::server::{self, Msg, Response, Session};
 use russh::{Channel, MethodKind, MethodSet};
 
 use komando::session::{Answer, EventProxy, GridSize, HopStep, Prompt, Remembered, SessionEvent, Status, new_term};
 use komando::vault::Secret;
+
+#[path = "support/ssh_server.rs"]
+mod ssh_server;
 
 const PASSWORD: &str = "secret";
 const CODE: &str = "123456";
@@ -87,9 +89,12 @@ impl server::Handler for TestServer {
     }
 }
 
+/// The seed of the server's host key.
+const HOST_KEY_SEED: u8 = 9;
+
 /// The server's host key.
 fn host_key() -> russh::keys::PrivateKey {
-    russh::keys::PrivateKey::from(russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[9; 32]))
+    ssh_server::key(HOST_KEY_SEED)
 }
 
 /// Starts a server on its own runtime and returns its port.
@@ -99,28 +104,13 @@ fn start(mode: Mode) -> (u16, tokio::runtime::Runtime) {
 
 /// A server that also has the host `certificates`.
 fn start_with(mode: Mode, certificates: Vec<russh::keys::Certificate>) -> (u16, tokio::runtime::Runtime) {
-    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
-    let key = host_key();
     let methods: &[MethodKind] = match mode {
         Mode::Interactive => &[MethodKind::KeyboardInteractive],
         Mode::PasswordThenCode => &[MethodKind::Password],
         Mode::KeysOnly => &[MethodKind::PublicKey],
     };
-    let config = Arc::new(server::Config {
-        keys: vec![key],
-        certificates,
-        methods: MethodSet::from(methods),
-        auth_rejection_time: Duration::ZERO,
-        auth_rejection_time_initial: Some(Duration::ZERO),
-        ..Default::default()
-    });
-    let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let mut server = TestServer { mode };
-    runtime.spawn(async move {
-        let _ = server.run_on_socket(config, &listener).await;
-    });
-    (port, runtime)
+    let config = server::Config { certificates, methods: MethodSet::from(methods), ..ssh_server::config(HOST_KEY_SEED) };
+    ssh_server::start(TestServer { mode }, config, 1)
 }
 
 /// A question the Session asked: its label, whether it was hidden, the "Remember" box, and
@@ -265,7 +255,7 @@ fn a_server_without_passwords_says_what_it_takes() {
 /// A host certificate for the test server's key, signed by the authority with `ca_seed`.
 fn host_certificate(ca_seed: u8, principal: &str) -> (russh::keys::Certificate, String) {
     use russh::keys::ssh_key::certificate::{Builder, CertType};
-    let ca = russh::keys::PrivateKey::from(russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[ca_seed; 32]));
+    let ca = ssh_server::key(ca_seed);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let mut builder = Builder::new([1u8; 16], host_key().public_key().key_data().clone(), now - 60, now + 3600).unwrap();
     builder.cert_type(CertType::Host).unwrap();

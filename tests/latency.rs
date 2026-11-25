@@ -2,14 +2,16 @@
 //! Host. The fixture replies REQUEST_FAILURE to keepalives, as network appliances can;
 //! that is still a valid round trip. No external server or credentials are used.
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komando::session::latency::{HopLatency, ReplyState};
 use komando::session::ssh::{self, Hop, Target};
 use komando::session::{EventProxy, GridSize, Prompt, SessionEvent, Status, new_term};
-use russh::server::{self, Msg, Server as _, Session};
+use russh::server::{self, Msg, Session};
 use russh::{Channel, ChannelId, ChannelMsg};
+
+#[path = "support/ssh_server.rs"]
+mod ssh_server;
 
 #[derive(Clone)]
 struct Loopback;
@@ -88,14 +90,7 @@ fn next(events: &mut futures::channel::mpsc::UnboundedReceiver<SessionEvent>) ->
 
 #[test]
 fn ssh_latency_is_reported_directly_and_through_a_jump_host() {
-    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-    let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let key = russh::keys::PrivateKey::from(russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[17; 32]));
-    let config = Arc::new(server::Config { keys: vec![key], ..Default::default() });
-    runtime.spawn(async move {
-        Loopback.run_on_socket(config, &listener).await.unwrap();
-    });
+    let (port, _runtime) = ssh_server::start(Loopback, ssh_server::config(17), 2);
 
     for names in [&["target"][..], &["jump", "target"][..]] {
         let dir = std::env::temp_dir().join(format!("komando-latency-{}", uuid::Uuid::new_v4()));

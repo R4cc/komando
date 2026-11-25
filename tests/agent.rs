@@ -7,9 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use russh::keys::agent::client::AgentClient;
-use russh::keys::ssh_key::private::Ed25519Keypair;
 use russh::keys::{HashAlg, PrivateKey, PublicKey};
-use russh::server::{self, Msg, Server as _, Session};
+use russh::server::{self, Msg, Session};
 use russh::{Channel, ChannelId, MethodKind, MethodSet};
 
 use komando::model::AgentUse;
@@ -18,11 +17,12 @@ use komando::session::ssh::{Hop, Target};
 use komando::session::{EventProxy, GridSize, HopStep, Prompt, SessionEvent, Status, new_term};
 use komando::vault::Secret;
 
-const PASSWORD: &str = "secret";
+#[path = "support/ssh_server.rs"]
+mod ssh_server;
 
-fn key(seed: u8) -> PrivateKey {
-    PrivateKey::from(Ed25519Keypair::from_seed(&[seed; 32]))
-}
+use ssh_server::key;
+
+const PASSWORD: &str = "secret";
 
 fn fingerprint(key: &PrivateKey) -> String {
     key.public_key().fingerprint(HashAlg::Sha256).to_string()
@@ -127,7 +127,7 @@ fn start(name: &str, keys: &[PrivateKey], accepts: &PrivateKey, opts: Opts) -> F
     let dir = std::env::temp_dir().join(format!("komando-agent-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let runtime = ssh_server::runtime(2);
 
     let socket = dir.join("agent.sock");
     let listener = runtime.block_on(async { tokio::net::UnixListener::bind(&socket) }).unwrap();
@@ -146,21 +146,14 @@ fn start(name: &str, keys: &[PrivateKey], accepts: &PrivateKey, opts: Opts) -> F
     });
 
     let methods: &[MethodKind] = if opts.password { &[MethodKind::Password, MethodKind::PublicKey] } else { &[MethodKind::PublicKey] };
-    let config = Arc::new(server::Config {
-        keys: vec![key(9)],
+    let config = server::Config {
         methods: MethodSet::from(methods),
-        auth_rejection_time: Duration::ZERO,
-        auth_rejection_time_initial: Some(Duration::ZERO),
         max_auth_attempts: if opts.max_tries > 0 { opts.max_tries } else { server::Config::default().max_auth_attempts },
-        ..Default::default()
-    });
-    let listener = runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
-    let port = listener.local_addr().unwrap().port();
+        ..ssh_server::config(9)
+    };
     let seen = Arc::new(Mutex::new(Seen::default()));
-    let mut server = TestServer { accepts: accepts.public_key().clone(), push_agent: opts.push_agent, seen: seen.clone() };
-    runtime.spawn(async move {
-        let _ = server.run_on_socket(config, &listener).await;
-    });
+    let server = TestServer { accepts: accepts.public_key().clone(), push_agent: opts.push_agent, seen: seen.clone() };
+    let port = ssh_server::serve(&runtime, server, config);
     Fixture { dir, socket, port, seen, _runtime: runtime }
 }
 
