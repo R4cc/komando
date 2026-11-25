@@ -4389,7 +4389,7 @@ mod tests {
             let (tx, _rx) = futures::channel::mpsc::unbounded();
             let proxy = EventProxy::new(tx);
             let term = new_term(GridSize { cols, rows, cell_width: 8, cell_height: 18 }, 1000, proxy.clone());
-            let sets = crate::highlight::load(std::path::Path::new("/nonexistent/komando-grid-test"));
+            let sets = crate::highlight::load(std::path::Path::new("/nonexistent/komando-grid-test")).0;
             Self {
                 term,
                 proxy,
@@ -4649,7 +4649,7 @@ $ ");
         assert_eq!(g.frame("light theme"), 12);
         g.highlighter = Arc::new(Highlighter::default());
         assert_eq!(g.frame("no highlight rules"), 12);
-        let sets = crate::highlight::load(std::path::Path::new("/nonexistent/komando-grid-test"));
+        let sets = crate::highlight::load(std::path::Path::new("/nonexistent/komando-grid-test")).0;
         g.highlighter = Arc::new(Highlighter::from_sets(&sets, &[]));
         assert_eq!(g.frame("highlight rules back"), 12);
         g.font = grid_font(16.);
@@ -4799,7 +4799,7 @@ $ ");
                 i % 997,
             )
         };
-        let sets = crate::highlight::load(std::path::Path::new("/nonexistent/komando-grid-bench"));
+        let sets = crate::highlight::load(std::path::Path::new("/nonexistent/komando-grid-bench")).0;
         let rules = Arc::new(Highlighter::from_sets(&sets, &[]));
         let cases = [
             ("no rules", Arc::new(Highlighter::default()), true),

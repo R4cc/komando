@@ -53,7 +53,7 @@ impl Harness {
         let size = GridSize { cols, rows, cell_width: 8, cell_height: 18 };
         let term = new_term(size, 10_000, proxy.clone());
         // The bundled set of highlight rules, as a first run has it.
-        let sets = highlight::load(std::path::Path::new("/nonexistent/komando-render-bench"));
+        let sets = highlight::load(std::path::Path::new("/nonexistent/komando-render-bench")).0;
         Self {
             term,
             proxy,

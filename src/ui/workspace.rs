@@ -432,6 +432,8 @@ pub struct Workspace {
     notifications: Option<crate::platform::Notifications>,
     completion_watches: notifications::CompletionWatches,
     highlights: Vec<HighlightSet>,
+    /// The highlights file couldn't be read nor kept aside, so it isn't saved over this run.
+    highlights_file_locked: bool,
     /// Rules that could not be compiled, with the reason.
     highlight_skipped: Vec<(String, String)>,
     page: Page,
@@ -592,7 +594,7 @@ impl Workspace {
             Library::default()
         });
         crate::perf::startup("library loaded");
-        let highlights = highlight::load(&data_dir);
+        let (highlights, highlights_unreadable) = highlight::load(&data_dir);
         crate::perf::startup("highlights loaded");
         let transfers = cx.new(Transfers::new);
         let favorites = cx.new(|_| FavoriteStore::new(data_dir.clone()));
@@ -621,6 +623,7 @@ impl Workspace {
             completion_watches: Default::default(),
             settings,
             highlights,
+            highlights_file_locked: highlights_unreadable.as_ref().is_some_and(|u| u.in_place),
             highlight_skipped: vec![],
             page: Page::Sessions,
             highlights_expanded: None,
@@ -713,8 +716,10 @@ impl Workspace {
             let _ = workspace.update(cx, |this, cx| this.close_own_windows(cx));
             true
         });
-        if let Some(message) = library_error {
-            this.show_toast_for(message, Duration::from_secs(20), cx);
+        // One toast holds both, should the hosts and highlights files both be unreadable.
+        let unreadable: Vec<String> = library_error.into_iter().chain(highlights_unreadable.map(|u| u.message)).collect();
+        if !unreadable.is_empty() {
+            this.show_toast_for(unreadable.join(" "), Duration::from_secs(20), cx);
         }
         // Look for a new version shortly after start, without getting in the way of it.
         if this.settings.check_for_updates && !matches!(this.update, UpdateState::Failed(_)) {
@@ -958,7 +963,9 @@ impl Workspace {
     }
 
     fn save_highlights(&mut self, cx: &mut Context<Self>) {
-        if let Err(err) = highlight::save(&self.data_dir, &self.highlights) {
+        if self.highlights_file_locked {
+            self.show_toast(format!("Highlights aren't saved until Komando restarts: {} couldn't be read.", highlight::FILE), cx);
+        } else if let Err(err) = highlight::save(&self.data_dir, &self.highlights) {
             self.show_toast(format!("Could not save highlights: {err:#}"), cx);
         }
         self.apply_highlights(cx);

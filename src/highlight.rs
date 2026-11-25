@@ -543,8 +543,18 @@ fn first_line(s: &str) -> String {
 
 /// Parse an imported file: one set object, or an array of sets.
 pub fn parse(text: &str) -> Result<Vec<HighlightSet>> {
+    let sets = parse_sets(text)?;
+    if sets.is_empty() {
+        bail!("the file contains no highlight sets");
+    }
+    Ok(sets)
+}
+
+/// One set object, or an array of sets, which may be empty: that's the saved file once the
+/// user deletes every set.
+fn parse_sets(text: &str) -> Result<Vec<HighlightSet>> {
     let value: Value = serde_json::from_str(text).context("not valid JSON")?;
-    let sets = match value {
+    Ok(match value {
         Value::Array(items) => items
             .into_iter()
             .map(serde_json::from_value)
@@ -552,16 +562,24 @@ pub fn parse(text: &str) -> Result<Vec<HighlightSet>> {
             .context("not a list of highlight sets")?,
         Value::Object(_) => vec![serde_json::from_value(value).context("not a highlight set")?],
         _ => bail!("expected a highlight set"),
-    };
-    if sets.is_empty() {
-        bail!("the file contains no highlight sets");
-    }
-    Ok(sets)
+    })
 }
 
-pub fn load(dir: &Path) -> Vec<HighlightSet> {
-    match fs::read_to_string(dir.join(FILE)) {
-        Ok(text) => match parse(&text) {
+/// Why the saved highlight rules couldn't be used, so the user can be told.
+#[derive(Debug)]
+pub struct Unreadable {
+    /// For the user: what went wrong, and where the file was kept.
+    pub message: String,
+    /// The file couldn't be moved or copied aside, so saving this run would replace the
+    /// user's rules with the bundled set.
+    pub in_place: bool,
+}
+
+/// The saved highlight sets, or the bundled set on first run or when the file can't be read.
+pub fn load(dir: &Path) -> (Vec<HighlightSet>, Option<Unreadable>) {
+    let path = dir.join(FILE);
+    let err = match fs::read_to_string(&path) {
+        Ok(text) => match parse_sets(&text) {
             Ok(mut sets) => {
                 // Compare the whole set, not just its id: toggles, renames, imported fields
                 // and edited rules all belong to the user and must survive an update.
@@ -574,16 +592,34 @@ pub fn load(dir: &Path) -> Vec<HighlightSet> {
                         }
                     }
                 }
-                sets
+                return (sets, None);
             }
-            Err(err) => {
-                log::error!("{FILE}: {err:#}");
-                vec![]
-            }
+            Err(err) => err,
         },
         // First run: start with the bundled set.
-        Err(_) => parse(DEFAULT_SET).unwrap_or_default(),
-    }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (parse(DEFAULT_SET).unwrap_or_default(), None),
+        Err(err) => anyhow::Error::from(err),
+    };
+    log::error!("{}: {err:#}", path.display());
+    // Move the unreadable file aside: the next save would otherwise replace the user's rules
+    // with the bundled set. A copy does as well when it can't be moved.
+    let aside = path.with_extension(format!("json.broken-{}", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+    let kept = fs::rename(&path, &aside).is_ok() || fs::copy(&path, &aside).is_ok();
+    let unreadable = if kept {
+        Unreadable {
+            message: format!("Couldn't read your highlights ({err:#}). The file was kept as {}.", aside.display()),
+            in_place: false,
+        }
+    } else {
+        Unreadable {
+            message: format!(
+                "Couldn't read your highlights ({err:#}). Changes to highlights won't be saved until Komando restarts, so {} stays as it is.",
+                path.display()
+            ),
+            in_place: true,
+        }
+    };
+    (parse(DEFAULT_SET).unwrap_or_default(), Some(unreadable))
 }
 
 pub fn save(dir: &Path, sets: &[HighlightSet]) -> Result<()> {
@@ -612,10 +648,11 @@ pub fn merge(existing: &mut Vec<HighlightSet>, imported: Vec<HighlightSet>) -> (
     (added, replaced)
 }
 
-/// Rule colours are picked for some background, not necessarily ours. Each is adjusted until
-/// it reads at 4.5:1 or better against the terminal: on a light terminal very light colours
-/// (#00FF00, #FFD700) are darkened, on a dark one very dark colours (#0000FF) are lightened.
-/// Colours that already read well are left as they are.
+/// Rule colours are picked for some background, not necessarily ours. Each is stepped until its
+/// luminance passes a fixed threshold: on a light terminal very light colours (#00FF00,
+/// #FFD700) are darkened, on a dark one very dark colours (#0000FF) are lightened. Colours that
+/// already pass are left as they are. The thresholds were chosen for the bundled backgrounds;
+/// contrast against the actual background isn't computed here.
 pub fn readable_on(color: Rgb8, dark_background: bool) -> Rgb8 {
     let luminance = |c: Rgb8| {
         let lin = |v: u8| {
@@ -627,15 +664,18 @@ pub fn readable_on(color: Rgb8, dark_background: bool) -> Rgb8 {
     let mut c = color;
     for _ in 0..16 {
         if dark_background {
-            // 4.5:1 on dark Themes and Default. Brighter Terminal Colors (Nord, One Half
-            // Dark, Dracula) get at least 3.75:1: more lift would wash out red and amber.
+            // On the bundled backgrounds this gives 4.5:1 on dark Themes and Default. Brighter
+            // Terminal Colors (Nord, One Half Dark, Dracula) get at least 3.75:1: more lift
+            // would wash out red and amber. default_colours_read_on_every_terminal_theme
+            // checks the bundled rules against them.
             if luminance(c) >= 0.27 {
                 break;
             }
             let lift = |v: u8| (v as f32 + (255.0 - v as f32) * 0.15).round() as u8;
             c = Rgb8 { r: lift(c.r), g: lift(c.g), b: lift(c.b) };
         } else {
-            // Keep a margin for warm paper and pale blue backgrounds, not only white.
+            // At least 5:1 on the bundled light backgrounds, with a margin for warm paper and
+            // pale blue ones, not only white.
             if luminance(c) <= 0.12 {
                 break;
             }
@@ -859,11 +899,11 @@ mod tests {
         let muted = parse(MUTED_DEFAULT_SET).unwrap();
         let bundled = parse(DEFAULT_SET).unwrap();
         assert_eq!(legacy[0].id, bundled[0].id, "disabled-set preferences must keep working");
-        assert_eq!(load(&dir), bundled, "first run uses the current bundle");
+        assert_eq!(load(&dir).0, bundled, "first run uses the current bundle");
         save(&dir, &legacy).unwrap();
-        assert_eq!(load(&dir), bundled);
+        assert_eq!(load(&dir).0, bundled);
         save(&dir, &muted).unwrap();
-        assert_eq!(load(&dir), bundled, "untouched muted defaults get the vivid palette");
+        assert_eq!(load(&dir).0, bundled, "untouched muted defaults get the vivid palette");
 
         for original in [&legacy[0], &muted[0]] {
             let mut renamed = original.clone();
@@ -878,15 +918,36 @@ mod tests {
             imported.extra.insert("custom".into(), Value::Bool(true));
             for modified in [renamed, toggled, recoloured, reordered, imported, bundled[0].clone()] {
                 save(&dir, &[modified.clone()]).unwrap();
-                assert_eq!(load(&dir), vec![modified]);
+                assert_eq!(load(&dir).0, vec![modified]);
             }
         }
         let mut custom = legacy[0].clone();
         custom.id = "custom".into();
         save(&dir, &[legacy[0].clone(), custom.clone()]).unwrap();
-        assert_eq!(load(&dir), vec![bundled[0].clone(), custom]);
+        assert_eq!(load(&dir).0, vec![bundled[0].clone(), custom]);
         save(&dir, &[]).unwrap();
-        assert!(load(&dir).is_empty(), "deleted sets must stay deleted");
+        let (sets, unreadable) = load(&dir);
+        assert!(sets.is_empty() && unreadable.is_none(), "deleted sets must stay deleted");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unreadable_highlights_are_kept_aside_rather_than_overwritten() {
+        let dir = std::env::temp_dir().join(format!("komando-highlights-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let corrupt = r#"[{"id": "mine", "name": "My rules", "keywords": [{"text": "#;
+        fs::write(dir.join(FILE), corrupt).unwrap();
+        let (sets, unreadable) = load(&dir);
+        assert_eq!(sets, parse(DEFAULT_SET).unwrap(), "the bundled set stands in");
+        let unreadable = unreadable.expect("the user is told");
+        assert!(!unreadable.in_place);
+        assert!(!dir.join(FILE).exists(), "the next save must not overwrite it");
+        let kept: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        let name = kept[0].file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("highlights.json.broken-"), "{name}");
+        assert!(unreadable.message.contains(&kept[0].display().to_string()), "{}", unreadable.message);
+        assert_eq!(fs::read_to_string(&kept[0]).unwrap(), corrupt);
         fs::remove_dir_all(dir).unwrap();
     }
 
