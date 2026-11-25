@@ -960,7 +960,9 @@ impl Library {
 
     pub fn load(dir: &Path) -> Result<Self> {
         let path = dir.join(Self::FILE);
-        if !path.exists() {
+        // Only a file that is surely missing means a fresh start; one that can't be checked
+        // is unreadable, so it isn't saved over.
+        if !path.try_exists().with_context(|| format!("checking {}", path.display()))? {
             return Ok(Self::default());
         }
         let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
@@ -972,6 +974,13 @@ impl Library {
     pub fn save(&self, dir: &Path) -> Result<()> {
         create_private_dir(dir)?;
         write_atomic(&dir.join(Self::FILE), toml::to_string_pretty(self)?.as_bytes())
+    }
+
+    /// Keep a library file that couldn't be read out of the next save's way, and return where
+    /// it went. An error means it is still the only copy of the Hosts and Projects, so it must
+    /// not be saved over.
+    pub fn set_aside(dir: &Path) -> Result<PathBuf> {
+        set_aside(&dir.join(Self::FILE), rename_with_retries)
     }
 
     /// Local Shells outside any Project, hidden ones included.
@@ -1843,6 +1852,24 @@ pub fn open_private_append(path: &Path) -> std::io::Result<fs::File> {
     Ok(file)
 }
 
+/// Rename `path` to a dated `.broken-…` name beside it, or copy it there when it can't be
+/// renamed (another program has it open, or the folder refuses renames).
+fn set_aside(path: &Path, rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>) -> Result<PathBuf> {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".broken-{}", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+    let aside = path.with_file_name(name);
+    let Err(rename_err) = rename(path, &aside) else { return Ok(aside) };
+    match fs::copy(path, &aside) {
+        Ok(_) => Ok(aside),
+        Err(copy_err) => {
+            // A half-written copy isn't one.
+            let _ = fs::remove_file(&aside);
+            Err(anyhow::anyhow!("moving it failed ({rename_err}), and so did copying it ({copy_err})"))
+                .with_context(|| format!("keeping {} as {}", path.display(), aside.display()))
+        }
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     /// Makes `write_atomic` fail on this thread, so tests can check what a failed save leaves.
@@ -2342,6 +2369,58 @@ mod tests {
         lib.save(&dir).unwrap();
         assert_eq!(Library::load(&dir).unwrap(), lib);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The files beside `path` whose names start with its own, other than itself.
+    fn kept_beside(path: &Path) -> Vec<PathBuf> {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let mut kept: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with(&format!("{name}.broken-")))
+            .collect();
+        kept.sort();
+        kept
+    }
+
+    #[test]
+    fn an_unreadable_library_is_moved_aside() {
+        let dir = std::env::temp_dir().join(format!("komando-library-aside-{}", new_id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(Library::FILE);
+        fs::write(&path, "hosts = [oops").unwrap();
+        assert!(Library::load(&dir).is_err());
+        let aside = Library::set_aside(&dir).unwrap();
+        assert_eq!(kept_beside(&path), [aside.clone()]);
+        assert_eq!(fs::read_to_string(&aside).unwrap(), "hosts = [oops");
+        assert!(!path.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_library_that_cannot_be_moved_is_copied_aside() {
+        let dir = std::env::temp_dir().join(format!("komando-library-copy-{}", new_id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(Library::FILE);
+        fs::write(&path, "hosts = [oops").unwrap();
+        let aside = set_aside(&path, |_, _| Err(std::io::Error::other("held open"))).unwrap();
+        assert_eq!(kept_beside(&path), [aside.clone()]);
+        assert_eq!(fs::read_to_string(&aside).unwrap(), "hosts = [oops");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hosts = [oops");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_library_that_cannot_be_moved_or_copied_is_reported() {
+        let dir = std::env::temp_dir().join(format!("komando-library-stuck-{}", new_id()));
+        // A folder where the file should be: it can't be copied, like a file that can't be read.
+        let path = dir.join(Library::FILE);
+        fs::create_dir_all(&path).unwrap();
+        let err = set_aside(&path, |_, _| Err(std::io::Error::other("held open"))).unwrap_err();
+        assert!(format!("{err:#}").contains("held open"), "{err:#}");
+        assert!(kept_beside(&path).is_empty(), "no half copy is left behind");
+        assert!(path.is_dir());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

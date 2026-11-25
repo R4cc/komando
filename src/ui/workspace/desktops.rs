@@ -252,7 +252,7 @@ impl Workspace {
         }
         let before = remote.viewer;
         remote.viewer = options;
-        if let Err(err) = self.library.save(&self.data_dir) {
+        if let Err(err) = self.save_library(&self.library) {
             if let Some(remote) = self.library.hosts[index].desktop_mut(protocol) {
                 remote.viewer = before;
             }
@@ -315,7 +315,7 @@ impl Workspace {
         if !added && self.library == before {
             return self.show_toast("Password saved to the vault.", cx);
         }
-        match self.library.save(&self.data_dir) {
+        match self.save_library(&self.library) {
             Ok(()) => self.show_toast("Password saved to the vault.", cx),
             Err(err) => {
                 self.library = before;

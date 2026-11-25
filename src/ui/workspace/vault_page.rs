@@ -194,7 +194,7 @@ impl Workspace {
         let mut library = self.library.clone();
         if library.forget_credential(id) {
             // The Credential is gone either way; a host still pointing at it just asks.
-            if let Err(err) = library.save(&self.data_dir) {
+            if let Err(err) = self.save_library(&library) {
                 self.show_toast(format!("Deleted, but your hosts could not be updated: {err:#}"), cx);
                 return;
             }

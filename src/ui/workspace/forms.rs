@@ -626,7 +626,7 @@ impl Workspace {
     /// Save a changed copy of the Library. It is taken only once it is on disk, so a failed
     /// write changes nothing.
     pub(super) fn commit_library(&mut self, library: Library) -> Result<(), String> {
-        library.save(&self.data_dir).map_err(|err| format!("Could not save: {err:#}"))?;
+        self.save_library(&library).map_err(|err| format!("Could not save: {err:#}"))?;
         self.library = library;
         Ok(())
     }

@@ -420,6 +420,9 @@ pub struct Startup {
 pub struct Workspace {
     data_dir: PathBuf,
     library: Library,
+    /// The library file when it could be neither read nor kept aside at start: it is the
+    /// only copy of the user's Hosts and Projects, so nothing is saved over it this run.
+    library_read_only: Option<PathBuf>,
     settings: Settings,
     #[cfg(windows)]
     tray: Option<crate::platform::Tray>,
@@ -568,14 +571,23 @@ impl Workspace {
         crate::perf::startup("settings loaded");
         // A fresh install has no Projects; the detected local shells stand alone.
         let mut library_error = None;
+        let mut library_read_only = None;
         let library = Library::load(&data_dir).unwrap_or_else(|err| {
             log::error!("{err:#}");
-            // Move the unreadable file aside: the next save would otherwise replace it.
-            let path = data_dir.join(Library::FILE);
-            let aside = path.with_extension(format!("toml.broken-{}", chrono::Local::now().format("%Y%m%d-%H%M%S")));
-            library_error = Some(match std::fs::rename(&path, &aside) {
-                Ok(()) => format!("Couldn't read your hosts ({err:#}). The file was kept as {}.", aside.display()),
-                Err(_) => format!("Couldn't read your hosts: {err:#}"),
+            // Keep the unreadable file aside: the next save would otherwise replace it.
+            library_error = Some(match Library::set_aside(&data_dir) {
+                Ok(aside) => format!("Couldn't read your hosts ({err:#}). The file was kept as {}.", aside.display()),
+                Err(aside_err) => {
+                    log::error!("{aside_err:#}");
+                    let path = data_dir.join(Library::FILE);
+                    let message = format!(
+                        "Couldn't read your hosts ({err:#}). Changes to Hosts and Projects won't be saved, \
+                         so {} isn't replaced. Fix or move it, then restart Komando.",
+                        path.display()
+                    );
+                    library_read_only = Some(path);
+                    message
+                }
             });
             Library::default()
         });
@@ -599,6 +611,7 @@ impl Workspace {
         let mut this = Self {
             data_dir,
             library,
+            library_read_only,
             #[cfg(windows)]
             tray: crate::platform::Tray::new(window, settings.minimize_to_tray, !auxiliary),
             #[cfg(windows)]
@@ -2397,7 +2410,7 @@ impl Workspace {
         if saved.is_none() {
             return;
         }
-        match library.save(&self.data_dir) {
+        match self.save_library(&library) {
             Ok(_) => {
                 self.library = library;
                 self.show_toast("User name saved.", cx);
@@ -2421,14 +2434,16 @@ impl Workspace {
             return;
         };
         let before = saved.credential.replace(cred_id.clone());
-        match library.save(&self.data_dir) {
+        match self.save_library(&library) {
             Ok(_) => {
                 self.library = library;
                 self.forget_unused_credentials(before);
                 self.show_toast("Password saved to the vault.", cx);
             }
             Err(err) => {
-                let _ = vault.remove(&cred_id);
+                if let Some(vault) = self.vault.as_mut() {
+                    let _ = vault.remove(&cred_id);
+                }
                 self.show_toast(format!("Could not save the password: {err:#}"), cx);
             }
         }
@@ -2479,7 +2494,7 @@ impl Workspace {
         }
         let Some(index) = self.library.hosts.iter().position(|h| h.id == host_id) else { return };
         let before = std::mem::replace(&mut self.library.hosts[index].credential, model::Inherited::Own(cred_id.clone()));
-        match self.library.save(&self.data_dir) {
+        match self.save_library(&self.library) {
             Ok(_) => self.show_toast("Password saved to the vault.", cx),
             Err(err) => {
                 // The Host would lose its new Credential at the next start: undo both, so
@@ -2518,6 +2533,15 @@ impl Workspace {
 
     fn show_toast(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.show_toast_for(message, Duration::from_secs(4), cx);
+    }
+
+    /// Save `library` as the user's Hosts and Projects, unless their file couldn't be read or
+    /// kept aside at start: saving would replace their only copy.
+    fn save_library(&self, library: &Library) -> anyhow::Result<()> {
+        if let Some(path) = &self.library_read_only {
+            anyhow::bail!("{} couldn't be read at start, so Komando won't save over it. Fix or move it, then restart Komando", path.display());
+        }
+        library.save(&self.data_dir)
     }
 
     fn show_toast_for(&mut self, message: impl Into<SharedString>, duration: Duration, cx: &mut Context<Self>) {
@@ -2755,7 +2779,7 @@ impl Workspace {
         }
         // Persist before closing Sessions or removing sidebar state: a failed deletion
         // should leave the saved library and its running Sessions intact.
-        if let Err(err) = library.save(&self.data_dir) {
+        if let Err(err) = self.save_library(&library) {
             self.show_toast(format!("Could not delete: {err:#}"), cx);
             self.focus_active(window, cx);
             return;
@@ -6056,5 +6080,45 @@ mod changed_rows_tests {
         assert_eq!(changed_rows(&[1, 1], &[1, 1, 1]), (2..2, 1));
         assert_eq!(changed_rows(&[], &[1, 2]), (0..0, 2));
         assert_eq!(changed_rows(&[1, 2], &[]), (0..2, 0));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod library_read_only_tests {
+    use super::*;
+    use gpui::WindowOptions;
+
+    #[test]
+    fn a_library_that_could_not_be_kept_is_never_saved_over() {
+        let dir = std::env::temp_dir().join(format!("komando-library-read-only-{}", uuid::Uuid::new_v4()));
+        Settings { onboarded: true, check_for_updates: false, usage_ping: false, ..Settings::default() }.save(&dir).unwrap();
+        let path = dir.join(Library::FILE);
+        let data_dir = dir.clone();
+        let file = path.clone();
+        gpui_platform::headless().run(move |cx| {
+            crate::init(cx);
+            cx.open_window(WindowOptions::default(), move |window, cx| {
+                let workspace = cx.new(|cx| Workspace::new(data_dir, Startup::default(), window, cx));
+                workspace.update(cx, |this, _| {
+                    // As if the file couldn't be read, moved or copied at start.
+                    std::fs::write(&file, "the user's only copy").unwrap();
+                    this.library_read_only = Some(file.clone());
+                    let mut library = this.library.clone();
+                    library.hosts.push(Host::new("web01", "10.0.0.1"));
+                    let err = this.commit_library(library).unwrap_err();
+                    assert!(err.contains(&file.display().to_string()), "{err}");
+                    assert!(this.library.hosts.is_empty(), "a refused save changes nothing");
+                    assert_eq!(std::fs::read_to_string(&file).unwrap(), "the user's only copy");
+                });
+                workspace
+            }).unwrap();
+            // Quit after the headless event loop starts; an earlier quit is reset on entry.
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(std::time::Duration::from_millis(10)).await;
+                cx.update(|cx| cx.quit());
+            }).detach();
+        });
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "the user's only copy");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
