@@ -19,8 +19,17 @@ All notable changes to Komando are listed here. The format follows
 - Importing from `~/.ssh/config` takes `ForwardAgent yes` and `IdentityAgent none`, and
   importing from Tabby takes agent forwarding.
 - Settings → About links to Komando's source code on GitHub.
+- Host certificates: a host covered by an `@cert-authority` line in `~/.ssh/known_hosts` or
+  Komando's own known hosts file is trusted when it presents a valid certificate from that
+  authority, without the first-connection question. A certificate that has expired, names
+  another host or comes from another authority is refused, with the reason.
 
 ### Changed
+
+- Copying, moving and deleting in the file browser now run in Transfers, where you can see how
+  many items are done and cancel. If something with the same name is already in the destination
+  of a copy or move, you're asked whether to replace it or keep both, as with uploads.
+- Closing a host or project form with unsaved changes now asks whether to discard them.
 
 - On Windows, closing Komando's window into the notification area now disconnects all
   sessions; their output stays so you can reconnect when you're back. Minimizing still keeps
@@ -56,11 +65,18 @@ All notable changes to Komando are listed here. The format follows
   `cp`, no longer leaves a half-written file that looks like a complete copy.
 - A VNC remote desktop whose server accepts the connection but never answers now stops after
   30 seconds with a message, instead of showing "Connecting" forever.
+- An SSH server that stops answering while you sign in, or before the shell opens, now ends the
+  attempt with a message instead of leaving it waiting forever. Time you spend typing a password
+  or approving a key in your SSH agent doesn't count.
 - On Linux and macOS, copying output or command history as a file no longer replaces what's on
   your clipboard when the file couldn't be created.
 
 ### Security
 
+- Programs on a server can no longer put text on your clipboard without asking. The first time
+  one tries, for example tmux or vim copying over SSH, Komando shows what it wants to copy and
+  asks: allow once, always for this host, or never. Set the default in Settings → Security
+  and change a host's choice in its terminal settings. Programs in local shells copy as before.
 - On Linux and macOS, Komando's saved data (hosts, the vault, known hosts, command history, logs
   and settings) can now be read only by you, not by other users of the computer. Files saved by
   an earlier version are locked down the next time Komando writes them.
