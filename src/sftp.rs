@@ -8,7 +8,7 @@
 //! next to its destination and only renamed into place once every byte has arrived; on any
 //! failure the partial file is removed. The remote file is opened before anything is created
 //! locally, so a permission error never produces an empty file. Uploads work the same way on
-//! the server.
+//! the server, as do copies on the server that go through the connection.
 //!
 //! Downloads and uploads go through a second SFTP channel, issuing the reads and writes
 //! themselves so they can keep as much on its way as the link carries without a queue building
@@ -1122,7 +1122,29 @@ impl Remote {
         }
     }
 
+    /// Copy through this connection. Like an upload, the copy is written to a partial file or
+    /// folder next to `to` and renamed into place once complete; on any failure the partial is
+    /// removed, so a dropped connection or a full disk never leaves a truncated file that
+    /// looks like a finished copy.
     async fn copy_through(&self, from: &str, to: &str) -> Result<(), OpError> {
+        let partial = copy_partial_path(to, &crate::model::new_id());
+        let result = async {
+            self.copy_tree(from, &partial).await?;
+            self.sftp.rename(partial.as_str(), to).await.map_err(|e| OpError::from(e).at(to))
+        }
+        .await;
+        if result.is_err() {
+            // Nothing there when the source couldn't even be read.
+            if let Err(err) = self.remove(&partial).await
+                && err.kind != ErrorKind::NotFound
+            {
+                log::warn!("removing the partial copy {partial}: {err}");
+            }
+        }
+        result
+    }
+
+    async fn copy_tree(&self, from: &str, to: &str) -> Result<(), OpError> {
         let mut stack = vec![(from.to_string(), to.to_string())];
         while let Some((src, dst)) = stack.pop() {
             let attrs = self.sftp.metadata(src.as_str()).await.map_err(|e| OpError::from(e).at(&src))?;
@@ -1488,6 +1510,17 @@ fn is_within(path: &str, dir: &str) -> bool {
     path == dir || dir.is_empty() || path.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'))
 }
 
+/// The partial file or folder a copy through the connection is written to:
+/// ".name.<id>.komando-part" next to `to`. The id keeps it apart from an upload's partial of
+/// the same name and from another copy's.
+fn copy_partial_path(to: &str, id: &str) -> String {
+    let name = format!(".{}.{id}{PARTIAL_SUFFIX}", file_name(to));
+    match parent(to) {
+        Some(dir) => join(&dir, &name),
+        None => name,
+    }
+}
+
 /// The partial file a download is written to: "name.ext.komando-part" next to `target`.
 fn partial_path(target: &Path) -> PathBuf {
     let mut name = target.file_name().map(|n| n.to_os_string()).unwrap_or_default();
@@ -1775,6 +1808,14 @@ mod tests {
         assert!(!is_within("/srv/app2", "/srv/app"));
         assert!(!is_within("/srv", "/srv/app"));
         assert!(is_within("/anything", "/"));
+    }
+
+    #[test]
+    fn copies_are_written_next_to_their_destination_under_a_partial_name() {
+        assert_eq!(copy_partial_path("/srv/app.conf", "abc"), format!("/srv/.app.conf.abc{PARTIAL_SUFFIX}"));
+        assert_eq!(copy_partial_path("/srv/data/", "abc"), format!("/srv/.data.abc{PARTIAL_SUFFIX}"));
+        assert_eq!(copy_partial_path("/top", "abc"), format!("/.top.abc{PARTIAL_SUFFIX}"));
+        assert_eq!(copy_partial_path("relative", "abc"), format!(".relative.abc{PARTIAL_SUFFIX}"));
     }
 
     #[test]
