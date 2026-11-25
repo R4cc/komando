@@ -109,7 +109,7 @@ impl Vault {
         let kdf = KdfParams::DEFAULT;
         let key = derive_key(master_password, &salt, kdf)?;
         let vault = Self { path: Self::path_in(dir), kdf, salt, key, contents: Contents::default() };
-        fs::create_dir_all(dir)?;
+        crate::model::create_private_dir(dir)?;
         vault.write(&vault.contents)?;
         Ok(vault)
     }
@@ -183,7 +183,7 @@ impl Vault {
         let mut lock_name = self.path.file_name().unwrap_or_default().to_os_string();
         lock_name.push(".lock");
         let lock_path = self.path.with_file_name(lock_name);
-        let lock = fs::OpenOptions::new()
+        let lock = crate::model::private_file_options()
             .create(true)
             .truncate(false)
             .write(true)

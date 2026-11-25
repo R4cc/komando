@@ -1,7 +1,7 @@
 //! A small file logger and a panic hook. Release builds have no console, so without these
 //! `log` output and panics on background threads (e.g. the PTY reader) would vanish.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -66,9 +66,9 @@ fn rotate_if_large(path: &Path, max: u64) {
 }
 
 fn open_log(path: &Path) -> Option<File> {
-    fs::create_dir_all(path.parent()?).ok()?;
+    crate::model::create_private_dir(path.parent()?).ok()?;
     rotate_if_large(path, MAX_LOG_BYTES);
-    OpenOptions::new().create(true).append(true).open(path).ok()
+    crate::model::open_private_append(path).ok()
 }
 
 /// Komando's own level and other crates' level: Info and Warn, or both as `KOMANDO_LOG` says.

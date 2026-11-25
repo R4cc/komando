@@ -587,7 +587,7 @@ pub fn load(dir: &Path) -> Vec<HighlightSet> {
 }
 
 pub fn save(dir: &Path, sets: &[HighlightSet]) -> Result<()> {
-    fs::create_dir_all(dir)?;
+    crate::model::create_private_dir(dir)?;
     write_atomic(&dir.join(FILE), serde_json::to_string_pretty(sets)?.as_bytes())
 }
 

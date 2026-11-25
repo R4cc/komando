@@ -42,7 +42,7 @@ impl Favorites {
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
-        fs::create_dir_all(dir)?;
+        crate::model::create_private_dir(dir)?;
         write_atomic(&dir.join(Self::FILE), toml::to_string_pretty(self)?.as_bytes())
     }
 

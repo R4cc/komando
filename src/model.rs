@@ -962,7 +962,7 @@ impl Library {
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
-        fs::create_dir_all(dir)?;
+        create_private_dir(dir)?;
         write_atomic(&dir.join(Self::FILE), toml::to_string_pretty(self)?.as_bytes())
     }
 
@@ -1653,7 +1653,7 @@ impl Settings {
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
-        fs::create_dir_all(dir)?;
+        create_private_dir(dir)?;
         write_atomic(&dir.join(Self::FILE), toml::to_string_pretty(self)?.as_bytes())
     }
 }
@@ -1703,7 +1703,7 @@ impl OpenTabs {
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
-        fs::create_dir_all(dir)?;
+        create_private_dir(dir)?;
         write_atomic(&dir.join(Self::FILE), toml::to_string_pretty(self)?.as_bytes())
     }
 
@@ -1790,6 +1790,51 @@ pub fn rename_with_retries(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Create `dir`, and any folder above it that is missing, for Komando's private data. On
+/// Linux and macOS only the user may open it, as Hosts, Credentials and Command History are
+/// inside; one an earlier version made is closed too. Windows keeps the folder's inherited
+/// permissions.
+pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        // Best effort: a `KOMANDO_HOME` the user doesn't own still works as before.
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(dir)
+    }
+}
+
+/// Options that create a file only the user may read on Linux and macOS, for Komando's
+/// private data. The mode applies to a new file only. Windows keeps the folder's permissions.
+pub fn private_file_options() -> fs::OpenOptions {
+    #[allow(unused_mut)]
+    let mut options = fs::OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+}
+
+/// Open `path` to add to its end, creating it as a private file (see
+/// [`private_file_options`]). One an earlier version left readable by others is closed too.
+pub fn open_private_append(path: &Path) -> std::io::Result<fs::File> {
+    let file = private_file_options().create(true).append(true).open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Best effort, as for the folder: a file the user doesn't own can still be added to.
+        let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
+    }
+    Ok(file)
+}
+
 #[cfg(test)]
 thread_local! {
     /// Makes `write_atomic` fail on this thread, so tests can check what a failed save leaves.
@@ -1797,6 +1842,8 @@ thread_local! {
 }
 
 /// Write via a temporary file and rename, so a crash never leaves a half-written file.
+/// The file is private (see [`private_file_options`]), so one an earlier version left
+/// readable by others is closed on its next save.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     #[cfg(test)]
@@ -1810,7 +1857,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     tmp_name.push(format!(".{}.{unique}.tmp", std::process::id()));
     let tmp = path.with_file_name(tmp_name);
     let written = (|| {
-        let mut file = fs::File::create(&tmp)?;
+        let mut file = private_file_options().write(true).create(true).truncate(true).open(&tmp)?;
         file.write_all(bytes)?;
         // On disk before the rename, so a power cut can't leave an empty file in its place.
         file.sync_all()
@@ -1825,6 +1872,44 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    fn mode(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_files_and_their_folder_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("komando-private-{}", uuid::Uuid::new_v4()));
+        let nested = dir.join("history");
+        super::create_private_dir(&nested).unwrap();
+        assert_eq!(mode(&dir), 0o700, "a new data folder");
+        assert_eq!(mode(&nested), 0o700, "a new folder inside it");
+
+        // As an earlier version left them: readable by everyone.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let saved = dir.join("library.toml");
+        std::fs::write(&saved, "old").unwrap();
+        std::fs::set_permissions(&saved, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let appended = nested.join("web.jsonl");
+        std::fs::write(&appended, "old\n").unwrap();
+        std::fs::set_permissions(&appended, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        super::create_private_dir(&dir).unwrap();
+        assert_eq!(mode(&dir), 0o700, "an existing folder is closed");
+        super::write_atomic(&saved, b"new").unwrap();
+        assert_eq!(mode(&saved), 0o600, "a saved file replaces the open one");
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), "new");
+        drop(super::open_private_append(&appended).unwrap());
+        assert_eq!(mode(&appended), 0o600, "a file added to is closed");
+        let fresh = nested.join("new.jsonl");
+        drop(super::open_private_append(&fresh).unwrap());
+        assert_eq!(mode(&fresh), 0o600, "a new file added to");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn open_tabs_survive_a_relaunch() {
         let dir = std::env::temp_dir().join(format!("komando-open-tabs-{}", uuid::Uuid::new_v4()));

@@ -57,7 +57,7 @@ pub fn trust(path: &Path, server: &str, fingerprint: &str) -> io::Result<()> {
         .collect();
     lines.push(format!("{server} {fingerprint}").into_bytes());
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
+        crate::model::create_private_dir(dir)?;
     }
     let mut bytes = lines.join(&b'\n');
     bytes.push(b'\n');

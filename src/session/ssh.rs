@@ -561,7 +561,7 @@ impl client::Handler for Client {
                 Ok(true) => {
                     self.log.line(LogKind::Good, "Host key matches the trusted one");
                     if path != &self.known_hosts {
-                        let _ = russh::keys::known_hosts::learn_known_hosts_path(&self.host, self.port, key, &self.known_hosts);
+                        let _ = learn_known_host(&self.host, self.port, key, &self.known_hosts);
                     }
                     return Ok(true);
                 }
@@ -624,16 +624,25 @@ impl client::Handler for Client {
         let trusted = answer.await.unwrap_or(false);
         self.clock.resume();
         if trusted {
-            if let Some(dir) = self.known_hosts.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            russh::keys::known_hosts::learn_known_hosts_path(&self.host, self.port, key, &self.known_hosts)?;
+            learn_known_host(&self.host, self.port, key, &self.known_hosts)?;
             self.log.line(LogKind::Good, "Host key trusted");
             Ok(true)
         } else {
             Err(anyhow!("Host key not trusted."))
         }
     }
+}
+
+/// Add `key` for `host:port` to Komando's known_hosts at `path`, which only the user may read
+/// on Linux and macOS: it lists every Host the user connects to.
+fn learn_known_host(host: &str, port: u16, key: &PublicKey, path: &std::path::Path) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        crate::model::create_private_dir(dir)?;
+    }
+    // Made private first: russh would create it readable by others.
+    drop(crate::model::open_private_append(path).with_context(|| format!("Opening {}", path.display()))?);
+    russh::keys::known_hosts::learn_known_hosts_path(host, port, key, path)?;
+    Ok(())
 }
 
 /// Trust `key` as the only key of `host:port` in Komando's known_hosts at `path`: every entry
@@ -657,13 +666,10 @@ fn replace_known_host(host: &str, port: u16, key: &PublicKey, path: &std::path::
         kept.push('\n');
     }
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        crate::model::create_private_dir(dir)?;
     }
-    // Written beside the file and moved over it, so a crash never leaves it half written.
-    let temporary = path.with_extension("komando-new");
-    std::fs::write(&temporary, kept).with_context(|| format!("Writing {}", temporary.display()))?;
-    std::fs::rename(&temporary, path).with_context(|| format!("Replacing {}", path.display()))?;
-    russh::keys::known_hosts::learn_known_hosts_path(host, port, key, path)?;
+    crate::model::write_atomic(path, kept.as_bytes())?;
+    learn_known_host(host, port, key, path)?;
     // An entry this could not recognise (a hashed host name) would still hold the old key.
     match russh::keys::check_known_hosts_path(host, port, key, path) {
         Ok(true) => Ok(()),
@@ -1826,6 +1832,11 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("# kept\n"), "comments are kept: {text}");
         assert!(!text.contains("db01"), "a line also naming the host goes, as with ssh-keygen -R: {text}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600, "only the user may read it");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

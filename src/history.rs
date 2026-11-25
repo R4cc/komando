@@ -110,14 +110,14 @@ fn read(path: &Path) -> std::io::Result<Vec<Entry>> {
 /// Add an entry to a Host's history.
 pub fn append(data_dir: &Path, host_id: &str, entry: &Entry) -> Result<()> {
     let path = file(data_dir, host_id);
-    fs::create_dir_all(dir(data_dir))?;
+    crate::model::create_private_dir(&dir(data_dir))?;
     let mut line = serde_json::to_string(entry)?;
     line.push('\n');
     // A write cut short (a crash) leaves a line without its end: start on a line of our own.
     if !ends_with_newline(&path) {
         line.insert(0, '\n');
     }
-    let mut out = fs::OpenOptions::new().create(true).append(true).open(&path).with_context(|| format!("opening {}", path.display()))?;
+    let mut out = crate::model::open_private_append(&path).with_context(|| format!("opening {}", path.display()))?;
     out.write_all(line.as_bytes()).with_context(|| format!("writing {}", path.display()))?;
     drop(out);
     if fs::metadata(&path).is_ok_and(|m| m.len() > TRIM_AT_BYTES) {
