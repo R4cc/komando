@@ -9,25 +9,25 @@ use super::*;
 pub(super) struct SnapCell {
     /// Row in the view and column.
     pub(super) row: i32,
-    pub(super) col: usize,
-    pub(super) c: char,
+    col: usize,
+    c: char,
     /// Zero-width characters on this cell (combining accents, variation selectors, ZWJ): where
     /// they are in the `Snapshot`'s `extras`.
-    pub(super) extra: Range<u32>,
-    pub(super) fg: Rgb,
-    pub(super) bg: Rgb,
-    pub(super) underline: Option<Rgb>,
-    pub(super) flags: Flags,
-    pub(super) selected: bool,
+    extra: Range<u32>,
+    fg: Rgb,
+    bg: Rgb,
+    underline: Option<Rgb>,
+    flags: Flags,
+    selected: bool,
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct CursorSnap {
-    pub(super) row: i32,
-    pub(super) col: usize,
-    pub(super) shape: CursorShape,
-    pub(super) wide: bool,
-    pub(super) color: Rgb,
+struct CursorSnap {
+    row: i32,
+    col: usize,
+    shape: CursorShape,
+    wide: bool,
+    color: Rgb,
 }
 
 /// Vertical text positions within a terminal row, shared by glyphs and decorations.
@@ -53,52 +53,52 @@ impl RowTextMetrics {
 }
 
 /// Everything a row needs to be laid out, shared by all rows of a frame.
-pub(super) struct RowContext<'a> {
-    pub(super) shaper: &'a dyn Shaper,
+struct RowContext<'a> {
+    shaper: &'a dyn Shaper,
     /// Regular, bold, italic, bold italic.
-    pub(super) fonts: [gpui::Font; 4],
-    pub(super) font_size: Pixels,
-    pub(super) origin: gpui::Point<Pixels>,
-    pub(super) cell_w: Pixels,
-    pub(super) line_h: Pixels,
-    pub(super) scale: f32,
+    fonts: [gpui::Font; 4],
+    font_size: Pixels,
+    origin: gpui::Point<Pixels>,
+    cell_w: Pixels,
+    line_h: Pixels,
+    scale: f32,
     /// From the top of a row: the text baseline, underline and strikethrough.
-    pub(super) baseline: Pixels,
-    pub(super) underline_y: Pixels,
-    pub(super) strike_y: Pixels,
-    pub(super) highlighter: Option<&'a highlight::Highlighter>,
-    pub(super) dark: bool,
-    pub(super) default_bg: Rgb,
-    pub(super) selection: Hsla,
-    pub(super) selection_foreground: Rgb,
+    baseline: Pixels,
+    underline_y: Pixels,
+    strike_y: Pixels,
+    highlighter: Option<&'a highlight::Highlighter>,
+    dark: bool,
+    default_bg: Rgb,
+    selection: Hsla,
+    selection_foreground: Rgb,
     /// The current search match's cells, (row, columns), and the colour of its text: it sits
     /// on a solid accent background (see `search_colors`).
-    pub(super) current_match: &'a [(i32, Range<usize>)],
-    pub(super) match_foreground: Rgb,
-    pub(super) cursor: Option<CursorSnap>,
-    pub(super) focused: bool,
+    current_match: &'a [(i32, Range<usize>)],
+    match_foreground: Rgb,
+    cursor: Option<CursorSnap>,
+    focused: bool,
 }
 
 /// Buffers `layout_row` reuses from row to row, so a frame does not allocate per row.
 #[derive(Default)]
-pub(super) struct RowScratch {
+struct RowScratch {
     /// The row's text and where each cell starts in it, for highlight rules.
-    pub(super) text: String,
-    pub(super) starts: Vec<usize>,
+    text: String,
+    starts: Vec<usize>,
     /// The style highlight rules give each byte of `text`.
-    pub(super) styles: Vec<Option<highlight::Style>>,
+    styles: Vec<Option<highlight::Style>>,
     /// (first column, end column, colour)
-    pub(super) backgrounds: Vec<(usize, usize, Rgb)>,
-    pub(super) selected: Vec<(usize, usize)>,
-    pub(super) prims: Vec<Prim>,
+    backgrounds: Vec<(usize, usize, Rgb)>,
+    selected: Vec<(usize, usize)>,
+    prims: Vec<Prim>,
 }
 
 /// Bytes `start..end` of a row's text, coloured by a highlight rule.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct StyledSpan {
-    pub(super) start: u32,
-    pub(super) end: u32,
-    pub(super) style: highlight::Style,
+    start: u32,
+    end: u32,
+    style: highlight::Style,
 }
 
 /// Row texts a generation of the highlight cache grows to before it ages (see `Generations`):
@@ -111,7 +111,7 @@ pub(super) const HIGHLIGHT_GENERATION: usize = 512;
 #[derive(Default)]
 pub(super) struct HighlightCache {
     /// The rules and the background (dark or not) the entries were worked out for.
-    pub(super) key: Option<(ByAddress<highlight::Highlighter>, bool)>,
+    key: Option<(ByAddress<highlight::Highlighter>, bool)>,
     pub(super) rows: Generations<Box<str>, Box<[StyledSpan]>>,
     #[cfg(test)]
     pub(super) scans: usize,
@@ -144,7 +144,7 @@ impl HighlightCache {
 }
 
 /// Per-byte styles (see `Highlighter::styles_for_background_into`) as spans.
-pub(super) fn styled_spans(styles: &[Option<highlight::Style>]) -> Box<[StyledSpan]> {
+fn styled_spans(styles: &[Option<highlight::Style>]) -> Box<[StyledSpan]> {
     let mut spans: Vec<StyledSpan> = Vec::new();
     for (i, style) in styles.iter().enumerate() {
         let Some(style) = *style else { continue };
@@ -198,7 +198,7 @@ pub(super) struct RowPaint {
 }
 
 impl RowPaint {
-    pub(super) fn clear(&mut self) {
+    fn clear(&mut self) {
         self.rects.clear();
         self.prims.clear();
         self.glyphs.clear();
@@ -254,7 +254,7 @@ pub(super) struct Frame {
 /// a character from a fallback font (CJK, emoji, symbols, Nerd Font icons) has its own
 /// width, and would shift everything after it on the line out of its column.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn layout_row(
+fn layout_row(
     cells: &[SnapCell],
     extras: &[char],
     row: i32,
@@ -431,15 +431,15 @@ pub(super) struct Snapshot {
     /// A row at a time, from the left.
     pub(super) cells: Vec<SnapCell>,
     /// The zero-width characters of all cells (see `SnapCell::extra`).
-    pub(super) extras: Vec<char>,
+    extras: Vec<char>,
     /// The rows copied that are part of a command line, by row of the view.
-    pub(super) input: Vec<(i32, InputRow)>,
+    input: Vec<(i32, InputRow)>,
 }
 
 /// How much of a row is a command the user typed, which highlight rules leave alone: the
 /// line at the cursor and lines entered earlier (Command Marks), after their prompt.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub(super) enum InputRow {
+enum InputRow {
     /// The first row of the line: what follows the prompt.
     AfterPrompt,
     /// A row the line wrapped onto: all of it.
@@ -449,7 +449,7 @@ pub(super) enum InputRow {
 impl Snapshot {
     /// Copy the cells of `rows` (rows of the view, top to bottom), colours resolved with
     /// `palette`, after what is copied already.
-    pub(super) fn copy_rows<T: alacritty_terminal::event::EventListener>(
+    fn copy_rows<T: alacritty_terminal::event::EventListener>(
         &mut self,
         term: &Term<T>,
         content: &alacritty_terminal::term::RenderableContent,
@@ -497,19 +497,19 @@ impl Snapshot {
         }
     }
 
-    pub(super) fn clear(&mut self) {
+    fn clear(&mut self) {
         self.cells.clear();
         self.extras.clear();
         self.input.clear();
     }
 
-    pub(super) fn input(&self, row: i32) -> Option<InputRow> {
+    fn input(&self, row: i32) -> Option<InputRow> {
         self.input.iter().find(|(r, _)| *r == row).map(|&(_, input)| input)
     }
 }
 
 /// The first row of the line at the cursor, when it is being typed at a prompt.
-pub(super) fn typing_start<T>(term: &Term<T>) -> Option<Line> {
+fn typing_start<T>(term: &Term<T>) -> Option<Line> {
     let grid = term.grid();
     let cursor = grid.cursor.point.line;
     (!term.mode().contains(TermMode::ALT_SCREEN) && cursor <= grid.bottommost_line())
@@ -523,7 +523,7 @@ pub(super) fn typing_start<T>(term: &Term<T>) -> Option<Line> {
 
 /// Whether row `line` is part of a command line (see `InputRow`): the one being typed, which
 /// starts at `typing`, or one entered earlier.
-pub(super) fn input_row<T>(term: &Term<T>, line: Line, typing: Option<Line>) -> Option<InputRow> {
+fn input_row<T>(term: &Term<T>, line: Line, typing: Option<Line>) -> Option<InputRow> {
     let start = crate::marks::logical_start(term, line);
     (Some(start) == typing || crate::marks::is_marked(&term.grid()[start][Column(0)]))
         .then_some(if start == line { InputRow::AfterPrompt } else { InputRow::All })
@@ -538,7 +538,7 @@ pub(super) struct TermLink {
 }
 
 /// Rows of a wrapped line read to find a link in it, either way from the pointer.
-pub(super) const LINK_ROWS: i32 = 16;
+const LINK_ROWS: i32 = 16;
 
 /// The link at `at`: one a program marked (OSC 8) with a web address, or an address with its
 /// scheme written in the text (see `crate::links`), read across rows a long line wrapped onto.
@@ -652,12 +652,12 @@ pub(super) fn ellipsize(text: &str, max: usize) -> String {
 /// Not always the terminal's display offset: while the view is scrolled up, a program scrolling
 /// a region that doesn't start at the top raises the offset without adding to the Scrollback
 /// (alacritty_terminal 0.26), and the view would start above the oldest line.
-pub(super) fn view_offset<T>(term: &Term<T>) -> usize {
+fn view_offset<T>(term: &Term<T>) -> usize {
     term.grid().display_offset().min(term.grid().history_size())
 }
 
 /// The cursor, if it is shown in the view.
-pub(super) fn cursor_snap<T: alacritty_terminal::event::EventListener>(
+fn cursor_snap<T: alacritty_terminal::event::EventListener>(
     term: &Term<T>,
     content: &alacritty_terminal::term::RenderableContent,
     palette: &crate::theme::TerminalPalette,
@@ -675,8 +675,8 @@ pub(super) fn cursor_snap<T: alacritty_terminal::event::EventListener>(
 
 /// The terminal font at one size: what the grid is measured and laid out with.
 pub(super) struct GridFont {
-    pub(super) family: SharedString,
-    pub(super) size: Pixels,
+    family: SharedString,
+    size: Pixels,
     /// Regular, bold, italic, bold italic.
     pub(super) fonts: [gpui::Font; 4],
     pub(super) cell_w: Pixels,
@@ -738,45 +738,45 @@ pub(super) struct GridLook<'a> {
 /// and `cell` already assume).
 #[derive(Default)]
 pub(super) struct GridCache {
-    pub(super) glyphs: GlyphCache,
+    glyphs: GlyphCache,
     pub(super) highlights: HighlightCache,
     pub(super) snapshot: Snapshot,
-    pub(super) scratch: RowScratch,
+    scratch: RowScratch,
     /// The rows of the view, laid out.
     pub(super) rows: Vec<RowPaint>,
     /// What `rows` were laid out with, besides the cells (`None` until the first frame).
-    pub(super) looked: Option<LaidOutWith>,
+    looked: Option<LaidOutWith>,
     /// The selection and the row of the cursor that `rows` show.
-    pub(super) selection: Option<SelectionRange>,
-    pub(super) cursor_row: Option<usize>,
+    selection: Option<SelectionRange>,
+    cursor_row: Option<usize>,
     /// The current search match that `rows` show.
-    pub(super) current_match: Vec<(i32, Range<usize>)>,
+    current_match: Vec<(i32, Range<usize>)>,
     /// The rows to lay out this frame.
-    pub(super) dirty: Vec<bool>,
+    dirty: Vec<bool>,
 }
 
 /// What every row's layout depends on besides its cells, the selection and the cursor.
 #[derive(PartialEq)]
-pub(super) struct LaidOutWith {
-    pub(super) family: SharedString,
-    pub(super) font_size: Pixels,
-    pub(super) cell_w: Pixels,
-    pub(super) line_h: Pixels,
-    pub(super) origin: gpui::Point<Pixels>,
-    pub(super) scale: f32,
-    pub(super) palette: crate::theme::TerminalPalette,
-    pub(super) match_foreground: Rgb,
+struct LaidOutWith {
+    family: SharedString,
+    font_size: Pixels,
+    cell_w: Pixels,
+    line_h: Pixels,
+    origin: gpui::Point<Pixels>,
+    scale: f32,
+    palette: crate::theme::TerminalPalette,
+    match_foreground: Rgb,
     /// The rules colouring output, `None` while highlighting is off; compared by identity
     /// (and held, so the address cannot come back with other rules).
-    pub(super) highlighter: Option<ByAddress<highlight::Highlighter>>,
-    pub(super) columns: usize,
-    pub(super) lines: usize,
+    highlighter: Option<ByAddress<highlight::Highlighter>>,
+    columns: usize,
+    lines: usize,
     /// How far the view is scrolled up (see `view_offset`).
-    pub(super) offset: usize,
+    offset: usize,
 }
 
 /// An `Arc` compared by what it points to, not by value.
-pub(super) struct ByAddress<T>(Arc<T>);
+struct ByAddress<T>(Arc<T>);
 
 impl<T> PartialEq for ByAddress<T> {
     fn eq(&self, other: &Self) -> bool {
@@ -934,14 +934,14 @@ pub(super) const INLINE_CLUSTER: usize = 8;
 /// Entries a generation of the glyph cache grows to before it ages (see `Generations`). Two
 /// generations are kept, so this many entries or more are always there: a screen in four styles
 /// with thousands of different characters, CJK or combining marks fits many times over.
-pub(super) const GLYPH_GENERATION: usize = 16_384;
+const GLYPH_GENERATION: usize = 16_384;
 
 /// A cluster and its style, inline.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct ClusterKey {
-    pub(super) style: u8,
-    pub(super) len: u8,
-    pub(super) chars: [char; INLINE_CLUSTER],
+struct ClusterKey {
+    style: u8,
+    len: u8,
+    chars: [char; INLINE_CLUSTER],
 }
 
 /// Cache entries in two generations: those used since the cache last aged, and those before.
@@ -949,8 +949,8 @@ pub(super) struct ClusterKey {
 /// frame is still there in the next, however many it was: a screen with more different
 /// characters than a generation holds is never shaped again frame after frame.
 pub(super) struct Generations<K, V = Box<[CachedGlyph]>> {
-    pub(super) current: FxHashMap<K, V>,
-    pub(super) previous: FxHashMap<K, V>,
+    current: FxHashMap<K, V>,
+    previous: FxHashMap<K, V>,
 }
 
 impl<K, V> Default for Generations<K, V> {
@@ -961,7 +961,7 @@ impl<K, V> Default for Generations<K, V> {
 
 impl<K: Hash + Eq, V> Generations<K, V> {
     /// Start a new generation once the current one has more than `limit` entries.
-    pub(super) fn age(&mut self, limit: usize) {
+    fn age(&mut self, limit: usize) {
         if self.current.len() > limit {
             // The old generation's table is cleared and reused for the new one.
             std::mem::swap(&mut self.current, &mut self.previous);
@@ -969,7 +969,7 @@ impl<K: Hash + Eq, V> Generations<K, V> {
         }
     }
 
-    pub(super) fn clear(&mut self) {
+    fn clear(&mut self) {
         self.current.clear();
         self.previous.clear();
     }
@@ -989,14 +989,14 @@ impl<K: Hash + Eq, V> Generations<K, V> {
 /// glyph): it is not looked for in the fonts again.
 pub(super) struct GlyphCache {
     /// The font family, size, and regular and bold weights the entries were shaped with.
-    pub(super) font: Option<(SharedString, Pixels, [FontWeight; 2])>,
+    font: Option<(SharedString, Pixels, [FontWeight; 2])>,
     /// ASCII characters in each style, by style and code: most cells of most screens.
-    pub(super) ascii: Box<[Option<Box<[CachedGlyph]>>]>,
-    pub(super) clusters: Generations<ClusterKey>,
+    ascii: Box<[Option<Box<[CachedGlyph]>>]>,
+    clusters: Generations<ClusterKey>,
     /// Clusters longer than `INLINE_CLUSTER`, the style first (as a character).
     pub(super) long: Generations<Box<[char]>>,
     /// Where a long cluster's key is put together for a lookup.
-    pub(super) long_key: Vec<char>,
+    long_key: Vec<char>,
     /// Entries a generation grows to before it ages.
     pub(super) limit: usize,
 }
@@ -1029,7 +1029,7 @@ impl GlyphCache {
 
     /// The glyphs of a cell's text (`c` and the zero-width characters on its cell) in a style,
     /// shaped if they aren't cached yet.
-    pub(super) fn get(&mut self, ctx: &RowContext, style: usize, c: char, extra: &[char]) -> &[CachedGlyph] {
+    fn get(&mut self, ctx: &RowContext, style: usize, c: char, extra: &[char]) -> &[CachedGlyph] {
         self.get_with(style, c, extra, |text| shape_cluster(ctx, style, text))
     }
 
@@ -1109,7 +1109,7 @@ impl Shaper for gpui::WindowTextSystem {
 }
 
 /// Shape one cell's text in a style.
-pub(super) fn shape_cluster(ctx: &RowContext, style: usize, text: &str) -> Box<[CachedGlyph]> {
+fn shape_cluster(ctx: &RowContext, style: usize, text: &str) -> Box<[CachedGlyph]> {
     #[cfg(test)]
     SHAPED.with(|n| n.set(n.get() + 1));
     ctx.shaper.shape(&ctx.fonts[style], ctx.font_size, text)

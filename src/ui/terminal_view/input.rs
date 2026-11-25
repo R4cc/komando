@@ -24,7 +24,7 @@ impl TerminalView {
         );
     }
 
-    pub(super) fn key_pressed(&mut self, ks: &gpui::Keystroke, window: &mut Window, cx: &mut Context<Self>) {
+    fn key_pressed(&mut self, ks: &gpui::Keystroke, window: &mut Window, cx: &mut Context<Self>) {
         // Keys typed into a field on top of the terminal (a connection question's user name or
         // password) bubble up to here. They belong to that field: sending them to the session
         // and stopping propagation would also stop the field from receiving the text.
@@ -145,7 +145,7 @@ impl TerminalView {
 
     /// A question answered with its buttons (a Host Key, a multi-line paste) is open, and the
     /// terminal keeps the focus for its Enter and Escape.
-    pub(super) fn prompt_holds_keys(&self) -> bool {
+    fn prompt_holds_keys(&self) -> bool {
         matches!(self.prompt, Some(ActivePrompt::HostKey { .. } | ActivePrompt::HostKeyChanged { .. } | ActivePrompt::ConfirmPaste { .. }))
     }
 
@@ -165,7 +165,7 @@ impl TerminalView {
         }
     }
 
-    pub(super) fn paste_text(&mut self, text: &str) {
+    fn paste_text(&mut self, text: &str) {
         let bracketed = self.pointer.bracketed_paste && self.term.lock().mode().contains(TermMode::BRACKETED_PASTE);
         self.scroll_to_bottom();
         self.write(keys::paste_bytes(text, bracketed));
@@ -212,7 +212,7 @@ impl TerminalView {
     }
 
     /// Whether the Restore scrollback button shows.
-    pub(super) fn shows_restore(&self) -> bool {
+    fn shows_restore(&self) -> bool {
         self.restore_offer && {
             let term = self.term.lock();
             let grid = term.grid();
@@ -223,7 +223,7 @@ impl TerminalView {
     }
 
     /// Bring back the output a clear hid, and show the end of it.
-    pub(super) fn restore_scrollback(&mut self, cx: &mut Context<Self>) {
+    fn restore_scrollback(&mut self, cx: &mut Context<Self>) {
         self.restore_offer = false;
         {
             let mut term = self.term.lock();

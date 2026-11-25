@@ -251,7 +251,8 @@ fn glyph_cache_shapes_each_cell_text_once_per_style() {
 fn glyph_cache_keeps_a_frame_bigger_than_its_limit_and_stays_bounded() {
     let shaped = Cell::new(0);
     let shape = fake_shape(&shaped);
-    let mut cache = GlyphCache { limit: 100, ..GlyphCache::default() };
+    let mut cache = GlyphCache::default();
+    cache.limit = 100;
     let marks: Vec<char> = ('\u{0300}'..='\u{036f}').collect();
     let marks = &marks;
     let screen = |seed: usize| (seed..seed + 1000).map(move |i| (char::from(b'a' + (i % 26) as u8), marks[i / 26 % marks.len()]));

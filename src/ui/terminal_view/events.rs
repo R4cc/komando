@@ -138,7 +138,7 @@ impl TerminalView {
         }
     }
 
-    pub(super) fn show_prompt(&mut self, prompt: Prompt, window: &mut Window, cx: &mut Context<Self>) {
+    fn show_prompt(&mut self, prompt: Prompt, window: &mut Window, cx: &mut Context<Self>) {
         self.prompt = Some(match prompt {
             Prompt::HostKey { fingerprint, algorithm, other_types, reply } => {
                 ActivePrompt::HostKey { fingerprint, algorithm, other_types, reply: Some(reply) }
@@ -221,7 +221,7 @@ impl TerminalView {
 
     /// Type the next Startup Command after `delay`, unless output arrives in the meantime
     /// (which starts a new wait).
-    pub(super) fn schedule_startup(&mut self, delay: Duration, window: &mut Window, cx: &mut Context<Self>) {
+    fn schedule_startup(&mut self, delay: Duration, window: &mut Window, cx: &mut Context<Self>) {
         self.startup.generation += 1;
         let generation = self.startup.generation;
         cx.spawn_in(window, async move |this, cx| {
@@ -235,7 +235,7 @@ impl TerminalView {
         .detach();
     }
 
-    pub(super) fn type_startup_command(&mut self, cx: &mut Context<Self>) {
+    fn type_startup_command(&mut self, cx: &mut Context<Self>) {
         if !self.startup.waiting() || self.status != Status::Connected {
             return;
         }
@@ -322,7 +322,7 @@ impl TerminalView {
     }
 
     /// Output arrived: note it, and keep `busy` up to date until the output settles.
-    pub(super) fn note_output(&mut self, cx: &mut Context<Self>) {
+    fn note_output(&mut self, cx: &mut Context<Self>) {
         self.activity.output(Instant::now());
         if self.activity_watch {
             return;

@@ -5,7 +5,7 @@ use super::*;
 
 impl TerminalView {
     /// The viewport cell under `position`, clamped to the grid.
-    pub(super) fn cell_at(&self, position: gpui::Point<Pixels>) -> (usize, usize) {
+    fn cell_at(&self, position: gpui::Point<Pixels>) -> (usize, usize) {
         let origin = self.origin.get();
         let (cw, ch) = self.cell.get();
         let size = self.grid_size();
@@ -14,7 +14,7 @@ impl TerminalView {
         (x.min(size.cols.saturating_sub(1) as usize), y.min(size.rows.saturating_sub(1) as usize))
     }
 
-    pub(super) fn grid_point(&self, position: gpui::Point<Pixels>) -> (GridPoint, Side) {
+    fn grid_point(&self, position: gpui::Point<Pixels>) -> (GridPoint, Side) {
         let origin = self.origin.get();
         let (cw, _) = self.cell.get();
         let (col, row) = self.cell_at(position);
@@ -58,7 +58,7 @@ impl TerminalView {
         }
     }
 
-    pub(super) fn link_under(&self, position: gpui::Point<Pixels>) -> Option<TermLink> {
+    fn link_under(&self, position: gpui::Point<Pixels>) -> Option<TermLink> {
         let at = self.grid_point(position).0;
         link_at(&*self.term.lock(), at)
     }
@@ -73,7 +73,7 @@ impl TerminalView {
         mouse.reporting().then_some(mouse)
     }
 
-    pub(super) fn report_mouse(
+    fn report_mouse(
         &mut self,
         mode: MouseMode,
         button: keys::MouseButton,
@@ -241,14 +241,14 @@ impl TerminalView {
     }
 
     /// Type the selected text into the shell, as if pasted.
-    pub(super) fn paste_selection(&mut self, cx: &mut Context<Self>) {
+    fn paste_selection(&mut self, cx: &mut Context<Self>) {
         let Some(text) = self.term.lock().selection_to_string().filter(|t| !t.is_empty()) else { return };
         self.paste_or_confirm(text, cx);
     }
 
     /// Select the whole output: the Scrollback and the screen down to its last written line
     /// (or the cursor's), not the blank rows below.
-    pub(super) fn select_all(&mut self, cx: &mut Context<Self>) {
+    fn select_all(&mut self, cx: &mut Context<Self>) {
         self.keyboard_selection.select_all(&mut self.term.lock());
         cx.notify();
     }
@@ -359,7 +359,7 @@ impl TerminalView {
     }
 
     /// Something else has the pointer, or there is nothing for the overlay to show.
-    pub(super) fn minimap_blocked(&self, window: &Window) -> bool {
+    fn minimap_blocked(&self, window: &Window) -> bool {
         !self.minimap
             || !self.minimap_overlay
             || self.prompt.is_some()
@@ -375,7 +375,7 @@ impl TerminalView {
 
     /// Open or close the overlay for the pointer at `position`. Merely passing over output
     /// never opens it, nor may a selection; once open it stays while the pointer is on it.
-    pub(super) fn minimap_track(&mut self, position: gpui::Point<Pixels>, pressed: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn minimap_track(&mut self, position: gpui::Point<Pixels>, pressed: bool, window: &mut Window, cx: &mut Context<Self>) {
         use crate::ui::minimap::{HIDE_DELAY, Timer, hover_region};
         if !self.minimap_overlay {
             return;
@@ -513,7 +513,7 @@ impl TerminalView {
         cx.notify();
     }
 
-    pub(super) fn extend_selection(&mut self, position: gpui::Point<Pixels>) {
+    fn extend_selection(&mut self, position: gpui::Point<Pixels>) {
         let (pt, side) = self.grid_point(position);
         if let Some(selection) = self.term.lock().selection.as_mut() {
             selection.update(pt, side);
@@ -522,7 +522,7 @@ impl TerminalView {
 
     /// Lines per second to scroll for a selection dragged to `position`: up (positive) above
     /// the grid, down below it, faster the further away; 0 over it.
-    pub(super) fn autoscroll_speed(&self, position: gpui::Point<Pixels>) -> f32 {
+    fn autoscroll_speed(&self, position: gpui::Point<Pixels>) -> f32 {
         let top = f32::from(self.origin.get().y);
         let (_, ch) = self.cell.get();
         let bottom = top + self.grid_size().rows as f32 * ch;
@@ -539,7 +539,7 @@ impl TerminalView {
 
     /// One frame of scrolling while a selection is held above or below the grid: as many
     /// lines as the time since the last frame allows, the rest carried to the next frame.
-    pub(super) fn autoscroll_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn autoscroll_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((last, carry)) = self.autoscroll else { return };
         let (position, speed) = match self.drag_at {
             Some(position) if self.selecting => (position, self.autoscroll_speed(position)),

@@ -6,7 +6,7 @@ use crate::ui::widgets::{dialog_card, dialog_mono, dialog_text};
 
 impl TerminalView {
     /// Scroll so the entered line sits near the top of the view, and light it up briefly.
-    pub(super) fn jump_to_mark(&mut self, id: u64, cx: &mut Context<Self>) {
+    fn jump_to_mark(&mut self, id: u64, cx: &mut Context<Self>) {
         {
             let mut term = self.term.lock();
             if term.mode().contains(TermMode::ALT_SCREEN) {
@@ -225,7 +225,7 @@ impl TerminalView {
     }
 
     /// The open question as a card.
-    pub(super) fn prompt_card(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn prompt_card(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let p = cx.global::<Appearance>().app;
         let prompt = self.prompt.as_ref()?;
         let hop_name = self.route.as_ref().and_then(|r| r.hop_name(r.current()).map(str::to_string));
@@ -364,7 +364,7 @@ impl TerminalView {
 
     /// An answer to the clipboard question: copy it or not, and for "Always" and "Never" keep
     /// the choice for the Host (`remember`).
-    pub(super) fn answer_clipboard(&mut self, copy: bool, remember: bool, cx: &mut Context<Self>) {
+    fn answer_clipboard(&mut self, copy: bool, remember: bool, cx: &mut Context<Self>) {
         let Some(text) = self.clipboard_ask.take() else { return };
         if copy {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
