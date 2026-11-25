@@ -37,8 +37,11 @@ jobs:
       # profile's optimisations, and both commands share the same profile and cache.
       - name: Build
         run: cargo build --profile ci --locked --timings
+      # The integration suites that need nothing but the test process: each runs its own SSH
+      # server in process. agent.rs is Unix-only; the other tests/ suites are ignored
+      # benchmarks or open native windows.
       - name: Test
-        run: cargo test --profile ci --lib --locked --timings
+        run: cargo test --profile ci --locked --timings --lib --test sign_in --test forwards --test latency
       - name: Test update handoff
         shell: powershell
         run: ./packaging/test-update.ps1
@@ -74,8 +77,9 @@ jobs:
           prefix-key: v2-ci
       - name: Build
         run: cargo build --profile ci --locked
+      # As on Windows, plus the SSH Agent suite, which needs Unix sockets.
       - name: Test
-        run: cargo test --profile ci --lib --locked
+        run: cargo test --profile ci --locked --lib --test sign_in --test agent --test forwards --test latency
       # Packaging is otherwise only exercised by a release.
       - name: Package
         run: ./packaging/build-linux.sh 0.0.0 target/ci/komando Komando-ci-linux.tar.gz && tar -tzf Komando-ci-linux.tar.gz

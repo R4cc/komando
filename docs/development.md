@@ -80,12 +80,15 @@ run; the initial **Queue build on default branch** job only dispatches it.
 
 The first release with a new compiler or dependency set can still be slow. Shipping builds
 keep thin LTO and the release profile's optimisation settings. CI uses `cargo build --profile ci`
-and `cargo test --profile ci --lib`: Komando is unoptimised, dependencies retain the dev profile's
+and `cargo test --profile ci`: Komando is unoptimised, dependencies retain the dev profile's
 optimisations, and assertions and overflow checks remain enabled. Local `cargo build` and
-`cargo test --lib` keep their existing profiles. CI builds and tests on Windows and Linux (and packs the
-Linux tarball); macOS is only built for a release, as its runners cost ten times as much.
-Branch pushes and pull requests run CI;
-pushing a tag does not repeat those checks.
+`cargo test --lib` keep their existing profiles. Besides the unit tests, CI runs the integration
+suites that bring their own SSH server: `sign_in`, `forwards` and `latency`, and on Linux also
+`agent`. The benchmark and compatibility suites (`throughput`, `compat`) and the native window
+tests (`window_frame`, `theme_picker`) are ignored tests that CI leaves out. CI builds and
+tests on Windows and Linux (and packs the Linux tarball); macOS is only built for a release, as
+its runners cost ten times as much. Branch pushes and pull requests run CI; pushing a tag does
+not repeat those checks.
 
 Both workflows upload Cargo's HTML timing reports as run artifacts for seven days. Download
 `ci-build-timings` or `release-build-timings-<tag>` from the run's summary to see which crates
