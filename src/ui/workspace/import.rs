@@ -11,11 +11,12 @@ use std::path::{Path, PathBuf};
 
 use gpui::Toggled;
 
-use super::settings::group;
+use super::settings::{group, settings_block};
 use super::*;
 use crate::import::{self, Applied, Duplicate, Found, FoundGroup, FoundHost, Plan, Target, mobaxterm, openssh, tabby};
 use crate::model::{JumpHost, PortForward, StartupCommand};
 use crate::share;
+use crate::ui::widgets::plural;
 
 /// Groups start folded when the import has more hosts than this, so the list stays short.
 const UNFOLD_UP_TO: usize = 40;
@@ -291,7 +292,7 @@ impl Workspace {
         };
         let picked = selection.picked_count();
         let status = if review {
-            format!("{} ready to import", hosts_label(picked))
+            "Nothing is saved until you import.".to_string()
         } else {
             format!("{picked} of {} picked", hosts_label(selection.found.host_count()))
         };
@@ -326,181 +327,101 @@ impl Workspace {
         )
     }
 
+    /// Where an import can come from: the other SSH clients, then a shared project. A problem
+    /// with the last attempt shows above them.
     fn import_start(&self, problem: Option<AnyElement>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let row = div()
-            .flex()
-            .items_center()
-            .gap(px(14.))
-            .child(badge("terminal", p.brand, 36.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child("Tabby"))
-                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(
-                        "Copies your SSH profiles' names, host names, ports, users, icons, forwarded ports and login \
-                         scripts (as startup commands). Profile groups become projects. Passwords and jump hosts stay in Tabby.",
-                    )),
-            )
-            .child(
-                button("import-tabby", "Import from Tabby", ButtonKind::Primary, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.start_client_import(Source::Tabby, tabby::find_config, cx)
-                    })),
-            )
-            .into_any_element();
-        let ssh_row = div()
-            .flex()
-            .items_center()
-            .gap(px(14.))
-            .child(badge("square-terminal", p.brand, 36.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child("SSH config"))
-                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(
-                        "Reads ~/.ssh/config and the files it includes. Each Host block with a host name comes over with its \
-                         address, port, user, ProxyJump (as jump hosts) and forwards, as ssh would use them: Host * and other \
-                         patterns fill in what a host leaves out. Keys stay in their files.",
-                    )),
-            )
-            .child(
-                button("import-openssh", "Import from SSH config", ButtonKind::Secondary, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.start_client_import(Source::OpenSsh, openssh::find_config, cx)
-                    })),
-            )
-            .into_any_element();
-        let moba_row = div()
-            .flex()
-            .items_center()
-            .gap(px(14.))
-            .child(badge("terminal", p.brand, 36.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child("MobaXterm"))
-                            .child(tag("Experimental", p.warning, p)),
-                    )
-                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(
-                        "Copies SSH, RDP and VNC sessions with their names, host names, ports and users. SSH gateways \
-                         and execute commands come over for SSH sessions. Desktop sessions open RDP or VNC directly; \
-                         desktops using an SSH gateway are left out. Session folders become projects. Passwords, keys \
-                         and desktop preferences stay in MobaXterm. Check the review before importing.",
-                    )),
-            )
-            .child(
-                button("import-mobaxterm", "Import from MobaXterm", ButtonKind::Secondary, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.start_client_import(Source::MobaXterm, mobaxterm::find_config, cx)
-                    })),
-            )
-            .into_any_element();
-        let project_row = div()
-            .flex()
-            .items_center()
-            .gap(px(14.))
-            .child(badge("folder-input", p.brand, 36.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child("Komando project"))
-                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(format!(
-                        "A .{} file someone made with \"Share project…\". Brings over its hosts with their addresses, \
-                         users, jump hosts, port forwards and startup commands. Passwords and keys are never in it.",
-                        share::EXTENSION
-                    ))),
-            )
-            .child(
-                button("import-project", "Choose project file…", ButtonKind::Secondary, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_import_file(Source::ProjectFile, window, cx))),
-            )
-            .into_any_element();
+        let import = |id: &'static str, from: Source, find_config: fn() -> Option<PathBuf>| {
+            button(id, "Import", ButtonKind::Secondary, p)
+                .aria_label(format!("Import from {}", from.name()))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.start_client_import(from, find_config, cx)))
+                .into_any_element()
+        };
+        let clients = vec![
+            source_row(
+                "square-terminal",
+                "Tabby",
+                false,
+                "SSH profiles with their icons, forwarded ports and login scripts. Profile groups become projects.".into(),
+                import("import-tabby", Source::Tabby, tabby::find_config),
+                p,
+            ),
+            source_row(
+                "file-cog",
+                "SSH config",
+                false,
+                "Hosts from ~/.ssh/config and the files it includes, with their jump hosts and forwards.".into(),
+                import("import-openssh", Source::OpenSsh, openssh::find_config),
+                p,
+            ),
+            source_row(
+                "app-window",
+                "MobaXterm",
+                true,
+                "SSH, RDP and VNC sessions. Session folders become projects.".into(),
+                import("import-mobaxterm", Source::MobaXterm, mobaxterm::find_config),
+                p,
+            ),
+        ];
+        let project = source_row(
+            "folder-input",
+            "Komando project",
+            false,
+            format!("A .{} file made with \"Share project…\".", share::EXTENSION),
+            button("import-project", "Choose file…", ButtonKind::Secondary, p)
+                .aria_label("Choose a project file")
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_import_file(Source::ProjectFile, window, cx)))
+                .into_any_element(),
+            p,
+        );
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
+            .gap(px(24.))
             .children(problem)
-            .child(group(p, vec![row, ssh_row, moba_row, project_row]))
+            .child(settings_block("From another SSH client", p, group(p, clients)))
+            .child(settings_block("From a shared project", p, group(p, vec![project])))
             .into_any_element()
     }
 
     fn import_not_found(&self, from: Source, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let notice = |icon: &str, color: Hsla, title: &str, body: &str, action: AnyElement, p: AppPalette| {
-            problem_card(
-                icon,
-                color,
-                title,
-                vec![div().text_size(px(12.5)).line_height(px(18.)).text_color(p.text_muted).child(body.to_string()).into_any_element()],
-                vec![action],
-                p,
-            )
+        let (title, body, choose) = match from {
+            Source::OpenSsh => {
+                let place = openssh::ssh_dir().map(|dir| dir.join("config").display().to_string()).unwrap_or_else(|| "~/.ssh/config".into());
+                ("No SSH config found", format!("ssh reads its hosts from {place}, and there's no file there. If yours is elsewhere, choose it."), "Choose SSH config…")
+            }
+            Source::MobaXterm if cfg!(windows) => (
+                "MobaXterm's sessions weren't found",
+                "MobaXterm keeps them in MobaXterm.ini, in Documents\\MobaXterm, %APPDATA%\\MobaXterm or next to a portable \
+                 MobaXterm.exe. You can also export them from its Sessions panel as a .mxtsessions file."
+                    .to_string(),
+                "Choose MobaXterm file…",
+            ),
+            Source::MobaXterm => (
+                "MobaXterm's sessions aren't on this PC",
+                "MobaXterm runs on Windows. Export your sessions from its Sessions panel as a .mxtsessions file and choose it here."
+                    .to_string(),
+                "Choose MobaXterm file…",
+            ),
+            _ => {
+                let place = if cfg!(windows) { "%APPDATA%\\tabby" } else { "Tabby's settings folder" };
+                (
+                    "Tabby's settings weren't found",
+                    format!("Tabby keeps its profiles in config.yaml, in {place} or in the data folder next to a portable Tabby.exe."),
+                    "Choose config.yaml…",
+                )
+            }
         };
-        if from == Source::OpenSsh {
-            let place = openssh::ssh_dir().map(|dir| dir.join("config").display().to_string()).unwrap_or_else(|| "~/.ssh/config".into());
-            return notice(
-                "search-x",
-                p.warning,
-                "Komando couldn't find an SSH config on this PC.",
-                &format!("ssh reads its hosts from {place}, and there's no file there. If yours is somewhere else, choose it."),
-                button("import-choose", "Choose SSH config file…", ButtonKind::Secondary, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_import_file(Source::OpenSsh, window, cx)))
-                    .into_any_element(),
-                p,
-            );
-        }
-        if from == Source::MobaXterm {
-            let body = if cfg!(windows) {
-                "An installed MobaXterm keeps them in MobaXterm.ini in Documents\\MobaXterm or %APPDATA%\\MobaXterm; a \
-                 portable one keeps it next to MobaXterm.exe. You can also export your sessions from MobaXterm's \
-                 Sessions panel to a .mxtsessions file and choose that file here."
-            } else {
-                "MobaXterm runs on Windows, so its sessions are not on this PC. Export them from MobaXterm's Sessions \
-                 panel to a .mxtsessions file and choose that file here."
-            };
-            return notice(
-                "search-x",
-                p.warning,
-                "Komando couldn't find MobaXterm's sessions on this PC.",
-                body,
-                button("import-choose", "Choose MobaXterm file…", ButtonKind::Secondary, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_import_file(Source::MobaXterm, window, cx)))
-                    .into_any_element(),
-                p,
-            );
-        }
-        let place = if cfg!(windows) { "%APPDATA%\\tabby" } else { "Tabby's settings folder" };
-        notice(
+        problem_card(
             "search-x",
             p.warning,
-            "Komando couldn't find Tabby on this PC.",
-            &format!(
-                "Tabby keeps its profiles in config.yaml, in {place}, or in the data folder next to a \
-                 portable Tabby.exe. Choose that file to import from it."
-            ),
-            button("import-choose", "Choose config.yaml…", ButtonKind::Secondary, p)
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_import_file(Source::Tabby, window, cx)))
-                .into_any_element(),
+            title,
+            vec![body_text(body, p)],
+            vec![
+                button("import-choose", choose, ButtonKind::Secondary, p)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.choose_import_file(from, window, cx)))
+                    .into_any_element(),
+                dismiss_button(p, cx),
+            ],
             p,
         )
     }
@@ -516,17 +437,12 @@ impl Workspace {
             "circle-alert",
             p.danger,
             title,
-            vec![
-                div().text_size(px(12.5)).line_height(px(18.)).text_color(p.text_muted).child(error.to_string()).into_any_element(),
-                file_line(path, p),
-            ],
+            vec![body_text(error.to_string(), p), file_line(path, p)],
             vec![
                 button("import-choose", "Choose another file…", ButtonKind::Secondary, p)
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.choose_import_file(from, window, cx)))
                     .into_any_element(),
-                button("import-dismiss", "Dismiss", ButtonKind::Ghost, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_import(cx)))
-                    .into_any_element(),
+                dismiss_button(p, cx),
             ],
             p,
         )
@@ -562,15 +478,12 @@ impl Workspace {
             p.warning,
             "Your Tabby settings are encrypted",
             vec![
-                div()
-                    .text_size(px(12.5))
-                    .line_height(px(18.))
-                    .text_color(p.text_muted)
-                    .child(
-                        "Tabby's \"Encrypt config file\" option is on, so only Tabby can read your profiles. \
-                         Switch it off for a moment to import them:",
-                    )
-                    .into_any_element(),
+                body_text(
+                    "Tabby's \"Encrypt config file\" option is on, so only Tabby can read your profiles. Switch it off \
+                     while you import; you can switch it back on afterwards."
+                        .into(),
+                    p,
+                ),
                 div()
                     .flex()
                     .flex_col()
@@ -579,12 +492,6 @@ impl Workspace {
                     .child(step(1, "In Tabby, open Settings → Vault."))
                     .child(step(2, "Switch off \"Encrypt config file\"."))
                     .child(step(3, "Come back here and choose Try again."))
-                    .into_any_element(),
-                div()
-                    .text_size(px(12.))
-                    .line_height(px(17.))
-                    .text_color(p.text_faint)
-                    .child("You can switch encryption back on once the import is done. Passwords never come over either way.")
                     .into_any_element(),
                 file_line(path, p),
             ],
@@ -595,9 +502,7 @@ impl Workspace {
                 button("import-choose", "Choose another file…", ButtonKind::Ghost, p)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.choose_import_file(Source::Tabby, window, cx)))
                     .into_any_element(),
-                button("import-dismiss", "Dismiss", ButtonKind::Ghost, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_import(cx)))
-                    .into_any_element(),
+                dismiss_button(p, cx),
             ],
             p,
         )
@@ -609,8 +514,8 @@ impl Workspace {
         div()
             .flex()
             .items_center()
-            .gap(px(10.))
-            .child(icon_el("file-text", 15., p.text_faint))
+            .gap(px(8.))
+            .child(icon_el("file-text", 14., p.text_faint))
             .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.text_muted).child(selection.source.display().to_string()))
             .child(
                 button("import-other", "Choose another file…", ButtonKind::Ghost, p)
@@ -620,19 +525,20 @@ impl Workspace {
     }
 
     fn import_pick(&self, selection: &Selection, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let total = selection.found.host_count();
-        let picked = selection.picked_count();
+        let groups = selection.found.groups.len();
         let toolbar = div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(px(4.))
             .child(
                 div()
                     .flex_1()
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(p.text)
-                    .child(format!("{picked} of {} picked", hosts_label(total))),
+                    .min_w_0()
+                    .truncate()
+                    .px(px(2.))
+                    .text_size(px(12.5))
+                    .text_color(p.text_muted)
+                    .child(format!("{} in {}", hosts_label(selection.found.host_count()), plural(groups, "project"))),
             )
             .child(
                 button("import-all", "Pick all", ButtonKind::Ghost, p)
@@ -643,17 +549,18 @@ impl Workspace {
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.pick_all_import(false, cx))),
             );
 
-        let mut groups = div().flex().flex_col().gap(px(10.));
+        let mut list = div().flex().flex_col().rounded(p.corner(12.)).border_1().border_color(p.border).bg(p.surface);
         for (g, (found, planned)) in selection.found.groups.iter().zip(&selection.plan.groups).enumerate() {
             let open = selection.open.contains(&g);
             let count = selection.picked[g].iter().filter(|x| **x).count();
+            let total = found.hosts.len();
             let (color, target) = match &planned.target {
-                Target::Existing { id, name } => (
-                    self.library.project(id).map(|pr| project_color(&pr.color)).unwrap_or(p.brand),
-                    format!("adds to your project {name}"),
-                ),
-                Target::New => (p.text_muted, "new project".to_string()),
+                Target::Existing { id, name } => {
+                    (self.library.project(id).map(|pr| project_color(&pr.color)).unwrap_or(p.brand), format!("Adds to {name}"))
+                }
+                Target::New => (p.text_muted, "New project".to_string()),
             };
+            let hosts = if count == total { hosts_label(total) } else { format!("{count} of {}", hosts_label(total)) };
             let header = div()
                 .id(("import-group", g))
                 .role(gpui::Role::Button)
@@ -666,12 +573,12 @@ impl Workspace {
                 .aria_expanded(open)
                 .tab_index(0)
                 .focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus))
-                .h(px(52.))
-                .px(px(12.))
+                .h(px(48.))
+                .px(px(10.))
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .rounded(p.corner(10.))
+                .rounded(p.corner(8.))
                 .cursor_pointer()
                 .hover(|s| s.bg(p.hover))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_import_open(g, cx)))
@@ -683,7 +590,7 @@ impl Workspace {
                         },
                     )),
                 )
-                .child(badge(found.icon.as_deref().unwrap_or("folder"), color, 28.))
+                .child(badge(found.icon.as_deref().unwrap_or("folder"), color, 24.))
                 .child(
                     div()
                         .flex_1()
@@ -691,107 +598,82 @@ impl Workspace {
                         .flex()
                         .flex_col()
                         .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).truncate().child(found.name.clone()))
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(p.text_faint)
-                                .truncate()
-                                .child(format!("{count} of {} · {target}", hosts_label(found.hosts.len()))),
-                        ),
+                        .child(div().text_size(px(12.)).text_color(p.text_faint).truncate().child(format!("{hosts} · {target}"))),
                 )
                 .child(icon_el(if open { "chevron-down" } else { "chevron-right" }, 14., p.text_faint));
-            let mut card = div().flex().flex_col().rounded(p.corner(12.)).border_1().border_color(p.border).bg(p.background).p(px(4.)).child(header);
+            let mut section = div().flex().flex_col().p(px(4.)).when(g > 0, |el| el.border_t_1().border_color(p.border)).child(header);
             if open {
-                let mut list = div().flex().flex_col().pl(px(26.)).pb(px(4.));
+                // Hosts start under the group's badge, so their tick boxes line up with it.
+                let mut hosts = div().flex().flex_col().pl(px(26.));
                 for (h, (host, duplicate)) in found.hosts.iter().zip(&planned.hosts).enumerate() {
-                    let on = selection.picked[g][h];
-                    let mut tags = div().flex().flex_shrink_0().max_w(px(300.)).gap(px(6.));
-                    match duplicate {
-                        Duplicate::No => {}
-                        Duplicate::InKomando { host, project } => {
-                            tags = tags.child(tag(&format!("Already in Komando: {host} in {project}"), p.warning, p));
-                        }
-                        Duplicate::Earlier { host } => tags = tags.child(tag(&format!("Same as {host} above"), p.warning, p)),
-                    }
-                    if !host.left_out.is_empty() {
-                        let n = host.left_out.len();
-                        tags = tags.child(tag(
-                            &format!("{n} setting{} stay in {}", if n == 1 { "" } else { "s" }, selection.from.name()),
-                            p.text_muted,
-                            p,
-                        ));
-                    }
-                    list = list.child(
-                        div()
-                            .id(SharedString::from(format!("import-host-{g}-{h}")))
-                            .h(px(40.))
-                            .px(px(8.))
-                            .flex()
-                            .items_center()
-                            .gap(px(10.))
-                            .rounded(p.corner(8.))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(p.hover))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_import_host(g, h, cx)))
-                            .child(checkbox(
-                                SharedString::from(format!("import-host-check-{g}-{h}")),
-                                &host.name,
-                                if on { Toggled::True } else { Toggled::False },
-                                p,
-                            ))
-                            .child(icon_el(host.icon.as_deref().unwrap_or("server"), 15., if on { p.text_muted } else { p.text_faint }))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .items_baseline()
-                                    .gap(px(8.))
-                                    .overflow_hidden()
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .flex_shrink(1.)
-                                            .truncate()
-                                            .text_size(px(13.))
-                                            .text_color(if on { p.text } else { p.text_muted })
-                                            .child(host.name.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .min_w(px(48.))
-                                            .flex_shrink(1.)
-                                            .flex_basis(px(0.))
-                                            .flex_grow(1.)
-                                            .truncate()
-                                            .text_size(px(12.))
-                                            .text_color(p.text_faint)
-                                            .child(login(host)),
-                                    ),
-                            )
-                            .child(tags),
-                    );
+                    hosts = hosts.child(self.import_host_row(selection.from, g, h, host, duplicate, selection.picked[g][h], p, cx));
                 }
-                card = card.child(list);
+                section = section.child(hosts);
             }
-            groups = groups.child(card);
+            list = list.child(section);
         }
 
-        let notes = (!selection.found.notes.is_empty()).then(|| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .children(selection.found.notes.iter().map(|note| info_line("info", note, p)))
-        });
+        let notes = (!selection.found.notes.is_empty())
+            .then(|| div().flex().flex_col().gap(px(6.)).children(selection.found.notes.iter().map(|note| info_line("info", note, p))));
         div()
             .flex()
             .flex_col()
             .gap(px(16.))
             .child(self.import_source(selection, p, cx))
-            .child(toolbar)
-            .child(groups)
+            .child(div().flex().flex_col().gap(px(6.)).child(toolbar).child(list))
             .children(notes)
+            .into_any_element()
+    }
+
+    /// One host in the pick list: its tick box, name and address, and what to know before
+    /// picking it.
+    #[allow(clippy::too_many_arguments)]
+    fn import_host_row(
+        &self,
+        from: Source,
+        g: usize,
+        h: usize,
+        host: &FoundHost,
+        duplicate: &Duplicate,
+        on: bool,
+        p: AppPalette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut tags = div().flex().flex_shrink_0().max_w(px(280.)).gap(px(6.));
+        match duplicate {
+            Duplicate::No => {}
+            Duplicate::InKomando { host: existing, project } if *existing == host.name => {
+                tags = tags.child(tag(&format!("Already in {project}"), p.warning, p));
+            }
+            Duplicate::InKomando { host: existing, project } => {
+                tags = tags.child(tag(&format!("Already in {project} as {existing}"), p.warning, p));
+            }
+            Duplicate::Earlier { host } => tags = tags.child(tag(&format!("Same as {host} above"), p.warning, p)),
+        }
+        if !host.left_out.is_empty() {
+            let left_out = plural(host.left_out.len(), "setting");
+            tags = tags.child(tag(&format!("{left_out} stay in {}", from.name()), p.text_muted, p));
+        }
+        div()
+            .id(SharedString::from(format!("import-host-{g}-{h}")))
+            .h(px(36.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .rounded(p.corner(8.))
+            .cursor_pointer()
+            .hover(|s| s.bg(p.hover))
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_import_host(g, h, cx)))
+            .child(checkbox(
+                SharedString::from(format!("import-host-check-{g}-{h}")),
+                &host.name,
+                if on { Toggled::True } else { Toggled::False },
+                p,
+            ))
+            .child(icon_el(host.icon.as_deref().unwrap_or("server"), 15., if on { p.text_muted } else { p.text_faint }))
+            .child(host_line(host, if on { p.text } else { p.text_muted }, FontWeight::NORMAL, p))
+            .child(tags)
             .into_any_element()
     }
 
@@ -799,7 +681,8 @@ impl Workspace {
         let picked = selection.picked_count();
         let mut projects = 0;
         let mut new_projects = 0;
-        let mut sections = div().flex().flex_col().gap(px(14.));
+        let mut any_left_out = false;
+        let mut sections = div().flex().flex_col().gap(px(20.));
         let mut seen_new: Vec<String> = vec![];
         for (g, (found, planned)) in selection.found.groups.iter().zip(&selection.plan.groups).enumerate() {
             let hosts: Vec<&FoundHost> =
@@ -827,47 +710,34 @@ impl Workspace {
             // uses them, even when none of the imported hosts does.
             let defaults = if creates { project_defaults(found) } else { vec![] };
             if !defaults.is_empty() {
-                let mut row = div().flex().flex_col().gap(px(6.)).child(
+                let mut row = div().flex().flex_col().gap(px(4.)).child(
                     div()
                         .flex()
                         .items_center()
                         .gap(px(10.))
-                        .child(icon_el("check", 15., p.success))
                         .child(icon_el("folder", 15., p.text_muted))
                         .child(div().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child("Project defaults")),
                 );
                 for (setting, detail) in defaults {
-                    row = row.child(setting_row(setting, detail, p));
+                    row = row.child(setting_row(None, setting, detail, p));
                 }
                 rows.push(row.into_any_element());
             }
             for host in hosts {
-                let mut row = div().flex().flex_col().gap(px(6.)).child(
+                let mut row = div().flex().flex_col().gap(px(4.)).child(
                     div()
                         .flex()
                         .items_center()
                         .gap(px(10.))
-                        .child(icon_el("check", 15., p.success))
                         .child(icon_el(host.icon.as_deref().unwrap_or("server"), 15., p.text_muted))
-                        .child(div().min_w_0().flex_shrink(1.).truncate().text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(host.name.clone()))
-                        .child(div().min_w(px(48.)).flex_shrink(1.).flex_basis(px(0.)).flex_grow(1.).truncate().text_size(px(12.)).text_color(p.text_muted).child(login(host))),
+                        .child(host_line(host, p.text, FontWeight::MEDIUM, p)),
                 );
                 for (setting, detail) in comes_over(host) {
-                    row = row.child(setting_row(setting, detail, p));
+                    row = row.child(setting_row(None, setting, detail, p));
                 }
                 for left in &host.left_out {
-                    row = row.child(
-                        div()
-                            .pl(px(25.))
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(icon_el("x", 13., p.danger))
-                            .child(div().flex_shrink_0().text_size(px(12.)).text_color(p.text).child(left.setting.clone()))
-                            .child(div().min_w_0().truncate().text_size(px(12.)).text_color(p.text_faint).child(left.detail.clone()))
-                            .child(div().flex_1())
-                            .child(div().flex_shrink_0().text_size(px(11.5)).text_color(p.text_faint).child("not imported")),
-                    );
+                    any_left_out = true;
+                    row = row.child(setting_row(Some(("x", p.danger)), left.setting.clone(), left.detail.clone(), p));
                 }
                 rows.push(row.into_any_element());
             }
@@ -878,11 +748,12 @@ impl Workspace {
                     .gap(px(8.))
                     .child(
                         div()
+                            .px(px(2.))
                             .flex()
                             .items_baseline()
                             .gap(px(10.))
-                            .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(found.name.clone()))
-                            .child(div().text_size(px(12.)).text_color(p.text_faint).child(target)),
+                            .child(div().min_w_0().truncate().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(found.name.clone()))
+                            .child(div().flex_shrink_0().text_size(px(12.)).text_color(p.text_faint).child(target)),
                     )
                     .child(group(p, rows)),
             );
@@ -890,107 +761,80 @@ impl Workspace {
 
         // What stays behind as a whole.
         let mut left: Vec<AnyElement> = vec![];
-        let unpicked: Vec<(&FoundHost, &Duplicate)> = selection
-            .found
+        let unpicked: Vec<&Duplicate> = selection
+            .plan
             .groups
             .iter()
-            .zip(&selection.plan.groups)
             .enumerate()
-            .flat_map(|(g, (found, planned))| {
-                found.hosts.iter().zip(&planned.hosts).enumerate().filter(move |(h, _)| !selection.picked[g][*h]).map(|(_, x)| x)
-            })
+            .flat_map(|(g, planned)| planned.hosts.iter().enumerate().filter(move |(h, _)| !selection.picked[g][*h]).map(|(_, d)| d))
             .collect();
-        let duplicates = unpicked.iter().filter(|(_, d)| d.is_duplicate()).count();
+        let duplicates = unpicked.iter().filter(|d| d.is_duplicate()).count();
         if duplicates > 0 {
-            left.push(info_line("x", &format!("{} already in Komando, skipped", hosts_label(duplicates)), p));
+            left.push(info_line("minus", &format!("{} already in Komando", hosts_label(duplicates)), p));
         }
         let others = unpicked.len() - duplicates;
         if others > 0 {
-            left.push(info_line("x", &format!("{} you didn't pick", hosts_label(others)), p));
+            left.push(info_line("minus", &format!("{} you didn't pick", hosts_label(others)), p));
         }
         left.push(info_line(
-            "x",
+            "minus",
             match selection.from {
-                Source::Tabby | Source::MobaXterm => {
-                    "Passwords and keys. Komando asks for the password the first time you connect and can save it in its vault; \
-                     a key file can be added in the host's settings."
-                }
-                Source::OpenSsh => {
-                    "Keys: they stay in their files. Add one in the host's settings, or Komando asks for the password the first \
-                     time you connect and can save it in its vault."
-                }
-                Source::ProjectFile => {
-                    "Passwords and keys: a shared project never holds them. Komando asks for each password, the jump hosts' \
-                     included, the first time you connect and can save it in its vault; a key file can be added in the host's \
-                     settings."
-                }
+                Source::Tabby | Source::MobaXterm => "Passwords and keys. Komando asks for each password when you first connect.",
+                Source::OpenSsh => "Keys, which stay in their files; add one in a host's settings. Komando asks for passwords when you first connect.",
+                Source::ProjectFile => "Passwords and keys, which a shared project never holds. Komando asks for each password when you first connect.",
             },
             p,
         ));
-        left.extend(selection.found.notes.iter().map(|note| info_line("x", note, p)));
+        left.extend(selection.found.notes.iter().map(|note| info_line("minus", note, p)));
 
         let go = if picked == 1 { "goes" } else { "go" };
         let summary = match new_projects {
-            0 => format!("{} {go} into {} existing project{}.", hosts_label(picked), projects, if projects == 1 { "" } else { "s" }),
-            n if n == projects => format!("{} {go} into {n} new project{}.", hosts_label(picked), if n == 1 { "" } else { "s" }),
+            0 => format!("{} {go} into {}.", hosts_label(picked), plural(projects, "existing project")),
+            n if n == projects => format!("{} {go} into {}.", hosts_label(picked), plural(n, "new project")),
             n => format!("{} {go} into {projects} projects, {n} of them new.", hosts_label(picked)),
         };
         div()
             .flex()
             .flex_col()
-            .gap(px(18.))
+            .gap(px(24.))
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child("Review the import"))
-                    .child(div().text_size(px(12.5)).text_color(p.text_muted).child(match selection.from {
-                        Source::Tabby | Source::MobaXterm | Source::OpenSsh => format!(
-                            "{summary} Settings marked with an X were set in {} and don't come over.",
+                    .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(summary))
+                    .when(any_left_out, |el| {
+                        el.child(div().text_size(px(12.5)).text_color(p.text_muted).child(format!(
+                            "Settings marked with an X don't come over and stay in {}.",
                             selection.from.name()
-                        ),
-                        Source::ProjectFile => {
-                            format!("{summary} Each host keeps the user, jump hosts, port forwards and startup commands it has in the shared project.")
-                        }
-                    })),
+                        )))
+                    }),
             )
             .child(sections)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(section_label("Not imported", p))
-                    .child(div().flex().flex_col().gap(px(6.)).children(left)),
-            )
+            .child(settings_block("Not imported", p, div().flex().flex_col().gap(px(6.)).px(px(2.)).children(left).into_any_element()))
             .into_any_element()
     }
 
     fn import_done(&self, applied: &Applied, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
-        let mut detail = vec![];
+        let mut into = vec![];
         if applied.new_projects > 0 {
-            detail.push(format!("{} new project{}", applied.new_projects, if applied.new_projects == 1 { "" } else { "s" }));
+            into.push(plural(applied.new_projects, "new project"));
         }
         if applied.extended_projects > 0 {
-            detail.push(format!(
-                "{} existing project{}",
-                applied.extended_projects,
-                if applied.extended_projects == 1 { "" } else { "s" }
-            ));
+            into.push(plural(applied.extended_projects, "existing project"));
         }
         let row = div()
             .flex()
             .items_center()
             .gap(px(14.))
-            .child(badge("check", p.success, 36.))
+            .child(badge("check", p.success, 32.))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(3.))
+                    .gap(px(2.))
                     .child(
                         div()
                             .text_size(px(13.5))
@@ -998,10 +842,13 @@ impl Workspace {
                             .text_color(p.text)
                             .child(format!("Imported {}", hosts_label(applied.hosts))),
                     )
-                    .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(format!(
-                        "Into {}. They're in the sidebar; the first connection asks for each password.",
-                        detail.join(" and ")
-                    ))),
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(17.))
+                            .text_color(p.text_muted)
+                            .child(format!("Into {}. You'll find them in the sidebar.", into.join(" and "))),
+                    ),
             )
             .child(
                 div()
@@ -1069,15 +916,69 @@ fn routes_and_commands(
     over
 }
 
-/// One setting a host or project brings over, in full: wrapped, never cut short.
-fn setting_row(setting: String, detail: String, p: AppPalette) -> gpui::Div {
+/// One way to import on the start page: an icon, what it is and what it brings over, and the
+/// button that starts it.
+fn source_row(icon: &str, name: &str, experimental: bool, about: String, action: AnyElement, p: AppPalette) -> AnyElement {
     div()
-        .pl(px(25.))
+        .flex()
+        .items_center()
+        .gap(px(14.))
+        .child(badge(icon, p.brand, 32.))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(name.to_string()))
+                        .when(experimental, |el| el.child(tag("Experimental", p.warning, p))),
+                )
+                .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(about)),
+        )
+        .child(action)
+        .into_any_element()
+}
+
+/// A host's name and, fainter, its address: the name keeps its room, the address is cut short
+/// first.
+fn host_line(host: &FoundHost, color: Hsla, weight: FontWeight, p: AppPalette) -> impl IntoElement {
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .items_baseline()
+        .gap(px(8.))
+        .overflow_hidden()
+        .child(div().min_w_0().flex_shrink(1.).truncate().text_size(px(13.)).font_weight(weight).text_color(color).child(host.name.clone()))
+        .child(
+            div()
+                .min_w(px(48.))
+                .flex_shrink(1.)
+                .flex_basis(px(0.))
+                .flex_grow(1.)
+                .truncate()
+                .text_size(px(12.))
+                .text_color(p.text_faint)
+                .child(login(host)),
+        )
+}
+
+/// One setting a host or project brings over, or leaves out when it has an icon, in full:
+/// wrapped, never cut short. The label lines up under the host's name.
+fn setting_row(icon: Option<(&str, Hsla)>, setting: String, detail: String, p: AppPalette) -> gpui::Div {
+    let left_out = icon.is_some();
+    div()
         .flex()
         .items_start()
-        .gap(px(8.))
-        .child(div().pt(px(2.)).child(icon_el("check", 13., p.success)))
-        .child(div().flex_shrink_0().text_size(px(12.)).text_color(p.text).child(setting))
+        .gap(px(10.))
+        .child(div().w(px(15.)).flex_shrink_0().pt(px(2.)).flex().justify_center().children(icon.map(|(icon, color)| icon_el(icon, 12., color))))
+        .child(div().w(px(132.)).flex_shrink_0().text_size(px(12.)).text_color(if left_out { p.text_faint } else { p.text_muted }).child(setting))
         .child(
             div()
                 .min_w_0()
@@ -1085,7 +986,7 @@ fn setting_row(setting: String, detail: String, p: AppPalette) -> gpui::Div {
                 .flex()
                 .flex_col()
                 .text_size(px(12.))
-                .text_color(p.text_faint)
+                .text_color(if left_out { p.text_faint } else { p.text })
                 .children(detail.lines().map(|line| div().child(line.to_string())).collect::<Vec<_>>()),
         )
 }
@@ -1127,14 +1028,26 @@ fn tag(text: &str, color: Hsla, p: AppPalette) -> impl IntoElement {
         .child(text.to_string())
 }
 
-/// An icon and a line of text, for notes about the import.
+/// A faint icon and a line of text, for notes about the import.
 fn info_line(icon: &str, text: &str, p: AppPalette) -> AnyElement {
     div()
         .flex()
         .items_start()
         .gap(px(8.))
-        .child(div().pt(px(2.)).child(icon_el(icon, 13., if icon == "x" { p.danger } else { p.text_faint })))
+        .child(div().pt(px(3.)).child(icon_el(icon, 12., p.text_faint)))
         .child(div().flex_1().text_size(px(12.5)).line_height(px(18.)).text_color(p.text_muted).child(text.to_string()))
+        .into_any_element()
+}
+
+/// A paragraph inside a problem card.
+fn body_text(text: String, p: AppPalette) -> AnyElement {
+    div().text_size(px(12.5)).line_height(px(18.)).text_color(p.text_muted).child(text).into_any_element()
+}
+
+/// Closes a problem card and goes back to the list of sources.
+fn dismiss_button(p: AppPalette, cx: &mut Context<Workspace>) -> AnyElement {
+    button("import-dismiss", "Dismiss", ButtonKind::Ghost, p)
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_import(cx)))
         .into_any_element()
 }
 
@@ -1151,7 +1064,7 @@ fn problem_card(icon: &str, color: Hsla, title: &str, body: Vec<AnyElement>, act
         .flex()
         .items_start()
         .gap(px(14.))
-        .child(badge(icon, color, 36.))
+        .child(badge(icon, color, 32.))
         .child(
             div()
                 .flex_1()
@@ -1159,7 +1072,7 @@ fn problem_card(icon: &str, color: Hsla, title: &str, body: Vec<AnyElement>, act
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title.to_string()))
+                .child(div().pt(px(6.)).text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title.to_string()))
                 .children(body)
                 .child(div().pt(px(4.)).flex().flex_wrap().gap(px(8.)).children(actions)),
         )
@@ -1186,7 +1099,7 @@ mod tests {
         for (fa, lucide) in tabby::ICON_MAP {
             assert!(is_icon(lucide), "{fa} maps to {lucide}, which isn't bundled");
         }
-        for icon in ["import", "square-terminal", "search-x", "circle-alert", "file-text", "check", "minus", "x", "info", "folder-input", "share-2", "lock-keyhole"] {
+        for icon in ["import", "square-terminal", "search-x", "circle-alert", "file-text", "check", "minus", "x", "info", "folder-input", "share-2", "lock-keyhole", "file-cog", "app-window", "folder", "server"] {
             assert!(is_icon(icon), "{icon}");
         }
     }

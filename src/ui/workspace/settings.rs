@@ -77,7 +77,7 @@ impl SettingsSection {
             Self::RemoteDesktop => "Each host sets up its own desktop in its form.",
             Self::Shells => "The shells listed at the top of the sidebar.",
             Self::Highlights => "Rules apply top to bottom; the first match wins.",
-            Self::Import => "Nothing changes until you confirm the review.",
+            Self::Import => "Passwords and keys stay behind. Nothing is saved until you confirm the review.",
             Self::Vault => "Passwords and keys saved for your hosts, encrypted with your master password.",
             Self::Security => "",
             Self::About => "",

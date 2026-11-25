@@ -30,6 +30,9 @@ All notable changes to Komando are listed here. The format follows
   many items are done and cancel. If something with the same name is already in the destination
   of a copy or move, you're asked whether to replace it or keep both, as with uploads.
 - Closing a host or project form with unsaved changes now asks whether to discard them.
+- The Import page in Settings is easier to read: each source has a short description, the hosts
+  to pick sit in one list, and the review shows each host's settings in a tidy column with what
+  stays behind marked.
 
 - On Windows, closing Komando's window into the notification area now disconnects all
   sessions; their output stays so you can reconnect when you're back. Minimizing still keeps
