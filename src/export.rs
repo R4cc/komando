@@ -1,5 +1,6 @@
 //! "Copy output as .txt file": write the Scrollback to a temporary file and put the *file*
-//! on the clipboard, so Ctrl+V in Explorer, Outlook or Teams pastes it as an attachment.
+//! on the clipboard, so Ctrl+V in Explorer, Outlook or Teams pastes it as an attachment. On
+//! Linux and macOS the clipboard gets the file's path as text.
 
 use std::path::PathBuf;
 
@@ -30,13 +31,22 @@ pub fn clean_up() {
     }
 }
 
-/// Returns a short note for the confirmation toast.
-pub fn write_and_copy_file(name: &str, text: &str) -> Result<String> {
-    let dir = export_dir();
-    create_private_dir(&dir)?;
+/// Returns a short note for the confirmation toast. When the file can't be written the
+/// clipboard is left alone, so it doesn't lose what the user had copied to a missing file.
+pub fn write_and_copy_file(name: &str, text: &str, cx: &mut gpui::App) -> Result<String> {
+    write_then_copy(&export_dir(), name, text, |path| copy_file_to_clipboard(path, cx))
+}
+
+fn write_then_copy(
+    dir: &std::path::Path,
+    name: &str,
+    text: &str,
+    copy: impl FnOnce(&std::path::Path) -> Result<String>,
+) -> Result<String> {
+    create_private_dir(dir)?;
     let path = dir.join(name);
     write_private(&path, &export_bytes(text))?;
-    copy_file_to_clipboard(&path)
+    copy(&path)
 }
 
 /// The file's bytes. Windows gets a UTF-8 byte order mark so Notepad and Outlook previews
@@ -109,10 +119,41 @@ mod tests {
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         std::fs::remove_dir_all(dir).unwrap();
     }
+
+    #[test]
+    fn clipboard_is_left_alone_when_the_file_cannot_be_written() {
+        use crate::model::new_id;
+        // A file where the export folder should be: the folder can't be created.
+        let blocker = std::env::temp_dir().join(format!("komando-export-{}", new_id()));
+        std::fs::write(&blocker, b"").unwrap();
+        let mut copied = false;
+        let result = write_then_copy(&blocker.join("exports"), "output.txt", "hi", |_| {
+            copied = true;
+            Ok(String::new())
+        });
+        std::fs::remove_file(&blocker).unwrap();
+        assert!(result.is_err());
+        assert!(!copied);
+    }
+
+    #[test]
+    fn written_file_is_what_gets_copied() {
+        use crate::model::new_id;
+        let dir = std::env::temp_dir().join(format!("komando-export-{}", new_id()));
+        let mut copied = None;
+        let note = write_then_copy(&dir, "output.txt", "hi", |path| {
+            copied = Some(std::fs::read(path).unwrap());
+            Ok(" note".into())
+        })
+        .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(note, " note");
+        assert_eq!(copied, Some(export_bytes("hi")));
+    }
 }
 
 #[cfg(windows)]
-pub fn copy_file_to_clipboard(path: &std::path::Path) -> Result<String> {
+pub fn copy_file_to_clipboard(path: &std::path::Path, _cx: &mut gpui::App) -> Result<String> {
     let path = path.to_string_lossy().to_string();
     let _clipboard = clipboard_win::Clipboard::new_attempts(10)
         .map_err(|e| anyhow::anyhow!("clipboard busy: {e}"))?;
@@ -121,9 +162,10 @@ pub fn copy_file_to_clipboard(path: &std::path::Path) -> Result<String> {
     Ok(" to the clipboard.".into())
 }
 
+/// Putting a file on the clipboard is Windows-only so far; on Linux and macOS its path goes
+/// there as text instead.
 #[cfg(not(windows))]
-pub fn copy_file_to_clipboard(_path: &std::path::Path) -> Result<String> {
-    // Putting a file on the clipboard is Windows-only so far; on Linux and macOS the caller
-    // puts its path there instead.
+pub fn copy_file_to_clipboard(path: &std::path::Path, cx: &mut gpui::App) -> Result<String> {
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.display().to_string()));
     Ok(" (path copied).".into())
 }

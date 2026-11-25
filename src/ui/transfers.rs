@@ -532,11 +532,7 @@ impl Transfers {
     }
 
     fn copy_file(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let _ = crate::export::copy_file_to_clipboard(&path);
-        // Putting a file on the clipboard is Windows-only so far; elsewhere it gets the path.
-        #[cfg(not(windows))]
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.display().to_string()));
-        let _ = cx;
+        let _ = crate::export::copy_file_to_clipboard(&path, cx);
     }
 
     fn show_on_server(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {

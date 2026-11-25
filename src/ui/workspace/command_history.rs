@@ -151,13 +151,10 @@ impl Workspace {
     fn copy_history_file(&mut self, cx: &mut Context<Self>) {
         let Some((host, text, _)) = self.history_text(cx) else { return };
         let name = format!("{}_history_{}.txt", sanitize(&host), chrono::Local::now().format("%Y-%m-%d_%H-%M-%S"));
-        match crate::export::write_and_copy_file(&name, &text) {
+        match crate::export::write_and_copy_file(&name, &text, cx) {
             Ok(note) => self.show_toast(format!("Copied {name}{note}"), cx),
             Err(err) => self.show_toast(format!("Could not create file: {err:#}"), cx),
         }
-        // On Linux and macOS the clipboard gets the path as text instead.
-        #[cfg(not(windows))]
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(crate::export::export_dir().join(&name).display().to_string()));
     }
 
     /// First click asks, the second (not a double click) deletes the open Host's history. The
