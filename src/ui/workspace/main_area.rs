@@ -6,7 +6,7 @@ use super::*;
 impl Workspace {
     /// The active Session's state, name and address with its actions. Lives in the title
     /// bar, above the terminal.
-    pub(super) fn render_session_strip(&self, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_session_strip(&self, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let entry = self.active_entry()?;
         // Where you are typing: state, the session's name, then user@address and port. The
         // name is repeated from the sidebar, which may be scrolled away from the active host.
@@ -350,7 +350,7 @@ impl Workspace {
     }
 
     /// In place of a desktop that is in a window of its own.
-    pub(super) fn render_in_own_window(&self, id: usize, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_in_own_window(&self, id: usize, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         island(p)
             .flex_1()
             .min_w_0()
@@ -376,7 +376,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    pub(super) fn render_empty(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_empty(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         if self.library.projects.is_empty() && self.library.hosts.is_empty() {
             return self.render_welcome(p, cx);
         }
@@ -409,7 +409,7 @@ impl Workspace {
 
     /// The start screen, shown until the first project or connection exists: what Komando is,
     /// and one click to add a server or open a local shell.
-    pub(super) fn render_welcome(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_welcome(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let shells = welcome_shells(self.library.standalone_shells().into_iter().filter(|s| !s.hidden).collect());
         let hero = |id: SharedString, icon: &str, label: String, kind: ButtonKind| {
             icon_text_button(id, icon, label, kind, p).h(px(44.)).px(px(20.)).gap(px(10.)).rounded(p.corner(10.)).text_size(px(14.))

@@ -2,6 +2,26 @@
 //! and close.
 
 use super::*;
+use super::forms::UnsavedForm;
+
+impl Overlay {
+    /// The open host or project form, which asks before closing throws changes away.
+    fn unsaved_form(&self) -> Option<&dyn UnsavedForm> {
+        match self {
+            Overlay::HostForm(form) => Some(form),
+            Overlay::ProjectForm(form) => Some(form),
+            _ => None,
+        }
+    }
+
+    fn unsaved_form_mut(&mut self) -> Option<&mut dyn UnsavedForm> {
+        match self {
+            Overlay::HostForm(form) => Some(form),
+            Overlay::ProjectForm(form) => Some(form),
+            _ => None,
+        }
+    }
+}
 
 impl Workspace {
     // ---- overlays: picker and forms ----------------------------------------------------
@@ -46,7 +66,7 @@ impl Workspace {
 
     /// Move quick connect's selection one result down (or up), wrapping at the ends, and
     /// scroll it into view.
-    pub(super) fn step_picker(&mut self, down: bool, cx: &mut Context<Self>) {
+    fn step_picker(&mut self, down: bool, cx: &mut Context<Self>) {
         let Some(Overlay::Picker { results, selected, scroll, .. }) = &mut self.overlay else { return };
         let count = results.len();
         if count == 0 {
@@ -60,7 +80,7 @@ impl Workspace {
 
     /// Quick connect: every sidebar item, filtered by name, address (with its port), user or
     /// Project.
-    pub(super) fn picker_results(&self, query: &str) -> Vec<PickerResult> {
+    fn picker_results(&self, query: &str) -> Vec<PickerResult> {
         let needle = query.to_lowercase();
         let found = |hay: String| needle.is_empty() || hay.to_lowercase().contains(&needle);
         self.sidebar_items()
@@ -162,7 +182,7 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn run_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn run_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Overlay::Confirm { action, .. }) = self.overlay.take() else { return };
         let mut library = self.library.clone();
         match &action {
@@ -269,7 +289,7 @@ impl Workspace {
     /// A press on the backdrop beside a dialog. Quick connect, a question and the history
     /// close; a host, project, shell or highlight form stays, since a stray click would throw away what was
     /// typed into it. Escape, Cancel and the close button still close it.
-    pub(super) fn backdrop_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn backdrop_pressed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !matches!(self.overlay, Some(Overlay::HostForm(_) | Overlay::ProjectForm(_) | Overlay::ShellForm | Overlay::RuleForm(_) | Overlay::SetForm(_) | Overlay::Tour(_))) {
             self.close_overlay(window, cx);
         }
@@ -278,11 +298,7 @@ impl Workspace {
     /// Escape, Cancel or the close button. A host or project form with changes asks first, and
     /// closes when asked again (Escape twice).
     pub(super) fn cancel_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let changed = match &self.overlay {
-            Some(Overlay::HostForm(form)) => form.changed(cx),
-            Some(Overlay::ProjectForm(form)) => form.changed(cx),
-            _ => false,
-        };
+        let changed = self.overlay.as_ref().and_then(Overlay::unsaved_form).is_some_and(|form| form.changed(cx));
         if let Some(asking) = self.asking_discard()
             && changed
             && !*asking
@@ -301,11 +317,7 @@ impl Workspace {
         if let Some(asking) = self.asking_discard() {
             *asking = false;
         }
-        let name = match &self.overlay {
-            Some(Overlay::HostForm(form)) => Some(form.name_field()),
-            Some(Overlay::ProjectForm(form)) => Some(form.name_field()),
-            _ => None,
-        };
+        let name = self.overlay.as_ref().and_then(Overlay::unsaved_form).map(|form| form.name_field());
         if let Some(name) = name {
             name.update(cx, |field, cx| field.focus(window, cx));
         }
@@ -314,11 +326,7 @@ impl Workspace {
 
     /// Whether the open host or project form asks "Discard your changes?".
     pub(super) fn asking_discard(&mut self) -> Option<&mut bool> {
-        match &mut self.overlay {
-            Some(Overlay::HostForm(form)) => Some(form.asking_discard_mut()),
-            Some(Overlay::ProjectForm(form)) => Some(form.asking_discard_mut()),
-            _ => None,
-        }
+        Some(&mut self.overlay.as_mut()?.unsaved_form_mut()?.unsaved_mut().asking_discard)
     }
 
     pub(super) fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -342,11 +350,7 @@ impl Workspace {
     /// `wide`: the window has room for forms laid out in two columns.
     pub(super) fn render_overlay(&self, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let overlay = self.overlay.as_ref()?;
-        let asking_discard = match overlay {
-            Overlay::HostForm(form) => form.asking_discard(),
-            Overlay::ProjectForm(form) => form.asking_discard(),
-            _ => false,
-        };
+        let asking_discard = overlay.unsaved_form().is_some_and(|form| form.unsaved().asking_discard);
         let body = match overlay {
             Overlay::Picker { query, results, selected, scroll } => {
                 let count = results.len();

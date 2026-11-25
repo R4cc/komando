@@ -11,8 +11,8 @@ use gpui::{AnyElement, App, ClickEvent, Context, Entity, FontWeight, Hsla, Share
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::tooltip::Tooltip;
 
-use super::settings::{group, setting_row, settings_block};
-use super::{FIRST_PROJECT_COLOR, FIRST_PROJECT_NAME, Overlay, Workspace, form_field, icon_picker, kbd, segmented, switch};
+use super::settings::{group, setting_row, settings_block, stacked};
+use super::{FIRST_PROJECT_COLOR, FIRST_PROJECT_NAME, Overlay, Workspace, field_label, form_field, icon_picker, kbd, segmented, switch};
 use crate::model::{AgentUse, CredentialId, Desktop, ForwardKind, Host, Inherited, JumpHost, Library, PortForward, Project, Protocol, StartupCommand};
 use crate::session::agent::{self, Agent};
 use crate::theme::{AppPalette, project_color};
@@ -169,11 +169,36 @@ pub(super) struct HostForm {
     /// The page shown.
     tab: FormTab,
     error: Option<String>,
-    /// What the form held when it opened (see [`HostForm::values`]), to tell whether closing it
-    /// throws anything away.
+    unsaved: Unsaved,
+}
+
+/// Whether closing a host or project form throws anything away.
+#[derive(Default)]
+pub(super) struct Unsaved {
+    /// What the form held when it opened (see [`UnsavedForm::values`]).
     opened_with: String,
     /// Closing it was asked for with changes made: "Discard your changes?" is on screen.
-    asking_discard: bool,
+    pub(super) asking_discard: bool,
+}
+
+/// The host and project forms, which ask "Discard your changes?" before closing throws
+/// something away.
+pub(super) trait UnsavedForm {
+    /// What the form's fields and choices hold (see [`field_values`]).
+    fn values(&self, cx: &App) -> String;
+    fn unsaved(&self) -> &Unsaved;
+    fn unsaved_mut(&mut self) -> &mut Unsaved;
+    fn name_field(&self) -> Entity<InputState>;
+
+    /// Something was changed since the form opened.
+    fn changed(&self, cx: &App) -> bool {
+        self.values(cx) != self.unsaved().opened_with
+    }
+
+    /// Remember what the form holds as it opens, to compare against when it closes.
+    fn opened(&mut self, cx: &App) {
+        self.unsaved_mut().opened_with = self.values(cx);
+    }
 }
 
 /// What a form's fields and choices hold, as one string: equal while nothing was changed.
@@ -207,8 +232,8 @@ fn row_choices(commands: &[CommandRow], jumps: &[JumpRow], forwards: &[ForwardRo
     format!("{}|{jumps:?}|{forwards:?}", commands.len())
 }
 
-impl HostForm {
-    pub(super) fn values(&self, cx: &App) -> String {
+impl UnsavedForm for HostForm {
+    fn values(&self, cx: &App) -> String {
         let mut fields = vec![&self.name, &self.address, &self.port, &self.user, &self.key_path];
         fields.extend(row_fields(&self.commands, &self.jumps, &self.forwards));
         for desktop in &self.desktops {
@@ -235,26 +260,21 @@ impl HostForm {
         field_values(&fields, choices, cx)
     }
 
-    /// Something was changed since the form opened.
-    pub(super) fn changed(&self, cx: &App) -> bool {
-        self.values(cx) != self.opened_with
+    fn unsaved(&self) -> &Unsaved {
+        &self.unsaved
     }
 
-    pub(super) fn asking_discard(&self) -> bool {
-        self.asking_discard
+    fn unsaved_mut(&mut self) -> &mut Unsaved {
+        &mut self.unsaved
     }
 
-    pub(super) fn asking_discard_mut(&mut self) -> &mut bool {
-        &mut self.asking_discard
-    }
-
-    pub(super) fn name_field(&self) -> Entity<InputState> {
+    fn name_field(&self) -> Entity<InputState> {
         self.name.clone()
     }
 }
 
-impl ProjectForm {
-    pub(super) fn values(&self, cx: &App) -> String {
+impl UnsavedForm for ProjectForm {
+    fn values(&self, cx: &App) -> String {
         let mut fields = vec![&self.name, &self.default_user, &self.key_path];
         fields.extend(row_fields(&self.commands, &self.jumps, &self.forwards));
         let choices = format!(
@@ -269,19 +289,15 @@ impl ProjectForm {
         field_values(&fields, choices, cx)
     }
 
-    pub(super) fn changed(&self, cx: &App) -> bool {
-        self.values(cx) != self.opened_with
+    fn unsaved(&self) -> &Unsaved {
+        &self.unsaved
     }
 
-    pub(super) fn asking_discard(&self) -> bool {
-        self.asking_discard
+    fn unsaved_mut(&mut self) -> &mut Unsaved {
+        &mut self.unsaved
     }
 
-    pub(super) fn asking_discard_mut(&mut self) -> &mut bool {
-        &mut self.asking_discard
-    }
-
-    pub(super) fn name_field(&self) -> Entity<InputState> {
+    fn name_field(&self) -> Entity<InputState> {
         self.name.clone()
     }
 }
@@ -324,9 +340,7 @@ pub(super) struct ProjectForm {
     /// The page shown.
     tab: FormTab,
     error: Option<String>,
-    /// As in [`HostForm`].
-    opened_with: String,
-    asking_discard: bool,
+    unsaved: Unsaved,
 }
 
 /// One Startup Command in a form's list: what it waits for (optional) and what it types.
@@ -595,11 +609,10 @@ impl Workspace {
             icon_query,
             tab: FormTab::General,
             error: None,
-            opened_with: String::new(),
-            asking_discard: false,
+            unsaved: Unsaved::default(),
         }));
         if let Some(Overlay::HostForm(form)) = &mut self.overlay {
-            form.opened_with = form.values(cx);
+            form.opened(cx);
         }
         self.list_agent_keys(cx);
         cx.notify();
@@ -2099,11 +2112,10 @@ impl Workspace {
             highlight: pr.highlight,
             tab: FormTab::General,
             error: None,
-            opened_with: String::new(),
-            asking_discard: false,
+            unsaved: Unsaved::default(),
         }));
         if let Some(Overlay::ProjectForm(form)) = &mut self.overlay {
-            form.opened_with = form.values(cx);
+            form.opened(cx);
         }
         cx.notify();
     }
@@ -2445,24 +2457,6 @@ fn count_note(n: usize) -> Option<String> {
     (n > 0).then(|| n.to_string())
 }
 
-/// A setting's name and explanation, for a group's row whose controls go below them.
-fn stacked(label: &str, hint: &str, p: AppPalette) -> gpui::Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(12.))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(3.))
-                .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()))
-                .when(!hint.is_empty(), |el| {
-                    el.child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(hint.to_string()))
-                }),
-        )
-}
-
 /// The "Highlight output" row of a host or project form.
 fn highlight_row(
     id: &'static str,
@@ -2577,10 +2571,6 @@ fn route_preview(hops: Vec<Hop>, end: Hop, end_color: Hsla, hint: &str, p: AppPa
         .child(path)
         .child(hint_text(hint.into(), p))
         .into_any_element()
-}
-
-fn field_label(label: &str, p: AppPalette) -> AnyElement {
-    div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()).into_any_element()
 }
 
 fn hint_text(text: String, p: AppPalette) -> AnyElement {

@@ -31,7 +31,7 @@ impl Workspace {
 
     /// Save a password typed for a Jump Host on a Session's way, where that Jump Host is
     /// saved. It gets a Credential of its own; the one it had goes once nothing uses it.
-    pub(super) fn save_jump_password(&mut self, jump: model::RouteJump, password: String, cx: &mut Context<Self>) {
+    fn save_jump_password(&mut self, jump: model::RouteJump, password: String, cx: &mut Context<Self>) {
         let Some(vault) = self.vault.as_mut() else { return };
         let label = format!("{} (jump host)", jump.jump.label());
         let cred_id = match vault.add(Credential { label, secret: Secret::Password { password } }) {
@@ -122,20 +122,28 @@ impl Workspace {
         let Some(view) = self.active_entry().and_then(|e| e.ui.view.terminal()) else { return };
         let text = view.read(cx).output_text();
         let lines = text.lines().count();
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-        self.show_toast(format!("Copied {} as text.", crate::ui::widgets::plural(lines, "line")), cx);
+        self.copy_as_text(text, lines, "line", cx);
     }
 
     pub(super) fn copy_output_file(&mut self, cx: &mut Context<Self>) {
         let Some(entry) = self.active_entry() else { return };
         let Some(view) = entry.ui.view.terminal() else { return };
         let text = view.read(cx).output_text();
-        let name = format!(
-            "{}_{}.txt",
-            sanitize(entry.label()),
-            chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
-        );
-        match crate::export::write_and_copy_file(&name, &text, cx) {
+        let stem = entry.label().to_string();
+        self.copy_as_file(&stem, &text, cx);
+    }
+
+    /// Copy `text` to the clipboard, and say how many `what` (lines, commands) it holds.
+    pub(super) fn copy_as_text(&mut self, text: String, count: usize, what: &str, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        self.show_toast(format!("Copied {} as text.", crate::ui::widgets::plural(count, what)), cx);
+    }
+
+    /// Save `text` as a .txt file named after `stem` and the time, and copy the file to the
+    /// clipboard.
+    pub(super) fn copy_as_file(&mut self, stem: &str, text: &str, cx: &mut Context<Self>) {
+        let name = format!("{}_{}.txt", sanitize(stem), chrono::Local::now().format("%Y-%m-%d_%H-%M-%S"));
+        match crate::export::write_and_copy_file(&name, text, cx) {
             Ok(note) => self.show_toast(format!("Copied {name}{note}"), cx),
             Err(err) => self.show_toast(format!("Could not create file: {err:#}"), cx),
         }

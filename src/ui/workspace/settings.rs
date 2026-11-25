@@ -275,8 +275,7 @@ impl Workspace {
                     let family = if value.is_empty() { Settings::default().font_family } else { value };
                     if family != this.settings.font_family {
                         this.settings.font_family = family;
-                        this.save_settings(cx);
-                        this.apply_appearance(window, cx);
+                        this.save_appearance(window, cx);
                     }
                 }
             });
@@ -356,8 +355,7 @@ impl Workspace {
             FontWeightKind::Regular => self.settings.font_weight = weight,
             FontWeightKind::Bold => self.settings.bold_font_weight = weight,
         }
-        self.save_settings(cx);
-        self.apply_appearance(window, cx);
+        self.save_appearance(window, cx);
     }
 
     /// A font weight field with its Reset button.
@@ -455,7 +453,6 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// For settings that only need writing to disk and the page redrawn.
     /// Settings → Close from the sidebar: how a sidebar row closes its Session.
     fn quick_close_dropdown(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         use gpui_component::button::Button;
@@ -484,6 +481,7 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// For settings that only need writing to disk and the page redrawn.
     pub(super) fn save_settings_and_notify(&mut self, cx: &mut Context<Self>) {
         self.save_settings(cx);
         cx.notify();
@@ -723,8 +721,7 @@ impl Workspace {
                 choice_tile("app-icon", i, label, self.settings.app_icon == icon, thumb, p)
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.settings.app_icon = icon;
-                        this.save_settings(cx);
-                        this.apply_appearance(window, cx);
+                        this.save_appearance(window, cx);
                     }))
             };
             div()
@@ -2669,24 +2666,26 @@ fn mode_preview(app: AppPalette, term: crate::theme::TerminalPalette, font: Shar
         .into_any_element()
 }
 
-/// Label and explanation above, the control below: for a control too wide to sit beside them.
-fn setting_row_below(p: AppPalette, label: &str, hint: &str, control: AnyElement) -> AnyElement {
+/// A setting's name with its explanation below, left out when empty.
+fn label_and_hint(p: AppPalette, label: &str, hint: &str) -> gpui::Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(12.))
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(3.))
-                .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()))
-                .when(!hint.is_empty(), |el| {
-                    el.child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(hint.to_string()))
-                }),
-        )
-        .child(div().flex().child(control))
-        .into_any_element()
+        .gap(px(3.))
+        .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()))
+        .when(!hint.is_empty(), |el| {
+            el.child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(hint.to_string()))
+        })
+}
+
+/// A setting's name and explanation, for a group's row whose controls go below them.
+pub(super) fn stacked(label: &str, hint: &str, p: AppPalette) -> gpui::Div {
+    div().flex().flex_col().gap(px(12.)).child(label_and_hint(p, label, hint))
+}
+
+/// Label and explanation above, the control below: for a control too wide to sit beside them.
+fn setting_row_below(p: AppPalette, label: &str, hint: &str, control: AnyElement) -> AnyElement {
+    stacked(label, hint, p).child(div().flex().child(control)).into_any_element()
 }
 
 /// Label and explanation on the left, the control on the right.
@@ -2695,18 +2694,7 @@ pub(super) fn setting_row(p: AppPalette, label: &str, hint: &str, control: AnyEl
         .flex()
         .items_center()
         .gap(px(24.))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(3.))
-                .child(div().text_size(px(13.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()))
-                .when(!hint.is_empty(), |el| {
-                    el.child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(hint.to_string()))
-                }),
-        )
+        .child(label_and_hint(p, label, hint).flex_1().min_w_0())
         .child(div().flex_shrink_0().child(control))
         .into_any_element()
 }

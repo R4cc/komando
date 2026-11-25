@@ -134,7 +134,7 @@ pub(super) fn small_switch(id: SharedString, label: impl Into<SharedString>, on:
     switch_with(id, label.into(), on, true, p)
 }
 
-pub(super) fn switch_with(id: SharedString, label: SharedString, on: bool, small: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+fn switch_with(id: SharedString, label: SharedString, on: bool, small: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
     let (w, h, knob) = if small { (26., 14., 10.) } else { (32., 18., 14.) };
     // The off track has to be visible on its own, not only through the knob's position.
     let off = p.border;
@@ -209,7 +209,7 @@ pub(super) struct IconTerms {
     words: Option<String>,
 }
 
-pub(super) fn icon_terms() -> &'static [IconTerms] {
+fn icon_terms() -> &'static [IconTerms] {
     static TERMS: std::sync::OnceLock<Vec<IconTerms>> = std::sync::OnceLock::new();
     TERMS.get_or_init(|| {
         all_icons()
@@ -386,13 +386,18 @@ pub(super) fn form_card(p: AppPalette, title: &str, body: AnyElement, actions: V
         .into_any_element()
 }
 
+/// A form field's name, above its control.
+pub(super) fn field_label(label: &str, p: AppPalette) -> AnyElement {
+    div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()).into_any_element()
+}
+
 /// A form field: label above the control, an optional hint below.
 pub(super) fn form_field(label: &str, hint: Option<&str>, control: AnyElement, p: AppPalette) -> AnyElement {
     div()
         .flex()
         .flex_col()
         .gap(px(6.))
-        .child(div().text_size(px(12.5)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(label.to_string()))
+        .child(field_label(label, p))
         .child(control)
         .when_some(hint, |el, hint| el.child(div().text_size(px(12.)).text_color(p.text_muted).child(hint.to_string())))
         .into_any_element()

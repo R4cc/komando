@@ -50,7 +50,7 @@ impl Workspace {
     }
 
     /// One row of the sidebar list, built only when it's in view.
-    pub(super) fn render_sidebar_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn render_sidebar_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let p = cx.global::<Appearance>().app.navigation();
         let Some(row) = self.sidebar_rows.get(ix).cloned() else { return div().into_any_element() };
         let element = match row {
@@ -189,7 +189,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    pub(super) fn render_project_row(&self, index: usize, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_project_row(&self, index: usize, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let Some(project) = self.library.projects.get(index) else { return div().into_any_element() };
             let color = project_color(&project.color);
             let collapsed = self.settings.collapsed_projects.contains(&project.id);

@@ -2,6 +2,41 @@
 
 use super::*;
 
+/// Under a new master password, the one sentence that must not be skimmed past.
+const NO_RECOVERY: &str = "There is no recovery: forget it and saved passwords are lost. Projects and hosts are kept.";
+
+/// A line under a password field, with its icon: an error, or what the password is for.
+pub(super) fn field_note(icon: &str, text: impl IntoElement, color: Hsla) -> gpui::Div {
+    div()
+        .flex()
+        .items_start()
+        .gap(px(6.))
+        .text_size(px(12.))
+        .line_height(px(17.))
+        .text_color(color)
+        .child(div().flex_shrink_0().pt(px(1.)).child(icon_el(icon, 13., color)))
+        .child(div().flex_1().min_w_0().child(text))
+}
+
+/// The warning box with [`NO_RECOVERY`], for setting a master password.
+pub(super) fn no_recovery_warning(p: AppPalette) -> gpui::Div {
+    div()
+        .flex()
+        .items_start()
+        .gap(px(8.))
+        .px(px(10.))
+        .py(px(8.))
+        .rounded(p.corner(8.))
+        .bg(p.warning.opacity(0.1))
+        .border_1()
+        .border_color(p.warning.opacity(0.3))
+        .text_size(px(12.))
+        .line_height(px(17.))
+        .text_color(p.text)
+        .child(div().flex_shrink_0().pt(px(1.)).child(icon_el("triangle-alert", 13., p.warning)))
+        .child(div().flex_1().min_w_0().child(NO_RECOVERY))
+}
+
 impl Workspace {
     // ---- vault ------------------------------------------------------------------------
 
@@ -41,7 +76,7 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn submit_unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn submit_unlock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(state) = self.unlock.as_mut() else { return };
         let password = state.password.read(cx).value().to_string();
         let result = if state.creating {
@@ -140,7 +175,7 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn clear_remembered_unlock(&mut self, cx: &mut Context<Self>) {
+    fn clear_remembered_unlock(&mut self, cx: &mut Context<Self>) {
         self.remembered_unlock = None;
         if let Err(err) = Vault::forget_unlock(&self.data_dir) {
             log::warn!("{err:#}");
@@ -247,7 +282,7 @@ impl Workspace {
     /// question (a plain card titled "Password for …"): it carries the vault badge and a
     /// brand-coloured top edge, names Komando's vault, and says under the field that this is
     /// not the server's password.
-    pub(super) fn render_unlock(&self, state: &UnlockState, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_unlock(&self, state: &UnlockState, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let p = p.panel();
         let creating = state.creating;
         let waiting = !self.pending.is_empty();
@@ -300,18 +335,6 @@ impl Workspace {
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.skip_unlock(window, cx))),
             );
 
-        // Under the field, one line that keeps it apart from a server's password question.
-        let hint = |icon: &str, text: &'static str, color: Hsla| {
-            div()
-                .flex()
-                .items_start()
-                .gap(px(6.))
-                .text_size(px(12.))
-                .line_height(px(17.))
-                .text_color(color)
-                .child(div().flex_shrink_0().pt(px(1.)).child(icon_el(icon, 13., color)))
-                .child(div().flex_1().min_w_0().child(text))
-        };
         let form = div()
             .flex()
             .flex_col()
@@ -320,50 +343,19 @@ impl Workspace {
             // instead of reaching past it.
             .child(div().px(px(3.)).child(password_input(&state.password, p)))
             .when(creating, |el| el.child(div().px(px(3.)).child(password_input(&state.confirm, p))))
+            // Under the field, one line that keeps it apart from a server's password question.
             .child(match &state.error {
-                Some(error) => div()
-                    .flex()
-                    .items_start()
-                    .gap(px(6.))
-                    .text_size(px(12.))
-                    .line_height(px(17.))
-                    .text_color(p.danger)
-                    .child(div().flex_shrink_0().pt(px(1.)).child(icon_el("circle-alert", 13., p.danger)))
-                    .child(div().flex_1().min_w_0().child(error.clone()))
-                    .into_any_element(),
-                None if creating => hint(
+                Some(error) => field_note("circle-alert", error.clone(), p.danger),
+                None if creating => field_note(
                     "key-round",
                     "Protects the passwords and keys Komando saves. It is not a server's password.",
                     p.text_faint,
-                )
-                .into_any_element(),
-                None => hint("key-round", "The password you chose for Komando, not the server's.", p.text_faint)
-                    .into_any_element(),
+                ),
+                None => field_note("key-round", "The password you chose for Komando, not the server's.", p.text_faint),
             });
 
         // The one sentence that must not be skimmed past.
-        let warning = creating.then(|| {
-            div()
-                .flex()
-                .items_start()
-                .gap(px(8.))
-                .px(px(10.))
-                .py(px(8.))
-                .rounded(p.corner(8.))
-                .bg(p.warning.opacity(0.1))
-                .border_1()
-                .border_color(p.warning.opacity(0.3))
-                .text_size(px(12.))
-                .line_height(px(17.))
-                .text_color(p.text)
-                .child(div().flex_shrink_0().pt(px(1.)).child(icon_el("triangle-alert", 13., p.warning)))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .child("There is no recovery: forget it and saved passwords are lost. Projects and hosts are kept."),
-                )
-        });
+        let warning = creating.then(|| no_recovery_warning(p));
 
         // Stay unlocked for the auto-lock time, or lock again once what waits has used the
         // Vault. Only offered when something waits: unlocking from the row means to stay.

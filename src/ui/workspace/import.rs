@@ -106,36 +106,14 @@ fn hosts_label(n: usize) -> String {
 }
 
 impl Workspace {
-    /// "Import from Tabby": read Tabby's configuration if it is in the usual place, or ask
-    /// for it.
-    fn start_tabby_import(&mut self, cx: &mut Context<Self>) {
-        match tabby::find_config() {
-            Some(path) => self.load_client(Source::Tabby, path, cx),
+    /// "Import from Tabby", "Import from MobaXterm" or "Import from SSH config": read the
+    /// client's settings if they are in the usual place (`~/.ssh/config` for SSH config), or
+    /// ask for them (or, for MobaXterm, for exported sessions).
+    fn start_client_import(&mut self, from: Source, find_config: fn() -> Option<PathBuf>, cx: &mut Context<Self>) {
+        match find_config() {
+            Some(path) => self.load_client(from, path, cx),
             None => {
-                self.import = ImportFlow::NotFound(Source::Tabby);
-                cx.notify();
-            }
-        }
-    }
-
-    /// "Import from MobaXterm": read MobaXterm.ini if it is in the usual place, or ask for it
-    /// (or for exported sessions).
-    fn start_mobaxterm_import(&mut self, cx: &mut Context<Self>) {
-        match mobaxterm::find_config() {
-            Some(path) => self.load_client(Source::MobaXterm, path, cx),
-            None => {
-                self.import = ImportFlow::NotFound(Source::MobaXterm);
-                cx.notify();
-            }
-        }
-    }
-
-    /// "Import from SSH config": read `~/.ssh/config`, or ask for the file.
-    fn start_openssh_import(&mut self, cx: &mut Context<Self>) {
-        match openssh::find_config() {
-            Some(path) => self.load_client(Source::OpenSsh, path, cx),
-            None => {
-                self.import = ImportFlow::NotFound(Source::OpenSsh);
+                self.import = ImportFlow::NotFound(from);
                 cx.notify();
             }
         }
@@ -369,7 +347,9 @@ impl Workspace {
             )
             .child(
                 button("import-tabby", "Import from Tabby", ButtonKind::Primary, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start_tabby_import(cx))),
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.start_client_import(Source::Tabby, tabby::find_config, cx)
+                    })),
             )
             .into_any_element();
         let ssh_row = div()
@@ -393,7 +373,9 @@ impl Workspace {
             )
             .child(
                 button("import-openssh", "Import from SSH config", ButtonKind::Secondary, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start_openssh_import(cx))),
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.start_client_import(Source::OpenSsh, openssh::find_config, cx)
+                    })),
             )
             .into_any_element();
         let moba_row = div()
@@ -425,7 +407,9 @@ impl Workspace {
             )
             .child(
                 button("import-mobaxterm", "Import from MobaXterm", ButtonKind::Secondary, p)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start_mobaxterm_import(cx))),
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.start_client_import(Source::MobaXterm, mobaxterm::find_config, cx)
+                    })),
             )
             .into_any_element();
         let project_row = div()

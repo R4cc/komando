@@ -76,13 +76,10 @@ impl Workspace {
         cx.notify();
     }
 
-    fn toggle_minimap(&mut self, cx: &mut Context<Self>) {
-        self.settings.minimap = !self.settings.minimap;
-        self.apply_terminal_settings(cx);
-    }
-
-    fn toggle_command_rail(&mut self, cx: &mut Context<Self>) {
-        self.settings.command_rail = !self.settings.command_rail;
+    /// Flip a terminal setting, such as the minimap, and show it in every terminal.
+    fn toggle_terminal_setting(&mut self, setting: fn(&mut Settings) -> &mut bool, cx: &mut Context<Self>) {
+        let on = setting(&mut self.settings);
+        *on = !*on;
         self.apply_terminal_settings(cx);
     }
 
@@ -127,11 +124,11 @@ impl Workspace {
                     this.focus_active(window, cx);
                 }))
                 .item(toggle("Minimap", minimap, |this, window, cx| {
-                    this.toggle_minimap(cx);
+                    this.toggle_terminal_setting(|s| &mut s.minimap, cx);
                     this.focus_active(window, cx);
                 }))
                 .item(toggle("Command rail", rail, |this, window, cx| {
-                    this.toggle_command_rail(cx);
+                    this.toggle_terminal_setting(|s| &mut s.command_rail, cx);
                     this.focus_active(window, cx);
                 }))
                 .item(

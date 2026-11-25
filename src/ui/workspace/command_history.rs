@@ -144,17 +144,12 @@ impl Workspace {
 
     fn copy_history_text(&mut self, cx: &mut Context<Self>) {
         let Some((_, text, shown)) = self.history_text(cx) else { return };
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-        self.show_toast(format!("Copied {} as text.", crate::ui::widgets::plural(shown, "command")), cx);
+        self.copy_as_text(text, shown, "command", cx);
     }
 
     fn copy_history_file(&mut self, cx: &mut Context<Self>) {
         let Some((host, text, _)) = self.history_text(cx) else { return };
-        let name = format!("{}_history_{}.txt", sanitize(&host), chrono::Local::now().format("%Y-%m-%d_%H-%M-%S"));
-        match crate::export::write_and_copy_file(&name, &text, cx) {
-            Ok(note) => self.show_toast(format!("Copied {name}{note}"), cx),
-            Err(err) => self.show_toast(format!("Could not create file: {err:#}"), cx),
-        }
+        self.copy_as_file(&format!("{host}_history"), &text, cx);
     }
 
     /// First click asks, the second (not a double click) deletes the open Host's history. The

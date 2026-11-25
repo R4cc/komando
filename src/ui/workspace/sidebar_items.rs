@@ -485,7 +485,7 @@ impl Workspace {
     /// An item's listed Sessions as cards under its row, hung off a guide line so they never
     /// read as Hosts. As many cards to a line as fit (see `session_card_rows`), the lines
     /// balanced and each card stretched to share its line, up to `SESSION_CARD_MAX_WIDTH`.
-    pub(super) fn render_session_cards(
+    fn render_session_cards(
         &self,
         item: &SidebarItem,
         listed: &[&SessionEntry],
@@ -522,7 +522,7 @@ impl Workspace {
     /// shown Session's card is raised; the rest lie flat. A corner mark appears only when
     /// something needs a look (connecting, dropped, output out of sight), and × on hover
     /// disconnects it, or closes it once it has dropped.
-    pub(super) fn render_session_card(&self, item: &SidebarItem, session: &SessionEntry, color: Hsla, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_session_card(&self, item: &SidebarItem, session: &SessionEntry, color: Hsla, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let id = session.id();
         let active = Some(id) == self.sessions.active();
         let focused = self.nav_focus_on(&NavTarget::Session(id));
@@ -712,7 +712,7 @@ impl Workspace {
 
     /// Open a Local Shell in a new, elevated Komando window. Windows asks for consent (UAC)
     /// first; saying no there leaves everything as it was. See `crate::elevate`.
-    pub(super) fn run_as_admin(&mut self, project: Option<String>, name: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn run_as_admin(&mut self, project: Option<String>, name: String, window: &mut Window, cx: &mut Context<Self>) {
         let parent = crate::platform::window_handle(window);
         let (tx, rx) = futures::channel::oneshot::channel();
         let label = name.clone();

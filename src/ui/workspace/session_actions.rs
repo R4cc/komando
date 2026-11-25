@@ -28,7 +28,7 @@ impl Workspace {
 
     /// Standalone shells removed in Settings whose Sessions are still open, so those Sessions
     /// stay reachable until they are closed.
-    pub(super) fn orphan_shells(&self) -> Vec<LocalShell> {
+    fn orphan_shells(&self) -> Vec<LocalShell> {
         let saved = self.library.standalone_shells();
         let mut orphans: Vec<LocalShell> = vec![];
         for s in &self.sessions {
@@ -92,7 +92,7 @@ impl Workspace {
         }
     }
 
-    pub(super) fn add_session(
+    fn add_session(
         &mut self,
         item: ItemKey,
         kind: SessionKind,
@@ -265,12 +265,12 @@ impl Workspace {
 
     /// Connecting to the Host from this Project would read the locked Vault (see
     /// `ResolvedHost::signs_in_with_vault`). Opening and reconnecting both ask first.
-    pub(super) fn host_needs_unlock(&self, project_id: &str, host_id: &str) -> bool {
+    fn host_needs_unlock(&self, project_id: &str, host_id: &str) -> bool {
         self.vault.is_none() && self.library.resolve(project_id, host_id).is_some_and(|host| host.signs_in_with_vault())
     }
 
     /// Ask for the Master Password to connect to a Host, once its job is in `pending`.
-    pub(super) fn show_host_unlock(&mut self, host_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn show_host_unlock(&mut self, host_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.library.host(host_id).map(|h| h.name.clone()).unwrap_or_else(|| "This host".into());
         self.show_unlock(format!("{name} signs in with a password or key saved in your vault."), window, cx);
     }
@@ -313,7 +313,7 @@ impl Workspace {
     }
 
     /// Start the Sessions that were waiting for a terminal pane to be laid out.
-    pub(super) fn start_waiting(&mut self, cx: &mut Context<Self>) {
+    fn start_waiting(&mut self, cx: &mut Context<Self>) {
         let waiting: Vec<_> = self
             .sessions
             .iter_mut()
@@ -331,7 +331,7 @@ impl Workspace {
         self.lock_if_used(cx);
     }
 
-    pub(super) fn start_backend(&mut self, view: &Entity<TerminalView>, kind: &SessionKind, project_id: Option<&str>, cx: &mut Context<Self>) {
+    fn start_backend(&mut self, view: &Entity<TerminalView>, kind: &SessionKind, project_id: Option<&str>, cx: &mut Context<Self>) {
         let (term, proxy, size) = {
             let v = view.read(cx);
             (v.term(), v.proxy(), v.grid_size())
@@ -679,14 +679,14 @@ impl Workspace {
     }
 
     /// Expand sidebar on hover: whether the hidden sidebar may float out over the Sessions.
-    pub(super) fn sidebar_can_peek(&self) -> bool {
+    fn sidebar_can_peek(&self) -> bool {
         self.settings.sidebar_auto_hide && !self.sidebar_visible && self.page == Page::Sessions && self.unlock.is_none()
     }
 
     /// Float the sidebar out at once (`true`), or slide it back once the pointer has been off
     /// it for a moment, so brushing past its edge doesn't close it. A pending change the
     /// other way is cancelled; one the same way keeps its timer.
-    pub(super) fn peek_sidebar_later(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn peek_sidebar_later(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.sidebar_peek == open {
             self.sidebar_peek_timer = None;
             return;
@@ -706,7 +706,7 @@ impl Workspace {
     }
 
     /// Float the sidebar out or slide it back now.
-    pub(super) fn set_sidebar_peek(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn set_sidebar_peek(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_peek_timer = None;
         if open == self.sidebar_peek || (open && !self.sidebar_can_peek()) {
             return;
@@ -732,7 +732,7 @@ impl Workspace {
     /// While the sidebar is out, follow the pointer outside the window too (gpui stops
     /// reporting it there). Out through the left edge, the sidebar stays until the pointer is
     /// `SIDEBAR_PEEK_OUTSIDE` past it; out any other way, it slides back as if left inside.
-    pub(super) fn watch_sidebar_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn watch_sidebar_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if crate::platform::pointer_in_window(window).is_none() {
             return;
         }
@@ -772,7 +772,7 @@ impl Workspace {
     }
 
     /// Whether nothing opened from the floated-out sidebar is still in use.
-    pub(super) fn sidebar_peek_may_close(&self, cx: &App) -> bool {
+    fn sidebar_peek_may_close(&self, cx: &App) -> bool {
         !cx.has_active_drag() && !self.transfers.read(cx).is_open() && !self.modal_open(cx)
     }
 
@@ -943,8 +943,8 @@ impl Workspace {
     }
 
     /// Disconnect every live Session, without asking about ones still printing output.
-    #[cfg_attr(not(windows), allow(dead_code))]
-    pub(super) fn disconnect_all_sessions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    #[cfg(windows)]
+    fn disconnect_all_sessions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let live: Vec<usize> = self.sessions.iter().filter(|s| s.is_live()).map(|s| s.id()).collect();
         for id in live {
             self.disconnect_session(id, window, cx);
@@ -1023,7 +1023,7 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn save_session_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn save_session_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Overlay::RenameSession { id, name, .. }) = &self.overlay else { return };
         let (id, value) = (*id, name.read(cx).value().trim().to_string());
         if let Some(entry) = self.sessions.get(id) {

@@ -416,8 +416,11 @@ impl Workspace {
     /// along sidebar row `row`: `Some(true)` along its bottom, `Some(false)` along its top.
     pub(super) fn reorder_line(&self, row: usize, cx: &gpui::App) -> Option<bool> {
         match &self.drop_target {
-            Some(DropTarget::ProjectOrder { row: r, after, .. }) if *r == row && cx.has_active_drag() => Some(*after),
-            Some(DropTarget::Reorder { row: r, after, .. }) if *r == row && cx.has_active_drag() => Some(*after),
+            Some(DropTarget::ProjectOrder { row: r, after, .. } | DropTarget::Reorder { row: r, after, .. })
+                if *r == row && cx.has_active_drag() =>
+            {
+                Some(*after)
+            }
             _ => None,
         }
     }

@@ -10,6 +10,7 @@
 
 use super::*;
 use super::settings::group;
+use super::vault::{field_note, no_recovery_warning};
 use crate::model::MinimapPlacement;
 
 /// The tour's steps, in order.
@@ -460,24 +461,8 @@ impl Workspace {
                 .into_any_element()
         } else {
             let message = match &tour.error {
-                Some(error) => div()
-                    .flex()
-                    .items_start()
-                    .gap(px(6.))
-                    .text_size(px(12.))
-                    .line_height(px(17.))
-                    .text_color(p.danger)
-                    .child(div().flex_shrink_0().pt(px(1.)).child(icon_el("circle-alert", 13., p.danger)))
-                    .child(div().flex_1().min_w_0().child(error.clone())),
-                None => div()
-                    .flex()
-                    .items_start()
-                    .gap(px(6.))
-                    .text_size(px(12.))
-                    .line_height(px(17.))
-                    .text_color(p.text_faint)
-                    .child(div().flex_shrink_0().pt(px(1.)).child(icon_el("key-round", 13., p.text_faint)))
-                    .child(div().flex_1().min_w_0().child("At least 8 characters. This is Komando's password, not a server's.")),
+                Some(error) => field_note("circle-alert", error.clone(), p.danger),
+                None => field_note("key-round", "At least 8 characters. This is Komando's password, not a server's.", p.text_faint),
             };
             div()
                 .flex()
@@ -486,25 +471,7 @@ impl Workspace {
                 .child(div().px(px(3.)).child(password_input(&tour.password, p)))
                 .child(div().px(px(3.)).child(password_input(&tour.confirm, p)))
                 .child(message)
-                .child(
-                    div()
-                        .flex()
-                        .items_start()
-                        .gap(px(8.))
-                        .px(px(10.))
-                        .py(px(8.))
-                        .rounded(p.corner(8.))
-                        .bg(p.warning.opacity(0.1))
-                        .border_1()
-                        .border_color(p.warning.opacity(0.3))
-                        .text_size(px(12.))
-                        .line_height(px(17.))
-                        .text_color(p.text)
-                        .child(div().flex_shrink_0().pt(px(1.)).child(icon_el("triangle-alert", 13., p.warning)))
-                        .child(div().flex_1().min_w_0().child(
-                            "There is no recovery: forget it and saved passwords are lost. Projects and hosts are kept.",
-                        )),
-                )
+                .child(no_recovery_warning(p))
                 .child(div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(
                     "Not now? Komando asks for one the first time it saves a password or key.",
                 ))

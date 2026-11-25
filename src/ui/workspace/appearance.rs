@@ -88,40 +88,35 @@ impl Workspace {
     }
 
     pub(super) fn set_terminal_colors(&mut self, dark: bool, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        if dark {
-            self.settings.dark_terminal_colors = id.into();
-        } else {
-            self.settings.light_terminal_colors = id.into();
-        }
-        self.save_settings(cx);
-        self.apply_appearance(window, cx);
+        let s = &mut self.settings;
+        *if dark { &mut s.dark_terminal_colors } else { &mut s.light_terminal_colors } = id.into();
+        self.save_appearance(window, cx);
     }
 
     pub(super) fn set_theme(&mut self, dark: bool, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        if dark {
-            self.settings.dark_theme = id.into();
-        } else {
-            self.settings.light_theme = id.into();
-        }
-        self.save_settings(cx);
-        self.apply_appearance(window, cx);
+        let s = &mut self.settings;
+        *if dark { &mut s.dark_theme } else { &mut s.light_theme } = id.into();
+        self.save_appearance(window, cx);
     }
 
     pub(super) fn set_app_theme(&mut self, theme: AppThemeSetting, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.app_theme = theme;
         self.appearance_other_mode = false;
-        self.save_settings(cx);
-        self.apply_appearance(window, cx);
+        self.save_appearance(window, cx);
     }
 
     pub(super) fn set_terminal_theme(&mut self, theme: TerminalThemeSetting, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.terminal_theme = theme;
-        self.save_settings(cx);
-        self.apply_appearance(window, cx);
+        self.save_appearance(window, cx);
     }
 
     pub(super) fn set_background_blur(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.settings.background_blur = on;
+        self.save_appearance(window, cx);
+    }
+
+    /// Save a changed look setting and show it in every window.
+    pub(super) fn save_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.save_settings(cx);
         self.apply_appearance(window, cx);
     }
