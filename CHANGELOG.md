@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-25
+
 ### Added
 
 - Sign in with keys from your SSH agent: `ssh-agent`, Pageant, the Windows OpenSSH agent,
@@ -33,7 +35,6 @@ All notable changes to Komando are listed here. The format follows
 - The Import page in Settings is easier to read: each source has a short description, the hosts
   to pick sit in one list, and the review shows each host's settings in a tidy column with what
   stays behind marked.
-
 - On Windows, closing Komando's window into the notification area now disconnects all
   sessions; their output stays so you can reconnect when you're back. Minimizing still keeps
   them running. Turn this off in Settings → Appearance under "Disconnect when closed to tray".
@@ -2109,7 +2110,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.8.4...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/R4cc/komando/compare/v0.8.8...v0.9.0
 [0.8.4]: https://github.com/R4cc/komando/compare/v0.8.3...v0.8.4
 [0.8.0]: https://github.com/R4cc/komando/compare/v0.7.9...v0.8.0
 [0.7.9]: https://github.com/R4cc/komando/compare/v0.7.8...v0.7.9
