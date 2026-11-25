@@ -26,7 +26,7 @@ use crate::session::InputSink;
 use crate::sftp::{self, Access, Allowed, Entry, ErrorKind, Identity, Kind, Listing, OpError, Remote, format_size};
 use crate::theme::{AppPalette, Appearance};
 use crate::ui::popup::{self, Popup};
-use crate::ui::transfers::{self, Job, Transfers};
+use crate::ui::transfers::{self, Job, ServerOp, Transfers};
 use crate::ui::widgets::{Busy, BusyPhase, ButtonKind, busy_done, after_delay, button, focus_outline, icon_el, plural, spinner, status_dot};
 
 const ROW_HEIGHT: f32 = 30.;
@@ -123,11 +123,22 @@ enum CopyOp {
     Move,
 }
 
+impl From<CopyOp> for ServerOp {
+    fn from(op: CopyOp) -> Self {
+        match op {
+            CopyOp::Copy => ServerOp::Copy,
+            CopyOp::Move => ServerOp::Move,
+        }
+    }
+}
+
 enum Dialog {
     CopyMove { op: CopyOp, paths: Vec<String>, input: Entity<InputState>, _subscription: Subscription },
     Delete { paths: Vec<String> },
     /// Uploads whose names already exist in the folder.
     Conflict { uploads: Vec<PathBuf>, dir: String, existing: Vec<String> },
+    /// A copy or move into `dest`, where the names `existing` are taken.
+    CopyConflict { op: CopyOp, pairs: Vec<(String, String)>, dest: String, existing: Vec<String> },
 }
 
 /// Rows being dragged inside the browser, to move them into a folder.
@@ -1061,51 +1072,95 @@ impl FileBrowser {
         }
         let dest = self.expand(&text);
         let taken: HashSet<String> = self.entries.iter().map(|e| e.name.clone()).collect();
-        let in_cwd = self.cwd.as_deref() == Some(dest.trim_end_matches('/')) || self.cwd.as_deref() == Some(dest.as_str());
         let pairs = copy_targets(op, paths, &dest, &taken);
         if pairs.is_empty() {
             // Moving to where it already is: say so rather than close without a word.
             self.notify_info("Already in that folder.", cx);
             return;
         }
-        let total = pairs.len();
-        let (verb, busy) = match op {
-            CopyOp::Copy => ("copy", "Copying…"),
-            CopyOp::Move => ("move", "Moving…"),
+        self.copy_or_move(op, pairs, dest, cx);
+    }
+
+    /// Copy or move each of `pairs` (an item and where it goes, all in `dest`) on the server, as
+    /// a job in Transfers. Names already taken there are asked about first: replace them, keep
+    /// both, or cancel.
+    fn copy_or_move(&mut self, op: CopyOp, pairs: Vec<(String, String)>, dest: String, cx: &mut Context<Self>) {
+        let Some(remote) = self.remote() else {
+            self.notify_error("Not connected.", cx);
+            return;
         };
-        let shown_dest = dest.clone();
-        self.run_op(
-            busy,
-            move |r| {
-                Box::pin(async move {
-                    let mut done = 0;
-                    for (from, to) in pairs {
-                        let result = match op {
-                            CopyOp::Copy => r.copy(&from, &to).await,
-                            CopyOp::Move => r.rename(&from, &to).await,
-                        };
-                        if let Err(err) = result {
-                            return Ok((done, Some((sftp::file_name(&from).to_string(), err))));
-                        }
-                        done += 1;
-                    }
-                    Ok((done, None))
+        let targets: Vec<String> = pairs.iter().map(|(_, to)| to.clone()).collect();
+        let task = sftp::spawn(async move {
+            use futures::{StreamExt as _, TryStreamExt as _};
+            let checks: Vec<_> = targets
+                .into_iter()
+                .map(|to| {
+                    let remote = remote.clone();
+                    async move { remote.exists(&to).await.map(|exists| exists.then(|| sftp::file_name(&to).to_string())) }
                 })
-            },
-            cx,
-            move |this, result: Result<(usize, Option<(String, OpError)>), OpError>, cx| match result {
-                Ok((_, None)) if !in_cwd => {
-                    let past = if op == CopyOp::Copy { "Copied" } else { "Moved" };
-                    this.notify_info(format!("{past} {} to {shown_dest}", plural(total, "item")), cx);
+                .collect();
+            let taken: Vec<Option<String>> = futures::stream::iter(checks).buffered(32).try_collect().await?;
+            Ok::<_, OpError>(taken.into_iter().flatten().collect::<Vec<_>>())
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await.and_then(|r| r);
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(existing) if existing.is_empty() => this.start_on_server(op.into(), on_server_items(pairs), false, cx),
+                Ok(existing) => {
+                    this.dialog = Some(Dialog::CopyConflict { op, pairs, dest, existing });
+                    cx.notify();
                 }
-                Ok((_, None)) => {}
-                Ok((done, Some((name, err)))) => {
-                    let prefix = if done > 0 { format!("{done} of {total} done. ") } else { String::new() };
-                    this.notify_error(format!("{prefix}{}", explain(&format!("{verb} {name}"), &err)), cx);
+                Err(err) => {
+                    let verb = if op == CopyOp::Copy { "copy" } else { "move" };
+                    this.notify_error(explain(verb, &err), cx);
                 }
-                Err(err) => this.notify_error(explain(verb, &err), cx),
-            },
-        );
+            });
+        })
+        .detach();
+    }
+
+    /// "Keep both" on the copy and move conflict dialog: the items whose names are taken in
+    /// `dest` go there under free names ("app (1).conf").
+    fn copy_or_move_keeping_both(&mut self, op: CopyOp, pairs: Vec<(String, String)>, dest: String, existing: Vec<String>, cx: &mut Context<Self>) {
+        let mut taken = names_in(&dest, self.cwd.as_deref(), &self.entries, &existing);
+        // Nor a name another of the items goes to.
+        taken.extend(pairs.iter().map(|(_, to)| sftp::file_name(to).to_string()));
+        if self.cwd.as_deref() == Some(dest.as_str()) {
+            let pairs = keep_both_targets(pairs, &dest, &existing, taken);
+            self.start_on_server(op.into(), on_server_items(pairs), false, cx);
+            return;
+        }
+        let Some(remote) = self.remote() else { return };
+        let list_dir = dest.clone();
+        let task = sftp::spawn(async move { remote.list(&list_dir).await });
+        cx.spawn(async move |this, cx| {
+            // Not listed: the names known to be taken still get free ones.
+            if let Ok(Ok(listing)) = task.await {
+                taken.extend(listing.entries.into_iter().map(|e| e.name));
+            }
+            let pairs = keep_both_targets(pairs, &dest, &existing, taken);
+            let _ = this.update(cx, |this, cx| this.start_on_server(op.into(), on_server_items(pairs), false, cx));
+        })
+        .detach();
+    }
+
+    /// Start a copy, move or delete on the server as a job in Transfers, where it shows its
+    /// progress and can be cancelled.
+    fn start_on_server(&mut self, op: ServerOp, items: Vec<(String, Option<String>)>, replace: bool, cx: &mut Context<Self>) {
+        if items.is_empty() {
+            return;
+        }
+        let Some(remote) = self.remote() else {
+            self.notify_error("Not connected.", cx);
+            return;
+        };
+        let source = cx.entity().downgrade();
+        let host = self.host_label.clone();
+        let (name, is_dir) = match items.as_slice() {
+            [(path, _)] => (sftp::file_name(path).to_string(), self.entries.iter().any(|e| &e.path == path && e.is_dir())),
+            many => (plural(many.len(), "item"), false),
+        };
+        self.transfers.update(cx, |t, cx| t.start(Job::OnServer { op, items, replace }, name, is_dir, host, source, remote, cx));
     }
 
     /// Rows dropped on a folder: move them there, if they are this browser's own.
@@ -1128,32 +1183,7 @@ impl FileBrowser {
         if pairs.is_empty() {
             return;
         }
-        let total = pairs.len();
-        self.run_op(
-            "Moving…",
-            move |r| {
-                Box::pin(async move {
-                    let mut done = 0;
-                    for (from, to) in pairs {
-                        if let Err(err) = r.rename(&from, &to).await {
-                            return Ok((done, Some((sftp::file_name(&from).to_string(), err))));
-                        }
-                        done += 1;
-                    }
-                    Ok((done, None))
-                })
-            },
-            cx,
-            // As with delete: say how many moved before one failed.
-            move |this, result: Result<(usize, Option<(String, OpError)>), OpError>, cx| match result {
-                Ok((_, None)) => {}
-                Ok((done, Some((name, err)))) => {
-                    let prefix = if done > 0 { format!("Moved {done} of {total}. ") } else { String::new() };
-                    this.notify_error(format!("{prefix}{}", explain(&format!("move {name}"), &err)), cx);
-                }
-                Err(err) => this.notify_error(explain("move", &err), cx),
-            },
-        );
+        self.copy_or_move(CopyOp::Move, pairs, dest, cx);
     }
 
     fn ask_delete(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
@@ -1169,31 +1199,7 @@ impl FileBrowser {
     }
 
     fn delete(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
-        let total = paths.len();
-        self.run_op(
-            "Deleting…",
-            move |r| {
-                Box::pin(async move {
-                    let mut done = 0;
-                    for path in paths {
-                        if let Err(err) = r.remove(&path).await {
-                            return Ok((done, Some((sftp::file_name(&path).to_string(), err))));
-                        }
-                        done += 1;
-                    }
-                    Ok((done, None))
-                })
-            },
-            cx,
-            move |this, result: Result<(usize, Option<(String, OpError)>), OpError>, cx| match result {
-                Ok((_, None)) => {}
-                Ok((done, Some((name, err)))) => {
-                    let prefix = if done > 0 { format!("Deleted {done} of {total}. ") } else { String::new() };
-                    this.notify_error(format!("{prefix}{}", explain(&format!("delete {name}"), &err)), cx);
-                }
-                Err(err) => this.notify_error(explain("delete", &err), cx),
-            },
-        );
+        self.start_on_server(ServerOp::Delete, paths.into_iter().map(|path| (path, None)).collect(), false, cx);
     }
 
     fn copy_paths(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
@@ -1502,6 +1508,28 @@ fn upload_names(paths: &[PathBuf], taken: Option<HashSet<String>>) -> Vec<String
 
 /// The names known to be taken in `dir`: those found there (`existing`), and everything in
 /// it when it is the folder on screen.
+/// A copy's or move's items as Transfers takes them.
+fn on_server_items(pairs: Vec<(String, String)>) -> Vec<(String, Option<String>)> {
+    pairs.into_iter().map(|(from, to)| (from, Some(to))).collect()
+}
+
+/// Where each item goes with "Keep both": the ones whose names are `existing` in `dest` get a
+/// free name, one not in `taken` (which holds the names there and those of the other items).
+fn keep_both_targets(pairs: Vec<(String, String)>, dest: &str, existing: &[String], mut taken: HashSet<String>) -> Vec<(String, String)> {
+    pairs
+        .into_iter()
+        .map(|(from, to)| {
+            let name = sftp::file_name(&to).to_string();
+            if !existing.contains(&name) {
+                return (from, to);
+            }
+            let free = sftp::unique_name(&name, |n| taken.contains(n));
+            taken.insert(free.clone());
+            (from, sftp::join(dest, &free))
+        })
+        .collect()
+}
+
 fn names_in(dir: &str, cwd: Option<&str>, entries: &[Entry], existing: &[String]) -> HashSet<String> {
     let mut taken: HashSet<String> = existing.iter().cloned().collect();
     if cwd == Some(dir) {
@@ -2879,6 +2907,43 @@ impl FileBrowser {
                     ],
                 )
             }
+            Dialog::CopyConflict { op, pairs, dest, existing } => {
+                let (op, p1, p2, d1, e1) = (*op, pairs.clone(), pairs.clone(), dest.clone(), existing.clone());
+                let names = existing.iter().take(3).map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
+                let more = existing.len().saturating_sub(3);
+                let done = if op == CopyOp::Copy { "the copy is complete" } else { "the move is done" };
+                (
+                    if existing.len() == 1 { "Replace the existing item?".into() } else { format!("Replace {} existing items?", existing.len()) },
+                    div()
+                        .text_size(px(12.5))
+                        .line_height(px(18.))
+                        .text_color(p.text_muted)
+                        .child(format!(
+                            "{names}{} already exist{} in {dest}. Replacing overwrites {} once {done}.",
+                            if more > 0 { format!(" and {more} more") } else { String::new() },
+                            if existing.len() == 1 { "s" } else { "" },
+                            if existing.len() == 1 { "it" } else { "them" },
+                        ))
+                        .into_any_element(),
+                    vec![
+                        cancel.into_any_element(),
+                        button("sftp-copy-keep-both", "Keep both", ButtonKind::Secondary, p)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.dialog = None;
+                                window.focus(&this.focus, cx);
+                                this.copy_or_move_keeping_both(op, p1.clone(), d1.clone(), e1.clone(), cx);
+                            }))
+                            .into_any_element(),
+                        button("sftp-copy-replace", "Replace", ButtonKind::Danger, p)
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.dialog = None;
+                                window.focus(&this.focus, cx);
+                                this.start_on_server(op.into(), on_server_items(p2.clone()), true, cx);
+                            }))
+                            .into_any_element(),
+                    ],
+                )
+            }
         };
         Some(
             div()
@@ -3217,6 +3282,17 @@ mod tests {
         assert_eq!(upload_names(&[PathBuf::from("logs")], Some(taken)), ["logs (1)"]);
         // Replace or no conflict: names stay as they are.
         assert_eq!(upload_names(&uploads, None), ["app.log", "other.log"]);
+    }
+
+    #[test]
+    fn keeping_both_gives_taken_names_free_ones_that_no_other_item_takes() {
+        use super::keep_both_targets;
+        let pairs = vec![("/a/app.conf".to_string(), "/b/app.conf".to_string()), ("/a/app (1).conf".to_string(), "/b/app (1).conf".to_string()), ("/a/new".to_string(), "/b/new".to_string())];
+        let existing = vec!["app.conf".to_string()];
+        let taken: HashSet<String> = ["app.conf", "app (1).conf", "new"].map(String::from).into();
+        let got = keep_both_targets(pairs, "/b", &existing, taken);
+        let to: Vec<&str> = got.iter().map(|(_, to)| to.as_str()).collect();
+        assert_eq!(to, ["/b/app (2).conf", "/b/app (1).conf", "/b/new"]);
     }
 
     #[test]

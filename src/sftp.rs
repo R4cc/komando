@@ -590,7 +590,8 @@ pub struct Progress {
 }
 
 impl Progress {
-    fn check(&self) -> Result<(), OpError> {
+    /// Stop here if the transfer was cancelled.
+    pub fn check(&self) -> Result<(), OpError> {
         if self.cancel.load(Ordering::Relaxed) { Err(OpError::cancelled()) } else { Ok(()) }
     }
 
@@ -1105,16 +1106,60 @@ impl Remote {
         Ok(())
     }
 
+    /// Move `from` to `to`, replacing what is at `to`. The old one is moved aside, not deleted,
+    /// until the new one is in its place: if that fails, it goes back and nothing is lost.
+    pub async fn rename_replacing(&self, from: &str, to: &str) -> Result<(), OpError> {
+        if from == to {
+            return Ok(());
+        }
+        // Moving the old one aside would take `from` with it.
+        if is_within(from, to) {
+            return Err(OpError::new(ErrorKind::Other, format!("\"{}\" is inside the \"{}\" it would replace.", file_name(from), file_name(to))));
+        }
+        if !self.exists(to).await? {
+            return self.rename(from, to).await;
+        }
+        let aside = copy_partial_path(to, &crate::model::new_id());
+        self.sftp.rename(to, aside.as_str()).await.map_err(|e| OpError::from(e).at(to))?;
+        if let Err(err) = self.rename(from, to).await {
+            let _ = self.sftp.rename(aside.as_str(), to).await;
+            return Err(err);
+        }
+        if let Err(err) = self.remove(&aside).await {
+            log::warn!("removing the replaced {aside}: {err}");
+        }
+        Ok(())
+    }
+
     /// Copy a file or folder to `to` on the server. Uses `cp` there; without a shell, the data
-    /// goes through this connection instead.
-    pub async fn copy(&self, from: &str, to: &str) -> Result<(), OpError> {
+    /// goes through this connection instead. With `replace`, what is at `to` is replaced once
+    /// the copy is complete (as [`Self::rename_replacing`] does); otherwise it fails the copy.
+    pub async fn copy(&self, from: &str, to: &str, replace: bool) -> Result<(), OpError> {
         // Into itself: without `cp` (which refuses), each copied level would be copied again.
         if is_within(to, from) {
             return Err(OpError::new(ErrorKind::Other, format!("\"{}\" can't be copied into itself.", file_name(from))));
         }
-        if self.exists(to).await? {
+        if !self.exists(to).await? {
+            return self.copy_new(from, to).await;
+        }
+        if !replace {
             return Err(OpError::new(ErrorKind::Exists, format!("\"{}\" already exists in {}", file_name(to), parent(to).unwrap_or_default())));
         }
+        if is_within(from, to) {
+            return Err(OpError::new(ErrorKind::Other, format!("\"{}\" is inside the \"{}\" it would replace.", file_name(from), file_name(to))));
+        }
+        // Copied next to it first, so a failed copy leaves the old one as it was.
+        let copy = copy_partial_path(to, &crate::model::new_id());
+        self.copy_new(from, &copy).await?;
+        if let Err(err) = self.rename_replacing(&copy, to).await {
+            let _ = self.remove(&copy).await;
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// Copy to `to`, where nothing is.
+    async fn copy_new(&self, from: &str, to: &str) -> Result<(), OpError> {
         match self.exec(&format!("cp -Rp -- {} {}", shell_quote(from), shell_quote(to))).await {
             Ok(out) if out.code == Some(0) => Ok(()),
             // No cp on the server.

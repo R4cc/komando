@@ -24,6 +24,60 @@ use crate::ui::widgets::{focus_outline, icon_el, progress_bar};
 pub enum Job {
     Download { remote_path: String, dir: PathBuf, open_after: bool },
     Upload { local: PathBuf, remote_dir: String, name: String, replace: bool },
+    /// Copy, move or delete on the server, one item after another: each path and, for a copy
+    /// or move, where it goes. With `replace`, what is there already is replaced. Its progress
+    /// counts items, not bytes; a retry picks up at the item that failed.
+    OnServer { op: ServerOp, items: Vec<(String, Option<String>)>, replace: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerOp {
+    Copy,
+    Move,
+    Delete,
+}
+
+impl ServerOp {
+    fn icon(self) -> &'static str {
+        match self {
+            ServerOp::Copy => "copy",
+            ServerOp::Move => "folder-input",
+            ServerOp::Delete => "trash",
+        }
+    }
+
+    /// "Copying", "Copied".
+    fn verbs(self) -> (&'static str, &'static str) {
+        match self {
+            ServerOp::Copy => ("Copying", "Copied"),
+            ServerOp::Move => ("Moving", "Moved"),
+            ServerOp::Delete => ("Deleting", "Deleted"),
+        }
+    }
+}
+
+/// Run a copy, move or delete on the server, counting finished items in `progress` and
+/// stopping between items once it is cancelled.
+async fn run_on_server(
+    remote: &Remote,
+    op: ServerOp,
+    items: &[(String, Option<String>)],
+    replace: bool,
+    progress: &Progress,
+) -> Result<(), OpError> {
+    progress.total.store(items.len() as u64, Ordering::Relaxed);
+    for (from, to) in items {
+        progress.check()?;
+        match (op, to) {
+            (ServerOp::Delete, _) => remote.remove(from).await?,
+            (ServerOp::Copy, Some(to)) => remote.copy(from, to, replace).await?,
+            (ServerOp::Move, Some(to)) if replace => remote.rename_replacing(from, to).await?,
+            (ServerOp::Move, Some(to)) => remote.rename(from, to).await?,
+            (_, None) => {}
+        }
+        progress.done.fetch_add(1, Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -133,11 +187,40 @@ impl Transfer {
         matches!(self.job, Job::Upload { .. })
     }
 
+    /// A copy, move or delete on the server, rather than a transfer of bytes.
+    fn on_server(&self) -> Option<ServerOp> {
+        match self.job {
+            Job::OnServer { op, .. } => Some(op),
+            _ => None,
+        }
+    }
+
     fn remote_path(&self) -> String {
         match &self.job {
             Job::Download { remote_path, .. } => remote_path.clone(),
             Job::Upload { remote_dir, name, .. } => sftp::join(remote_dir, name),
+            Job::OnServer { items, .. } => {
+                items.first().map(|(from, to)| to.clone().unwrap_or_else(|| from.clone())).unwrap_or_default()
+            }
         }
+    }
+
+    /// The folders on the server it changes, to list again once it ends.
+    fn changed_dirs(&self) -> Vec<String> {
+        let mut dirs = vec![];
+        match &self.job {
+            Job::Upload { remote_dir, .. } => dirs.push(remote_dir.clone()),
+            Job::OnServer { items, .. } => {
+                for (from, to) in items {
+                    dirs.extend(sftp::parent(from));
+                    dirs.extend(to.as_deref().and_then(sftp::parent));
+                }
+            }
+            Job::Download { .. } => {}
+        }
+        dirs.sort();
+        dirs.dedup();
+        dirs
     }
 }
 
@@ -257,7 +340,7 @@ impl Transfers {
 
     /// A download finished while the panel was closed, and the panel hasn't been opened since.
     pub fn new_download(&self) -> bool {
-        self.items.iter().any(|t| !t.seen && !t.is_upload() && matches!(t.state, State::Done { .. }))
+        self.items.iter().any(|t| !t.seen && matches!(t.job, Job::Download { .. }) && matches!(t.state, State::Done { .. }))
     }
 
     /// How far the current burst of transfers is, for the ring on the Transfers entry.
@@ -265,16 +348,19 @@ impl Transfers {
         if !self.has_active() {
             return Activity::Idle;
         }
-        let parts = self.items.iter().filter(|t| t.in_burst).map(|t| {
-            let total = t.progress.total.load(Ordering::Relaxed);
-            let done = match t.state {
-                State::Active => t.progress.done.load(Ordering::Relaxed),
-                // Ended (even failed): no longer moving, so it counts as complete.
-                _ => total,
-            };
-            (done, total)
-        });
-        match combined_progress(parts) {
+        let parts = |on_server: bool| {
+            self.items.iter().filter(move |t| t.in_burst && t.on_server().is_some() == on_server).map(|t| {
+                let total = t.progress.total.load(Ordering::Relaxed);
+                let done = match t.state {
+                    State::Active => t.progress.done.load(Ordering::Relaxed),
+                    // Ended (even failed): no longer moving, so it counts as complete.
+                    _ => total,
+                };
+                (done, total)
+            })
+        };
+        // Bytes when anything moves bytes; items counted on the server don't add up with them.
+        match combined_progress(parts(false)).or_else(|| combined_progress(parts(true))) {
             Some(fraction) => Activity::Progress(fraction),
             None => Activity::Unknown,
         }
@@ -395,6 +481,11 @@ impl Transfers {
                 Job::Upload { local, remote_dir, name, replace } => {
                     remote.upload(&local, &remote_dir, &name, replace, &progress).await.map(|p| (None, Some(p)))
                 }
+                Job::OnServer { op, items, replace } => {
+                    run_on_server(&remote, op, &items, replace, &progress).await?;
+                    // A copy or move shows where its first item went.
+                    Ok((None, items.first().and_then(|(_, to)| to.clone())))
+                }
             }
         });
         cx.spawn(async move |this, cx| {
@@ -426,12 +517,16 @@ impl Transfers {
                 t.state = State::Failed { at, error };
             }
         }
-        // The browser shows the new file when it is in the folder that changed.
-        if let Job::Upload { remote_dir, .. } = &t.job
-            && let Some(browser) = t.source.upgrade()
-        {
-            let dir = remote_dir.clone();
-            browser.update(cx, |b, cx| b.changed_on_server(&dir, cx));
+        // The browser shows the change when it is in a folder that changed. Before a failed
+        // job forgets its finished items, which changed folders too.
+        let dirs = t.changed_dirs();
+        if let Some(browser) = t.source.upgrade() {
+            browser.update(cx, |b, cx| dirs.iter().for_each(|dir| b.changed_on_server(dir, cx)));
+        }
+        // A retry picks up at the item that failed (or wasn't reached).
+        if let (State::Failed { .. }, Job::OnServer { items, .. }) = (&t.state, &mut t.job) {
+            let done = (t.progress.done.load(Ordering::Relaxed) as usize).min(items.len());
+            items.drain(..done);
         }
         cx.emit(TransfersChanged);
         cx.notify();
@@ -585,9 +680,14 @@ impl Transfers {
         let id = t.id;
         let done = t.progress.done.load(Ordering::Relaxed);
         let total = t.progress.total.load(Ordering::Relaxed);
-        let verb = if t.is_upload() { "Uploaded" } else { "Downloaded" };
+        let server_op = t.on_server();
+        let verb = match server_op {
+            Some(op) => op.verbs().1,
+            None if t.is_upload() => "Uploaded",
+            None => "Downloaded",
+        };
         let (icon, color) = match &t.state {
-            State::Active => (if t.is_upload() { "upload" } else { "download" }, p.brand),
+            State::Active => (server_op.map_or(if t.is_upload() { "upload" } else { "download" }, ServerOp::icon), p.brand),
             State::Done { .. } => ("circle-check", p.success),
             State::Failed { error, .. } if error.kind == ErrorKind::Cancelled => ("circle-x", p.text_faint),
             State::Failed { .. } => ("circle-alert", p.danger),
@@ -607,7 +707,14 @@ impl Transfers {
             (Some(speed), _) => format!(" · {}/s", format_size(speed.round() as u64)),
             (None, _) => String::new(),
         };
-        let detail: SharedString = match &t.state {
+        let detail: SharedString = match (&t.state, server_op) {
+            (State::Active, Some(op)) if total > 1 => format!("{} · {done} of {total} · {}", op.verbs().0, t.host).into(),
+            (State::Active, Some(op)) => format!("{}… · {}", op.verbs().0, t.host).into(),
+            (State::Done { at, .. }, Some(_)) => {
+                let what = if total > 1 { format!("{verb} {total} items") } else { verb.to_string() };
+                format!("{what} {} · {}", ago(*at), t.host).into()
+            }
+            (state, _) => match state {
             State::Active if waiting => format!("Waiting for other transfers · {}", t.host).into(),
             State::Active if total > 0 => {
                 format!("{} of {}{pace} · {}", format_size(done), format_size(total), t.host).into()
@@ -618,6 +725,7 @@ impl Transfers {
             }
             State::Done { at, .. } => format!("{} · {verb} {} · {}", format_size(total), ago(*at), t.host).into(),
             State::Failed { error, .. } => error.message.clone().into(),
+            },
         };
         let failed = matches!(t.state, State::Failed { .. });
         let tip: SharedString = format!("{}:{}", t.host, t.remote_path()).into();
@@ -757,7 +865,11 @@ impl Transfers {
                             div()
                                 .id(("transfer-progress", id))
                                 .role(gpui::Role::ProgressIndicator)
-                                .aria_label(if t.is_upload() { "Upload progress" } else { "Download progress" })
+                                .aria_label(match server_op {
+                                    Some(_) => "Progress",
+                                    None if t.is_upload() => "Upload progress",
+                                    None => "Download progress",
+                                })
                                 .aria_min_numeric_value(0.)
                                 .aria_max_numeric_value(100.)
                                 .when_some(shown, |el, f| el.aria_numeric_value((f64::from(f) * 100.).round()))

@@ -639,10 +639,27 @@ fn compat_sftp_on_the_sessions_connection() {
         rm.mkdir(&format!("{b}/new")).await.unwrap();
         assert_eq!(rm.mkdir(&format!("{b}/new")).await.unwrap_err().kind, ErrorKind::Exists);
         rm.rename(&format!("{b}/new"), &format!("{b}/renamed")).await.unwrap();
-        rm.copy(&format!("{b}/logs"), &format!("{b}/renamed/logs")).await.unwrap();
+        rm.copy(&format!("{b}/logs"), &format!("{b}/renamed/logs"), false).await.unwrap();
         assert!(std::path::Path::new(&format!("{b}/renamed/logs/a.log")).exists());
         rm.remove(&format!("{b}/renamed")).await.unwrap();
         assert!(!rm.exists(&format!("{b}/renamed")).await.unwrap());
+
+        // Copy and move onto a name that's taken: refused, or replaced when asked.
+        let (one, two) = (format!("{b}/one.txt"), format!("{b}/two.txt"));
+        std::fs::write(&one, b"one").unwrap();
+        std::fs::write(&two, b"two").unwrap();
+        assert_eq!(rm.copy(&one, &two, false).await.unwrap_err().kind, ErrorKind::Exists);
+        rm.copy(&one, &two, true).await.unwrap();
+        assert_eq!((std::fs::read(&one).unwrap(), std::fs::read(&two).unwrap()), (b"one".to_vec(), b"one".to_vec()));
+        std::fs::write(&one, b"uno").unwrap();
+        assert_eq!(rm.rename(&one, &two).await.unwrap_err().kind, ErrorKind::Exists);
+        rm.rename_replacing(&one, &two).await.unwrap();
+        assert!(!rm.exists(&one).await.unwrap());
+        assert_eq!(std::fs::read(&two).unwrap(), b"uno");
+        // A folder replaces a file, whole.
+        rm.copy(&format!("{b}/logs"), &two, true).await.unwrap();
+        assert!(std::path::Path::new(&format!("{two}/a.log")).exists());
+        rm.remove(&two).await.unwrap();
         assert!(rm.list(&format!("{b}/nope")).await.unwrap_err().kind == ErrorKind::NotFound);
     }));
 
