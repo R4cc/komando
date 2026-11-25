@@ -35,6 +35,29 @@ All notable changes to Komando are listed here. The format follows
   window. Closing five sessions full of logs used to leave Komando about 280 MB larger than
   before they opened, and resizing a window with a full Scrollback a few times could triple
   its memory.
+- Reconnecting a session after the vault locked now asks for the master password, instead of
+  signing in without the saved password or key.
+- If Komando can't read your hosts file when it starts and can't move it aside, it now keeps a
+  copy of it, or, if that fails too, doesn't save hosts and projects until you restart, instead
+  of replacing the file with an empty one.
+- If your highlights file can't be read, it is now kept as `highlights.json.broken-<date>` and
+  you're told so, instead of your highlight rules being lost the next time highlights are saved.
+- A damaged character in a host's command history no longer hides or deletes the whole
+  history; only the damaged line is skipped.
+- Startup commands now also stop at password questions in other languages, such as
+  `[sudo] Passwort für ana:`, so a command is never typed into a password prompt.
+- A copy between folders on a server that fails partway, on servers where Komando can't run
+  `cp`, no longer leaves a half-written file that looks like a complete copy.
+- A VNC remote desktop whose server accepts the connection but never answers now stops after
+  30 seconds with a message, instead of showing "Connecting" forever.
+- On Linux and macOS, copying output or command history as a file no longer replaces what's on
+  your clipboard when the file couldn't be created.
+
+### Security
+
+- On Linux and macOS, Komando's saved data (hosts, the vault, known hosts, command history, logs
+  and settings) can now be read only by you, not by other users of the computer. Files saved by
+  an earlier version are locked down the next time Komando writes them.
 
 ## [0.8.8] - 2026-11-23
 
