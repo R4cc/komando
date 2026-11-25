@@ -1516,6 +1516,24 @@ impl Workspace {
                         .into_any_element(),
                 ),
                 setting_row(p, "SSH agent", agent_hint, div().w(px(260.)).children(agent_input).into_any_element()),
+                setting_row_below(
+                    p,
+                    "Programs on hosts may copy to the clipboard",
+                    "When a program such as tmux or vim copies text over SSH (OSC 52). A host can set its own in its \
+                     Terminal settings. Programs in local shells always may.",
+                    {
+                        use crate::model::RemoteClipboard;
+                        const CHOICES: [(&str, RemoteClipboard); 3] =
+                            [("Ask", RemoteClipboard::Ask), ("Allow", RemoteClipboard::Allow), ("Never", RemoteClipboard::Never)];
+                        let current = self.settings.remote_clipboard;
+                        segmented("remote-clipboard", &CHOICES.map(|(label, choice)| (label, choice == current)), p, cx, |this, i, _, cx| {
+                            this.settings.remote_clipboard = CHOICES[i].1;
+                            this.save_settings(cx);
+                            this.refresh_session_clipboard(cx);
+                            cx.notify();
+                        })
+                    },
+                ),
                 setting_row(
                     p,
                     "Trusted server keys",

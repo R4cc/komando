@@ -156,6 +156,8 @@ pub(super) struct HostForm {
     run_project_commands: bool,
     /// Highlight Rules colour its output.
     highlight: bool,
+    /// Programs on it may copy to the clipboard: always, never, or as Settings say (`None`).
+    clipboard: Option<bool>,
     /// Its Remote Desktops: RDP, then VNC.
     desktops: [DesktopRow; 2],
     /// Opened from an unconfigured desktop's menu entry: show just that protocol's settings.
@@ -215,7 +217,7 @@ impl HostForm {
         let desktops: Vec<_> =
             self.desktops.iter().map(|d| (d.on, &d.saved, d.forget_saved, d.through_ssh)).collect();
         let choices = format!(
-            "{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{}|{desktops:?}|{:?}|{}|{}",
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{}|{:?}|{desktops:?}|{:?}|{}|{}",
             self.user_source,
             self.sign_in,
             self.agent,
@@ -225,6 +227,7 @@ impl HostForm {
             self.use_project_forwards,
             self.run_project_commands,
             self.highlight,
+            self.clipboard,
             self.opens,
             self.icon,
             row_choices(&self.commands, &self.jumps, &self.forwards),
@@ -584,6 +587,7 @@ impl Workspace {
             forwards,
             run_project_commands: h.run_project_commands,
             highlight: h.highlight,
+            clipboard: h.clipboard,
             desktops,
             desktop_setup: None,
             opens: h.opens_with(),
@@ -890,8 +894,15 @@ impl Workspace {
         };
         let port_forwards = read_forward_rows(&form.forwards, &project_forwards, cx).map_err(on_tab(FormTab::Forwards))?;
         let startup_commands = read_command_rows(&form.commands, cx).map_err(on_tab(FormTab::Terminal))?;
-        let (project_id, editing, sign_in, run_project_commands, icon, highlight) =
-            (form.project_id.clone(), form.editing.clone(), form.sign_in, form.run_project_commands, form.icon.clone(), form.highlight);
+        let (project_id, editing, sign_in, run_project_commands, icon, highlight, clipboard) = (
+            form.project_id.clone(),
+            form.editing.clone(),
+            form.sign_in,
+            form.run_project_commands,
+            form.icon.clone(),
+            form.highlight,
+            form.clipboard,
+        );
         let desktop_entries =
             form.desktops.iter().map(|row| read_desktop_row(row, cx)).collect::<Result<Vec<_>, _>>().map_err(on_tab(FormTab::RemoteDesktop))?;
         let opens = form.opens;
@@ -924,6 +935,7 @@ impl Workspace {
         host.startup_commands = startup_commands;
         host.run_project_commands = run_project_commands;
         host.highlight = highlight;
+        host.clipboard = clipboard;
         host.icon = Some(icon);
         let mut imported: Vec<CredentialId> = imported.into_iter().collect();
         // Desktop passwords that are replaced or forgotten leave the Vault once nothing uses them.
@@ -1365,12 +1377,25 @@ impl Workspace {
                 }
             },
         );
+        const CLIPBOARD: [(&str, Option<bool>); 3] = [("As in Settings", None), ("Allow", Some(true)), ("Never", Some(false))];
+        let labels = CLIPBOARD.map(|(label, choice)| (label, choice == form.clipboard));
+        let clipboard = setting_row(
+            p,
+            "Programs may copy to the clipboard",
+            "When a program on the host, such as tmux or vim, copies text to your clipboard (OSC 52). Settings → Security has the default.",
+            segmented("hf-clipboard", &labels, p, cx, |this, i, _, cx| {
+                if let Some(form) = this.host_form() {
+                    form.clipboard = CLIPBOARD[i].1;
+                }
+                cx.notify();
+            }),
+        );
         div()
             .flex()
             .flex_col()
             .gap(px(28.))
             .child(settings_block("Startup commands", p, commands.into_any_element()))
-            .child(settings_block("Output", p, group(p, vec![highlight])))
+            .child(settings_block("Output", p, group(p, vec![highlight, clipboard])))
             .into_any_element()
     }
 

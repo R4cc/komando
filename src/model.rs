@@ -297,6 +297,22 @@ pub struct Host {
     /// Highlight Rules colour its terminal output, when its Project's are on too.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub highlight: bool,
+    /// Programs on it may copy to the clipboard (OSC 52): always (`Some(true)`), never, or
+    /// as Settings say (`None`, see [`Settings::remote_clipboard`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clipboard: Option<bool>,
+}
+
+/// Whether programs on a Host may copy to the clipboard (OSC 52) when the Host has no choice
+/// of its own. Local shells always may: their programs can reach the clipboard anyway.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteClipboard {
+    /// The first copy asks: once, always for this Host, or never for it.
+    #[default]
+    Ask,
+    Allow,
+    Never,
 }
 
 /// How Komando reaches a Host: a terminal over SSH, or a Remote Desktop over RDP or VNC.
@@ -552,6 +568,7 @@ impl Host {
             vnc_enabled: true,
             opens: Protocol::Ssh,
             highlight: true,
+            clipboard: None,
         }
     }
 }
@@ -1446,6 +1463,9 @@ pub struct Settings {
     pub presentation_full_screen: bool,
     /// Presentation mode hides the sidebar (Ctrl+Shift+B still shows it).
     pub presentation_hide_sidebar: bool,
+    /// Whether programs on a Host may copy to the clipboard, for Hosts without a choice of
+    /// their own.
+    pub remote_clipboard: RemoteClipboard,
 }
 
 /// How a sidebar row closes the Session it stands for, as × does (Settings → Appearance).
@@ -1629,6 +1649,7 @@ impl Default for Settings {
             presentation_font_size: 24.0,
             presentation_full_screen: true,
             presentation_hide_sidebar: true,
+            remote_clipboard: RemoteClipboard::Ask,
         }
     }
 }
@@ -2146,6 +2167,22 @@ mod tests {
     }
 
     #[test]
+    fn a_hosts_clipboard_choice_round_trips_and_older_files_ask() {
+        let mut host = Host::new("build", "10.0.4.22");
+        let saved = toml::to_string(&host).unwrap();
+        assert!(!saved.contains("clipboard"), "no choice, nothing written: {saved}");
+        assert_eq!(toml::from_str::<Host>(&saved).unwrap().clipboard, None);
+        host.clipboard = Some(false);
+        assert_eq!(toml::from_str::<Host>(&toml::to_string(&host).unwrap()).unwrap().clipboard, Some(false));
+        // Settings saved before the setting existed ask.
+        let older: Settings = toml::from_str("usage_ping = false").unwrap();
+        assert_eq!(older.remote_clipboard, RemoteClipboard::Ask);
+        let never = Settings { remote_clipboard: RemoteClipboard::Never, ..Settings::default() };
+        let back: Settings = toml::from_str(&toml::to_string(&never).unwrap()).unwrap();
+        assert_eq!(back.remote_clipboard, RemoteClipboard::Never);
+    }
+
+    #[test]
     fn remote_desktops_round_trip_and_older_files_have_none() {
         let mut host = Host::new("win-build", "10.0.4.21");
         let old: Host = toml::from_str(&toml::to_string(&host).unwrap()).unwrap();
@@ -2298,6 +2335,7 @@ mod tests {
             vnc_enabled: true,
             opens: Protocol::Ssh,
             highlight: true,
+            clipboard: None,
         }
     }
 

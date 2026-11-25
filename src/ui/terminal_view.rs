@@ -187,6 +187,8 @@ pub enum TerminalEvent {
     CloseSplit,
     /// A Port Forward couldn't start; `why` says so in a sentence.
     ForwardFailed { forward: crate::model::PortForward, why: String },
+    /// "Always" (`allow`) or "Never" on the clipboard question: keep it for the Host.
+    ClipboardChoice { allow: bool },
 }
 
 enum ActivePrompt {
@@ -285,6 +287,11 @@ pub struct TerminalView {
     pub minimap_overlay: bool,
     /// Over the output: how long the pointer rests at the right edge before it opens.
     pub minimap_delay: Duration,
+    /// Whether programs here may copy to the clipboard (OSC 52); the workspace sets it from
+    /// the Host and Settings (see [`Self::set_clipboard`]).
+    pub clipboard: crate::model::RemoteClipboard,
+    /// What a program last asked to copy, waiting for the user to allow it.
+    clipboard_ask: Option<String>,
     /// One of the two panes of Split View: its right-click menu offers to close the split.
     pub in_split: bool,
     minimap_state: Rc<crate::ui::minimap::MinimapState>,
@@ -568,6 +575,8 @@ impl TerminalView {
             minimap: true,
             minimap_overlay: false,
             minimap_delay: Duration::from_millis(300),
+            clipboard: crate::model::RemoteClipboard::Ask,
+            clipboard_ask: None,
             in_split: false,
             minimap_state: Rc::new(Default::default()),
             grid_cache: Rc::new(RefCell::new(GridCache::default())),
@@ -883,7 +892,7 @@ impl TerminalView {
             }
             SessionEvent::Prompt(prompt) => self.show_prompt(prompt, window, cx),
             SessionEvent::Remember { hop, what } => cx.emit(TerminalEvent::Remember { hop, what }),
-            SessionEvent::ClipboardStore(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
+            SessionEvent::ClipboardStore(text) => self.clipboard_store(text, cx),
             SessionEvent::Appeared(id) => {
                 if self.startup.watching == Some(id) {
                     self.startup.watching = None;
@@ -2375,6 +2384,128 @@ impl TerminalView {
         Some(element)
     }
 
+    /// A program asked to put `text` on the clipboard (OSC 52).
+    fn clipboard_store(&mut self, text: String, cx: &mut Context<Self>) {
+        use crate::model::RemoteClipboard;
+        match self.clipboard {
+            RemoteClipboard::Allow => cx.write_to_clipboard(ClipboardItem::new_string(text)),
+            RemoteClipboard::Never => log::info!("a program on the host asked to copy to the clipboard: not allowed"),
+            // A later copy replaces the one still waiting: the question is about the latest.
+            RemoteClipboard::Ask => {
+                self.clipboard_ask = Some(text);
+                cx.notify();
+            }
+        }
+    }
+
+    /// The Host's clipboard choice or Settings changed. A copy still waiting is dropped
+    /// unless it's still to be asked about.
+    pub fn set_clipboard(&mut self, policy: crate::model::RemoteClipboard, cx: &mut Context<Self>) {
+        if self.clipboard != policy {
+            self.clipboard = policy;
+            if policy != crate::model::RemoteClipboard::Ask {
+                self.clipboard_ask = None;
+            }
+            cx.notify();
+        }
+    }
+
+    /// An answer to the clipboard question: copy it or not, and for "Always" and "Never" keep
+    /// the choice for the Host (`remember`).
+    fn answer_clipboard(&mut self, copy: bool, remember: bool, cx: &mut Context<Self>) {
+        let Some(text) = self.clipboard_ask.take() else { return };
+        if copy {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+        if remember {
+            cx.emit(TerminalEvent::ClipboardChoice { allow: copy });
+        }
+        cx.notify();
+    }
+
+    fn render_clipboard_ask(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let text = self.clipboard_ask.as_ref()?;
+        let p = cx.global::<Appearance>().app;
+        let stop = |_: &MouseDownEvent, window: &mut Window, cx: &mut gpui::App| {
+            // Not a click on the terminal: no selection, and the keyboard stays where it was.
+            window.prevent_default();
+            cx.stop_propagation();
+        };
+        let (summary, preview) = clipboard_preview(text);
+        Some(
+            div()
+                .absolute()
+                .bottom(px(16.))
+                .left(px(16.))
+                .right(px(16.))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .id("clipboard-ask")
+                        .role(gpui::Role::AlertDialog)
+                        .aria_label("A program wants to copy to your clipboard")
+                        .min_w_0()
+                        .max_w(px(560.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .px(px(14.))
+                        .py(px(10.))
+                        .rounded(p.corner(10.))
+                        .bg(p.surface)
+                        .border_1()
+                        .border_color(p.border)
+                        .font_family(p.font_family)
+                        .text_size(px(13.))
+                        .cursor_default()
+                        .on_mouse_down(MouseButton::Left, stop)
+                        .on_mouse_down(MouseButton::Middle, stop)
+                        .on_mouse_down(MouseButton::Right, stop)
+                        .child(div().text_color(p.text).child(format!("A program on this host wants to copy {summary} to your clipboard.")))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .px(px(8.))
+                                .py(px(4.))
+                                .rounded(p.corner(6.))
+                                .bg(p.muted)
+                                .font_family(p.mono_family)
+                                .text_size(px(12.))
+                                .text_color(p.text_muted)
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(preview),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .justify_end()
+                                .gap(px(8.))
+                                .child(
+                                    button("clipboard-never", "Never for this host", ButtonKind::Ghost, p)
+                                        .on_click(cx.listener(|this, _, _, cx| this.answer_clipboard(false, true, cx))),
+                                )
+                                .child(
+                                    button("clipboard-deny", "Not now", ButtonKind::Ghost, p)
+                                        .on_click(cx.listener(|this, _, _, cx| this.answer_clipboard(false, false, cx))),
+                                )
+                                .child(
+                                    button("clipboard-always", "Always for this host", ButtonKind::Secondary, p)
+                                        .on_click(cx.listener(|this, _, _, cx| this.answer_clipboard(true, true, cx))),
+                                )
+                                .child(
+                                    button("clipboard-once", "Allow once", ButtonKind::Primary, p)
+                                        .on_click(cx.listener(|this, _, _, cx| this.answer_clipboard(true, false, cx))),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn render_disconnected(&self, cx: &Context<Self>) -> Option<gpui::AnyElement> {
         let Status::Disconnected(reason) = &self.status else { return None };
         // The route page shows where and why the connection failed; the output itself says
@@ -2425,6 +2556,19 @@ impl TerminalView {
                 .into_any_element(),
         )
     }
+}
+
+/// How the clipboard question describes `text`: its size ("12 characters", "3 lines"), and its
+/// start on one line, with line breaks shown as ⏎.
+fn clipboard_preview(text: &str) -> (String, String) {
+    let lines = text.lines().count();
+    let summary = if lines > 1 {
+        format!("{lines} lines")
+    } else {
+        crate::ui::widgets::plural(text.chars().count(), "character")
+    };
+    let preview: String = text.chars().take(200).map(|c| if c == '\n' { '⏎' } else if c.is_control() { ' ' } else { c }).collect();
+    (summary, preview)
 }
 
 fn report_button(button: MouseButton) -> keys::MouseButton {
@@ -4048,6 +4192,7 @@ impl Render for TerminalView {
             .children(rail)
             .children(self.render_restore(cx))
             .children(self.render_disconnected(cx))
+            .children(self.render_clipboard_ask(cx))
             .children(self.render_route(cx))
             .context_menu({
                 let (view, focus) = (cx.entity().downgrade(), self.focus.clone());
@@ -4076,6 +4221,18 @@ mod tests {
     use crate::theme::rgb_to_hsla;
     use alacritty_terminal::vte::ansi::Rgb;
     use std::ops::Range;
+
+    #[test]
+    fn the_clipboard_question_says_how_much_and_shows_the_start() {
+        use super::clipboard_preview;
+        assert_eq!(clipboard_preview("rm -rf ~"), ("8 characters".to_string(), "rm -rf ~".to_string()));
+        let (summary, preview) = clipboard_preview("curl x | sh\nexit\n");
+        assert_eq!(summary, "2 lines");
+        assert_eq!(preview, "curl x | sh⏎exit⏎");
+        // Escape sequences can't restyle the question.
+        assert_eq!(clipboard_preview("a\u{1b}[31mb").1, "a [31mb");
+        assert_eq!(clipboard_preview(&"x".repeat(5000)).1.chars().count(), 200);
+    }
 
     #[test]
     fn pasting_as_one_line_turns_every_line_break_into_a_space() {

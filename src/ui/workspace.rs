@@ -947,6 +947,43 @@ impl Workspace {
                 });
             }
         }
+        self.refresh_session_clipboard(cx);
+    }
+
+    /// Whether programs in the Sessions of `item` may copy to the clipboard (OSC 52): a Host's
+    /// own choice, else Settings'. Local shells always may.
+    fn clipboard_for(&self, item: &ItemKey) -> crate::model::RemoteClipboard {
+        use crate::model::RemoteClipboard;
+        match item {
+            ItemKey::Shell { .. } => RemoteClipboard::Allow,
+            ItemKey::Host { host, .. } => match self.library.host(host).and_then(|h| h.clipboard) {
+                Some(true) => RemoteClipboard::Allow,
+                Some(false) => RemoteClipboard::Never,
+                None => self.settings.remote_clipboard,
+            },
+        }
+    }
+
+    /// After the clipboard setting or a Host's choice changed: tell each open terminal.
+    pub(super) fn refresh_session_clipboard(&mut self, cx: &mut Context<Self>) {
+        for entry in &self.sessions {
+            let policy = self.clipboard_for(&entry.item());
+            if let Some(view) = entry.ui.view.terminal() {
+                view.update(cx, |v, cx| v.set_clipboard(policy, cx));
+            }
+        }
+    }
+
+    /// "Always" or "Never" on a terminal's clipboard question: kept on its Host.
+    fn choose_clipboard(&mut self, id: usize, allow: bool, cx: &mut Context<Self>) {
+        let Some(ItemKey::Host { host, .. }) = self.sessions.get(id).map(|entry| entry.item()) else { return };
+        let mut library = self.library.clone();
+        let Some(saved) = library.hosts.iter_mut().find(|h| &h.id == host) else { return };
+        saved.clipboard = Some(allow);
+        if let Err(err) = self.commit_library(library) {
+            self.show_toast(format!("Could not save the choice. {err}"), cx);
+        }
+        self.refresh_session_clipboard(cx);
     }
 
     fn apply_highlights(&mut self, cx: &mut Context<Self>) {
@@ -1417,6 +1454,7 @@ impl Workspace {
         let minimap = self.minimap_shown(false);
         let minimap_overlay = self.settings.minimap_placement == crate::model::MinimapPlacement::Over;
         let minimap_delay = std::time::Duration::from_millis(self.settings.minimap_delay_ms.into());
+        let clipboard = self.clipboard_for(&item);
         let project_id = match &item {
             ItemKey::Host { project, .. } => Some(project.clone()),
             ItemKey::Shell { project, .. } => project.clone(),
@@ -1438,6 +1476,7 @@ impl Workspace {
                 view.minimap = minimap;
                 view.minimap_overlay = minimap_overlay;
                 view.minimap_delay = minimap_delay;
+                view.clipboard = clipboard;
                 view
             });
             let sub = cx.subscribe_in(&view, window, move |this, view, event: &TerminalEvent, window, cx| match event {
@@ -1514,6 +1553,7 @@ impl Workspace {
                     this.show_toast("Minimap hidden. Turn it back on in Settings → Terminal.", cx);
                 }
                 TerminalEvent::CloseSplit => this.close_split(window, cx),
+                TerminalEvent::ClipboardChoice { allow } => this.choose_clipboard(id, *allow, cx),
                 TerminalEvent::ForwardFailed { forward, why } => this.forward_failed(id, forward, why, cx),
                 TerminalEvent::StartupStopped { waited_for } => this.show_toast_for(
                     format!("Startup commands stopped: \"{}\" didn't appear within a minute.", waited_for.trim()),
