@@ -65,5 +65,5 @@ This was static analysis of the executable. It did not launch MobaXterm, connect
 servers, inspect personal configurations, or verify the complete 26.6 session schema.
 One large session-loading procedure (`0x008cdd70`) exceeded the decompiler's 50 MiB
 payload allowance; its full behavior remains unverified. Desktop field positions
-remain based on the sources described in ADR 0011, not a claim of complete native
+remain based on the sources described in ADR 0018, not a claim of complete native
 validation. The executable's hash was checked again after analysis.

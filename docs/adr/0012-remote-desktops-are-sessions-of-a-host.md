@@ -39,7 +39,7 @@ testing the protocol adapters and maintaining their dependencies.
   window rather than disconnecting it, so a desktop is never lost by closing a window.
 - The initial scope excludes clipboard, audio, drives, printers, RD Gateway, Kerberos and
   multi-monitor sessions. Project files and the Tabby import remain SSH-only. The experimental
-  MobaXterm import also supports direct RDP and VNC sessions (ADR 0011); desktop SSH gateways
+  MobaXterm import also supports direct RDP and VNC sessions (ADR 0018); desktop SSH gateways
   cannot be represented by the tunnel to the Host itself and are left out explicitly.
 - Komando now shares plain text through the RDP or VNC clipboard. The toolbar saves the
   sharing preference per desktop, and View only pauses it.
