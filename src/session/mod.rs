@@ -11,6 +11,7 @@ pub(crate) mod ledbat;
 pub mod latency;
 pub mod local;
 mod pace;
+pub(crate) mod password_prompt;
 pub mod row_pool;
 pub mod ssh;
 mod sudo;

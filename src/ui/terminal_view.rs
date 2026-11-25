@@ -35,6 +35,7 @@ use crate::highlight::{self, ActiveHighlights};
 use crate::keys::{self, MouseAction, MouseMode, Mods};
 use crate::marks::Marks;
 use crate::model::StartupCommand;
+use crate::session::password_prompt::asks_for_password;
 use crate::session::wait_for::WaitFor;
 use crate::ui::connect_route::{self, ConnectRoute, RouteCard};
 use crate::session::{
@@ -159,12 +160,6 @@ impl StartupCommands {
     fn next_waits(&self) -> bool {
         self.queue.front().is_some_and(|c| c.wait_for.is_some())
     }
-}
-
-/// Whether a terminal line is asking for a secret ("[sudo] password for ana:").
-fn asks_for_secret(line: &str) -> bool {
-    let line = line.trim_end().to_lowercase();
-    line.ends_with(':') && (line.contains("password") || line.contains("passphrase"))
 }
 
 /// What a terminal tells the workspace about.
@@ -1011,7 +1006,7 @@ impl TerminalView {
                 let row = &grid[grid.cursor.point.line];
                 (0..term.columns()).map(|c| row[Column(c)].c).collect::<String>()
             };
-            if asks_for_secret(&cursor_line) {
+            if asks_for_password(&cursor_line) {
                 self.startup.paused = true;
                 return;
             }
@@ -3677,7 +3672,7 @@ impl Render for TerminalView {
             !term.mode().contains(TermMode::ALT_SCREEN) && {
                 let row = &term.grid()[term.grid().cursor.point.line];
                 let line: String = (0..term.columns()).map(|c| row[Column(c)].c).collect();
-                asks_for_secret(&line)
+                asks_for_password(&line)
             }
         };
         let (minimap_column, minimap_overlay) = if !self.minimap {
@@ -4076,7 +4071,7 @@ fn one_line(text: &str) -> String {
 mod tests {
     use super::{
         Activity, CachedGlyph, GlyphCache, GridCache, GridFont, GridLook, INLINE_CLUSTER, RowTextMetrics, Shaper,
-        asks_for_secret, layout_grid,
+        layout_grid,
     };
     use crate::theme::rgb_to_hsla;
     use alacritty_terminal::vte::ansi::Rgb;
@@ -4256,15 +4251,6 @@ mod tests {
                 assert!(metrics.strike_y < metrics.baseline);
             }
         }
-    }
-
-    #[test]
-    fn startup_commands_wait_at_password_questions() {
-        assert!(asks_for_secret("[sudo] password for ana:   "));
-        assert!(asks_for_secret("Enter passphrase for key '/root/.ssh/id_ed25519':"));
-        assert!(asks_for_secret("Password:"));
-        assert!(!asks_for_secret("ana@web01:~$ "));
-        assert!(!asks_for_secret("export PASSWORD_FILE=/tmp/x"));
     }
 
     /// A stand-in for shaping: one glyph per character, numbered by the character, counted.

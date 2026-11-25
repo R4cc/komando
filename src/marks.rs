@@ -301,9 +301,7 @@ fn worth_marking(line: &str) -> bool {
     if prompt.is_empty() || command.is_empty() {
         return false;
     }
-    let lower = line.to_lowercase();
-    let asks_secret = ["password", "passphrase", "passwort", "pin"].iter().any(|w| lower.contains(w));
-    !(asks_secret && line.trim_end().ends_with(':'))
+    !crate::session::password_prompt::asks_for_password(line)
 }
 
 /// Split `"[ops@web01 ~]$ systemctl status nginx"` into the prompt and the command after it.
@@ -385,6 +383,8 @@ mod tests {
         assert!(worth_marking("$ ls"));
         assert!(!worth_marking("[ops@web01 ~]$"));
         assert!(!worth_marking("[sudo] password for ops:"));
+        assert!(!worth_marking("ops@web01 $ Passwort:"));
+        assert!(worth_marking("$ echo Spinning up:"));
         assert!(!worth_marking("plain input"));
     }
 
