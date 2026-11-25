@@ -322,12 +322,18 @@ fn an_agent_channel_the_client_didnt_ask_for_is_refused() {
 
 #[test]
 fn a_server_that_hangs_up_after_too_many_keys_says_to_choose_one() {
-    let keys: Vec<PrivateKey> = (1..=6).map(key).collect();
+    // The right key joins the agent only after the first try: the agent lists its keys in no
+    // set order, so holding it from the start would sometimes offer it within the server's limit.
+    let keys: Vec<PrivateKey> = (1..=5).map(key).collect();
     let fixture = start("too-many", &keys, &key(6), Opts { max_tries: 3, ..Default::default() });
     let outcome = connect(&fixture, None, AgentUse::Any, false, |_| true);
     assert!(!outcome.signed_in);
     let reason = outcome.ended.unwrap();
     assert!(reason.contains("closed the connection after"), "{reason}");
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+        let mut client = AgentClient::connect_uds(&fixture.socket).await.unwrap();
+        client.add_identity(&key(6), &[]).await.unwrap();
+    });
     // Choosing the key lets it in.
     let outcome = connect(&fixture, None, AgentUse::Key(fingerprint(&key(6))), false, |_| true);
     assert!(outcome.signed_in, "ended: {:?}", outcome.ended);

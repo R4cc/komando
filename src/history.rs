@@ -96,9 +96,19 @@ fn newest(mut entries: Vec<Entry>) -> Vec<Entry> {
     entries
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Makes `read` fail on this thread, so tests can check what a failed read leaves.
+    static FAIL_READS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Every entry in a history file, oldest first. Read as bytes and line by line, so a line cut
 /// in the middle of a character costs only that line, not the whole history.
 fn read(path: &Path) -> std::io::Result<Vec<Entry>> {
+    #[cfg(test)]
+    if FAIL_READS.with(std::cell::Cell::get) {
+        return Err(std::io::Error::other("reading failed for a test"));
+    }
     let bytes = fs::read(path)?;
     let entries = bytes
         .split(|&b| b == b'\n')
@@ -335,23 +345,19 @@ mod tests {
         fs::remove_dir_all(dir).ok();
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_file_that_cant_be_read_is_not_trimmed() {
-        use std::os::unix::fs::PermissionsExt as _;
         let dir = temp_dir();
         fs::create_dir_all(super::dir(&dir)).unwrap();
         let path = file(&dir, "web");
         let line = serde_json::to_string(&entry(0, "a", &"x".repeat(300))).unwrap() + "\n";
         fs::write(&path, line.repeat(MAX_ENTRIES + 50)).unwrap();
         let before = fs::metadata(&path).unwrap().len();
-        // Write-only: appending works, reading it back for the trim does not.
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o200)).unwrap();
-        if fs::read(&path).is_ok() {
-            return; // Run as root, which reads it anyway.
-        }
-        append(&dir, "web", &entry(1, "a", "$ newest")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        // Appending works, reading it back for the trim does not.
+        super::FAIL_READS.with(|fail| fail.set(true));
+        let appended = append(&dir, "web", &entry(1, "a", "$ newest"));
+        super::FAIL_READS.with(|fail| fail.set(false));
+        appended.unwrap();
         assert!(fs::metadata(&path).unwrap().len() > before);
         assert_eq!(load(&dir, "web").len(), MAX_ENTRIES);
         fs::remove_dir_all(dir).ok();
