@@ -42,8 +42,14 @@ All notable changes to Komando are listed here. The format follows
   of replacing the file with an empty one.
 - If your highlights file can't be read, it is now kept as `highlights.json.broken-<date>` and
   you're told so, instead of your highlight rules being lost the next time highlights are saved.
+- If your settings or favorite folders can't be read, the file is now kept as
+  `….broken-<date>` and you're told so, instead of being replaced by the defaults moments
+  later. Settings recovered this way skip the welcome tour and start with the anonymous daily
+  ping off, as you may have switched it off.
 - A damaged character in a host's command history no longer hides or deletes the whole
   history; only the damaged line is skipped.
+- Typing commands on a host with long prompts no longer makes the terminal stutter once its
+  command history is large. Such hosts now keep fewer than 10,000 commands.
 - Startup commands now also stop at password questions in other languages, such as
   `[sudo] Passwort für ana:`, so a command is never typed into a password prompt.
 - A copy between folders on a server that fails partway, on servers where Komando can't run
