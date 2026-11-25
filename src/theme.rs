@@ -106,7 +106,6 @@ pub struct AppPalette {
 
 impl AppPalette {
     pub fn dark() -> Self { Self::from_theme(&DARK_THEMES[0]) }
-    pub fn light() -> Self { Self::from_theme(&LIGHT_THEMES[0]) }
 
     pub fn from_theme(t: &ThemeSpec) -> Self {
         let c = t.colors;

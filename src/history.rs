@@ -178,18 +178,12 @@ fn ends_with_newline(path: &Path) -> bool {
 
 /// Delete a Host's history.
 pub fn forget(data_dir: &Path, host_id: &str) -> Result<()> {
-    match fs::remove_file(file(data_dir, host_id)) {
-        Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.into()),
-        _ => Ok(()),
-    }
+    Ok(crate::model::ignore_not_found(fs::remove_file(file(data_dir, host_id)))?)
 }
 
 /// Delete every Host's history.
 pub fn forget_all(data_dir: &Path) -> Result<()> {
-    match fs::remove_dir_all(dir(data_dir)) {
-        Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.into()),
-        _ => Ok(()),
-    }
+    Ok(crate::model::ignore_not_found(fs::remove_dir_all(dir(data_dir)))?)
 }
 
 /// How many Hosts have a history saved.

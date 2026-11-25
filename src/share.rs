@@ -11,7 +11,9 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::import::{Found, FoundGroup, FoundHost};
-use crate::model::{AgentUse, Host, Inherited, JumpHost, Library, PortForward, Project, StartupCommand, resolve};
+use crate::model::{
+    AgentUse, Host, Inherited, JumpHost, Library, PortForward, Project, StartupCommand, default_port, is_false, is_true, resolve, yes,
+};
 
 /// The file name extension of a Project File.
 pub const EXTENSION: &str = "komando";
@@ -102,22 +104,6 @@ impl SharedJump {
     fn to_jump(&self) -> JumpHost {
         JumpHost { address: self.address.trim().to_string(), port: self.port, user: self.user.clone().filter(|u| !u.is_empty()), credential: None }
     }
-}
-
-fn default_port() -> u16 {
-    22
-}
-
-fn yes() -> bool {
-    true
-}
-
-fn is_true(value: &bool) -> bool {
-    *value
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 /// Startup Commands without any that answer a password question: their command would be a

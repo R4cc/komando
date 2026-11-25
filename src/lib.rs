@@ -26,6 +26,7 @@ pub mod search;
 pub mod session;
 pub mod sftp;
 pub mod share;
+pub mod text;
 pub mod theme;
 pub mod ui;
 pub mod update;

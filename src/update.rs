@@ -554,20 +554,13 @@ pub fn clean_up() {
 fn clean_up_portable(exe: &Path) {
     let _ = fs::remove_file(old_exe(exe));
     let Some(dir) = exe.parent() else { return };
-    let Some(cutoff) = std::time::SystemTime::now().checked_sub(Duration::from_secs(7 * 24 * 60 * 60)) else { return };
     let prefix = portable_download_prefix(exe);
     let legacy = [exe.with_extension("download"), exe.with_extension("part")];
-    let Ok(entries) = fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let ours = legacy.contains(&path)
-            || (name.starts_with(&prefix) && matches!(path.extension().and_then(|s| s.to_str()), Some("download" | "part")));
-        if ours && entry.metadata().is_ok_and(|m| m.is_file() && m.modified().is_ok_and(|at| at < cutoff)) {
-            let _ = fs::remove_file(path);
-        }
-    }
+    crate::model::remove_older_than(dir, STALE_DOWNLOAD_AGE, |path| {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        legacy.iter().any(|l| l == path)
+            || (name.starts_with(&prefix) && matches!(path.extension().and_then(|s| s.to_str()), Some("download" | "part")))
+    });
 }
 
 fn portable_download_prefix(exe: &Path) -> String {
@@ -577,17 +570,14 @@ fn portable_download_prefix(exe: &Path) -> String {
 /// Remove only week-old downloads from our own directory. A second Komando window may
 /// still be downloading or using a recent installer when this window starts.
 fn remove_installers(dir: &Path) {
-    let Some(cutoff) = std::time::SystemTime::now().checked_sub(Duration::from_secs(7 * 24 * 60 * 60)) else { return };
-    let Ok(entries) = fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        let stale_file =
-            entry.metadata().ok().is_some_and(|meta| meta.is_file() && meta.modified().ok().is_some_and(|modified| modified < cutoff));
-        if stale_file && name.starts_with("Komando-") && (name.ends_with(".msi") || name.ends_with(".part") || name.ends_with(".ready")) {
-            let _ = fs::remove_file(entry.path());
-        }
-    }
+    crate::model::remove_older_than(dir, STALE_DOWNLOAD_AGE, |path| {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        name.starts_with("Komando-") && (name.ends_with(".msi") || name.ends_with(".part") || name.ends_with(".ready"))
+    });
 }
+
+/// How long an update download is kept: a week.
+const STALE_DOWNLOAD_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Where downloaded installers go.
 fn installer_dir() -> PathBuf {

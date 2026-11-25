@@ -37,7 +37,7 @@ pub fn init() {
     });
 }
 
-pub fn enabled() -> bool {
+fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 

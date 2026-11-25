@@ -234,7 +234,7 @@ pub fn parse(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
 /// unencrypted, see `StartupCommand::answers_password`).
 fn login_script(user: &Value, builtin: &Value) -> Result<Option<Vec<StartupCommand>>, LeftOut> {
     let Some(steps) = set_value(user, builtin, &["options", "scripts"]).and_then(Value::as_array) else { return Ok(None) };
-    let not = |why: &str| LeftOut::new("Login script", format!("{}, {why}", plural(steps.len(), "step")));
+    let not = |why: &str| LeftOut::new("Login script", format!("{}, {why}", crate::text::plural(steps.len(), "step")));
     let mut commands = vec![];
     for step in steps {
         if flag(step.get("isRegex")) {
@@ -352,7 +352,8 @@ fn left_out(user: &Value, builtin: &Value, profiles: &[&Map<String, Value>]) -> 
         let options = options.get("options");
         let interval = number(options.and_then(|o| o.get("keepaliveInterval"))).unwrap_or(5000);
         let count = number(options.and_then(|o| o.get("keepaliveCountMax"))).unwrap_or(10);
-        let every = if interval == 0 { "off".to_string() } else { format!("every {} s, {}", interval / 1000, plural(count as usize, "try")) };
+        let tries = if count == 1 { "1 try".to_string() } else { format!("{count} tries") };
+        let every = if interval == 0 { "off".to_string() } else { format!("every {} s, {tries}", interval / 1000) };
         out.push(LeftOut::new("Keep-alive", every));
     }
     if set(&["behaviorOnSessionEnd"]).and_then(|v| text_of(Some(v))) == Some("reconnect") {
@@ -555,14 +556,6 @@ fn set_value<'a>(user: &'a Value, builtin: &Value, path: &[&str]) -> Option<&'a 
         return None;
     }
     Some(value)
-}
-
-fn plural(n: usize, word: &str) -> String {
-    match (n, word) {
-        (1, _) => format!("1 {word}"),
-        (_, "try") => format!("{n} tries"),
-        _ => format!("{n} {word}s"),
-    }
 }
 
 #[cfg(test)]

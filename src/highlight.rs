@@ -23,7 +23,7 @@ use regex::{Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::model::{Unreadable, write_atomic};
+use crate::model::{Unreadable, write_atomic, yes};
 
 pub const FILE: &str = "highlights.json";
 const DEFAULT_SET: &str = include_str!("../assets/highlights/default.json");
@@ -68,10 +68,6 @@ pub struct Keyword {
     pub match_group: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
-}
-
-fn yes() -> bool {
-    true
 }
 
 impl Keyword {

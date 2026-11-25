@@ -24,7 +24,7 @@ serde_json = "1"
 # 1.x: 0.8's writer counted quotes in a row in a `u8` and panicked on 256 of them.
 toml = "1"
 dirs = "6"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 regex = "1"
 futures = "0.3"

@@ -1576,10 +1576,7 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 fn format_time(mtime: Option<u32>) -> String {
-    mtime
-        .and_then(|t| chrono::DateTime::from_timestamp(t as i64, 0))
-        .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_else(|| "—".into())
+    mtime.and_then(|t| crate::text::local_date_time(t as i64)).unwrap_or_else(|| "—".into())
 }
 
 /// Who owns it and what the signed-in user may do, for the lock and permission tooltips.
@@ -3004,7 +3001,7 @@ fn copy_targets(op: CopyOp, paths: Vec<String>, dest: &str, taken: &HashSet<Stri
 /// The shell command that changes to `dir`, quoted for POSIX shells (and fish) when needed.
 pub fn cd_command(dir: &str) -> String {
     let plain = !dir.is_empty() && dir.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+@%:,=".contains(c));
-    let quoted = if plain { dir.to_string() } else { format!("'{}'", dir.replace('\'', "'\\''")) };
+    let quoted = if plain { dir.to_string() } else { sftp::shell_quote(dir) };
     if dir.starts_with('-') { format!("cd -- {quoted}") } else { format!("cd {quoted}") }
 }
 

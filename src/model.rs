@@ -788,7 +788,7 @@ fn is_zero(value: &u16) -> bool {
     *value == 0
 }
 
-fn is_false(value: &bool) -> bool {
+pub(crate) fn is_false(value: &bool) -> bool {
     !*value
 }
 
@@ -807,15 +807,15 @@ pub struct RouteJump {
     pub jump: JumpHost,
 }
 
-fn yes() -> bool {
+pub(crate) fn yes() -> bool {
     true
 }
 
-fn is_true(value: &bool) -> bool {
+pub(crate) fn is_true(value: &bool) -> bool {
     *value
 }
 
-fn default_port() -> u16 {
+pub(crate) fn default_port() -> u16 {
     22
 }
 
@@ -989,8 +989,7 @@ impl Library {
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
-        create_private_dir(dir)?;
-        write_atomic(&dir.join(Self::FILE), toml::to_string_pretty(self)?.as_bytes())
+        save_toml(dir, Self::FILE, self)
     }
 
     /// Local Shells outside any Project, hidden ones included.
@@ -1660,18 +1659,13 @@ impl Settings {
     /// The saved settings, or the defaults on first run. A file that can't be read is kept
     /// aside (see [`Unreadable`]): saving the defaults over it would lose every setting made.
     pub fn load(dir: &Path) -> (Self, Option<Unreadable>) {
-        let path = dir.join(Self::FILE);
-        let err = match fs::read_to_string(&path) {
-            Ok(text) => match toml::from_str::<Self>(&text) {
-                Ok(settings) => return (settings.migrated(), None),
-                Err(err) => anyhow::Error::from(err),
-            },
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
-            Err(err) => anyhow::Error::from(err),
-        };
-        let mut unreadable = Unreadable::keep(&path, &err, "your settings", "settings");
-        unreadable.message.push_str(" Settings are back to their defaults, with the anonymous daily ping off.");
-        (Self::recovered(), Some(unreadable))
+        match load_toml::<Self>(dir, Self::FILE, "your settings", "settings") {
+            Ok(settings) => (settings.map_or_else(Self::default, Self::migrated), None),
+            Err(mut unreadable) => {
+                unreadable.message.push_str(" Settings are back to their defaults, with the anonymous daily ping off.");
+                (Self::recovered(), Some(unreadable))
+            }
+        }
     }
 
     /// The defaults for someone whose settings file couldn't be read: not a first run, so no
@@ -1689,8 +1683,7 @@ impl Settings {
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
-        create_private_dir(dir)?;
-        write_atomic(&dir.join(Self::FILE), toml::to_string_pretty(self)?.as_bytes())
+        save_toml(dir, Self::FILE, self)
     }
 }
 
@@ -1739,16 +1732,12 @@ impl OpenTabs {
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
-        create_private_dir(dir)?;
-        write_atomic(&dir.join(Self::FILE), toml::to_string_pretty(self)?.as_bytes())
+        save_toml(dir, Self::FILE, self)
     }
 
     /// Forget the tabs, when Restore tabs on start is switched off.
     pub fn clear(dir: &Path) -> Result<()> {
-        match fs::remove_file(dir.join(Self::FILE)) {
-            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.into()),
-            _ => Ok(()),
-        }
+        Ok(ignore_not_found(fs::remove_file(dir.join(Self::FILE)))?)
     }
 }
 
@@ -1826,6 +1815,28 @@ pub fn rename_with_retries(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+/// The outcome of removing something, where one that was already gone counts as removed.
+pub fn ignore_not_found(removed: std::io::Result<()>) -> std::io::Result<()> {
+    match removed {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
+        _ => Ok(()),
+    }
+}
+
+/// Remove the files in `dir` that `ours` accepts and that were last changed more than `age`
+/// ago. Best effort: a file that can't be checked or removed is left for a later try.
+pub fn remove_older_than(dir: &Path, age: std::time::Duration, ours: impl Fn(&Path) -> bool) {
+    let Some(cutoff) = std::time::SystemTime::now().checked_sub(age) else { return };
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let stale = || entry.metadata().is_ok_and(|meta| meta.is_file() && meta.modified().is_ok_and(|at| at < cutoff));
+        if ours(&path) && stale() {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 /// Create `dir`, and any folder above it that is missing, for Komando's private data. On
 /// Linux and macOS only the user may open it, as Hosts, Credentials and Command History are
 /// inside; one an earlier version made is closed too. Windows keeps the folder's inherited
@@ -1887,6 +1898,34 @@ fn set_aside(path: &Path, rename: impl FnOnce(&Path, &Path) -> std::io::Result<(
                 .with_context(|| format!("keeping {} as {}", path.display(), aside.display()))
         }
     }
+}
+
+/// Save `value` as the TOML file `file` in Komando's private folder `dir`, creating the folder
+/// when it is missing.
+pub(crate) fn save_toml(dir: &Path, file: &str, value: &impl Serialize) -> Result<()> {
+    create_private_dir(dir)?;
+    write_atomic(&dir.join(file), toml::to_string_pretty(value)?.as_bytes())
+}
+
+/// Read the TOML file `file` in `dir`: `None` when it is missing, as on first run. One that
+/// can't be read or parsed is kept aside (see [`Unreadable`]), as saving over it would lose
+/// what it holds; `what` and `changes` are as for [`Unreadable::keep`].
+pub(crate) fn load_toml<T: serde::de::DeserializeOwned>(
+    dir: &Path,
+    file: &str,
+    what: &str,
+    changes: &str,
+) -> std::result::Result<Option<T>, Unreadable> {
+    let path = dir.join(file);
+    let err = match fs::read_to_string(&path) {
+        Ok(text) => match toml::from_str(&text) {
+            Ok(value) => return Ok(Some(value)),
+            Err(err) => anyhow::Error::from(err),
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => anyhow::Error::from(err),
+    };
+    Err(Unreadable::keep(&path, &err, what, changes))
 }
 
 /// A data file Komando couldn't read at start, so the user can be told and their file isn't

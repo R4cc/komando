@@ -18,11 +18,7 @@ struct Remembered {
 impl Vault {
     /// Clear restart unlock access, including when the Vault is already locked.
     pub fn forget_unlock(dir: &Path) -> Result<()> {
-        match fs::remove_file(dir.join(FILE)) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e).context("Could not clear the remembered vault unlock"),
-        }
+        crate::model::ignore_not_found(fs::remove_file(dir.join(FILE))).context("Could not clear the remembered vault unlock")
     }
 
     /// Save the original last-use time, never the time this function was called.

@@ -109,9 +109,7 @@ pub fn check(cert: &Certificate, host: &str, authorities: &[&PublicKey], now: u6
 }
 
 fn date(unix: u64) -> String {
-    chrono::DateTime::from_timestamp(unix.min(i64::MAX as u64) as i64, 0)
-        .map(|at| at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_else(|| "a date past the year 262143".into())
+    crate::text::local_date_time(unix.min(i64::MAX as u64) as i64).unwrap_or_else(|| "a date past the year 262143".into())
 }
 
 #[cfg(test)]

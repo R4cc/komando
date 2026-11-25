@@ -8,7 +8,7 @@ use anyhow::Result;
 
 /// Windows' temp folder is the user's own. On Linux and macOS it is `/tmp`, shared by every
 /// user, where someone else could create the folder first; the user's cache folder is theirs.
-pub fn export_dir() -> PathBuf {
+fn export_dir() -> PathBuf {
     if cfg!(windows) {
         std::env::temp_dir().join("Komando")
     } else {
@@ -19,16 +19,8 @@ pub fn export_dir() -> PathBuf {
 /// Remove exports older than a day. They hold terminal output, which can include secrets,
 /// and only need to live long enough to be pasted somewhere.
 pub fn clean_up() {
-    let Some(cutoff) = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(24 * 60 * 60)) else {
-        return;
-    };
-    let Ok(entries) = std::fs::read_dir(export_dir()) else { return };
-    for entry in entries.flatten() {
-        let stale = entry.metadata().is_ok_and(|meta| meta.is_file() && meta.modified().is_ok_and(|at| at < cutoff));
-        if stale && entry.path().extension().is_some_and(|ext| ext == "txt") {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
+    let day = std::time::Duration::from_secs(24 * 60 * 60);
+    crate::model::remove_older_than(&export_dir(), day, |path| path.extension().is_some_and(|ext| ext == "txt"));
 }
 
 /// Returns a short note for the confirmation toast. When the file can't be written the
@@ -62,31 +54,23 @@ fn export_bytes(text: &str) -> Vec<u8> {
 }
 
 /// Only the user may read the export folder: the output can hold secrets. The mode is set
-/// again when the folder already exists, so one an earlier version made is closed too.
+/// again when the folder already exists, so one an earlier version made is closed too. Unlike
+/// Komando's data folder, where that is best effort, a folder that can't be closed is an error:
+/// no export is written where others could read it.
 fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    crate::model::create_private_dir(dir)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
-    #[cfg(not(unix))]
-    {
-        std::fs::create_dir_all(dir)
-    }
+    Ok(())
 }
 
 fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path)?;
-    // The mode above only applies to a new file; an export of the same name may be older.
+    let mut file = crate::model::private_file_options().write(true).create(true).truncate(true).open(path)?;
+    // The private mode only applies to a new file; an export of the same name may be older.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

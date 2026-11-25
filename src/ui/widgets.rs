@@ -17,10 +17,7 @@ use gpui::Focusable as _;
 use gpui_component::input::{Input, InputState};
 use gpui_component::tooltip::Tooltip;
 
-/// `n` and a count noun with a plain plural: "1 host", "3 hosts".
-pub fn plural(n: usize, what: &str) -> String {
-    if n == 1 { format!("1 {what}") } else { format!("{n} {what}s") }
-}
+pub use crate::text::plural;
 
 /// A compact warning shared by password fields and terminal password prompts.
 pub fn caps_lock_indicator(id: impl Into<ElementId>, p: AppPalette) -> impl IntoElement {

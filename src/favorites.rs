@@ -3,13 +3,12 @@
 //! A favorite is a remote path. One without a Host is shared: it shows on every Host, so
 //! common places such as `/var/log` are saved once.
 
-use std::fs;
 use std::path::Path;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{HostId, Unreadable, new_id, write_atomic};
+use crate::model::{HostId, Unreadable, load_toml, new_id, save_toml};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Favorite {
@@ -33,21 +32,14 @@ impl Favorites {
     /// The saved favorites, or none on first run. A file that can't be read is kept aside (see
     /// [`Unreadable`]): saving over it would lose every favorite.
     pub fn load(dir: &Path) -> (Self, Option<Unreadable>) {
-        let path = dir.join(Self::FILE);
-        let err = match fs::read_to_string(&path) {
-            Ok(text) => match toml::from_str(&text) {
-                Ok(favorites) => return (favorites, None),
-                Err(err) => anyhow::Error::from(err),
-            },
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
-            Err(err) => anyhow::Error::from(err),
-        };
-        (Self::default(), Some(Unreadable::keep(&path, &err, "your favorite folders", "favorite folders")))
+        match load_toml(dir, Self::FILE, "your favorite folders", "favorite folders") {
+            Ok(favorites) => (favorites.unwrap_or_default(), None),
+            Err(unreadable) => (Self::default(), Some(unreadable)),
+        }
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
-        crate::model::create_private_dir(dir)?;
-        write_atomic(&dir.join(Self::FILE), toml::to_string_pretty(self)?.as_bytes())
+        save_toml(dir, Self::FILE, self)
     }
 
     /// The favorites shown on `host`: its own, then the shared ones, each in saved order.
@@ -115,6 +107,7 @@ impl Favorites {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn shared_favorites_show_on_every_host() {
