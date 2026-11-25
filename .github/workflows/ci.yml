@@ -77,6 +77,9 @@ jobs:
           prefix-key: v2-ci
       - name: Build
         run: cargo build --profile ci --locked
+      # Nothing else builds the examples, so this keeps them from breaking unnoticed.
+      - name: Check examples
+        run: cargo check --profile ci --locked --examples
       # As on Windows, plus the SSH Agent suite, which needs Unix sockets.
       - name: Test
         run: cargo test --profile ci --locked --lib --test sign_in --test agent --test forwards --test latency
