@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use crate::session::ledbat::LinkDelay;
 
 /// The queueing delay transfers may add to everything else on the connection.
-pub(crate) const TARGET: Duration = Duration::from_millis(20);
+const TARGET: Duration = Duration::from_millis(20);
 /// The largest read: OpenSSH's limit (256 KiB packets, less headers).
 pub(crate) const MAX_REQUEST: u32 = 255 * 1024;
 /// The smallest read, so a slow link isn't flooded with tiny requests.

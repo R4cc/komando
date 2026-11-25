@@ -49,6 +49,9 @@ const REQUEST_KIB: usize = 255;
 /// behind everything in flight before it: up to [`BUDGET_KIB`], 32 s at 256 KiB/s. A dead
 /// connection is noticed sooner by the SSH keepalive.
 const REQUEST_TIMEOUT_SECS: u64 = 60;
+/// How long the server may take for each step of starting SFTP: opening the channel, starting
+/// SFTP on it, and opening the download channel.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(20);
 /// How many files a folder transfer (or delete) works on at once, and how many files all
 /// transfers on one connection have open together. Each file costs a few round trips of its
 /// own (open, read, close) that one at a time would wait out back to back; but servers limit
@@ -489,14 +492,6 @@ pub fn unique_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
     (1..).map(|n| format!("{stem} ({n}){ext}")).find(|candidate| !taken(candidate)).expect("some name is free")
 }
 
-/// A local path in `dir` that doesn't exist yet, nor as a partial download.
-pub fn unique_local_path(dir: &Path, name: &str) -> PathBuf {
-    let name = unique_name(name, |n| {
-        dir.join(n).exists() || dir.join(format!("{n}{PARTIAL_SUFFIX}")).exists()
-    });
-    dir.join(name)
-}
-
 /// The local name for a remote one. Windows needs it made safe (see `windows_file_name`);
 /// Linux and macOS take nearly any name, so it is kept as the server sent it.
 pub fn local_file_name(name: &str) -> String {
@@ -920,7 +915,7 @@ pub struct ExecOutput {
 
 impl Remote {
     pub(crate) async fn open(handle: Arc<Handle<Client>>) -> Result<Remote> {
-        let channel = tokio::time::timeout(Duration::from_secs(20), handle.channel_open_session())
+        let channel = tokio::time::timeout(OPEN_TIMEOUT, handle.channel_open_session())
             .await
             .map_err(|_| anyhow!("The server did not open a channel for SFTP in time."))?
             .map_err(|e| anyhow!("Could not open a channel: {e}"))?;
@@ -934,12 +929,12 @@ impl Remote {
             max_write_packet_len: (REQUEST_KIB * 1024) as u32,
             ..Default::default()
         };
-        let sftp = tokio::time::timeout(Duration::from_secs(20), SftpSession::new_with_config(channel.into_stream(), config))
+        let sftp = tokio::time::timeout(OPEN_TIMEOUT, SftpSession::new_with_config(channel.into_stream(), config))
             .await
             .map_err(|_| anyhow!("The server did not start SFTP. It may not offer it."))?
             .map_err(|e| anyhow!("Could not start SFTP: {e}"))?;
         // The download channel opens while the home folder is looked up.
-        let opening_paced = tokio::time::timeout(Duration::from_secs(20), PacedChannel::open(&handle));
+        let opening_paced = tokio::time::timeout(OPEN_TIMEOUT, PacedChannel::open(&handle));
         let (home, paced) = tokio::join!(sftp.canonicalize("."), opening_paced);
         let home = home.unwrap_or_else(|_| "/".into());
         let paced = match paced {
@@ -2007,13 +2002,9 @@ mod tests {
     }
 
     #[test]
-    fn local_names_avoid_partial_downloads() {
-        let dir = std::env::temp_dir().join(format!("komando-sftp-{}", crate::model::new_id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(format!("a.txt{PARTIAL_SUFFIX}")), b"").unwrap();
-        assert_eq!(unique_local_path(&dir, "a.txt"), dir.join("a (1).txt"));
+    fn partial_downloads_sit_beside_the_file() {
+        let dir = std::env::temp_dir().join("komando-sftp");
         assert_eq!(partial_path(&dir.join("a.txt")), dir.join(format!("a.txt{PARTIAL_SUFFIX}")));
-        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -2169,41 +2160,26 @@ mod tests {
     #[test]
     #[ignore]
     fn stress_download_name_collisions() {
-        for optimized in [false, true] {
-            let dir = std::env::temp_dir().join(format!("komando-name-stress-{}-{optimized}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            let start = std::time::Instant::now();
-            futures::executor::block_on(spawn(async move {
-                let mut jobs = Vec::new();
-                for _ in 0..1000 {
-                    let dir = dir.clone();
-                    jobs.push(async move {
-                        if optimized { return reserve_local(&dir, "shared.log", false).await; }
-                        // The former production path, retained here for a reproducible
-                        // comparison with the same filesystem, concurrency and input.
-                        loop {
-                            let target = unique_local_path(&dir, "shared.log");
-                            let partial = partial_path(&target);
-                            match tokio::fs::OpenOptions::new().write(true).create_new(true).open(&partial).await {
-                                Ok(file) => return Ok((target, partial, Some(file))),
-                                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                                Err(e) => return Err(OpError::local(&e, &partial)),
-                            }
-                        }
-                    });
-                }
-                let paths: Vec<_> = futures::stream::iter(jobs).buffer_unordered(32).try_collect().await.unwrap();
-                let mut unique = HashSet::new();
-                for (target, partial, file) in paths {
-                    assert!(unique.insert(target));
-                    drop(file);
-                    std::fs::remove_file(partial).unwrap();
-                }
-                assert_eq!(unique.len(), 1000);
-                std::fs::remove_dir(&dir).unwrap();
-            })).unwrap();
-            eprintln!("1000 colliding download reservations optimized={optimized}: {:?}", start.elapsed());
-        }
+        let dir = std::env::temp_dir().join(format!("komando-name-stress-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = std::time::Instant::now();
+        futures::executor::block_on(spawn(async move {
+            let mut jobs = Vec::new();
+            for _ in 0..1000 {
+                let dir = dir.clone();
+                jobs.push(async move { reserve_local(&dir, "shared.log", false).await });
+            }
+            let paths: Vec<_> = futures::stream::iter(jobs).buffer_unordered(32).try_collect().await.unwrap();
+            let mut unique = HashSet::new();
+            for (target, partial, file) in paths {
+                assert!(unique.insert(target));
+                drop(file);
+                std::fs::remove_file(partial).unwrap();
+            }
+            assert_eq!(unique.len(), 1000);
+            std::fs::remove_dir(&dir).unwrap();
+        })).unwrap();
+        eprintln!("1000 colliding download reservations: {:?}", start.elapsed());
     }
 
     #[test]
