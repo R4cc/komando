@@ -587,7 +587,7 @@ impl Render for DragPreview {
                     .items_center()
                     .gap(px(8.))
                     .rounded(p.corner(8.))
-                    .bg(p.surface.opacity(1.))
+                    .bg(p.surface)
                     .border_1()
                     .border_color(p.border)
                     .font_family(p.font_family)
