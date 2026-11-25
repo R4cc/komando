@@ -1537,7 +1537,7 @@ impl Workspace {
                 setting_row(
                     p,
                     "Trusted server keys",
-                    "",
+                    "To trust a certificate authority's host certificates, add an @cert-authority line here or in ~/.ssh/known_hosts.",
                     button("open-known-hosts", "Show file", ButtonKind::Secondary, p)
                         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.reveal_path(&known_hosts)))
                         .into_any_element(),

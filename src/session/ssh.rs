@@ -341,8 +341,10 @@ fn window_for(round_trip: Duration) -> u32 {
 
 /// The client settings for one hop's connection, with a window of `window` bytes: what its SFTP
 /// channels and, on a Jump Host's connection, the tunnel onward get. The shell's channel has a
-/// paced window of its own instead (see `shell`).
-fn client_config(window: u32) -> Arc<client::Config> {
+/// paced window of its own instead (see `shell`). With `certificates`, the server is asked for
+/// a host certificate ahead of a plain key: only when a trusted authority covers the host,
+/// since a certificate from anyone else would be refused (see `host_cert`).
+fn client_config(window: u32, certificates: bool) -> Arc<client::Config> {
     let window = FIXED_WINDOW.lock().unwrap().map_or(window, |(window, _)| window);
     Arc::new(client::Config {
         inactivity_timeout: None,
@@ -353,6 +355,7 @@ fn client_config(window: u32) -> Arc<client::Config> {
             kex: std::borrow::Cow::Borrowed(KEX),
             cipher: std::borrow::Cow::Borrowed(ciphers()),
             mac: std::borrow::Cow::Borrowed(MACS),
+            host_key_certificates: if certificates { russh::Preferred::DEFAULT.key } else { std::borrow::Cow::Borrowed(&[]) },
             ..Default::default()
         },
         ..Default::default()
@@ -494,6 +497,9 @@ pub fn spawn(target: Target, size: GridSize, term: SharedTerm, proxy: EventProxy
 pub(crate) struct Client {
     host: String,
     port: u16,
+    /// The Certificate Authorities trusted for this host (see `host_cert`): a host certificate
+    /// signed by one of them is trusted without asking.
+    authorities: Vec<PublicKey>,
     known_hosts: PathBuf,
     proxy: EventProxy,
     log: ConnectLog,
@@ -556,9 +562,7 @@ impl client::Handler for Client {
     async fn check_server_key(&mut self, server_key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
         let key: &PublicKey = match server_key {
             PublicKeyOrCertificate::PublicKey { key, .. } => key,
-            PublicKeyOrCertificate::Certificate(_) => {
-                return Err(anyhow!("Host certificates are not supported yet."));
-            }
+            PublicKeyOrCertificate::Certificate(cert) => return self.check_certificate(cert),
         };
         let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
         self.proxy.send(SessionEvent::Hop { index: self.hop, step: HopStep::CheckingKey });
@@ -697,6 +701,40 @@ fn replace_known_host(host: &str, port: u16, key: &PublicKey, path: &std::path::
 }
 
 /// Ask the user, with `clock` stopped until they answer.
+/// The `@cert-authority` lines of Komando's known_hosts and then the user's OpenSSH one.
+fn known_authorities(own: &std::path::Path) -> Vec<super::host_cert::Authority> {
+    let mut authorities = super::host_cert::read(own);
+    if let Some(home) = dirs::home_dir() {
+        authorities.extend(super::host_cert::read(&home.join(".ssh").join("known_hosts")));
+    }
+    authorities
+}
+
+impl Client {
+    /// A host certificate: trusted when one of the host's authorities signed it for this host
+    /// and it is in date. Otherwise the connection stops; there is no key to fall back on that
+    /// the user could compare.
+    fn check_certificate(&self, cert: &russh::keys::Certificate) -> Result<bool> {
+        self.proxy.send(SessionEvent::Hop { index: self.hop, step: HopStep::CheckingKey });
+        self.log.line(LogKind::Step, &format!("Host certificate {} (key ID \"{}\")", cert.algorithm(), cert.key_id()));
+        let authorities: Vec<&PublicKey> = self.authorities.iter().collect();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs());
+        match super::host_cert::check(cert, &self.host, &authorities, now) {
+            Ok(authority) => {
+                self.log.line(LogKind::Good, &format!("Host certificate signed by the trusted authority {authority}"));
+                Ok(true)
+            }
+            Err(why) => {
+                self.log.line(LogKind::Fail, &format!("Host certificate refused: {why}"));
+                Err(anyhow!(
+                    "{} presented a host certificate that can't be trusted: {why}. Its authority is trusted by an @cert-authority line in known_hosts.",
+                    self.host
+                ))
+            }
+        }
+    }
+}
+
 async fn ask(
     proxy: &EventProxy,
     clock: &ConnectClock,
@@ -720,6 +758,7 @@ async fn run(
 ) -> Result<String> {
     // Every hop's connection stays open: the next one runs through it.
     let mut handles: Vec<Handle<Client>> = Vec::with_capacity(target.hops.len());
+    let authorities = known_authorities(&target.known_hosts);
     // The last hop's user and the password it signed in with, offered at sudo prompts.
     let mut sudo = None;
     // The Host's connection window: the most its shell's paced window grows to.
@@ -734,9 +773,13 @@ async fn run(
         let clock = ConnectClock::new();
         let is_host = index + 1 == target.hops.len();
         let binding = Arc::new(OnceLock::new());
+        let host_authorities: Vec<PublicKey> =
+            super::host_cert::for_host(&authorities, &hop.address, hop.port).into_iter().cloned().collect();
+        let certificates = !host_authorities.is_empty();
         let handler = Client {
             host: hop.address.clone(),
             port: hop.port,
+            authorities: host_authorities,
             known_hosts: target.known_hosts.clone(),
             proxy: proxy.clone(),
             log: log.clone(),
@@ -754,7 +797,7 @@ async fn run(
                     let stream = open_tcp(&hop.address, hop.port).await?;
                     let window = if is_jump { MAX_WINDOW } else { WINDOW };
                     host_window = window;
-                    client::connect_stream(client_config(window), stream, handler).await
+                    client::connect_stream(client_config(window, certificates), stream, handler).await
                 })
                 .await
                 .ok_or_else(timed_out)??,
@@ -775,7 +818,7 @@ async fn run(
                 host_window = window;
                 log::debug!("tunnel to {} opened in {round_trip:?}: window {} KiB", describe(hop), window / 1024);
                 clock
-                    .limit(CONNECT_TIMEOUT, client::connect_stream(client_config(window), tunnel.into_stream(), handler))
+                    .limit(CONNECT_TIMEOUT, client::connect_stream(client_config(window, certificates), tunnel.into_stream(), handler))
                     .await
                     .ok_or_else(timed_out)??
             }

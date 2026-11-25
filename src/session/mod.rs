@@ -7,6 +7,7 @@
 
 pub mod agent;
 pub mod forward;
+pub mod host_cert;
 pub(crate) mod ledbat;
 pub mod latency;
 pub mod local;

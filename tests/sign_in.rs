@@ -87,10 +87,20 @@ impl server::Handler for TestServer {
     }
 }
 
+/// The server's host key.
+fn host_key() -> russh::keys::PrivateKey {
+    russh::keys::PrivateKey::from(russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[9; 32]))
+}
+
 /// Starts a server on its own runtime and returns its port.
 fn start(mode: Mode) -> (u16, tokio::runtime::Runtime) {
+    start_with(mode, vec![])
+}
+
+/// A server that also has the host `certificates`.
+fn start_with(mode: Mode, certificates: Vec<russh::keys::Certificate>) -> (u16, tokio::runtime::Runtime) {
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
-    let key = russh::keys::PrivateKey::from(russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[9; 32]));
+    let key = host_key();
     let methods: &[MethodKind] = match mode {
         Mode::Interactive => &[MethodKind::KeyboardInteractive],
         Mode::PasswordThenCode => &[MethodKind::Password],
@@ -98,6 +108,7 @@ fn start(mode: Mode) -> (u16, tokio::runtime::Runtime) {
     };
     let config = Arc::new(server::Config {
         keys: vec![key],
+        certificates,
         methods: MethodSet::from(methods),
         auth_rejection_time: Duration::ZERO,
         auth_rejection_time_initial: Some(Duration::ZERO),
@@ -129,14 +140,22 @@ struct Outcome {
     remembered: Option<String>,
     /// Why the session ended, if it did before signing in.
     ended: Option<String>,
+    /// The Host Key question came up (and was answered with Trust).
+    host_key_asked: bool,
 }
 
 /// Signs in to the server on `port` as alice, answering its questions in turn with `answers`
 /// (the text, and whether "Remember" is ticked).
 fn sign_in(name: &str, port: u16, secret: Option<Secret>, answers: &[(&str, bool)]) -> Outcome {
+    sign_in_trusting(name, port, secret, answers, "")
+}
+
+/// As `sign_in`, with Komando's known_hosts holding `known_hosts` first.
+fn sign_in_trusting(name: &str, port: u16, secret: Option<Secret>, answers: &[(&str, bool)], known_hosts: &str) -> Outcome {
     let dir = std::env::temp_dir().join(format!("komando-sign-in-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("known_hosts"), known_hosts).unwrap();
     let size = GridSize { cols: 80, rows: 24, cell_width: 9, cell_height: 18 };
     let (tx, mut events) = futures::channel::mpsc::unbounded();
     let proxy = EventProxy::new(tx);
@@ -150,7 +169,7 @@ fn sign_in(name: &str, port: u16, secret: Option<Secret>, answers: &[(&str, bool
     };
     let target = komando::session::ssh::Target { hops: vec![hop], known_hosts: dir.join("known_hosts"), forwards: vec![], ..Default::default() };
     let sink = komando::session::ssh::spawn(target, size, term, proxy);
-    let mut outcome = Outcome { asked: vec![], signed_in: false, remembered: None, ended: None };
+    let mut outcome = Outcome { asked: vec![], signed_in: false, remembered: None, ended: None, host_key_asked: false };
     let mut answers = answers.iter();
     let deadline = Instant::now() + Duration::from_secs(10);
     while !outcome.signed_in && outcome.ended.is_none() {
@@ -161,6 +180,7 @@ fn sign_in(name: &str, port: u16, secret: Option<Secret>, answers: &[(&str, bool
         };
         match event {
             SessionEvent::Prompt(Prompt::HostKey { reply, .. }) => {
+                outcome.host_key_asked = true;
                 let _ = reply.send(true);
             }
             SessionEvent::Prompt(Prompt::Input { label, secret, remember, error, reply }) => {
@@ -240,4 +260,45 @@ fn a_server_without_passwords_says_what_it_takes() {
     assert_eq!(outcome.asked, []);
     let reason = outcome.ended.unwrap();
     assert!(reason.contains("takes no password, only: publickey"), "{reason}");
+}
+
+/// A host certificate for the test server's key, signed by the authority with `ca_seed`.
+fn host_certificate(ca_seed: u8, principal: &str) -> (russh::keys::Certificate, String) {
+    use russh::keys::ssh_key::certificate::{Builder, CertType};
+    let ca = russh::keys::PrivateKey::from(russh::keys::ssh_key::private::Ed25519Keypair::from_seed(&[ca_seed; 32]));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let mut builder = Builder::new([1u8; 16], host_key().public_key().key_data().clone(), now - 60, now + 3600).unwrap();
+    builder.cert_type(CertType::Host).unwrap();
+    builder.valid_principal(principal).unwrap();
+    (builder.sign(&ca).unwrap(), ca.public_key().to_openssh().unwrap())
+}
+
+#[test]
+fn a_host_certificate_from_a_trusted_authority_is_trusted_without_asking() {
+    let (cert, ca) = host_certificate(21, "127.0.0.1");
+    let (port, _server) = start_with(Mode::Interactive, vec![cert]);
+    let trusted = format!("@cert-authority [127.0.0.1]:{port} {ca}\n");
+    let outcome = sign_in_trusting("cert", port, None, &[(PASSWORD, false)], &trusted);
+    assert!(outcome.signed_in, "ended: {:?}", outcome.ended);
+    assert!(!outcome.host_key_asked);
+}
+
+#[test]
+fn a_host_certificate_for_another_host_is_refused() {
+    let (cert, ca) = host_certificate(21, "db.example.com");
+    let (port, _server) = start_with(Mode::Interactive, vec![cert]);
+    let trusted = format!("@cert-authority [127.0.0.1]:{port} {ca}\n");
+    let outcome = sign_in_trusting("cert-other", port, None, &[(PASSWORD, false)], &trusted);
+    assert!(!outcome.signed_in);
+    let reason = outcome.ended.unwrap();
+    assert!(reason.contains("can't be trusted: it is for db.example.com, not 127.0.0.1"), "{reason}");
+}
+
+#[test]
+fn without_an_authority_a_host_with_a_certificate_is_asked_about_as_before() {
+    let (cert, _) = host_certificate(21, "127.0.0.1");
+    let (port, _server) = start_with(Mode::Interactive, vec![cert]);
+    let outcome = sign_in("cert-none", port, None, &[(PASSWORD, false)]);
+    assert!(outcome.signed_in, "ended: {:?}", outcome.ended);
+    assert!(outcome.host_key_asked);
 }
