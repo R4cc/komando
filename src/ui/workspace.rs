@@ -18,7 +18,7 @@ use gpui_component::tooltip::Tooltip;
 
 use crate::highlight::{self, ActiveHighlights, HighlightSet, Highlighter};
 use crate::model::{
-    self, AppThemeSetting, CredentialSource, Host, Library, LocalShell, Project, Settings, TerminalThemeSetting,
+    self, AppThemeSetting, CredentialSource, Host, Library, LocalShell, Project, Settings, TerminalThemeSetting, Unreadable,
 };
 use crate::session::{self, Status, ssh};
 use crate::theme::{AppPalette, Appearance, TerminalPalette, alpha, project_color};
@@ -424,6 +424,9 @@ pub struct Workspace {
     /// only copy of the user's Hosts and Projects, so nothing is saved over it this run.
     library_read_only: Option<PathBuf>,
     settings: Settings,
+    /// The settings file when it could be neither read nor kept aside at start, so it isn't
+    /// saved over this run.
+    settings_read_only: Option<PathBuf>,
     #[cfg(windows)]
     tray: Option<crate::platform::Tray>,
     #[cfg(windows)]
@@ -569,35 +572,25 @@ impl Drop for Workspace {
 
 impl Workspace {
     pub fn new(data_dir: PathBuf, startup: Startup, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let settings = Settings::load(&data_dir);
+        // Data files that couldn't be read, each kept aside so the next save doesn't replace it.
+        let (settings, settings_unreadable) = Settings::load(&data_dir);
         crate::perf::startup("settings loaded");
         // A fresh install has no Projects; the detected local shells stand alone.
-        let mut library_error = None;
-        let mut library_read_only = None;
+        let mut library_unreadable = None;
         let library = Library::load(&data_dir).unwrap_or_else(|err| {
-            log::error!("{err:#}");
-            // Keep the unreadable file aside: the next save would otherwise replace it.
-            library_error = Some(match Library::set_aside(&data_dir) {
-                Ok(aside) => format!("Couldn't read your hosts ({err:#}). The file was kept as {}.", aside.display()),
-                Err(aside_err) => {
-                    log::error!("{aside_err:#}");
-                    let path = data_dir.join(Library::FILE);
-                    let message = format!(
-                        "Couldn't read your hosts ({err:#}). Changes to Hosts and Projects won't be saved, \
-                         so {} isn't replaced. Fix or move it, then restart Komando.",
-                        path.display()
-                    );
-                    library_read_only = Some(path);
-                    message
-                }
-            });
+            library_unreadable =
+                Some(Unreadable::keep(&data_dir.join(Library::FILE), &err, "your hosts", "Hosts and Projects"));
             Library::default()
         });
         crate::perf::startup("library loaded");
         let (highlights, highlights_unreadable) = highlight::load(&data_dir);
         crate::perf::startup("highlights loaded");
+        let (favorite_folders, favorites_unreadable) = crate::favorites::Favorites::load(&data_dir);
         let transfers = cx.new(Transfers::new);
-        let favorites = cx.new(|_| FavoriteStore::new(data_dir.clone()));
+        let favorites = cx.new(|_| {
+            let in_place = favorites_unreadable.as_ref().and_then(|u| u.in_place.clone());
+            FavoriteStore::new(data_dir.clone(), favorite_folders, in_place)
+        });
         let transfers_sub = cx.subscribe(&transfers, |_, _, _: &TransfersChanged, cx| cx.notify());
         // The ring on the Transfers entry follows the panel's progress ticks.
         let transfers_ticks = cx.observe(&transfers, |_, _, cx| cx.notify());
@@ -613,7 +606,8 @@ impl Workspace {
         let mut this = Self {
             data_dir,
             library,
-            library_read_only,
+            library_read_only: library_unreadable.as_ref().and_then(|u| u.in_place.clone()),
+            settings_read_only: settings_unreadable.as_ref().and_then(|u| u.in_place.clone()),
             #[cfg(windows)]
             tray: crate::platform::Tray::new(window, settings.minimize_to_tray, !auxiliary),
             #[cfg(windows)]
@@ -623,7 +617,7 @@ impl Workspace {
             completion_watches: Default::default(),
             settings,
             highlights,
-            highlights_file_locked: highlights_unreadable.as_ref().is_some_and(|u| u.in_place),
+            highlights_file_locked: highlights_unreadable.as_ref().is_some_and(|u| u.in_place.is_some()),
             highlight_skipped: vec![],
             page: Page::Sessions,
             highlights_expanded: None,
@@ -716,8 +710,12 @@ impl Workspace {
             let _ = workspace.update(cx, |this, cx| this.close_own_windows(cx));
             true
         });
-        // One toast holds both, should the hosts and highlights files both be unreadable.
-        let unreadable: Vec<String> = library_error.into_iter().chain(highlights_unreadable.map(|u| u.message)).collect();
+        // One toast holds them all, should several files be unreadable.
+        let unreadable: Vec<String> = [library_unreadable, settings_unreadable, highlights_unreadable, favorites_unreadable]
+            .into_iter()
+            .flatten()
+            .map(|u| u.message)
+            .collect();
         if !unreadable.is_empty() {
             this.show_toast_for(unreadable.join(" "), Duration::from_secs(20), cx);
         }
@@ -2583,7 +2581,10 @@ impl Workspace {
 
     /// Save the settings, and say so when that fails instead of dropping the change silently.
     fn save_settings(&mut self, cx: &mut Context<Self>) {
-        if let Err(err) = self.settings.save(&self.data_dir) {
+        if let Some(path) = &self.settings_read_only {
+            let message = format!("Settings aren't saved until Komando restarts: {} couldn't be read.", path.display());
+            self.show_toast(message, cx);
+        } else if let Err(err) = self.settings.save(&self.data_dir) {
             self.show_toast(format!("Could not save settings: {err:#}"), cx);
         }
     }

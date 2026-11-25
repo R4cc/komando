@@ -23,7 +23,7 @@ use regex::{Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::model::write_atomic;
+use crate::model::{Unreadable, write_atomic};
 
 pub const FILE: &str = "highlights.json";
 const DEFAULT_SET: &str = include_str!("../assets/highlights/default.json");
@@ -565,16 +565,6 @@ fn parse_sets(text: &str) -> Result<Vec<HighlightSet>> {
     })
 }
 
-/// Why the saved highlight rules couldn't be used, so the user can be told.
-#[derive(Debug)]
-pub struct Unreadable {
-    /// For the user: what went wrong, and where the file was kept.
-    pub message: String,
-    /// The file couldn't be moved or copied aside, so saving this run would replace the
-    /// user's rules with the bundled set.
-    pub in_place: bool,
-}
-
 /// The saved highlight sets, or the bundled set on first run or when the file can't be read.
 pub fn load(dir: &Path) -> (Vec<HighlightSet>, Option<Unreadable>) {
     let path = dir.join(FILE);
@@ -600,26 +590,8 @@ pub fn load(dir: &Path) -> (Vec<HighlightSet>, Option<Unreadable>) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (parse(DEFAULT_SET).unwrap_or_default(), None),
         Err(err) => anyhow::Error::from(err),
     };
-    log::error!("{}: {err:#}", path.display());
-    // Move the unreadable file aside: the next save would otherwise replace the user's rules
-    // with the bundled set. A copy does as well when it can't be moved.
-    let aside = path.with_extension(format!("json.broken-{}", chrono::Local::now().format("%Y%m%d-%H%M%S")));
-    let kept = fs::rename(&path, &aside).is_ok() || fs::copy(&path, &aside).is_ok();
-    let unreadable = if kept {
-        Unreadable {
-            message: format!("Couldn't read your highlights ({err:#}). The file was kept as {}.", aside.display()),
-            in_place: false,
-        }
-    } else {
-        Unreadable {
-            message: format!(
-                "Couldn't read your highlights ({err:#}). Changes to highlights won't be saved until Komando restarts, so {} stays as it is.",
-                path.display()
-            ),
-            in_place: true,
-        }
-    };
-    (parse(DEFAULT_SET).unwrap_or_default(), Some(unreadable))
+    // Kept aside: the next save would otherwise replace the user's rules with the bundled set.
+    (parse(DEFAULT_SET).unwrap_or_default(), Some(Unreadable::keep(&path, &err, "your highlights", "highlights")))
 }
 
 pub fn save(dir: &Path, sets: &[HighlightSet]) -> Result<()> {
@@ -940,7 +912,7 @@ mod tests {
         let (sets, unreadable) = load(&dir);
         assert_eq!(sets, parse(DEFAULT_SET).unwrap(), "the bundled set stands in");
         let unreadable = unreadable.expect("the user is told");
-        assert!(!unreadable.in_place);
+        assert_eq!(unreadable.in_place, None);
         assert!(!dir.join(FILE).exists(), "the next save must not overwrite it");
         let kept: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
         assert_eq!(kept.len(), 1, "{kept:?}");

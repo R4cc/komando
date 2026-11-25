@@ -35,16 +35,22 @@ const ROW_HEIGHT: f32 = 30.;
 pub struct FavoriteStore {
     pub data: Favorites,
     dir: PathBuf,
+    /// The favorites file when it could be neither read nor kept aside at start: it is the
+    /// only copy of the user's favorites, so nothing is saved over it this run.
+    in_place: Option<PathBuf>,
 }
 
 impl FavoriteStore {
-    pub fn new(dir: PathBuf) -> Self {
-        Self { data: Favorites::load(&dir), dir }
+    /// `in_place` is [`crate::model::Unreadable::in_place`] from loading `data`.
+    pub fn new(dir: PathBuf, data: Favorites, in_place: Option<PathBuf>) -> Self {
+        Self { data, dir, in_place }
     }
 
     pub fn change(&mut self, f: impl FnOnce(&mut Favorites), cx: &mut Context<Self>) {
         f(&mut self.data);
-        if let Err(err) = self.data.save(&self.dir) {
+        if let Some(path) = &self.in_place {
+            log::warn!("not saving favorites over {}, which couldn't be read", path.display());
+        } else if let Err(err) = self.data.save(&self.dir) {
             log::error!("saving favorites: {err:#}");
         }
         cx.notify();

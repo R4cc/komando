@@ -6,10 +6,10 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{HostId, new_id, write_atomic};
+use crate::model::{HostId, Unreadable, new_id, write_atomic};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Favorite {
@@ -30,15 +30,19 @@ pub struct Favorites {
 impl Favorites {
     pub const FILE: &'static str = "favorites.toml";
 
-    pub fn load(dir: &Path) -> Self {
+    /// The saved favorites, or none on first run. A file that can't be read is kept aside (see
+    /// [`Unreadable`]): saving over it would lose every favorite.
+    pub fn load(dir: &Path) -> (Self, Option<Unreadable>) {
         let path = dir.join(Self::FILE);
-        let Ok(text) = fs::read_to_string(&path) else { return Self::default() };
-        toml::from_str(&text)
-            .with_context(|| format!("parsing {}", path.display()))
-            .unwrap_or_else(|err| {
-                log::error!("{err:#}");
-                Self::default()
-            })
+        let err = match fs::read_to_string(&path) {
+            Ok(text) => match toml::from_str(&text) {
+                Ok(favorites) => return (favorites, None),
+                Err(err) => anyhow::Error::from(err),
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
+            Err(err) => anyhow::Error::from(err),
+        };
+        (Self::default(), Some(Unreadable::keep(&path, &err, "your favorite folders", "favorite folders")))
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
@@ -157,7 +161,30 @@ mod tests {
         favs.add("/etc/nginx", None);
         favs.add("/srv", Some("h1"));
         favs.save(&dir).unwrap();
-        assert_eq!(Favorites::load(&dir), favs);
+        assert_eq!(Favorites::load(&dir), (favs, None));
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn unreadable_favorites_are_kept_aside_rather_than_overwritten() {
+        let dir = std::env::temp_dir().join(format!("komando-fav-{}", new_id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(Favorites::FILE), "[[favorite]]\nid = 3").unwrap();
+        let (favs, unreadable) = Favorites::load(&dir);
+        assert_eq!(favs, Favorites::default());
+        let unreadable = unreadable.expect("the user is told");
+        assert_eq!(unreadable.in_place, None);
+        assert!(!dir.join(Favorites::FILE).exists(), "the next save must not overwrite it");
+        let kept: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert!(kept[0].file_name().unwrap().to_str().unwrap().starts_with("favorites.toml.broken-"), "{kept:?}");
+        assert!(unreadable.message.contains(&kept[0].display().to_string()), "{}", unreadable.message);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn missing_favorites_are_a_first_run() {
+        let dir = std::env::temp_dir().join(format!("komando-fav-{}", new_id()));
+        assert_eq!(Favorites::load(&dir), (Favorites::default(), None));
     }
 }

@@ -976,13 +976,6 @@ impl Library {
         write_atomic(&dir.join(Self::FILE), toml::to_string_pretty(self)?.as_bytes())
     }
 
-    /// Keep a library file that couldn't be read out of the next save's way, and return where
-    /// it went. An error means it is still the only copy of the Hosts and Projects, so it must
-    /// not be saved over.
-    pub fn set_aside(dir: &Path) -> Result<PathBuf> {
-        set_aside(&dir.join(Self::FILE), rename_with_retries)
-    }
-
     /// Local Shells outside any Project, hidden ones included.
     pub fn standalone_shells(&self) -> Vec<LocalShell> {
         self.shells.clone().unwrap_or_else(default_shells)
@@ -1643,22 +1636,27 @@ impl Default for Settings {
 impl Settings {
     pub const FILE: &'static str = "settings.toml";
 
-    pub fn load(dir: &Path) -> Self {
+    /// The saved settings, or the defaults on first run. A file that can't be read is kept
+    /// aside (see [`Unreadable`]): saving the defaults over it would lose every setting made.
+    pub fn load(dir: &Path) -> (Self, Option<Unreadable>) {
         let path = dir.join(Self::FILE);
-        let Ok(text) = fs::read_to_string(&path) else { return Self::default() };
-        match toml::from_str::<Self>(&text) {
-            Ok(settings) => settings.migrated(),
-            Err(err) => {
-                // Move the unreadable file aside: the next save would otherwise replace it
-                // with the defaults, losing every setting the user made.
-                let aside = path.with_extension(format!("toml.broken-{}", chrono::Local::now().format("%Y%m%d-%H%M%S")));
-                match fs::rename(&path, &aside) {
-                    Ok(()) => log::error!("Couldn't read {} ({err}); kept it as {}", path.display(), aside.display()),
-                    Err(_) => log::error!("Couldn't read {}: {err}", path.display()),
-                }
-                Self::default()
-            }
-        }
+        let err = match fs::read_to_string(&path) {
+            Ok(text) => match toml::from_str::<Self>(&text) {
+                Ok(settings) => return (settings.migrated(), None),
+                Err(err) => anyhow::Error::from(err),
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
+            Err(err) => anyhow::Error::from(err),
+        };
+        let mut unreadable = Unreadable::keep(&path, &err, "your settings", "settings");
+        unreadable.message.push_str(" Settings are back to their defaults, with the anonymous daily ping off.");
+        (Self::recovered(), Some(unreadable))
+    }
+
+    /// The defaults for someone whose settings file couldn't be read: not a first run, so no
+    /// welcome tour, and the usage ping off, as they may have switched it off.
+    fn recovered() -> Self {
+        Self { onboarded: true, usage_ping: false, ..Self::default() }
     }
 
     /// Settings saved by older versions, in today's terms.
@@ -1870,6 +1868,53 @@ fn set_aside(path: &Path, rename: impl FnOnce(&Path, &Path) -> std::io::Result<(
     }
 }
 
+/// A data file Komando couldn't read at start, so the user can be told and their file isn't
+/// replaced by the next save of what stands in for it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Unreadable {
+    /// For the user: what went wrong, and where the file was kept.
+    pub message: String,
+    /// The file when it could be neither moved nor copied aside: it is still the only copy of
+    /// what it holds, so nothing may be saved over it this run.
+    pub in_place: Option<PathBuf>,
+}
+
+impl Unreadable {
+    /// Keep the file at `path`, which couldn't be read (`err`), out of the next save's way: move
+    /// it to a dated `.broken-…` name beside it, or copy it there. `what` names its contents for
+    /// the user ("your settings"), `changes` what won't be saved when it can't be kept.
+    pub fn keep(path: &Path, err: &anyhow::Error, what: &str, changes: &str) -> Self {
+        Self::keep_with(path, err, what, changes, rename_with_retries)
+    }
+
+    fn keep_with(
+        path: &Path,
+        err: &anyhow::Error,
+        what: &str,
+        changes: &str,
+        rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    ) -> Self {
+        log::error!("{}: {err:#}", path.display());
+        match set_aside(path, rename) {
+            Ok(aside) => Self {
+                message: format!("Couldn't read {what} ({err:#}). The file was kept as {}.", aside.display()),
+                in_place: None,
+            },
+            Err(aside_err) => {
+                log::error!("{aside_err:#}");
+                Self {
+                    message: format!(
+                        "Couldn't read {what} ({err:#}). Changes to {changes} won't be saved, so {} isn't replaced. \
+                         Fix or move it, then restart Komando.",
+                        path.display()
+                    ),
+                    in_place: Some(path.to_path_buf()),
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     /// Makes `write_atomic` fail on this thread, so tests can check what a failed save leaves.
@@ -1985,12 +2030,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         settings.collapsed_projects.extend(["production".into(), "staging".into()]);
         settings.save(&dir).unwrap();
-        let mut reopened = Settings::load(&dir);
+        let mut reopened = Settings::load(&dir).0;
         assert_eq!(reopened.collapsed_projects, settings.collapsed_projects);
         assert!(!reopened.collapsed_projects.contains("development"));
         reopened.collapsed_projects.remove("production");
         reopened.save(&dir).unwrap();
-        let relaunched = Settings::load(&dir);
+        let relaunched = Settings::load(&dir).0;
         assert!(!relaunched.collapsed_projects.contains("production"));
         assert!(relaunched.collapsed_projects.contains("staging"));
         std::fs::remove_dir_all(dir).unwrap();
@@ -2028,7 +2073,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("komando-pointer-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         settings.save(&dir).unwrap();
-        assert_eq!(Settings::load(&dir), settings);
+        assert_eq!(Settings::load(&dir).0, settings);
         std::fs::remove_dir_all(dir).unwrap();
         let fresh: Settings = toml::from_str("").unwrap();
         assert_eq!(fresh.pointer, Pointer::default());
@@ -2043,10 +2088,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("komando-icon-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         settings.save(&dir).unwrap();
-        assert_eq!(Settings::load(&dir), settings);
+        assert_eq!(Settings::load(&dir).0, settings);
         settings.app_icon = AppIcon::Dark;
         settings.save(&dir).unwrap();
-        assert_eq!(Settings::load(&dir).app_icon, AppIcon::Dark);
+        assert_eq!(Settings::load(&dir).0.app_icon, AppIcon::Dark);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2080,11 +2125,24 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("komando-settings-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(Settings::FILE), "font_size = \"huge\"").unwrap();
-        assert_eq!(Settings::load(&dir), Settings::default());
+        let (settings, unreadable) = Settings::load(&dir);
+        // Not a first run: no tour, and no ping the user may have switched off.
+        assert_eq!(settings, Settings { onboarded: true, usage_ping: false, ..Settings::default() });
+        let unreadable = unreadable.expect("the user is told");
+        assert_eq!(unreadable.in_place, None);
         assert!(!dir.join(Settings::FILE).exists(), "the next save must not overwrite it");
-        let kept: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
-        assert!(kept.iter().any(|name| name.starts_with("settings.toml.broken-")), "{kept:?}");
+        let kept: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert!(kept[0].file_name().unwrap().to_str().unwrap().starts_with("settings.toml.broken-"), "{kept:?}");
+        assert!(unreadable.message.contains(&kept[0].display().to_string()), "{}", unreadable.message);
+        assert_eq!(fs::read_to_string(&kept[0]).unwrap(), "font_size = \"huge\"");
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_settings_are_a_first_run() {
+        let dir = std::env::temp_dir().join(format!("komando-settings-{}", uuid::Uuid::new_v4()));
+        assert_eq!(Settings::load(&dir), (Settings::default(), None));
     }
 
     #[test]
@@ -2389,9 +2447,11 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join(Library::FILE);
         fs::write(&path, "hosts = [oops").unwrap();
-        assert!(Library::load(&dir).is_err());
-        let aside = Library::set_aside(&dir).unwrap();
-        assert_eq!(kept_beside(&path), [aside.clone()]);
+        let err = Library::load(&dir).unwrap_err();
+        let unreadable = Unreadable::keep(&path, &err, "your hosts", "Hosts and Projects");
+        assert_eq!(unreadable.in_place, None);
+        let [aside] = kept_beside(&path).try_into().unwrap();
+        assert!(unreadable.message.contains(&aside.display().to_string()), "{}", unreadable.message);
         assert_eq!(fs::read_to_string(&aside).unwrap(), "hosts = [oops");
         assert!(!path.exists());
         fs::remove_dir_all(dir).unwrap();
@@ -2407,6 +2467,22 @@ mod tests {
         assert_eq!(kept_beside(&path), [aside.clone()]);
         assert_eq!(fs::read_to_string(&aside).unwrap(), "hosts = [oops");
         assert_eq!(fs::read_to_string(&path).unwrap(), "hosts = [oops");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_kept_aside_is_not_to_be_saved_over() {
+        let dir = std::env::temp_dir().join(format!("komando-unreadable-stuck-{}", new_id()));
+        // A folder where the file should be: it can't be copied, like a file that can't be read.
+        let path = dir.join(Settings::FILE);
+        fs::create_dir_all(&path).unwrap();
+        let err = anyhow::anyhow!("permission denied");
+        let held = |_: &Path, _: &Path| Err(std::io::Error::other("held open"));
+        let unreadable = Unreadable::keep_with(&path, &err, "your settings", "settings", held);
+        assert_eq!(unreadable.in_place, Some(path.clone()));
+        assert!(unreadable.message.contains("Changes to settings won't be saved"), "{}", unreadable.message);
+        assert!(unreadable.message.contains(&path.display().to_string()), "{}", unreadable.message);
+        assert!(kept_beside(&path).is_empty());
         fs::remove_dir_all(dir).unwrap();
     }
 
