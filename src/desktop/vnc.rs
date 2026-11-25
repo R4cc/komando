@@ -19,11 +19,17 @@ use zeroize::Zeroizing;
 
 use super::keys::{self, Key};
 use super::{Button, DesktopEvent, Input, Link, Quality, Status, Target};
+use crate::session::ssh::ConnectClock;
 
 /// How often Komando asks for what changed on screen. Servers answer when something has.
 const REFRESH: Duration = Duration::from_millis(33);
 
 const ATTEMPTS: usize = 5;
+
+/// How long the handshake may take once the connection is open, not counting the sign-in
+/// prompt: a port that accepts the connection but never speaks VNC must not leave the pane
+/// connecting forever. As for RDP.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The most text sent to the clipboard at once. vnc-rs drops the connection on more coming
 /// back, and servers may do the same.
@@ -42,7 +48,7 @@ pub(super) async fn run(target: Target, link: &mut Link) -> Result<String> {
     for _ in 0..ATTEMPTS {
         let typed = Typed::default();
         let sent = Arc::new(AtomicBool::new(false));
-        match connect(&target, link, password.take(), error.take(), typed.clone(), sent.clone()).await {
+        match connect(&target, link, password.take(), error.take(), typed.clone(), sent.clone(), HANDSHAKE_TIMEOUT).await {
             Ok(client) => {
                 if let Some((password, true)) = typed.lock().expect("typed").take() {
                     link.send(DesktopEvent::Remember { user: None, password });
@@ -52,6 +58,9 @@ pub(super) async fn run(target: Target, link: &mut Link) -> Result<String> {
             }
             Err(VncError::WrongPassword) => error = Some("The password is incorrect.".to_string()),
             Err(VncError::General(reason)) if reason == CANCELLED => return Ok("Sign-in cancelled.".into()),
+            Err(VncError::General(reason)) if reason == TIMED_OUT => {
+                return Err(anyhow!("The server didn't finish connecting within {} seconds.", HANDSHAKE_TIMEOUT.as_secs()));
+            }
             // RFB 3.8 servers refuse a password with a reason of their own rather than as
             // "wrong password": once one was sent, ask again, with the server's words.
             Err(VncError::General(reason)) if sent.load(Ordering::Acquire) => {
@@ -73,6 +82,7 @@ pub(super) async fn run(target: Target, link: &mut Link) -> Result<String> {
 }
 
 const CANCELLED: &str = "cancelled";
+const TIMED_OUT: &str = "timed out";
 
 fn describe(err: &VncError) -> String {
     match err {
@@ -91,10 +101,14 @@ async fn connect(
     error: Option<String>,
     typed: Typed,
     sent: Arc<AtomicBool>,
+    timeout: Duration,
 ) -> Result<VncClient, VncError> {
     let stream = target.route.open().await.map_err(|err| VncError::General(format!("{err:#}")))?;
+    // Paused while the sign-in prompt is open: the user may take longer than the timeout.
+    let clock = ConnectClock::new();
     // Asked only if the server wants a password: a saved one first, else the user.
     let events = link.events.clone();
+    let asking = clock.clone();
     let ask = async move {
         if let Some(password) = password {
             sent.store(true, Ordering::Release);
@@ -102,8 +116,11 @@ async fn connect(
         }
         let (reply, answer) = futures::channel::oneshot::channel();
         let prompt = super::DesktopPrompt::SignIn { user: None, needs_user: false, error, reply };
+        asking.pause();
         let _ = events.unbounded_send(DesktopEvent::Prompt(prompt));
-        match answer.await.ok().flatten() {
+        let answer = answer.await.ok().flatten();
+        asking.resume();
+        match answer {
             Some(answer) => {
                 let password = answer.password.to_string();
                 *typed.lock().expect("typed") = Some((answer.password, answer.remember));
@@ -113,18 +130,21 @@ async fn connect(
             None => Err(VncError::General(CANCELLED.into())),
         }
     };
-    VncConnector::new(stream)
-        .set_auth_method(ask)
-        .add_encoding(VncEncoding::Zrle)
-        .add_encoding(VncEncoding::CopyRect)
-        .add_encoding(VncEncoding::Raw)
-        .add_encoding(VncEncoding::DesktopSizePseudo)
-        .allow_shared(target.shared)
-        .set_pixel_format(pixel_format(target.quality))
-        .build()?
-        .try_start()
-        .await?
-        .finish()
+    let handshake = async {
+        VncConnector::new(stream)
+            .set_auth_method(ask)
+            .add_encoding(VncEncoding::Zrle)
+            .add_encoding(VncEncoding::CopyRect)
+            .add_encoding(VncEncoding::Raw)
+            .add_encoding(VncEncoding::DesktopSizePseudo)
+            .allow_shared(target.shared)
+            .set_pixel_format(pixel_format(target.quality))
+            .build()?
+            .try_start()
+            .await?
+            .finish()
+    };
+    clock.limit(timeout, handshake).await.unwrap_or_else(|| Err(VncError::General(TIMED_OUT.into())))
 }
 
 /// The pixels asked of the server: full color, or fewer bits per pixel to send less.
@@ -343,6 +363,62 @@ impl Pointer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::desktop::Protocol;
+    use crate::desktop::tests::{rfb_accept, target};
+
+    const TEST_TIMEOUT: Duration = Duration::from_millis(200);
+
+    /// A link whose events the test reads; the receiver must outlive the connection.
+    fn link() -> (Link, futures::channel::mpsc::UnboundedReceiver<DesktopEvent>) {
+        let (events, receiver) = futures::channel::mpsc::unbounded();
+        let (_input, input) = tokio::sync::mpsc::unbounded_channel();
+        (Link { events, input, picture: Default::default(), pending: Default::default() }, receiver)
+    }
+
+    async fn connect_within(target: &Target, link: &Link) -> Result<VncClient, VncError> {
+        connect(target, link, target.password.clone(), None, Typed::default(), Arc::default(), TEST_TIMEOUT).await
+    }
+
+    #[tokio::test]
+    async fn a_server_that_never_speaks_times_out() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = target(Protocol::Vnc, listener.local_addr().unwrap().port());
+        // Accepted, then silent: the socket stays open until the test ends.
+        let server = tokio::spawn(async move { listener.accept().await.unwrap() });
+        let (link, _events) = link();
+        let result = tokio::time::timeout(Duration::from_secs(3), connect_within(&target, &link))
+            .await
+            .expect("the handshake must give up on its own");
+        assert!(matches!(result, Err(VncError::General(reason)) if reason == TIMED_OUT));
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn the_sign_in_prompt_does_not_count_towards_the_timeout() {
+        use futures::StreamExt as _;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut target = target(Protocol::Vnc, listener.local_addr().unwrap().port());
+        target.password = None;
+        let server = tokio::spawn(async move { rfb_accept(&listener, true).await });
+        let (link, mut events) = link();
+        // The user takes several timeouts to type the password.
+        let user = async {
+            while let Some(event) = events.next().await {
+                if let DesktopEvent::Prompt(super::super::DesktopPrompt::SignIn { reply, .. }) = event {
+                    tokio::time::sleep(TEST_TIMEOUT * 4).await;
+                    let answer = super::super::SignIn { user: None, password: Zeroizing::new("test".into()), remember: false };
+                    reply.send(Some(answer)).ok().unwrap();
+                    return;
+                }
+            }
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), futures::future::join(connect_within(&target, &link), user))
+            .await
+            .expect("sign-in round trip");
+        assert!(result.is_ok(), "signed in after a slow answer: {:?}", result.err());
+        let _socket = server.await.unwrap();
+    }
 
     #[test]
     fn fewer_colors_become_full_bgra() {

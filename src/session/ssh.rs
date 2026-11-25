@@ -231,12 +231,13 @@ fn describe(hop: &Hop) -> String {
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// When reaching a hop started counting towards [`CONNECT_TIMEOUT`]: `None` while a Host Key
-/// question waits for the user, who may take longer than that to compare a fingerprint.
+/// question waits for the user, who may take longer than that to compare a fingerprint. A VNC
+/// Remote Desktop's handshake uses it the same way around its sign-in prompt.
 #[derive(Clone)]
-struct ConnectClock(Arc<std::sync::Mutex<Option<Instant>>>);
+pub(crate) struct ConnectClock(Arc<std::sync::Mutex<Option<Instant>>>);
 
 impl ConnectClock {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(Arc::new(std::sync::Mutex::new(Some(Instant::now()))))
     }
 
@@ -249,18 +250,18 @@ impl ConnectClock {
     }
 
     /// Stop counting until [`Self::resume`]: a question is on screen.
-    fn pause(&self) {
+    pub(crate) fn pause(&self) {
         self.set(None);
     }
 
     /// Count again from now, with the whole timeout ahead.
-    fn resume(&self) {
+    pub(crate) fn resume(&self) {
         self.set(Some(Instant::now()));
     }
 
     /// `future`'s output, or `None` once it took longer than [`CONNECT_TIMEOUT`] while not
     /// paused.
-    async fn limit<T>(&self, timeout: Duration, future: impl Future<Output = T>) -> Option<T> {
+    pub(crate) async fn limit<T>(&self, timeout: Duration, future: impl Future<Output = T>) -> Option<T> {
         self.resume();
         let mut future = std::pin::pin!(future);
         loop {

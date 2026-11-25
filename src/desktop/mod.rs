@@ -486,7 +486,7 @@ mod tests {
         assert_eq!(p.bgra, before);
     }
 
-    fn target(protocol: Protocol, port: u16) -> Target {
+    pub(super) fn target(protocol: Protocol, port: u16) -> Target {
         Target {
             protocol,
             address: "127.0.0.1".into(),
@@ -532,7 +532,7 @@ mod tests {
     }
 
     /// Accept a viewer on a loopback RFB server and take it through sign-in to a 2×1 desktop.
-    async fn rfb_accept(listener: &tokio::net::TcpListener, password_auth: bool) -> tokio::net::TcpStream {
+    pub(super) async fn rfb_accept(listener: &tokio::net::TcpListener, password_auth: bool) -> tokio::net::TcpStream {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
         let (mut socket, _) = listener.accept().await.unwrap();
