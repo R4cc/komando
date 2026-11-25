@@ -18,18 +18,11 @@ use vnc::{ClientKeyEvent, ClientMouseEvent, PixelFormat, VncClient, VncConnector
 use zeroize::Zeroizing;
 
 use super::keys::{self, Key};
-use super::{Button, DesktopEvent, Input, Link, Quality, Status, Target};
+use super::{Attempt, Button, DesktopEvent, HANDSHAKE_TIMEOUT, Input, Link, Quality, Target, handshake_timed_out, sign_in};
 use crate::session::ssh::ConnectClock;
 
 /// How often Komando asks for what changed on screen. Servers answer when something has.
 const REFRESH: Duration = Duration::from_millis(33);
-
-const ATTEMPTS: usize = 5;
-
-/// How long the handshake may take once the connection is open, not counting the sign-in
-/// prompt: a port that accepts the connection but never speaks VNC must not leave the pane
-/// connecting forever. As for RDP.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The most text sent to the clipboard at once. vnc-rs drops the connection on more coming
 /// back, and servers may do the same.
@@ -44,41 +37,36 @@ const UNSUPPORTED_SIGN_IN: &str = "Security type apart from Vnc Auth has not bee
 
 pub(super) async fn run(target: Target, link: &mut Link) -> Result<String> {
     let mut password = target.password.clone();
-    let mut error = None;
-    for _ in 0..ATTEMPTS {
+    let attempt = async |link: &Link, error: Option<String>| {
         let typed = Typed::default();
         let sent = Arc::new(AtomicBool::new(false));
-        match connect(&target, link, password.take(), error.take(), typed.clone(), sent.clone(), HANDSHAKE_TIMEOUT).await {
+        match connect(&target, link, password.take(), error, typed.clone(), sent.clone(), HANDSHAKE_TIMEOUT).await {
             Ok(client) => {
-                if let Some((password, true)) = typed.lock().expect("typed").take() {
-                    link.send(DesktopEvent::Remember { user: None, password });
-                }
-                link.status(Status::Connected);
-                return active(client, link, pixel_format(target.quality), target.clipboard).await;
+                let remember = typed.lock().expect("typed").take().filter(|(_, remember)| *remember);
+                Ok(Attempt::Connected { connection: client, remember: remember.map(|(password, _)| (None, password)) })
             }
-            Err(VncError::WrongPassword) => error = Some("The password is incorrect.".to_string()),
-            Err(VncError::General(reason)) if reason == CANCELLED => return Ok("Sign-in cancelled.".into()),
-            Err(VncError::General(reason)) if reason == TIMED_OUT => {
-                return Err(anyhow!("The server didn't finish connecting within {} seconds.", HANDSHAKE_TIMEOUT.as_secs()));
-            }
+            Err(VncError::WrongPassword) => Ok(Attempt::Retry(Some("The password is incorrect.".to_string()))),
+            Err(VncError::General(reason)) if reason == CANCELLED => Ok(Attempt::Cancelled),
+            Err(VncError::General(reason)) if reason == TIMED_OUT => Err(handshake_timed_out()),
             // RFB 3.8 servers refuse a password with a reason of their own rather than as
             // "wrong password": once one was sent, ask again, with the server's words.
             Err(VncError::General(reason)) if sent.load(Ordering::Acquire) => {
                 let reason = reason.trim();
-                error = Some(if reason.is_empty() {
+                Ok(Attempt::Retry(Some(if reason.is_empty() {
                     "The password is incorrect.".to_string()
                 } else {
                     format!("The password was refused: {reason}")
-                });
+                })))
             }
             Err(VncError::General(reason)) if reason == UNSUPPORTED_SIGN_IN => {
-                return Err(anyhow!("{}", describe(&VncError::ConnectError)));
+                Err(anyhow!("{}", describe(&VncError::ConnectError)))
             }
-            Err(err @ VncError::General(_)) => return Err(anyhow!("{}", describe(&err))),
-            Err(err) => return Err(anyhow!("Connecting failed: {}", describe(&err))),
+            Err(err @ VncError::General(_)) => Err(anyhow!("{}", describe(&err))),
+            Err(err) => Err(anyhow!("Connecting failed: {}", describe(&err))),
         }
-    }
-    Ok("Signing in failed too many times.".into())
+    };
+    let active = async |client, link: &mut Link| active(client, link, pixel_format(target.quality), target.clipboard).await;
+    sign_in(link, attempt, active).await
 }
 
 const CANCELLED: &str = "cancelled";
@@ -341,10 +329,6 @@ impl Pointer {
                 let notches = rest.abs() / 120;
                 *rest %= 120;
                 (0..notches).flat_map(|_| [self.message(self.buttons | bit), self.message(self.buttons)]).collect()
-            }
-            Input::CtrlAltDel => {
-                let combo = [keys::CONTROL, keys::ALT, keys::DELETE];
-                combo.iter().map(|k| key(k.keysym, true)).chain(combo.iter().rev().map(|k| key(k.keysym, false))).collect()
             }
             Input::ReleaseAll => {
                 let mut events: Vec<X11Event> = self.held.drain().map(|keysym| key(keysym, false)).collect();

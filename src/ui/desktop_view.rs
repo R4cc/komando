@@ -346,10 +346,6 @@ impl DesktopView {
         matches!(self.status, Status::Connected)
     }
 
-    pub fn send_ctrl_alt_del(&self) {
-        self.send(DesktopInput::CtrlAltDel);
-    }
-
     /// Press `keys` in order and let them go in reverse: a shortcut the keyboard here can't send.
     fn send_combo(&self, keys: &[Code]) {
         for key in keys {

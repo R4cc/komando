@@ -8,9 +8,6 @@
 //! one of Komando's windows is in front. Keys it takes go to that desktop over a channel.
 //! Alt+F4 and Alt+Space stay with this PC, so the window can still be closed and moved.
 
-// The hook is Windows-only; elsewhere only the tests use its decisions.
-#![cfg_attr(not(windows), allow(dead_code))]
-
 use futures::channel::mpsc::UnboundedSender;
 
 use super::keys::Code;
@@ -36,31 +33,44 @@ pub struct HookedKey {
     pub down: bool,
 }
 
-// Virtual-key codes the hook decides on.
+// Virtual-key codes the hook decides on. Like `Taker` and `keysym_for_vk`, only the hook (on Windows)
+// and the tests use them.
+#[cfg(any(windows, test))]
 const VK_TAB: u32 = 0x09;
+#[cfg(any(windows, test))]
 const VK_ESCAPE: u32 = 0x1b;
+#[cfg(any(windows, test))]
 const VK_SNAPSHOT: u32 = 0x2c;
+#[cfg(any(windows, test))]
 const VK_LWIN: u32 = 0x5b;
+#[cfg(any(windows, test))]
 const VK_RWIN: u32 = 0x5c;
+#[cfg(any(windows, test))]
 const VK_VOLUME_MUTE: u32 = 0xad;
+#[cfg(any(windows, test))]
 const VK_VOLUME_UP: u32 = 0xaf;
+#[cfg(any(windows, test))]
 const VK_MEDIA_NEXT_TRACK: u32 = 0xb0;
+#[cfg(any(windows, test))]
 const VK_MEDIA_PLAY_PAUSE: u32 = 0xb3;
 
 /// Which keys are being taken: decided per key press, so a key taken down is taken up too
 /// (Alt may be let go before Tab).
+#[cfg(any(windows, test))]
 #[derive(Debug)]
 pub(crate) struct Taker {
     taken: [bool; 256],
     windows_held: bool,
 }
 
+#[cfg(any(windows, test))]
 impl Default for Taker {
     fn default() -> Self {
         Self { taken: [false; 256], windows_held: false }
     }
 }
 
+#[cfg(any(windows, test))]
 impl Taker {
     /// Whether the hook takes this key event from Windows.
     pub(crate) fn take(&mut self, capture: Capture, vk: u32, down: bool, alt: bool, ctrl: bool) -> bool {
@@ -93,6 +103,7 @@ impl Taker {
 }
 
 /// The X11 keysym for a virtual key (VNC sends symbols, RDP the scancode). 0 when unknown.
+#[cfg(any(windows, test))]
 pub(crate) fn keysym_for_vk(vk: u32, char_of: impl Fn(u32) -> Option<char>) -> u32 {
     match vk {
         0x08 => 0xff08,

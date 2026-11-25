@@ -36,6 +36,20 @@ pub type Stream = Box<dyn AsyncStream>;
 /// How long reaching the server may take before Komando gives up.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Sign-in attempts before giving up, so a server that keeps refusing doesn't ask forever.
+const ATTEMPTS: usize = 5;
+
+/// How long the handshake may take once the connection is open: for RDP each step before and
+/// after the certificate question, for VNC all of it but the sign-in prompt. A port that
+/// accepts the connection but never speaks RDP or VNC must not leave the pane connecting
+/// forever.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The error for a handshake that took longer than [`HANDSHAKE_TIMEOUT`].
+fn handshake_timed_out() -> anyhow::Error {
+    anyhow!("The server didn't finish connecting within {} seconds.", HANDSHAKE_TIMEOUT.as_secs())
+}
+
 /// The remote screen, in BGRA (the order gpui draws), always opaque.
 #[derive(Default)]
 pub struct Picture {
@@ -274,7 +288,6 @@ pub enum Input {
         height: u32,
         scale_percent: u32,
     },
-    CtrlAltDel,
     /// Let go of every key and button held: the view lost the keyboard.
     ReleaseAll,
     /// This PC's clipboard holds this text: offer it to the desktop, to paste there.
@@ -381,6 +394,42 @@ impl Connection {
     pub fn send(&self, input: Input) {
         let _ = self.input.send(input);
     }
+}
+
+/// How one try at connecting and signing in ended, short of an error.
+enum Attempt<C> {
+    /// Signed in. A password typed in with "Remember" ticked comes along, with its user for
+    /// RDP, to be saved for the Host.
+    Connected { connection: C, remember: Option<(Option<String>, Zeroizing<String>)> },
+    /// Not signed in: ask again, saying why if the server did.
+    Retry(Option<String>),
+    /// The user closed the sign-in prompt.
+    Cancelled,
+}
+
+/// Connect with `attempt` until it signs in, up to [`ATTEMPTS`] times, then run the desktop
+/// with `active`. Each attempt is given why the one before failed, to show in its prompt.
+/// Returns why the connection ended.
+async fn sign_in<C>(
+    link: &mut Link,
+    mut attempt: impl AsyncFnMut(&Link, Option<String>) -> Result<Attempt<C>>,
+    active: impl AsyncFnOnce(C, &mut Link) -> Result<String>,
+) -> Result<String> {
+    let mut error = None;
+    for _ in 0..ATTEMPTS {
+        match attempt(link, error.take()).await? {
+            Attempt::Connected { connection, remember } => {
+                if let Some((user, password)) = remember {
+                    link.send(DesktopEvent::Remember { user, password });
+                }
+                link.status(Status::Connected);
+                return active(connection, link).await;
+            }
+            Attempt::Retry(why) => error = why,
+            Attempt::Cancelled => return Ok("Sign-in cancelled.".into()),
+        }
+    }
+    Ok("Signing in failed too many times.".into())
 }
 
 /// Start connecting. The connection ends when the view sends `Input::Close` or drops its

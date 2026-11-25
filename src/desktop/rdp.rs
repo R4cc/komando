@@ -31,42 +31,34 @@ use zeroize::Zeroizing;
 
 use super::keys::{self, Key};
 use super::trust::{self, Known};
-use super::{Button, DesktopEvent, Input, Link, Picture, Quality, Status, Stream, Target, split_domain};
+use super::{
+    Attempt, Button, DesktopEvent, HANDSHAKE_TIMEOUT, Input, Link, Picture, Quality, Stream, Target, handshake_timed_out,
+    sign_in, split_domain,
+};
 use clipboard::Clipboard;
 
 type Framed = TokioFramed<Stream>;
 
-/// Sign-in attempts before giving up, so a server that keeps refusing doesn't ask forever.
-const ATTEMPTS: usize = 5;
-
 pub(super) async fn run(target: Target, link: &mut Link) -> Result<String> {
     let mut user = target.user.clone().filter(|u| !u.is_empty());
     let mut password = target.password.clone();
-    let mut error = None;
-    for _ in 0..ATTEMPTS {
+    let attempt = async |link: &Link, error: Option<String>| {
         let mut remember = false;
         if user.is_none() || password.is_none() || error.is_some() {
-            let Some(answer) = link.ask_sign_in(user.clone(), true, error.take()).await else {
-                return Ok("Sign-in cancelled.".into());
-            };
+            let Some(answer) = link.ask_sign_in(user.clone(), true, error).await else { return Ok(Attempt::Cancelled) };
             user = answer.user.filter(|u| !u.is_empty());
             password = Some(answer.password);
             remember = answer.remember;
         }
-        let (Some(name), Some(secret)) = (user.clone(), password.clone()) else { continue };
+        let (Some(name), Some(secret)) = (user.clone(), password.clone()) else { return Ok(Attempt::Retry(None)) };
         match connect(&target, link, &name, &secret).await {
-            Ok((framed, result, clipboard)) => {
-                if remember {
-                    link.send(DesktopEvent::Remember { user: Some(name), password: secret });
-                }
-                link.status(Status::Connected);
-                return active(framed, result, clipboard, link).await;
-            }
-            Err(Failure::SignIn(message)) => error = Some(message),
-            Err(Failure::Other(err)) => return Err(err),
+            Ok(connection) => Ok(Attempt::Connected { connection, remember: remember.then_some((Some(name), secret)) }),
+            Err(Failure::SignIn(message)) => Ok(Attempt::Retry(Some(message))),
+            Err(Failure::Other(err)) => Err(err),
         }
-    }
-    Ok("Signing in failed too many times.".into())
+    };
+    let active = async |(framed, result, clipboard), link: &mut Link| active(framed, result, clipboard, link).await;
+    sign_in(link, attempt, active).await
 }
 
 enum Failure {
@@ -125,15 +117,9 @@ async fn connect(
     Ok((framed, result, clipboard))
 }
 
-/// How long one step of reaching the desktop (before or after the certificate question) may
-/// take: a port that accepts the connection but never speaks RDP must not leave the pane
-/// connecting forever.
-const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
+/// One step of reaching the desktop, given [`HANDSHAKE_TIMEOUT`].
 async fn within<T>(step: impl std::future::Future<Output = T>) -> Result<T, Failure> {
-    tokio::time::timeout(HANDSHAKE_TIMEOUT, step).await.map_err(|_| {
-        Failure::Other(anyhow!("The server didn't finish connecting within {} seconds.", HANDSHAKE_TIMEOUT.as_secs()))
-    })
+    tokio::time::timeout(HANDSHAKE_TIMEOUT, step).await.map_err(|_| Failure::Other(handshake_timed_out()))
 }
 
 /// Trusted on first use, like a Host Key: most RDP servers sign their own certificate.
@@ -462,10 +448,6 @@ fn operations(event: Input) -> Vec<Operation> {
         }
         Input::Wheel { vertical, amount } => {
             vec![Operation::WheelRotations(WheelRotations { is_vertical: vertical, rotation_units: amount })]
-        }
-        Input::CtrlAltDel => {
-            let keys = [keys::CONTROL, keys::ALT, keys::DELETE].map(scancode);
-            keys.iter().map(|k| Operation::KeyPressed(*k)).chain(keys.iter().rev().map(|k| Operation::KeyReleased(*k))).collect()
         }
         // Handled by the caller.
         Input::ReleaseAll | Input::Resize { .. } | Input::Clipboard(_) | Input::ShareClipboard(_) | Input::Close => vec![],
