@@ -28,6 +28,7 @@ use crate::theme::{AppPalette, Appearance};
 use crate::ui::popup::{self, Popup};
 use crate::ui::transfers::{self, Job, ServerOp, Transfers};
 use crate::ui::widgets::{Busy, BusyPhase, ButtonKind, busy_done, after_delay, button, focus_outline, icon_el, plural, spinner, status_dot};
+use crate::ui::widgets::{IconButtonSize, disabled_color, icon_button_sized};
 
 const ROW_HEIGHT: f32 = 30.;
 
@@ -170,7 +171,7 @@ impl Render for DragGhost {
             .px(px(10.))
             .py(px(5.))
             .rounded(p.corner(7.))
-            .bg(p.surface.opacity(1.))
+            .bg(p.surface)
             .border_1()
             .border_color(p.border)
             .text_size(px(12.))
@@ -897,23 +898,32 @@ impl FileBrowser {
     }
 
     /// "Keep both" on the conflict dialog: upload under free names. `existing` are the names
-    /// found taken in `dir`; when `dir` isn't the folder on screen (the files were dropped on
-    /// a folder row), what else is in it is listed first, so a "name (1)" is free too.
+    /// found taken in `dir`.
     fn keep_both(&mut self, paths: Vec<PathBuf>, dir: String, existing: Vec<String>, cx: &mut Context<Self>) {
-        let mut taken = names_in(&dir, self.cwd.as_deref(), &self.entries, &existing);
+        let taken = names_in(&dir, self.cwd.as_deref(), &self.entries, &existing);
+        let list_dir = dir.clone();
+        self.with_names_taken_in(list_dir, taken, move |this, taken, cx| this.start_uploads(paths, dir, false, Some(taken), cx), cx);
+    }
+
+    /// Call `go` with the names taken in `dir` for "Keep both": `taken`, plus what else is in
+    /// `dir`. When `dir` isn't the folder on screen (the items were dropped on a folder row),
+    /// it is listed first, so a "name (1)" is free too.
+    fn with_names_taken_in(
+        &mut self, dir: String, mut taken: HashSet<String>,
+        go: impl FnOnce(&mut Self, HashSet<String>, &mut Context<Self>) + 'static, cx: &mut Context<Self>,
+    ) {
         if self.cwd.as_deref() == Some(dir.as_str()) {
-            self.start_uploads(paths, dir, false, Some(taken), cx);
+            go(self, taken, cx);
             return;
         }
         let Some(remote) = self.remote() else { return };
-        let list_dir = dir.clone();
-        let task = sftp::spawn(async move { remote.list(&list_dir).await });
+        let task = sftp::spawn(async move { remote.list(&dir).await });
         cx.spawn(async move |this, cx| {
             // Not listed: the names known to be taken still get free ones.
             if let Ok(Ok(listing)) = task.await {
                 taken.extend(listing.entries.into_iter().map(|e| e.name));
             }
-            let _ = this.update(cx, |this, cx| this.start_uploads(paths, dir, false, Some(taken), cx));
+            let _ = this.update(cx, |this, cx| go(this, taken, cx));
         })
         .detach();
     }
@@ -1125,23 +1135,10 @@ impl FileBrowser {
         let mut taken = names_in(&dest, self.cwd.as_deref(), &self.entries, &existing);
         // Nor a name another of the items goes to.
         taken.extend(pairs.iter().map(|(_, to)| sftp::file_name(to).to_string()));
-        if self.cwd.as_deref() == Some(dest.as_str()) {
+        self.with_names_taken_in(dest.clone(), taken, move |this, taken, cx| {
             let pairs = keep_both_targets(pairs, &dest, &existing, taken);
-            self.start_on_server(op.into(), on_server_items(pairs), false, cx);
-            return;
-        }
-        let Some(remote) = self.remote() else { return };
-        let list_dir = dest.clone();
-        let task = sftp::spawn(async move { remote.list(&list_dir).await });
-        cx.spawn(async move |this, cx| {
-            // Not listed: the names known to be taken still get free ones.
-            if let Ok(Ok(listing)) = task.await {
-                taken.extend(listing.entries.into_iter().map(|e| e.name));
-            }
-            let pairs = keep_both_targets(pairs, &dest, &existing, taken);
-            let _ = this.update(cx, |this, cx| this.start_on_server(op.into(), on_server_items(pairs), false, cx));
-        })
-        .detach();
+            this.start_on_server(op.into(), on_server_items(pairs), false, cx);
+        }, cx);
     }
 
     /// Start a copy, move or delete on the server as a job in Transfers, where it shows its
@@ -1419,6 +1416,14 @@ impl FileBrowser {
         cx.notify();
     }
 
+    /// Open the menu `build` makes at `position` (window coordinates).
+    fn open_popup(
+        &mut self, position: gpui::Point<gpui::Pixels>, window: &mut Window, cx: &mut Context<Self>,
+        build: impl FnOnce(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu,
+    ) {
+        self.popup = Popup::open(position, |this: &mut Self| &mut this.popup, window, cx, build);
+    }
+
     /// The menu of the selected rows (or of the folder, with none), from the keyboard: beside
     /// the row the keyboard is on, or at the top of the list.
     fn open_menu_from_keyboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1435,7 +1440,7 @@ impl FileBrowser {
         if self.selected.is_empty() {
             let view = cx.entity().downgrade();
             let (cwd, show_hidden, connected) = (self.cwd.clone(), self.show_hidden, self.remote().is_some());
-            self.popup = Popup::open(position, |this: &mut Self| &mut this.popup, window, cx, move |menu, _, _| {
+            self.open_popup(position, window, cx, move |menu, _, _| {
                 folder_menu(menu, &view, cwd, show_hidden, connected)
             });
         } else {
@@ -1452,7 +1457,7 @@ impl FileBrowser {
         let favorites = self.favorites.read(cx).data.clone();
         let host = self.host_id.clone();
         let extras = self.menu_extras;
-        self.popup = Popup::open(position, |this: &mut Self| &mut this.popup, window, cx, move |menu, _, _| {
+        self.open_popup(position, window, cx, move |menu, _, _| {
             entry_menu(menu, &view, targets, dir_write, &favorites, &host, extras)
         });
     }
@@ -1528,6 +1533,27 @@ fn keep_both_targets(pairs: Vec<(String, String)>, dest: &str, existing: &[Strin
             (from, sftp::join(dest, &free))
         })
         .collect()
+}
+
+/// The title and text of a dialog asking whether to replace the items named `existing` in
+/// `folder`: `one` is what a single one is called ("file"), and `when` finishes "Replacing
+/// overwrites it once …".
+fn conflict_text(existing: &[String], one: &str, folder: &str, when: &str, p: AppPalette) -> (String, AnyElement) {
+    let names = existing.iter().take(3).map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
+    let more = existing.len().saturating_sub(3);
+    let title = if existing.len() == 1 { format!("Replace the existing {one}?") } else { format!("Replace {} existing items?", existing.len()) };
+    let body = div()
+        .text_size(px(12.5))
+        .line_height(px(18.))
+        .text_color(p.text_muted)
+        .child(format!(
+            "{names}{} already exist{} in {folder}. Replacing overwrites {} once {when}.",
+            if more > 0 { format!(" and {more} more") } else { String::new() },
+            if existing.len() == 1 { "s" } else { "" },
+            if existing.len() == 1 { "it" } else { "them" },
+        ))
+        .into_any_element();
+    (title, body)
 }
 
 fn names_in(dir: &str, cwd: Option<&str>, entries: &[Entry], existing: &[String]) -> HashSet<String> {
@@ -1645,11 +1671,6 @@ fn keyboard_ring(p: AppPalette) -> Vec<gpui::BoxShadow> {
     }]
 }
 
-/// How a control that can't be used right now draws its icon and label.
-fn disabled_color(p: AppPalette) -> Hsla {
-    p.text_faint.opacity(0.55)
-}
-
 /// What every control in the browser shares: a button for screen readers, named `label`, and
 /// a Tab stop with the focus ring while it can be used. One that can't is skipped by Tab.
 fn control(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, enabled: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
@@ -1669,19 +1690,14 @@ fn split_shortcut(tip: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// A toolbar button with its name as a tooltip. Screen readers get the name and the shortcut
+/// apart.
 fn tool_button(id: impl Into<gpui::ElementId>, icon: &str, tip: &'static str, enabled: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
     let (label, keys) = split_shortcut(tip);
-    control(id, label, enabled, p)
+    icon_button_sized(id, icon, label, IconButtonSize::Toolbar, enabled, p)
         .when_some(keys, |el, keys| el.aria_keyshortcuts(keys))
-        .size(px(28.))
-        .flex()
         .flex_shrink_0()
-        .items_center()
-        .justify_center()
-        .rounded(p.corner(7.))
         .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
-        .when(enabled, |el| el.cursor_pointer().hover(move |s| s.bg(p.hover)))
-        .child(icon_el(icon, 15., if enabled { p.text_muted } else { disabled_color(p) }))
 }
 
 /// A bordered toolbar button with an icon and, when there is room, a label.
@@ -1791,7 +1807,7 @@ impl FileBrowser {
                 let show_hidden = this.show_hidden;
                 let cwd = this.cwd.clone();
                 let connected = this.remote().is_some();
-                this.popup = Popup::open(event.position(), |this: &mut Self| &mut this.popup, window, cx, move |menu, _, _| {
+                this.open_popup(event.position(), window, cx, move |menu, _, _| {
                     folder_menu(menu, &view, cwd, show_hidden, connected)
                 });
                 cx.notify();
@@ -1963,7 +1979,7 @@ impl FileBrowser {
                             return;
                         }
                         let view = view.clone();
-                        this.popup = Popup::open(event.position(), |this: &mut Self| &mut this.popup, window, cx, move |menu, _, _| {
+                        this.open_popup(event.position(), window, cx, move |menu, _, _| {
                             menu.item(popup::item("Upload files…", None, &view, |this, window, cx| this.pick_uploads(false, window, cx)))
                                 .item(popup::item("Upload folder…", None, &view, |this, window, cx| {
                                     this.pick_uploads(true, window, cx)
@@ -2628,7 +2644,7 @@ impl FileBrowser {
                         .top(px(9.))
                         .flex()
                         .rounded(p.corner(6.))
-                        .bg(p.surface.opacity(1.))
+                        .bg(p.surface)
                         .invisible()
                         .group_hover("fav-row", |s| s.visible())
                         .when(!first, |el| {
@@ -2734,7 +2750,7 @@ impl FileBrowser {
                 .flex()
                 .flex_col()
                 .rounded(p.corner(10.))
-                .bg(p.surface.opacity(1.))
+                .bg(p.surface)
                 .border_1()
                 .border_color(p.border)
                 .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
@@ -2870,21 +2886,10 @@ impl FileBrowser {
             }
             Dialog::Conflict { uploads, dir, existing } => {
                 let (u1, u2, d1, d2, e1) = (uploads.clone(), uploads.clone(), dir.clone(), dir.clone(), existing.clone());
-                let names = existing.iter().take(3).map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
-                let more = existing.len().saturating_sub(3);
+                let (title, body) = conflict_text(existing, "file", dir, "the upload is complete", p);
                 (
-                    if existing.len() == 1 { "Replace the existing file?".into() } else { format!("Replace {} existing items?", existing.len()) },
-                    div()
-                        .text_size(px(12.5))
-                        .line_height(px(18.))
-                        .text_color(p.text_muted)
-                        .child(format!(
-                            "{names}{} already exist{} in {dir}. Replacing overwrites {} once the upload is complete.",
-                            if more > 0 { format!(" and {more} more") } else { String::new() },
-                            if existing.len() == 1 { "s" } else { "" },
-                            if existing.len() == 1 { "it" } else { "them" },
-                        ))
-                        .into_any_element(),
+                    title,
+                    body,
                     vec![
                         cancel.into_any_element(),
                         button("sftp-keep-both", "Keep both", ButtonKind::Secondary, p)
@@ -2906,22 +2911,11 @@ impl FileBrowser {
             }
             Dialog::CopyConflict { op, pairs, dest, existing } => {
                 let (op, p1, p2, d1, e1) = (*op, pairs.clone(), pairs.clone(), dest.clone(), existing.clone());
-                let names = existing.iter().take(3).map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
-                let more = existing.len().saturating_sub(3);
                 let done = if op == CopyOp::Copy { "the copy is complete" } else { "the move is done" };
+                let (title, body) = conflict_text(existing, "item", dest, done, p);
                 (
-                    if existing.len() == 1 { "Replace the existing item?".into() } else { format!("Replace {} existing items?", existing.len()) },
-                    div()
-                        .text_size(px(12.5))
-                        .line_height(px(18.))
-                        .text_color(p.text_muted)
-                        .child(format!(
-                            "{names}{} already exist{} in {dest}. Replacing overwrites {} once {done}.",
-                            if more > 0 { format!(" and {more} more") } else { String::new() },
-                            if existing.len() == 1 { "s" } else { "" },
-                            if existing.len() == 1 { "it" } else { "them" },
-                        ))
-                        .into_any_element(),
+                    title,
+                    body,
                     vec![
                         cancel.into_any_element(),
                         button("sftp-copy-keep-both", "Keep both", ButtonKind::Secondary, p)
@@ -2967,7 +2961,7 @@ impl FileBrowser {
                         .flex_col()
                         .gap(px(12.))
                         .rounded(p.corner(12.))
-                        .bg(p.surface.opacity(1.))
+                        .bg(p.surface)
                         .border_1()
                         .border_color(p.border)
                         .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
@@ -3042,45 +3036,49 @@ fn entry_menu(
     let paths: Vec<String> = targets.iter().map(|e| e.path.clone()).collect();
     let readable = targets.iter().any(|e| !e.locked() && e.kind != Kind::Other);
     let can_change = dir_write != Allowed::No;
-    let item = |label: String, icon: Option<&str>, enabled: bool, run: Box<dyn Fn(&mut FileBrowser, &mut Window, &mut Context<FileBrowser>)>| {
-        popup::item(label, icon, view, move |this, window, cx| run(this, window, cx)).disabled(!enabled)
-    };
+    // A function rather than a closure, since every entry runs a closure of its own type.
+    fn item(
+        view: &WeakEntity<FileBrowser>, label: impl Into<String>, icon: Option<&str>, enabled: bool,
+        run: impl Fn(&mut FileBrowser, &mut Window, &mut Context<FileBrowser>) + 'static,
+    ) -> PopupMenuItem {
+        popup::item(label, icon, view, run).disabled(!enabled)
+    }
 
     if single {
         let e = first.clone();
-        menu = menu.item(item("Open".into(), None, !first.locked(), Box::new(move |this, _, cx| this.open_entry(&e, cx))));
+        menu = menu.item(item(view, "Open", None, !first.locked(), move |this, _, cx| this.open_entry(&e, cx)));
     }
     let download_label = if single { "Download".to_string() } else { format!("Download {} items", targets.len()) };
     let t = targets.clone();
-    menu = menu.item(item(download_label, Some("download"), readable, Box::new(move |this, _, cx| this.download(t.clone(), false, cx))));
+    menu = menu.item(item(view, download_label, Some("download"), readable, move |this, _, cx| this.download(t.clone(), false, cx)));
     menu = menu.separator();
     if single && extras.rename {
         let path = first.path.clone();
-        menu = menu.item(item("Rename".into(), None, can_change, Box::new(move |this, window, cx| this.start_rename(path.clone(), window, cx))));
+        menu = menu.item(item(view, "Rename", None, can_change, move |this, window, cx| this.start_rename(path.clone(), window, cx)));
     }
     if extras.copy_to {
         let p = paths.clone();
-        menu = menu.item(item("Copy to…".into(), None, readable, Box::new(move |this, window, cx| this.ask_copy_move(CopyOp::Copy, p.clone(), window, cx))));
+        menu = menu.item(item(view, "Copy to…", None, readable, move |this, window, cx| this.ask_copy_move(CopyOp::Copy, p.clone(), window, cx)));
     }
     if extras.move_to {
         let p = paths.clone();
-        menu = menu.item(item("Move to…".into(), None, can_change, Box::new(move |this, window, cx| this.ask_copy_move(CopyOp::Move, p.clone(), window, cx))));
+        menu = menu.item(item(view, "Move to…", None, can_change, move |this, window, cx| this.ask_copy_move(CopyOp::Move, p.clone(), window, cx)));
     }
     let (p3, p4) = (paths.clone(), paths.clone());
     menu = menu
-        .item(item(if single { "Delete".into() } else { format!("Delete {} items", targets.len()) }, Some("trash"), can_change, Box::new(move |this, _, cx| this.ask_delete(p3.clone(), cx))))
+        .item(item(view, if single { "Delete".into() } else { format!("Delete {} items", targets.len()) }, Some("trash"), can_change, move |this, _, cx| this.ask_delete(p3.clone(), cx)))
         .separator()
-        .item(item(if single { "Copy as path".into() } else { "Copy as paths".into() }, None, true, Box::new(move |this, _, cx| this.copy_paths(p4.clone(), cx))));
+        .item(item(view, if single { "Copy as path" } else { "Copy as paths" }, None, true, move |this, _, cx| this.copy_paths(p4.clone(), cx)));
     if single {
         let e = first.clone();
-        menu = menu.item(item("Jump to here".into(), None, !(first.is_dir() && first.locked()), Box::new(move |this, _, cx| this.jump_to(&e, cx))));
+        menu = menu.item(item(view, "Jump to here", None, !(first.is_dir() && first.locked()), move |this, _, cx| this.jump_to(&e, cx)));
         if first.is_dir() {
             let (a, b) = (first.path.clone(), first.path.clone());
             let has_shared = favorites.items.iter().any(|f| f.path == first.path && f.host.is_none());
             let has_own = favorites.items.iter().any(|f| f.path == first.path && f.host.as_deref() == Some(host));
             menu = menu
-                .item(item("Add to favorites".into(), Some("star"), !has_shared, Box::new(move |this, _, cx| this.add_favorite(a.clone(), false, cx))))
-                .item(item("Add to favorites for this host".into(), None, !has_own, Box::new(move |this, _, cx| this.add_favorite(b.clone(), true, cx))));
+                .item(item(view, "Add to favorites", Some("star"), !has_shared, move |this, _, cx| this.add_favorite(a.clone(), false, cx)))
+                .item(item(view, "Add to favorites for this host", None, !has_own, move |this, _, cx| this.add_favorite(b.clone(), true, cx)));
         }
         if first.locked() {
             menu = menu.separator().item(PopupMenuItem::label(if first.is_dir() {

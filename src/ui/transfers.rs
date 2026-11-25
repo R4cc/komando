@@ -18,7 +18,7 @@ use crate::sftp::{self, ErrorKind, OpError, Progress, Remote, format_size};
 use crate::theme::{AppPalette, Appearance};
 use crate::ui::file_browser::FileBrowser;
 use crate::ui::popup::{self, Popup};
-use crate::ui::widgets::{focus_outline, icon_el, progress_bar};
+use crate::ui::widgets::{IconButtonSize, focus_outline, icon_button_sized, icon_el, progress_bar};
 
 #[derive(Clone, Debug)]
 pub enum Job {
@@ -654,25 +654,11 @@ fn ago(at: DateTime<Local>) -> String {
     }
 }
 
-/// A compact icon button for the panel's rows and header: `icon_button`'s keyboard focus and
-/// label at the rows' smaller size.
+/// A compact icon button for the panel's rows and header, with its name as a tooltip.
 fn row_button(id: impl Into<gpui::ElementId>, icon: &str, tip: &'static str, p: AppPalette) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .role(gpui::Role::Button)
-        .aria_label(tip)
-        .tab_index(0)
-        .focus_visible(move |s| focus_outline(s, p.focus))
-        .size(px(24.))
-        .flex()
+    icon_button_sized(id, icon, tip, IconButtonSize::Compact, true, p)
         .flex_shrink_0()
-        .items_center()
-        .justify_center()
-        .rounded(p.corner(6.))
-        .cursor_pointer()
-        .hover(move |s| s.bg(p.hover))
         .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
-        .child(icon_el(icon, 14., p.text_muted))
 }
 
 impl Transfers {
@@ -953,7 +939,7 @@ impl Render for Transfers {
             .flex()
             .flex_col()
             .rounded(p.corner(14.))
-            .bg(p.surface.opacity(1.))
+            .bg(p.surface)
             .border_1()
             .border_color(p.border)
             .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {

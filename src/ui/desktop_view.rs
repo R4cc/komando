@@ -13,7 +13,7 @@ use futures::channel::mpsc::UnboundedSender;
 use futures::channel::oneshot;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AnyWindowHandle, App, Bounds, ClipboardItem, Context, Corners, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyDownEvent, KeyUpEvent,
+    AnyElement, AnyWindowHandle, App, Bounds, ClipboardItem, Context, Corners, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, KeyUpEvent,
     Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage, ScrollDelta,
     ScrollEvent, SharedString, Subscription, Task, Window, actions, canvas, div, point, prelude::*, px, size,
 };
@@ -25,7 +25,7 @@ use crate::desktop::keys::Code;
 use crate::desktop::{self, Button, Connection, DesktopEvent, DesktopPrompt, Input as DesktopInput, Key, Protocol, SignIn, Status, Target};
 use crate::model::{Scaling, ViewerOptions};
 use crate::theme::{Appearance};
-use crate::ui::widgets::{ButtonKind, button, password_input, spinner};
+use crate::ui::widgets::{ButtonKind, button, dialog_card, dialog_mono, dialog_text, password_input, spinner};
 
 /// The key context of a desktop pane, so Tab goes to the remote desktop instead of moving focus.
 pub const CONTEXT: &str = "RemoteDesktop";
@@ -1002,36 +1002,10 @@ impl DesktopView {
     fn render_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let p = cx.global::<Appearance>().app;
         let card = |title: String, body: AnyElement, actions: Vec<AnyElement>| {
-            div()
-                .w(px(420.))
-                .max_w_full()
-                .p(px(20.))
-                .rounded(p.corner(14.))
-                .bg(p.surface)
-                .border_1()
-                .border_color(p.border)
-                .flex()
-                .flex_col()
-                .gap(px(14.))
-                .font_family(p.font_family)
-                .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title))
-                .child(body)
-                .when(!actions.is_empty(), |el| el.child(div().flex().justify_end().gap(px(8.)).children(actions)))
-                .into_any_element()
+            dialog_card(title, body, actions, p).max_w_full().into_any_element()
         };
-        let text = |s: String| div().text_size(px(13.)).line_height(px(20.)).text_color(p.text_muted).child(s).into_any_element();
-        let mono = |s: String| {
-            div()
-                .px(px(10.))
-                .py(px(8.))
-                .rounded(p.corner(8.))
-                .bg(p.hover)
-                .font_family(p.mono_family)
-                .text_size(px(12.))
-                .text_color(p.text)
-                .child(s)
-                .into_any_element()
-        };
+        let text = |s: String| dialog_text(s, p);
+        let mono = |s: String| dialog_mono(s, p);
         let protocol = self.protocol.label();
         let host = self.host.clone();
         if let Some(prompt) = &self.prompt {

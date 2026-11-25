@@ -2,6 +2,7 @@
 //! clipboard question and the disconnected banner.
 
 use super::*;
+use crate::ui::widgets::{dialog_card, dialog_mono, dialog_text};
 
 impl TerminalView {
     /// Scroll so the entered line sits near the top of the view, and light it up briefly.
@@ -229,35 +230,10 @@ impl TerminalView {
         let prompt = self.prompt.as_ref()?;
         let hop_name = self.route.as_ref().and_then(|r| r.hop_name(r.current()).map(str::to_string));
         let card = |title: &str, body: gpui::AnyElement, actions: Vec<gpui::AnyElement>| {
-            div()
-                .w(px(420.))
-                .p(px(20.))
-                .rounded(p.corner(14.))
-                .bg(p.surface)
-                .border_1()
-                .border_color(p.border)
-                .flex()
-                .flex_col()
-                .gap(px(14.))
-                .font_family(p.font_family)
-                .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title.to_string()))
-                .child(body)
-                .child(div().flex().justify_end().gap(px(8.)).children(actions))
-                .into_any_element()
+            dialog_card(title.to_string(), body, actions, p).into_any_element()
         };
-        let text = |s: String| div().text_size(px(13.)).line_height(px(20.)).text_color(p.text_muted).child(s).into_any_element();
-        let mono = |s: String| {
-            div()
-                .px(px(10.))
-                .py(px(8.))
-                .rounded(p.corner(8.))
-                .bg(p.hover)
-                .font_family(p.mono_family)
-                .text_size(px(12.))
-                .text_color(p.text)
-                .child(s)
-                .into_any_element()
-        };
+        let text = |s: String| dialog_text(s, p);
+        let mono = |s: String| dialog_mono(s, p);
         let element = match prompt {
             ActivePrompt::HostKey { fingerprint, algorithm, other_types, .. } => card(
                 &match &hop_name {

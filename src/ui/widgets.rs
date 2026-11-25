@@ -125,7 +125,6 @@ fn button_shell(id: impl Into<ElementId>, kind: ButtonKind, p: AppPalette) -> (S
     (el, fg)
 }
 
-/// A square icon-only button with a tooltip-free label for accessibility tooling.
 /// A labelled tick box in a dialog. It is a Tab stop: Space toggles it and keeps the focus
 /// there, so Tab carries on to the next control. `toggle` gets `true` when the mouse did it.
 ///
@@ -175,22 +174,60 @@ pub fn labelled_checkbox(
         .child(div().text_size(px(13.)).text_color(p.text).child(label))
 }
 
+/// How large a square icon-only button is drawn.
+#[derive(Clone, Copy)]
+pub enum IconButtonSize {
+    /// 30 px with a 16 px icon: forms, settings and the sidebar.
+    Regular,
+    /// 28 px with a 15 px icon: the file browser's toolbar.
+    Toolbar,
+    /// 24 px with a 14 px icon: the Transfers panel's rows and header.
+    Compact,
+}
+
+impl IconButtonSize {
+    /// The button's side, its icon's size and its corner radius, in px.
+    fn metrics(self) -> (f32, f32, f32) {
+        match self {
+            Self::Regular => (30., 16., 7.),
+            Self::Toolbar => (28., 15., 7.),
+            Self::Compact => (24., 14., 6.),
+        }
+    }
+}
+
+/// How a control that can't be used right now draws its icon and label.
+pub fn disabled_color(p: AppPalette) -> Hsla {
+    p.text_faint.opacity(0.55)
+}
+
+/// A square icon-only button, named after its icon for accessibility tooling since it shows
+/// no text.
 pub fn icon_button(id: impl Into<ElementId>, icon: &str, p: AppPalette) -> Stateful<gpui::Div> {
+    icon_button_sized(id, icon, icon.replace('-', " "), IconButtonSize::Regular, true, p)
+}
+
+/// A square icon-only button named `label` for screen readers. While it can be used it is a
+/// Tab stop with the focus ring and lights up under the pointer; one that can't is skipped by
+/// Tab and draws its icon faded.
+pub fn icon_button_sized(
+    id: impl Into<ElementId>, icon: &str, label: impl Into<SharedString>, size: IconButtonSize, enabled: bool,
+    p: AppPalette,
+) -> Stateful<gpui::Div> {
+    let (side, icon_size, radius) = size.metrics();
     div()
         .id(id)
         .role(gpui::Role::Button)
-        .aria_label(icon.replace('-', " "))
-        .tab_index(0)
-        .focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus))
-        .size(px(30.))
+        .aria_label(label)
+        .when(enabled, |el| el.tab_index(0).focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus)))
+        .size(px(side))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(p.corner(7.))
+        .rounded(p.corner(radius))
         .text_color(p.text_muted)
-        .cursor_pointer()
-        .hover(move |s| s.bg(p.hover).text_color(p.hover_text))
-        .child(icon_el(icon, 16., p.text_muted))
+        .when(enabled, |el| el.cursor_pointer().hover(move |s| s.bg(p.hover).text_color(p.hover_text)))
+        .child(icon_el(icon, icon_size, if enabled { p.text_muted } else { disabled_color(p) }))
 }
 
 /// A sidebar row's × button: like `icon_button`, but it turns red under the pointer, icon
@@ -657,6 +694,44 @@ fn arc_path(center: gpui::Point<gpui::Pixels>, radius: f32, stroke: f32, start: 
 /// Rows inside them have an 8px radius and sit 8px from the edge: 8 + 8 = 16.
 pub const ISLAND_RADIUS: f32 = 16.;
 pub const ISLAND_GAP: f32 = 8.;
+
+/// A dialog card over a pane, such as a host key or sign-in question: `title`, then `body`,
+/// then the `actions` at the bottom right, left out when there are none.
+pub fn dialog_card(title: impl Into<SharedString>, body: AnyElement, actions: Vec<AnyElement>, p: AppPalette) -> gpui::Div {
+    div()
+        .w(px(420.))
+        .p(px(20.))
+        .rounded(p.corner(14.))
+        .bg(p.surface)
+        .border_1()
+        .border_color(p.border)
+        .flex()
+        .flex_col()
+        .gap(px(14.))
+        .font_family(p.font_family)
+        .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(title.into()))
+        .child(body)
+        .when(!actions.is_empty(), |el| el.child(div().flex().justify_end().gap(px(8.)).children(actions)))
+}
+
+/// A paragraph in a `dialog_card`.
+pub fn dialog_text(text: impl Into<SharedString>, p: AppPalette) -> AnyElement {
+    div().text_size(px(13.)).line_height(px(20.)).text_color(p.text_muted).child(text.into()).into_any_element()
+}
+
+/// A monospace block in a `dialog_card`, for a fingerprint or a command.
+pub fn dialog_mono(text: impl Into<SharedString>, p: AppPalette) -> AnyElement {
+    div()
+        .px(px(10.))
+        .py(px(8.))
+        .rounded(p.corner(8.))
+        .bg(p.hover)
+        .font_family(p.mono_family)
+        .text_size(px(12.))
+        .text_color(p.text)
+        .child(text.into())
+        .into_any_element()
+}
 
 pub fn island(p: AppPalette) -> gpui::Div {
     div()
