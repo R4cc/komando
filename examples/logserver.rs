@@ -19,16 +19,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use russh::keys::PublicKey;
 use russh::keys::ssh_key::LineEnding;
-use russh::keys::ssh_key::private::Ed25519Keypair;
-use russh::keys::{PrivateKey, PublicKey};
 use russh::server::{self, Msg, Server as _, Session};
 use russh::{Channel, ChannelId, ChannelMsg};
 
 #[path = "../tests/support/log_line.rs"]
 mod log_line;
+#[path = "../tests/support/ssh_server.rs"]
+mod ssh_server;
 
-use log_line::log_line;
+use log_line::log_blocks;
 
 struct LogServer {
     lines: u64,
@@ -105,15 +106,10 @@ impl server::Handler for LogServer {
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 let start = Instant::now();
                 let mut bytes = 0;
-                let mut block = Vec::with_capacity(70 * 1024);
-                for i in 0..lines {
-                    log_line(i, &mut block);
-                    if block.len() >= 64 * 1024 || i + 1 == lines {
-                        bytes += block.len();
-                        if channel.data(&block[..]).await.is_err() {
-                            return;
-                        }
-                        block.clear();
+                for block in log_blocks(lines) {
+                    bytes += block.len();
+                    if channel.data(&block[..]).await.is_err() {
+                        return;
                     }
                 }
                 let sent = start.elapsed();
@@ -152,22 +148,15 @@ async fn main() {
     let port: u16 = std::env::var("KOMANDO_DEMO_PORT").map(|p| p.parse().unwrap()).unwrap_or(2222);
 
     std::fs::create_dir_all(&dir).unwrap();
-    let host = PrivateKey::from(Ed25519Keypair::from_seed(&[7; 32]));
-    let client = PrivateKey::from(Ed25519Keypair::from_seed(&[9; 32]));
+    let config = ssh_server::benchmark_config();
+    let host = &config.keys[0];
+    let client = ssh_server::key(9);
     std::fs::write(dir.join("client_ed25519"), client.to_openssh(LineEnding::LF).unwrap().as_bytes()).unwrap();
     let host_pub: &PublicKey = host.public_key();
     std::fs::write(dir.join("host_ed25519.pub"), host_pub.to_openssh().unwrap()).unwrap();
     std::fs::write(dir.join("host_ed25519_private"), host.to_openssh(LineEnding::LF).unwrap().as_bytes()).unwrap();
 
-    let config = Arc::new(server::Config {
-        keys: vec![host],
-        auth_rejection_time: Duration::ZERO,
-        auth_rejection_time_initial: Some(Duration::ZERO),
-        inactivity_timeout: None,
-        nodelay: true,
-        ..Default::default()
-    });
     eprintln!("logserver on 127.0.0.1:{port}, {lines} lines x {runs} runs per shell");
     let mut server = LogServer { lines, runs, channel: None };
-    server.run_on_address(config, ("127.0.0.1", port)).await.unwrap();
+    server.run_on_address(Arc::new(config), ("127.0.0.1", port)).await.unwrap();
 }

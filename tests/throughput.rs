@@ -33,7 +33,7 @@ mod log_line;
 mod ssh_server;
 
 use delay_proxy::DelayProxy;
-use log_line::log_line;
+use log_line::{log_blocks, log_line};
 
 /// The last line's text as the terminal shows it.
 fn plain_line(i: u64) -> String {
@@ -212,19 +212,13 @@ impl server::Handler for LogServer {
         let (mut read, channel) = channel.split();
         tokio::spawn(async move { while read.wait().await.is_some() {} });
         tokio::spawn(async move {
-            // Blocks of about 64 KiB, each sent once the client's window has room for it.
-            let mut block = Vec::with_capacity(70 * 1024);
-            for i in 0..lines {
-                log_line(i, &mut block);
-                if block.len() >= 64 * 1024 || i + 1 == lines {
-                    if channel.data(&block[..]).await.is_err() {
-                        return;
-                    }
-                    block.clear();
-                    if interrupted.as_ref().is_some_and(|stop| stop.load(std::sync::atomic::Ordering::Relaxed)) {
-                        let _ = channel.data(&b"^C\r\n"[..]).await;
-                        break;
-                    }
+            for block in log_blocks(lines) {
+                if channel.data(&block[..]).await.is_err() {
+                    return;
+                }
+                if interrupted.as_ref().is_some_and(|stop| stop.load(std::sync::atomic::Ordering::Relaxed)) {
+                    let _ = channel.data(&b"^C\r\n"[..]).await;
+                    break;
                 }
             }
             let _ = channel.exit_status(0).await;
@@ -262,7 +256,7 @@ fn start_jump_server(connect_delay: Duration) -> (u16, tokio::runtime::Runtime) 
 }
 
 fn start(server: LogServer, threads: usize) -> (u16, tokio::runtime::Runtime) {
-    ssh_server::start(server, server::Config { inactivity_timeout: None, nodelay: true, ..ssh_server::config(7) }, threads)
+    ssh_server::start(server, ssh_server::benchmark_config(), threads)
 }
 
 /// What was uploaded to the benchmark server, by path: how far the writes to each file reached.

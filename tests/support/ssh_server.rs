@@ -25,6 +25,12 @@ pub fn config(seed: u8) -> server::Config {
     }
 }
 
+/// [`config`] for the benchmark servers, which send a lot: an idle connection never times out,
+/// and small writes such as a typed key's echo go out at once.
+pub fn benchmark_config() -> server::Config {
+    server::Config { inactivity_timeout: None, nodelay: true, ..config(7) }
+}
+
 /// A multi-thread runtime with `threads` workers.
 pub fn runtime(threads: usize) -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread().worker_threads(threads).enable_all().build().unwrap()
