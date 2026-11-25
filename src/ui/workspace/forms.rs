@@ -20,7 +20,7 @@ use crate::ui::widgets::{ButtonKind, badge, button, icon_button, icon_el, icon_t
 use crate::vault::{Credential, Secret};
 
 /// Where a Host takes a setting from, as picked in the host form.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Source {
     Project,
     Own,
@@ -38,7 +38,7 @@ impl Source {
 }
 
 /// Which of the SSH Agent's keys a Host signs in with, as picked in the host form.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum AgentChoice {
     Any,
     One,
@@ -53,7 +53,7 @@ const FORWARD_AGENT_WARNING: &str = "git and ssh on the host can sign in with yo
     So can anyone with root there: forward only to hosts you trust.";
 
 /// How a Host or Project signs in, as picked in a form.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum SignIn {
     /// Host: the Project Credential (or asked, if the Project has none).
     Project,
@@ -167,6 +167,120 @@ pub(super) struct HostForm {
     /// The page shown.
     tab: FormTab,
     error: Option<String>,
+    /// What the form held when it opened (see [`HostForm::values`]), to tell whether closing it
+    /// throws anything away.
+    opened_with: String,
+    /// Closing it was asked for with changes made: "Discard your changes?" is on screen.
+    asking_discard: bool,
+}
+
+/// What a form's fields and choices hold, as one string: equal while nothing was changed.
+/// Which page is shown, the icon search and errors aren't part of it.
+fn field_values(fields: &[&Entity<InputState>], choices: String, cx: &App) -> String {
+    let mut out = choices;
+    for field in fields {
+        out.push('\u{0}');
+        out.push_str(&field.read(cx).value());
+    }
+    out
+}
+
+fn row_fields<'a>(commands: &'a [CommandRow], jumps: &'a [JumpRow], forwards: &'a [ForwardRow]) -> Vec<&'a Entity<InputState>> {
+    let mut fields = vec![];
+    for row in commands {
+        fields.extend([&row.wait_for, &row.command]);
+    }
+    for row in jumps {
+        fields.extend([&row.user, &row.address, &row.port, &row.password]);
+    }
+    for row in forwards {
+        fields.extend([&row.port, &row.to_host, &row.to_port]);
+    }
+    fields
+}
+
+fn row_choices(commands: &[CommandRow], jumps: &[JumpRow], forwards: &[ForwardRow]) -> String {
+    let jumps: Vec<_> = jumps.iter().map(|row| (&row.saved, row.remove_saved)).collect();
+    let forwards: Vec<_> = forwards.iter().map(|row| (row.kind, row.open_to_network)).collect();
+    format!("{}|{jumps:?}|{forwards:?}", commands.len())
+}
+
+impl HostForm {
+    pub(super) fn values(&self, cx: &App) -> String {
+        let mut fields = vec![&self.name, &self.address, &self.port, &self.user, &self.key_path];
+        fields.extend(row_fields(&self.commands, &self.jumps, &self.forwards));
+        for desktop in &self.desktops {
+            fields.extend([&desktop.port, &desktop.user, &desktop.domain, &desktop.password]);
+        }
+        let desktops: Vec<_> =
+            self.desktops.iter().map(|d| (d.on, &d.saved, d.forget_saved, d.through_ssh)).collect();
+        let choices = format!(
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{}|{}|{}|{}|{desktops:?}|{:?}|{}|{}",
+            self.user_source,
+            self.sign_in,
+            self.agent,
+            self.agent_key,
+            self.forward_agent,
+            self.use_project_jumps,
+            self.use_project_forwards,
+            self.run_project_commands,
+            self.highlight,
+            self.opens,
+            self.icon,
+            row_choices(&self.commands, &self.jumps, &self.forwards),
+        );
+        field_values(&fields, choices, cx)
+    }
+
+    /// Something was changed since the form opened.
+    pub(super) fn changed(&self, cx: &App) -> bool {
+        self.values(cx) != self.opened_with
+    }
+
+    pub(super) fn asking_discard(&self) -> bool {
+        self.asking_discard
+    }
+
+    pub(super) fn asking_discard_mut(&mut self) -> &mut bool {
+        &mut self.asking_discard
+    }
+
+    pub(super) fn name_field(&self) -> Entity<InputState> {
+        self.name.clone()
+    }
+}
+
+impl ProjectForm {
+    pub(super) fn values(&self, cx: &App) -> String {
+        let mut fields = vec![&self.name, &self.default_user, &self.key_path];
+        fields.extend(row_fields(&self.commands, &self.jumps, &self.forwards));
+        let choices = format!(
+            "{}|{}|{:?}|{}|{}|{}",
+            self.color,
+            self.icon,
+            self.sign_in,
+            self.forward_agent,
+            self.highlight,
+            row_choices(&self.commands, &self.jumps, &self.forwards),
+        );
+        field_values(&fields, choices, cx)
+    }
+
+    pub(super) fn changed(&self, cx: &App) -> bool {
+        self.values(cx) != self.opened_with
+    }
+
+    pub(super) fn asking_discard(&self) -> bool {
+        self.asking_discard
+    }
+
+    pub(super) fn asking_discard_mut(&mut self) -> &mut bool {
+        &mut self.asking_discard
+    }
+
+    pub(super) fn name_field(&self) -> Entity<InputState> {
+        self.name.clone()
+    }
 }
 
 /// One Remote Desktop in the host form: switched on or off, with its settings.
@@ -207,6 +321,9 @@ pub(super) struct ProjectForm {
     /// The page shown.
     tab: FormTab,
     error: Option<String>,
+    /// As in [`HostForm`].
+    opened_with: String,
+    asking_discard: bool,
 }
 
 /// One Startup Command in a form's list: what it waits for (optional) and what it types.
@@ -474,7 +591,12 @@ impl Workspace {
             icon_query,
             tab: FormTab::General,
             error: None,
+            opened_with: String::new(),
+            asking_discard: false,
         }));
+        if let Some(Overlay::HostForm(form)) = &mut self.overlay {
+            form.opened_with = form.values(cx);
+        }
         self.list_agent_keys(cx);
         cx.notify();
     }
@@ -1952,7 +2074,12 @@ impl Workspace {
             highlight: pr.highlight,
             tab: FormTab::General,
             error: None,
+            opened_with: String::new(),
+            asking_discard: false,
         }));
+        if let Some(Overlay::ProjectForm(form)) = &mut self.overlay {
+            form.opened_with = form.values(cx);
+        }
         cx.notify();
     }
 
@@ -2485,7 +2612,7 @@ fn form_footer(id: &'static str, ok_label: &'static str, error: Option<&str>, p:
         .gap(px(8.))
         .child(
             button((id, 1usize), "Cancel", ButtonKind::Ghost, p)
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx))),
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.cancel_overlay(window, cx))),
         )
         .child(
             button((id, 2usize), ok_label, ButtonKind::Primary, p)

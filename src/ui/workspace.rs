@@ -2860,6 +2860,52 @@ impl Workspace {
         }
     }
 
+    /// Escape, Cancel or the close button. A host or project form with changes asks first, and
+    /// closes when asked again (Escape twice).
+    fn cancel_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let changed = match &self.overlay {
+            Some(Overlay::HostForm(form)) => form.changed(cx),
+            Some(Overlay::ProjectForm(form)) => form.changed(cx),
+            _ => false,
+        };
+        if let Some(asking) = self.asking_discard()
+            && changed
+            && !*asking
+        {
+            *asking = true;
+            // Off the form's fields, so typing doesn't change what the question is about.
+            window.focus(&self.focus, cx);
+            cx.notify();
+            return;
+        }
+        self.close_overlay(window, cx);
+    }
+
+    /// "Keep editing": back to the form, as it was.
+    fn keep_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(asking) = self.asking_discard() {
+            *asking = false;
+        }
+        let name = match &self.overlay {
+            Some(Overlay::HostForm(form)) => Some(form.name_field()),
+            Some(Overlay::ProjectForm(form)) => Some(form.name_field()),
+            _ => None,
+        };
+        if let Some(name) = name {
+            name.update(cx, |field, cx| field.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Whether the open host or project form asks "Discard your changes?".
+    fn asking_discard(&mut self) -> Option<&mut bool> {
+        match &mut self.overlay {
+            Some(Overlay::HostForm(form)) => Some(form.asking_discard_mut()),
+            Some(Overlay::ProjectForm(form)) => Some(form.asking_discard_mut()),
+            _ => None,
+        }
+    }
+
     fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.overlay, Some(Overlay::ShellForm)) {
             self.clear_shell_editor(window, cx);
@@ -5016,6 +5062,11 @@ impl Workspace {
     /// `wide`: the window has room for forms laid out in two columns.
     fn render_overlay(&self, wide: bool, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let overlay = self.overlay.as_ref()?;
+        let asking_discard = match overlay {
+            Overlay::HostForm(form) => form.asking_discard(),
+            Overlay::ProjectForm(form) => form.asking_discard(),
+            _ => false,
+        };
         let body = match overlay {
             Overlay::Picker { query, results, selected, scroll } => {
                 let count = results.len();
@@ -5194,9 +5245,10 @@ impl Workspace {
                                 .absolute()
                                 .top(px(12.))
                                 .right(px(12.))
-                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx))),
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.cancel_overlay(window, cx))),
                         ),
                 )
+                .when(asking_discard, |el| el.child(discard_question(p, cx)))
                 .into_any_element(),
         )
     }
@@ -5528,6 +5580,49 @@ fn icon_picker(
         .child(div().text_size(px(11.5)).text_color(p.text_faint).child(status))
 }
 
+/// Over a host or project form being closed with changes: discard them, or go back to it.
+fn discard_question(p: AppPalette, cx: &mut Context<Workspace>) -> AnyElement {
+    div()
+        .id("discard-backdrop")
+        .absolute()
+        .inset_0()
+        .occlude()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(alpha(0x000000, if p.dark { 0.35 } else { 0.15 }))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .id("discard-card")
+                .role(gpui::Role::AlertDialog)
+                .aria_label("Discard your changes?")
+                .rounded(p.corner(14.))
+                .bg(p.surface)
+                .border_1()
+                .border_color(p.border)
+                .child(form_card(
+                    p,
+                    "Discard your changes?",
+                    div()
+                        .text_size(px(13.))
+                        .line_height(px(20.))
+                        .text_color(p.text_muted)
+                        .child("What you changed in this form hasn't been saved.")
+                        .into_any_element(),
+                    vec![
+                        button("discard-keep", "Keep editing", ButtonKind::Ghost, p)
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.keep_editing(window, cx)))
+                            .into_any_element(),
+                        button("discard-ok", "Discard", ButtonKind::Danger, p)
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.close_overlay(window, cx)))
+                            .into_any_element(),
+                    ],
+                )),
+        )
+        .into_any_element()
+}
+
 fn form_card(p: AppPalette, title: &str, body: AnyElement, actions: Vec<AnyElement>) -> AnyElement {
     div()
         .w(px(440.))
@@ -5775,7 +5870,7 @@ impl Render for Workspace {
                     this.transfers.update(cx, |transfers, cx| transfers.close_in(window, cx));
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.overlay.is_some() {
-                    this.close_overlay(window, cx);
+                    this.cancel_overlay(window, cx);
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.prompt_open(cx) {
                     match this.active_entry().map(|e| e.ui.view.clone()) {
