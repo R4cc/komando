@@ -85,12 +85,26 @@ fn file(data_dir: &Path, host_id: &str) -> PathBuf {
 
 /// A Host's history, oldest first. Lines that can't be read (a crash mid-write) are skipped.
 pub fn load(data_dir: &Path, host_id: &str) -> Vec<Entry> {
-    let Ok(text) = fs::read_to_string(file(data_dir, host_id)) else { return vec![] };
-    let mut entries: Vec<Entry> = text.lines().filter_map(|line| serde_json::from_str(line).ok()).collect();
+    newest(read(&file(data_dir, host_id)).unwrap_or_default())
+}
+
+/// The newest `MAX_ENTRIES` of `entries`.
+fn newest(mut entries: Vec<Entry>) -> Vec<Entry> {
     if entries.len() > MAX_ENTRIES {
         entries.drain(..entries.len() - MAX_ENTRIES);
     }
     entries
+}
+
+/// Every entry in a history file, oldest first. Read as bytes and line by line, so a line cut
+/// in the middle of a character costs only that line, not the whole history.
+fn read(path: &Path) -> std::io::Result<Vec<Entry>> {
+    let bytes = fs::read(path)?;
+    let entries = bytes
+        .split(|&b| b == b'\n')
+        .filter_map(|line| serde_json::from_slice(line.strip_suffix(b"\r").unwrap_or(line)).ok())
+        .collect();
+    Ok(entries)
 }
 
 /// Add an entry to a Host's history.
@@ -107,7 +121,10 @@ pub fn append(data_dir: &Path, host_id: &str, entry: &Entry) -> Result<()> {
     out.write_all(line.as_bytes()).with_context(|| format!("writing {}", path.display()))?;
     drop(out);
     if fs::metadata(&path).is_ok_and(|m| m.len() > TRIM_AT_BYTES) {
-        let kept = load(data_dir, host_id);
+        // Trimmed only from what was read: a file that can't be read now is left as it is,
+        // never replaced by an empty one.
+        let Ok(entries) = read(&path) else { return Ok(()) };
+        let kept = newest(entries);
         let mut text = String::new();
         for entry in &kept {
             text.push_str(&serde_json::to_string(entry)?);
@@ -271,6 +288,72 @@ mod tests {
         append(&dir, "web", &entry(2, "a", "$ two")).unwrap();
         let lines: Vec<String> = load(&dir, "web").into_iter().map(|e| e.line).collect();
         assert_eq!(lines, ["$ one", "$ two"]);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// A saved line whose `é` lost its second byte, as a crash can leave it: not UTF-8, which
+    /// once made the whole file unreadable.
+    fn cut_character_line() -> Vec<u8> {
+        let mut bad = serde_json::to_string(&entry(2, "a", "$ echo é")).unwrap().into_bytes();
+        let at = bad.iter().position(|&b| b == 0xc3).unwrap();
+        bad.remove(at + 1);
+        bad.push(b'\n');
+        bad
+    }
+
+    #[test]
+    fn a_line_with_a_bad_byte_costs_only_that_line() {
+        let dir = temp_dir();
+        append(&dir, "web", &entry(1, "a", "$ one")).unwrap();
+        fs::OpenOptions::new().append(true).open(file(&dir, "web")).unwrap().write_all(&cut_character_line()).unwrap();
+        append(&dir, "web", &entry(3, "a", "$ three")).unwrap();
+        let lines: Vec<String> = load(&dir, "web").into_iter().map(|e| e.line).collect();
+        assert_eq!(lines, ["$ one", "$ three"]);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_trim_keeps_the_lines_around_a_bad_byte() {
+        let dir = temp_dir();
+        let long = "x".repeat(300);
+        let mut bytes = vec![];
+        for i in 0..MAX_ENTRIES + 50 {
+            bytes.extend(serde_json::to_string(&entry(0, "a", &format!("$ {i} {long}"))).unwrap().into_bytes());
+            bytes.push(b'\n');
+        }
+        // A cut character among the lines the trim keeps: before, the trim emptied the file.
+        bytes.extend(cut_character_line());
+        fs::create_dir_all(super::dir(&dir)).unwrap();
+        fs::write(file(&dir, "web"), bytes).unwrap();
+        append(&dir, "web", &entry(1, "a", "$ newest")).unwrap();
+        let text = fs::read_to_string(file(&dir, "web")).expect("the trim rewrote the file");
+        let kept: Vec<Entry> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(kept.len(), MAX_ENTRIES);
+        assert_eq!(kept[0].line, format!("$ 51 {long}"));
+        assert_eq!(kept[MAX_ENTRIES - 2].line, format!("$ {} {long}", MAX_ENTRIES + 49));
+        assert_eq!(kept.last().unwrap().line, "$ newest");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_cant_be_read_is_not_trimmed() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = temp_dir();
+        fs::create_dir_all(super::dir(&dir)).unwrap();
+        let path = file(&dir, "web");
+        let line = serde_json::to_string(&entry(0, "a", &"x".repeat(300))).unwrap() + "\n";
+        fs::write(&path, line.repeat(MAX_ENTRIES + 50)).unwrap();
+        let before = fs::metadata(&path).unwrap().len();
+        // Write-only: appending works, reading it back for the trim does not.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o200)).unwrap();
+        if fs::read(&path).is_ok() {
+            return; // Run as root, which reads it anyway.
+        }
+        append(&dir, "web", &entry(1, "a", "$ newest")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(fs::metadata(&path).unwrap().len() > before);
+        assert_eq!(load(&dir, "web").len(), MAX_ENTRIES);
         fs::remove_dir_all(dir).ok();
     }
 
