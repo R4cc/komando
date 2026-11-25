@@ -21,9 +21,14 @@ use serde::{Deserialize, Serialize};
 
 /// Entries kept per Host; the oldest go first.
 pub const MAX_ENTRIES: usize = 10_000;
-/// A file this large is trimmed to `MAX_ENTRIES` on the next append. Lines are about a hundred
-/// bytes, so this is well past `MAX_ENTRIES` and trimming is rare.
+/// A file this large is trimmed on the next append.
 const TRIM_AT_BYTES: u64 = 2 * 1024 * 1024;
+/// What a trim leaves at most, well under `TRIM_AT_BYTES`: an entry is its line plus about 70
+/// bytes, so `MAX_ENTRIES` of lines longer than about 140 bytes (a prompt with a long path and
+/// a git branch) don't fit in `TRIM_AT_BYTES`. Trimmed by count alone, such a file stayed over
+/// the limit and was rewritten on every Enter; this way the next trim is a few thousand
+/// commands away.
+const KEEP_BYTES: usize = 3 * 512 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
@@ -134,15 +139,30 @@ pub fn append(data_dir: &Path, host_id: &str, entry: &Entry) -> Result<()> {
         // Trimmed only from what was read: a file that can't be read now is left as it is,
         // never replaced by an empty one.
         let Ok(entries) = read(&path) else { return Ok(()) };
-        let kept = newest(entries);
-        let mut text = String::new();
-        for entry in &kept {
-            text.push_str(&serde_json::to_string(entry)?);
-            text.push('\n');
-        }
-        crate::model::write_atomic(&path, text.as_bytes())?;
+        crate::model::write_atomic(&path, trimmed(&entries)?.as_bytes())?;
     }
     Ok(())
+}
+
+/// The file's text after a trim: the newest entries, at most `MAX_ENTRIES` of them and at most
+/// `KEEP_BYTES`. The newest one is kept whatever its size.
+fn trimmed(entries: &[Entry]) -> Result<String> {
+    let mut lines = vec![];
+    let mut size = 0;
+    for entry in entries.iter().rev().take(MAX_ENTRIES) {
+        let line = serde_json::to_string(entry)?;
+        size += line.len() + 1;
+        if size > KEEP_BYTES && !lines.is_empty() {
+            break;
+        }
+        lines.push(line);
+    }
+    let mut text = String::with_capacity(size);
+    for line in lines.iter().rev() {
+        text.push_str(line);
+        text.push('\n');
+    }
+    Ok(text)
 }
 
 /// Whether the file ends with a line break, or is empty or missing.
@@ -338,9 +358,8 @@ mod tests {
         append(&dir, "web", &entry(1, "a", "$ newest")).unwrap();
         let text = fs::read_to_string(file(&dir, "web")).expect("the trim rewrote the file");
         let kept: Vec<Entry> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-        assert_eq!(kept.len(), MAX_ENTRIES);
-        assert_eq!(kept[0].line, format!("$ 51 {long}"));
-        assert_eq!(kept[MAX_ENTRIES - 2].line, format!("$ {} {long}", MAX_ENTRIES + 49));
+        assert!(kept.len() > 1000, "kept {}", kept.len());
+        assert_eq!(kept[kept.len() - 2].line, format!("$ {} {long}", MAX_ENTRIES + 49));
         assert_eq!(kept.last().unwrap().line, "$ newest");
         fs::remove_dir_all(dir).ok();
     }
@@ -385,10 +404,46 @@ mod tests {
         fs::write(file(&dir, "web"), text).unwrap();
         append(&dir, "web", &entry(1, "a", "$ newest")).unwrap();
         let kept = load(&dir, "web");
-        assert_eq!(kept.len(), MAX_ENTRIES);
+        // Long lines: fewer than `MAX_ENTRIES` fit, the newest ones, in order.
+        assert!(kept.len() > 1000 && kept.len() < MAX_ENTRIES, "kept {}", kept.len());
+        assert_eq!(kept[kept.len() - 2].line, format!("$ {} {long}", MAX_ENTRIES + 49));
         assert_eq!(kept.last().unwrap().line, "$ newest");
-        assert!(fs::metadata(file(&dir, "web")).unwrap().len() < TRIM_AT_BYTES * 2);
+        let size = fs::metadata(file(&dir, "web")).unwrap().len();
+        assert!(size <= KEEP_BYTES as u64, "{size} bytes");
+        // The next command is only added: the trim isn't repeated on every Enter.
+        let next = entry(2, "a", "$ next");
+        append(&dir, "web", &next).unwrap();
+        let added = serde_json::to_string(&next).unwrap().len() as u64 + 1;
+        assert_eq!(fs::metadata(file(&dir, "web")).unwrap().len(), size + added);
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_trim_of_short_lines_keeps_the_newest_max_entries() {
+        let dir = temp_dir();
+        let mut text = String::new();
+        let mut i = 0;
+        while text.len() as u64 <= TRIM_AT_BYTES {
+            text.push_str(&serde_json::to_string(&entry(0, "a", &format!("$ ls {i}"))).unwrap());
+            text.push('\n');
+            i += 1;
+        }
+        fs::create_dir_all(super::dir(&dir)).unwrap();
+        fs::write(file(&dir, "web"), text).unwrap();
+        append(&dir, "web", &entry(1, "a", "$ newest")).unwrap();
+        let kept = load(&dir, "web");
+        assert_eq!(kept.len(), MAX_ENTRIES);
+        assert_eq!(kept[MAX_ENTRIES - 2].line, format!("$ ls {}", i - 1));
+        assert_eq!(kept.last().unwrap().line, "$ newest");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_trim_keeps_the_newest_entry_however_long() {
+        let huge = entry(0, "a", &"x".repeat(KEEP_BYTES + 10));
+        let text = trimmed(&[entry(0, "a", "$ old"), huge.clone()]).unwrap();
+        let kept: Vec<Entry> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(kept, vec![huge]);
     }
 
     #[test]
