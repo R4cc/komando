@@ -67,11 +67,16 @@ pub enum Status {
 
 /// How a [`Status::Disconnected`] reason begins when reaching a Host took too long.
 pub const TIMED_OUT: &str = "Timed out connecting to ";
+/// ... when the server stopped answering while signing in.
+pub const TIMED_OUT_SIGNING_IN: &str = "Timed out signing in to ";
+/// ... when the server didn't open the shell's channel.
+pub const TIMED_OUT_OPENING_SHELL: &str = "Timed out opening the shell on ";
 
 impl Status {
     /// The connection ended because a Host didn't answer in time.
     pub fn timed_out(&self) -> bool {
-        matches!(self, Status::Disconnected(reason) if reason.starts_with(TIMED_OUT))
+        matches!(self, Status::Disconnected(reason)
+            if [TIMED_OUT, TIMED_OUT_SIGNING_IN, TIMED_OUT_OPENING_SHELL].iter().any(|start| reason.starts_with(start)))
     }
 }
 
@@ -673,8 +678,10 @@ pub fn tidy_export(raw: &str) -> String {
 mod tests {
     #[test]
     fn only_a_connection_that_ran_out_of_time_counts_as_timed_out() {
-        use super::{Status, TIMED_OUT};
+        use super::{Status, TIMED_OUT, TIMED_OUT_OPENING_SHELL, TIMED_OUT_SIGNING_IN};
         assert!(Status::Disconnected(format!("{TIMED_OUT}example.com:22.")).timed_out());
+        assert!(Status::Disconnected(format!("{TIMED_OUT_SIGNING_IN}example.com:22.")).timed_out());
+        assert!(Status::Disconnected(format!("{TIMED_OUT_OPENING_SHELL}example.com:22.")).timed_out());
         assert!(!Status::Disconnected("Connection refused (os error 111)".into()).timed_out());
         assert!(!Status::Disconnected(String::new()).timed_out());
         assert!(!Status::Connecting.timed_out());

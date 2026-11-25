@@ -230,6 +230,14 @@ fn describe(hop: &Hop) -> String {
 /// How long reaching one hop may take, Host Key questions aside.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// How long signing in to one hop may keep waiting on the server, time spent on the user's
+/// answers (a password, a code, an SSH agent's approval) aside. Longer than
+/// [`CONNECT_TIMEOUT`]: servers pause after a wrong password, and some look users up slowly.
+const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long ending a connection may take before it is dropped anyway.
+const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// When reaching a hop started counting towards [`CONNECT_TIMEOUT`]: `None` while a Host Key
 /// question waits for the user, who may take longer than that to compare a fingerprint. A VNC
 /// Remote Desktop's handshake uses it the same way around its sign-in prompt.
@@ -257,6 +265,14 @@ impl ConnectClock {
     /// Count again from now, with the whole timeout ahead.
     pub(crate) fn resume(&self) {
         self.set(Some(Instant::now()));
+    }
+
+    /// `future`, with the clock stopped while it runs: it waits on the user.
+    pub(crate) async fn paused<T>(&self, future: impl Future<Output = T>) -> T {
+        self.pause();
+        let out = future.await;
+        self.resume();
+        out
     }
 
     /// `future`'s output, or `None` once it took longer than [`CONNECT_TIMEOUT`] while not
@@ -680,10 +696,18 @@ fn replace_known_host(host: &str, port: u16, key: &PublicKey, path: &std::path::
     }
 }
 
-async fn ask(proxy: &EventProxy, label: &str, secret: bool, remember: Option<bool>, error: Option<String>) -> Option<Answer> {
+/// Ask the user, with `clock` stopped until they answer.
+async fn ask(
+    proxy: &EventProxy,
+    clock: &ConnectClock,
+    label: &str,
+    secret: bool,
+    remember: Option<bool>,
+    error: Option<String>,
+) -> Option<Answer> {
     let (reply, answer) = oneshot::channel();
     proxy.send(SessionEvent::Prompt(Prompt::Input { label: label.into(), secret, remember, error, reply }));
-    answer.await.ok().flatten()
+    clock.paused(answer).await.ok().flatten()
 }
 
 async fn run(
@@ -763,7 +787,7 @@ async fn run(
             Some(user) => (user, false),
             None => {
                 log.line(LogKind::Step, "No user name saved for this host: waiting for one");
-                let answer = ask(&proxy, &format!("User name for {}", hop.name), false, Some(false), None)
+                let answer = ask(&proxy, &clock, &format!("User name for {}", hop.name), false, Some(false), None)
                     .await
                     .ok_or_else(|| anyhow!(CANCELLED))?;
                 (answer.value, answer.remember)
@@ -774,7 +798,10 @@ async fn run(
         // password, so the password's vault entry is labelled with it.
         let agent_use = if is_host { target.host_agent.clone() } else { AgentUse::Any };
         let agent = target.agent.as_ref().filter(|_| agent_use != AgentUse::Off);
-        let signed_in = authenticate(&mut handle, &user, &hop.address, hop.secret.as_ref(), agent, &agent_use, &proxy, &log).await?;
+        let signed_in = clock
+            .limit(SIGN_IN_TIMEOUT, authenticate(&mut handle, &user, &hop.address, hop.secret.as_ref(), agent, &agent_use, &proxy, &log, &clock))
+            .await
+            .ok_or_else(|| anyhow!("{}{}:{}.", super::TIMED_OUT_SIGNING_IN, hop.address, hop.port))??;
         log.line(LogKind::Good, &format!("Signed in to {} as {user}", hop.name));
         if remember_user {
             proxy.send(SessionEvent::Remember { hop: index, what: Remembered::User(user.clone()) });
@@ -815,21 +842,27 @@ async fn run(
         log::info!("agent forwarding is on, but there is no SSH agent to forward");
     }
     let forward_agent = target.forward_agent && target.agent.is_some();
-    let result = shell(handle, &mut size, &term, &proxy, &log, &mut commands, sudo, host_window, forward_agent).await;
+    let host = target.hops.last().map(|hop| format!("{}:{}", hop.address, hop.port)).unwrap_or_default();
+    let result = shell(handle, &host, &mut size, &term, &proxy, &log, &mut commands, sudo, host_window, forward_agent).await;
     drop(forwards);
     monitors.shutdown().await;
     // Always end the connection with the terminal, so SFTP channels opened on it end too.
-    let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
-    // The Jump Hosts' connections, innermost first.
-    for jump in handles[..handles.len() - 1].iter().rev() {
-        let _ = jump.disconnect(Disconnect::ByApplication, "", "en").await;
-    }
+    // A server that stopped answering doesn't hold the tab: the connections drop with `handles`.
+    let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, async {
+        let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
+        // The Jump Hosts' connections, innermost first.
+        for jump in handles[..handles.len() - 1].iter().rev() {
+            let _ = jump.disconnect(Disconnect::ByApplication, "", "en").await;
+        }
+    })
+    .await;
     result
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn shell(
     handle: &Arc<Handle<Client>>,
+    host: &str,
     size: &mut GridSize,
     term: &SharedTerm,
     proxy: &EventProxy,
@@ -844,8 +877,13 @@ async fn shell(
     // sending the connection's large window's worth first.
     let mut pace = Pace::up_to(max_window);
     let paced = FIXED_WINDOW.lock().unwrap().is_none();
-    let mut channel =
-        if paced { handle.channel_open_session_with_window(pace.window()).await? } else { handle.channel_open_session().await? };
+    // The requests below don't wait for replies; opening the channel does.
+    let opening = async {
+        if paced { handle.channel_open_session_with_window(pace.window()).await } else { handle.channel_open_session().await }
+    };
+    let mut channel = tokio::time::timeout(CONNECT_TIMEOUT, opening)
+        .await
+        .map_err(|_| anyhow!("{}{host}.", super::TIMED_OUT_OPENING_SHELL))??;
     let window = paced.then(|| set_window(handle, channel.id(), pace.window()));
     // Signing in took a while: the pane has been laid out since the connection started, so
     // open the shell at its size rather than resize it straight after (a shell that starts at
@@ -1213,6 +1251,8 @@ struct PasswordState<'a> {
     /// keys come before a typed password.
     agent_next: bool,
     signed_in: SignedIn,
+    /// Stopped while a question waits for the user.
+    clock: ConnectClock,
 }
 
 /// What one sign-in method came to.
@@ -1251,20 +1291,27 @@ async fn authenticate(
     agent_use: &AgentUse,
     proxy: &EventProxy,
     log: &ConnectLog,
+    clock: &ConnectClock,
 ) -> Result<SignedIn> {
     let saved = match secret {
         Some(Secret::Password { password }) => Some(password.as_str()),
         _ => None,
     };
-    let mut state =
-        PasswordState { saved, remember: false, last_error: None, agent_next: false, signed_in: SignedIn { password: None, remember: false } };
+    let mut state = PasswordState {
+        saved,
+        remember: false,
+        last_error: None,
+        agent_next: false,
+        signed_in: SignedIn { password: None, remember: false },
+        clock: clock.clone(),
+    };
     let mut methods = None;
     if let Some(Secret::PrivateKey { key, passphrase }) = secret {
         log.line(LogKind::Step, &format!("Signing in as {user} with the saved key"));
         let decoded = match russh::keys::decode_secret_key(key, passphrase.as_deref()) {
             Ok(decoded) => Ok(decoded),
             Err(_) if passphrase.is_none() => {
-                let pass = ask(proxy, "Key passphrase", true, None, None).await.ok_or_else(|| anyhow!(CANCELLED))?;
+                let pass = ask(proxy, clock, "Key passphrase", true, None, None).await.ok_or_else(|| anyhow!(CANCELLED))?;
                 let pass = Zeroizing::new(pass.value);
                 russh::keys::decode_secret_key(key, Some(pass.as_str()))
             }
@@ -1314,7 +1361,7 @@ async fn authenticate(
             && (state.saved.is_none() || !takes_password)
             && let Some(agent) = agent.take()
         {
-            match agent_keys(handle, user, address, agent, agent_use, log).await? {
+            match agent_keys(handle, user, address, agent, agent_use, log, clock).await? {
                 // Nothing to offer: on to the rest.
                 None => {}
                 Some(Step::Done) => return Ok(state.signed_in),
@@ -1370,8 +1417,10 @@ async fn agent_keys(
     agent: &Agent,
     agent_use: &AgentUse,
     log: &ConnectLog,
+    clock: &ConnectClock,
 ) -> Result<Option<Step>> {
-    let opened = match agent.open(handle.agent_session_binding()).await {
+    // Its own time limit: listing may also wait for the user's approval.
+    let opened = match clock.paused(agent.open(handle.agent_session_binding())).await {
         Ok(Some(opened)) => opened,
         Ok(None) => return Ok(None),
         Err(err) => {
@@ -1408,14 +1457,19 @@ async fn agent_keys(
             break;
         }
         offered += 1;
-        let result = match key {
-            russh::keys::agent::AgentIdentity::PublicKey { key, .. } => {
-                handle.authenticate_publickey_with(user, key.clone(), hash, &mut client).await
-            }
-            russh::keys::agent::AgentIdentity::Certificate { certificate, .. } => {
-                handle.authenticate_certificate_with(user, certificate.clone(), hash, &mut client).await
-            }
-        };
+        // Not timed: the agent may wait for the user to approve or touch a security key.
+        let result = clock
+            .paused(async {
+                match key {
+                    russh::keys::agent::AgentIdentity::PublicKey { key, .. } => {
+                        handle.authenticate_publickey_with(user, key.clone(), hash, &mut client).await
+                    }
+                    russh::keys::agent::AgentIdentity::Certificate { certificate, .. } => {
+                        handle.authenticate_certificate_with(user, certificate.clone(), hash, &mut client).await
+                    }
+                }
+            })
+            .await;
         match result {
             Ok(AuthResult::Success) => return Ok(Some(Step::Done)),
             Ok(AuthResult::Failure { remaining_methods, partial_success: true }) => return Ok(Some(Step::More(remaining_methods))),
@@ -1567,7 +1621,7 @@ async fn keyboard_interactive(
                     } else {
                         typed = true;
                         let label = question_label(&prompt.prompt, user, address);
-                        let answer = ask(proxy, &label, !prompt.echo, None, state.last_error.take())
+                        let answer = ask(proxy, &state.clock, &label, !prompt.echo, None, state.last_error.take())
                             .await
                             .ok_or_else(|| anyhow!(CANCELLED))?;
                         answers.push(answer.value);
@@ -1589,7 +1643,7 @@ fn keep_password(state: &mut PasswordState<'_>, given: Option<(Zeroizing<String>
 
 async fn ask_password(user: &str, address: &str, state: &mut PasswordState<'_>, proxy: &EventProxy) -> Result<Zeroizing<String>> {
     let label = format!("Password for {user}@{address}");
-    let answer = ask(proxy, &label, true, Some(state.remember), state.last_error.take())
+    let answer = ask(proxy, &state.clock, &label, true, Some(state.remember), state.last_error.take())
         .await
         .ok_or_else(|| anyhow!(CANCELLED))?;
     state.remember = answer.remember;
@@ -1648,6 +1702,34 @@ mod tests {
         assert_eq!(slow_answer, Some("connected"));
         // Without a question, a server that never answers still times out.
         let stalled = runtime.block_on(clock.limit(timeout, std::future::pending::<()>()));
+        assert_eq!(stalled, None);
+    }
+
+    #[test]
+    fn signing_in_times_out_only_while_waiting_on_the_server() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let timeout = Duration::from_millis(80);
+        let clock = super::ConnectClock::new();
+        // A slow password prompt, then two server replies each well within the limit.
+        let signed_in = runtime.block_on(clock.limit(timeout, {
+            let clock = clock.clone();
+            async move {
+                clock.paused(tokio::time::sleep(timeout * 4)).await;
+                tokio::time::sleep(timeout / 3).await;
+                clock.paused(tokio::time::sleep(timeout * 2)).await;
+                tokio::time::sleep(timeout / 3).await;
+                "signed in"
+            }
+        }));
+        assert_eq!(signed_in, Some("signed in"));
+        // A server that stops answering after the prompt still times out.
+        let stalled = runtime.block_on(clock.limit(timeout, {
+            let clock = clock.clone();
+            async move {
+                clock.paused(tokio::time::sleep(timeout * 2)).await;
+                std::future::pending::<()>().await
+            }
+        }));
         assert_eq!(stalled, None);
     }
 

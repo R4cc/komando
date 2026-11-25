@@ -919,7 +919,10 @@ pub struct ExecOutput {
 
 impl Remote {
     pub(crate) async fn open(handle: Arc<Handle<Client>>) -> Result<Remote> {
-        let channel = handle.channel_open_session().await.map_err(|e| anyhow!("Could not open a channel: {e}"))?;
+        let channel = tokio::time::timeout(Duration::from_secs(20), handle.channel_open_session())
+            .await
+            .map_err(|_| anyhow!("The server did not open a channel for SFTP in time."))?
+            .map_err(|e| anyhow!("Could not open a channel: {e}"))?;
         channel.request_subsystem(true, "sftp").await.map_err(|e| anyhow!("Could not start SFTP: {e}"))?;
         let config = russh_sftp::client::Config {
             request_timeout_secs: REQUEST_TIMEOUT_SECS,
