@@ -412,13 +412,9 @@ pub(super) fn form_field(label: &str, hint: Option<&str>, control: AnyElement, p
 }
 
 /// A connected Session's Disconnect and Close entries. Delete does what × does: it closes
-/// the Session, or with `keep` (a terminal, "Keep sessions after disconnecting" on) only
-/// disconnects it, so then there is no separate Close.
-pub(super) fn live_session_items(menu: PopupMenu, id: usize, keep: bool, ws: &gpui::WeakEntity<Workspace>) -> PopupMenu {
+/// the Session.
+pub(super) fn live_session_items(menu: PopupMenu, id: usize, ws: &gpui::WeakEntity<Workspace>) -> PopupMenu {
     let disconnect = menu_item("Disconnect", Some("unplug"), ws, move |this, window, cx| this.end_session(id, EndRequest::Disconnect, window, cx));
-    if keep {
-        return menu.item(disconnect.action(Box::new(nav::NavDelete)));
-    }
     menu.item(disconnect)
         .item(menu_item("Close session", None, ws, move |this, window, cx| this.end_session(id, EndRequest::Close, window, cx)).action(Box::new(nav::NavDelete)))
 }
@@ -560,6 +556,49 @@ pub(super) fn strip_action(id: &'static str, icon: &str, label: &'static str, da
                 .text_color(p.text_faint)
                 .group_hover(id, move |s| s.text_color(hover_fg)),
         )
+}
+
+/// A Session's action in the strip above it, with its icon and its name: the strip's actions
+/// all look alike, so none has to be guessed from an icon. `on` marks a toggle that is on.
+pub(super) fn strip_button(id: &'static str, icon: &str, label: &'static str, on: bool, enabled: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+    let color = if on {
+        p.active_text
+    } else if enabled {
+        p.text_muted
+    } else {
+        p.text_faint.opacity(0.55)
+    };
+    div()
+        .id(id)
+        .group(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .tab_index(0)
+        .focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus))
+        .h(px(26.))
+        .px(px(8.))
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(6.))
+        .rounded(p.corner(7.))
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(color)
+        .when(on, |el| el.bg(p.active))
+        .when(enabled, |el| el.cursor_pointer().hover(move |s| s.bg(if on { p.active } else { p.hover }).text_color(p.text)))
+        .when(!enabled, |el| el.cursor_default())
+        // Its hitbox hides the title bar's drag area: see `strip_action`.
+        .occlude()
+        .child(
+            gpui::svg()
+                .path(SharedString::from(format!("icons/{icon}.svg")))
+                .size(px(13.))
+                .flex_shrink_0()
+                .text_color(color)
+                .when(enabled, |el| el.group_hover(id, move |s| s.text_color(p.text))),
+        )
+        .child(label)
 }
 
 /// A keyboard shortcut ("Ctrl ,") in a small outlined chip, the only one in the app.

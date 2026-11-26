@@ -468,50 +468,85 @@ impl TerminalView {
         let p = cx.global::<Appearance>().app;
         // It never connected: a failure, marked in red like its row in the sidebar.
         let failed = !self.was_connected && reason != crate::session::CLOSED_BY_USER;
-        Some(
-            div()
-                .absolute()
-                .bottom(px(16.))
-                .left(px(16.))
-                .right(px(16.))
-                .flex()
-                .justify_center()
-                .child(
-                    // A long reason (a failed key exchange lists every algorithm) wraps within
-                    // the terminal's width, and past three lines ends in "…": the output above
-                    // has it in full.
+        // An SSH connection's log already says why it failed, just above: the notice then
+        // only offers the way out, rather than saying it all again.
+        let said = self.tells_end;
+        // Right under the last line of output, where the failure is read, unless that is
+        // too far down to fit: then at the bottom.
+        let (_, line_h) = self.cell.get();
+        let (cursor_line, screen_lines) = {
+            let term = self.term.lock();
+            (term.grid().cursor.point.line.0.max(0) as f32, term.screen_lines() as f32)
+        };
+        let under_output = cursor_line < screen_lines - 4.;
+        let actions = div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap(px(8.))
+            .child(
+                button("reconnect", "Reconnect", ButtonKind::Primary, p)
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(TerminalEvent::Reconnect))),
+            )
+            .when(failed && said, |el| {
+                el.child(
+                    button("reconnect-edit", "Edit host", ButtonKind::Secondary, p)
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(TerminalEvent::EditHost { hop: THE_HOST }))),
+                )
+            })
+            .child(div().text_color(p.text_muted).child("or press Enter"));
+        let notice = div()
+            .min_w_0()
+            .max_w_full()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(12.))
+            .px(px(12.))
+            .py(px(8.))
+            .rounded(p.corner(10.))
+            .bg(p.surface)
+            .border_1()
+            .border_color(if failed { p.danger.opacity(0.35) } else { p.border })
+            .font_family(p.font_family)
+            .text_size(px(13.))
+            .when(!said, |el| {
+                // A long reason (a failed key exchange lists every algorithm) ends in "…" past
+                // three lines: the output above has it in full.
+                el.child(
                     div()
                         .min_w_0()
-                        .max_w_full()
+                        .flex_1()
                         .flex()
                         .items_center()
                         .gap(px(10.))
-                        .px(px(14.))
-                        .py(px(9.))
-                        .rounded(p.corner(10.))
-                        .bg(p.surface)
-                        .border_1()
-                        .border_color(p.border)
-                        .font_family(p.font_family)
-                        .text_size(px(13.))
                         .child(div().flex_shrink_0().size(px(8.)).rounded_full().bg(if failed { p.danger } else { p.text_faint }))
                         .child(
                             div()
                                 .min_w_0()
-                                .flex_shrink(1.)
                                 .whitespace_normal()
                                 .line_clamp(3)
                                 .text_ellipsis()
                                 .text_color(p.text)
                                 .child(reason.clone()),
-                        )
-                        .child(
-                            button("reconnect", "Reconnect", ButtonKind::Primary, p)
-                                .flex_shrink_0()
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(TerminalEvent::Reconnect))),
-                        )
-                        .child(div().flex_shrink_0().text_color(p.text_muted).child("or press Enter")),
+                        ),
                 )
+            })
+            .child(actions);
+        Some(
+            div()
+                .absolute()
+                .left(px(PADDING_X))
+                .right(px(PADDING_X))
+                .map(|el| {
+                    if under_output {
+                        el.top(px(PADDING_Y + cursor_line * line_h + 6.))
+                    } else {
+                        el.bottom(px(16.))
+                    }
+                })
+                .flex()
+                .child(notice)
                 .into_any_element(),
         )
     }

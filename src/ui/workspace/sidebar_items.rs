@@ -79,8 +79,6 @@ impl Workspace {
         // Beside the Session shown, unless that is the one this would show.
         let can_split = self.sessions.can_place(&key, None, Side::Right);
         let history = self.settings.command_history;
-        // × and Delete only disconnect a terminal; with the setting off they close it.
-        let keep_sessions = self.settings.keep_disconnected_sessions && main.is_some_and(|s| s.ui.view.desktop().is_none());
         let completion_ids: Vec<usize> = sessions.iter().map(|s| s.id()).collect();
         let linked = linked.is_some();
         // Its connected terminal, for Browse files: the row's own, else the last shown.
@@ -142,7 +140,7 @@ impl Workspace {
                         .action(Box::new(nav::NavEdit)),
                 );
                 if live {
-                    menu = live_session_items(menu, id, keep_sessions, &ws);
+                    menu = live_session_items(menu, id, &ws);
                 } else {
                     menu = menu.item(
                         menu_item("Close session", None, &ws, move |this, window, cx| this.end_session(id, EndRequest::CloseNow, window, cx))
@@ -248,10 +246,7 @@ impl Workspace {
         let row_session = main.filter(|_| show_status).map(|s| s.id());
         let hover_close = row_session.filter(|_| quick_close.on_hover());
         let middle_close = row_session.filter(|_| quick_close.on_middle_click());
-        let close_tip: SharedString = match main {
-            Some(s) if s.is_live() && self.settings.keep_disconnected_sessions && s.ui.view.desktop().is_none() => "Disconnect".into(),
-            _ => "Close session".into(),
-        };
+        let close_tip: SharedString = "Close session".into();
         let show_count = grouped && !expanded;
         // Room for every digit of the count, so 50 doesn't wrap onto two lines.
         let count_width = (listed_count.to_string().len() as f32 * 7.).max(14.);
@@ -550,8 +545,8 @@ impl Workspace {
             SidebarItem::Shell { .. } => item.icon_color(&icon, color, p),
             SidebarItem::Host { .. } => text_color,
         };
-        let disconnects = live && self.settings.keep_disconnected_sessions && session.ui.view.desktop().is_none();
-        let tip: SharedString = if disconnects { "Disconnect".into() } else { "Close session".into() };
+        // × always closes; Disconnect, which keeps the output, is in the row's menu.
+        let tip: SharedString = "Close session".into();
         let close = div()
             .id(SharedString::from(format!("close-{id}")))
             .group("session-close")
@@ -661,18 +656,20 @@ impl Workspace {
         session_row_text(session, port)
     }
 
-    /// The active Session's name in the title bar: its Host (or shell) and, when it has a row of
-    /// its own in the sidebar, that row's label, so the two read the same ("web01 · SSH —
-    /// Session 2"). Otherwise the Host's row stands for it, and the title is that row's name.
-    pub(super) fn session_title(&self, session: &SessionEntry) -> SharedString {
+    /// The active Session's name in the title bar: its Host (or shell), then which Session it
+    /// is. With a row of its own in the sidebar, that is the row's label ("SSH — Session 2"),
+    /// so the two read the same; otherwise the Host's row stands for it, and it is only the
+    /// name the Session was given, if any.
+    pub(super) fn session_title(&self, session: &SessionEntry) -> (SharedString, Option<SharedString>) {
         let listed = self.sessions.listed(session.item()).iter().any(|s| s.id() == session.id());
         let item = match session.kind() {
             SessionKind::Ssh { host_id } | SessionKind::Desktop { host_id, .. } => self.library.host(host_id).map(|h| h.name.clone()),
             SessionKind::Local { shell } => Some(shell.name.clone()),
         };
         match item {
-            Some(item) if listed => format!("{item} · {}", self.session_row_text(session).0).into(),
-            _ => self.sessions.display_name(session),
+            Some(item) if listed => (item.into(), Some(self.session_row_text(session).0)),
+            Some(item) => (item.into(), session.name().cloned()),
+            None => (self.sessions.display_name(session), None),
         }
     }
 
@@ -700,7 +697,6 @@ impl Workspace {
         let dropped = session.is_some_and(|s| !s.is_live());
         let desktop = session.and_then(desktop_protocol);
         let own_window = session.is_some_and(|s| s.own_window());
-        let keep = self.settings.keep_disconnected_sessions && desktop.is_none();
         let files = session.is_some_and(|s| matches!(s.kind(), SessionKind::Ssh { .. }) && matches!(s.status(), Status::Connected));
         let in_split = self.sessions.in_split(id);
         let sidebar_focus = self.nav.focus.clone();
@@ -724,7 +720,7 @@ impl Workspace {
                 }))
                 .item(menu_item("Close", None, &ws, move |this, window, cx| this.end_session(id, EndRequest::CloseNow, window, cx)).action(Box::new(nav::NavDelete)))
             } else {
-                live_session_items(menu, id, keep, &ws)
+                live_session_items(menu, id, &ws)
             };
             if desktop.is_some() {
                 menu = menu.separator().item(if own_window {

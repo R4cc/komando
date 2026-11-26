@@ -701,23 +701,17 @@ impl<P> Sessions<P> {
 
 /// Ending Sessions.
 impl<P> Sessions<P> {
-    /// What `request` comes to for a Session. With `keep_disconnected` (the setting), closing
-    /// a live terminal disconnects it instead, keeping its output.
-    pub fn ending(&self, id: usize, request: EndRequest, keep_disconnected: bool) -> Ending {
+    /// What `request` comes to for a Session. Closing always closes; only Disconnect keeps the
+    /// Session and its output.
+    pub fn ending(&self, id: usize, request: EndRequest) -> Ending {
         let Some(entry) = self.get(id) else { return Ending::Nothing };
         let live = entry.is_live();
         let printing = live && entry.busy;
-        let close = if keep_disconnected && live && !entry.is_desktop() { Ending::Disconnect } else { Ending::Remove };
         match request {
-            EndRequest::CloseNow => close,
+            EndRequest::CloseNow => Ending::Remove,
             EndRequest::CloseByKey if live && entry.is_desktop() => Ending::Ask(Question::CloseDesktopByKey),
-            EndRequest::Close | EndRequest::CloseByKey => match (printing, keep_disconnected) {
-                (true, false) => Ending::Ask(Question::CloseWhilePrinting),
-                (true, true) => Ending::Ask(Question::DisconnectWhilePrinting),
-                // As a close without the question: a live terminal kept with Keep on, a
-                // desktop or a dropped Session (nothing left to disconnect) discarded.
-                (false, _) => close,
-            },
+            EndRequest::Close | EndRequest::CloseByKey if printing => Ending::Ask(Question::CloseWhilePrinting),
+            EndRequest::Close | EndRequest::CloseByKey => Ending::Remove,
             EndRequest::Disconnect if !live => Ending::Nothing,
             EndRequest::Disconnect if printing => Ending::Ask(Question::DisconnectWhilePrinting),
             EndRequest::Disconnect => Ending::Disconnect,
@@ -1304,40 +1298,30 @@ mod tests {
         use Question::*;
         #[rustfmt::skip]
         let cases = [
-            // request, desktop, live, printing, keep disconnected → ending
-            (Close, false, true, false, false, Remove),
-            (Close, false, true, true, false, Ask(CloseWhilePrinting)),
-            (Close, false, false, false, false, Remove),
-            (Close, false, true, false, true, Disc),
-            (Close, false, true, true, true, Ask(DisconnectWhilePrinting)),
-            // A dropped Session has nothing left to disconnect: × closes it.
-            (Close, false, false, false, true, Remove),
-            // A desktop is discarded, Keep on or not, as the menus' Close does.
-            (Close, true, true, false, true, Remove),
-            (CloseByKey, true, false, false, true, Remove),
-            (CloseByKey, true, true, false, false, Ask(CloseDesktopByKey)),
-            (CloseByKey, true, false, false, false, Remove),
-            (CloseByKey, false, true, true, false, Ask(CloseWhilePrinting)),
-            (CloseNow, false, true, true, false, Remove),
-            (CloseNow, false, true, true, true, Disc),
-            (CloseNow, true, true, false, true, Remove),
-            (CloseNow, false, false, false, true, Remove),
-            (Disconnect, false, true, false, false, Disc),
-            (Disconnect, false, true, true, false, Ask(DisconnectWhilePrinting)),
-            (Disconnect, false, false, false, false, Nothing),
-            (Disconnect, true, true, false, true, Disc),
+            // request, desktop, live, printing → ending
+            (Close, false, true, false, Remove),
+            (Close, false, true, true, Ask(CloseWhilePrinting)),
+            (Close, false, false, false, Remove),
+            (Close, true, true, false, Remove),
+            (CloseByKey, true, true, false, Ask(CloseDesktopByKey)),
+            (CloseByKey, true, false, false, Remove),
+            (CloseByKey, false, true, true, Ask(CloseWhilePrinting)),
+            (CloseByKey, false, true, false, Remove),
+            (CloseNow, false, true, true, Remove),
+            (CloseNow, true, true, false, Remove),
+            (CloseNow, false, false, false, Remove),
+            (Disconnect, false, true, false, Disc),
+            (Disconnect, false, true, true, Ask(DisconnectWhilePrinting)),
+            (Disconnect, false, false, false, Nothing),
+            (Disconnect, true, true, false, Disc),
         ];
-        for (request, desktop, live, printing, keep, expected) in cases {
+        for (request, desktop, live, printing, expected) in cases {
             let mut sessions = Sessions::default();
             let kind = if desktop { rdp("web01") } else { ssh("web01") };
             let id = session_in(&mut sessions, kind, live, printing);
-            assert_eq!(
-                sessions.ending(id, request, keep),
-                expected,
-                "{request:?}, desktop {desktop}, live {live}, printing {printing}, keep {keep}"
-            );
+            assert_eq!(sessions.ending(id, request), expected, "{request:?}, desktop {desktop}, live {live}, printing {printing}");
         }
-        assert_eq!(Sessions::<()>::default().ending(1, Close, false), Nothing);
+        assert_eq!(Sessions::<()>::default().ending(1, Close), Nothing);
     }
 
     #[test]
@@ -1431,7 +1415,7 @@ mod tests {
         let mut sessions = Sessions::default();
         let id = open(&mut sessions, &host("web01"), ssh("web01"));
         let failed = |sessions: &Sessions<()>| sessions.get(id).unwrap().failed();
-        sessions.set_status(id, Status::Disconnected("Timed out connecting to 10.0.0.1:22.".into()));
+        sessions.set_status(id, Status::Disconnected("Timed out connecting to 10.0.0.1:22".into()));
         assert!(failed(&sessions), "timed out before connecting");
         sessions.set_status(id, Status::Connecting);
         assert!(!failed(&sessions), "trying again");

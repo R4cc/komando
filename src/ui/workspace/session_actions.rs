@@ -448,7 +448,9 @@ impl Workspace {
         let host = self.library.resolve(project_id, host_id)?;
         match host.jump_hosts.get(hop) {
             Some(jump) => Some(HopTarget::Jump(jump.clone())),
-            None if hop == host.jump_hosts.len() => Some(HopTarget::Host { project_id: project_id.into(), host_id: host_id.clone() }),
+            None if hop == host.jump_hosts.len() || hop == crate::ui::terminal_view::THE_HOST => {
+                Some(HopTarget::Host { project_id: project_id.into(), host_id: host_id.clone() })
+            }
             None => None,
         }
     }
@@ -890,7 +892,7 @@ impl Workspace {
         if request != EndRequest::CloseNow && self.modal_open(cx) {
             return;
         }
-        let ending = self.sessions.ending(id, request, self.settings.keep_disconnected_sessions);
+        let ending = self.sessions.ending(id, request);
         let question = match ending {
             Ending::Disconnect => return self.disconnect_session(id, window, cx),
             Ending::Remove => return self.remove_session(id, window, cx),

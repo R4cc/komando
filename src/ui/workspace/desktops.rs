@@ -5,7 +5,7 @@ use gpui::{AnyElement, ClickEvent, Context, Window, prelude::*};
 use zeroize::Zeroizing;
 
 use super::sessions::EndRequest;
-use super::{ItemKey, Pending, SessionEntry, SessionKind, SessionParts, SessionView, Workspace, strip_action};
+use super::{ItemKey, Pending, SessionEntry, SessionKind, SessionParts, SessionView, Workspace, strip_button};
 use crate::desktop::{self, Route, Target};
 use crate::model::Protocol;
 use crate::session::Status;
@@ -327,9 +327,10 @@ impl Workspace {
         }
     }
 
-    /// The title bar's actions on a Remote Desktop: Disconnect, or Reconnect once it has dropped, and its own
-    /// window. Keys, scaling and quality are in the desktop's own toolbar. Moving between a Host's terminal and its desktops is done
-    /// from the sidebar, so the bar keeps its layout.
+    /// The title bar's actions on a Remote Desktop: Disconnect, or Reconnect once it has dropped,
+    /// labelled like a terminal's. Its own window, keys, scaling and quality are in the desktop's
+    /// own toolbar. Moving between a Host's terminal and its desktops is done from the sidebar,
+    /// so the bar keeps its layout.
     pub(super) fn desktop_strip_buttons(&self, entry: &SessionEntry, p: AppPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let Some(protocol) = desktop_protocol(entry) else { return vec![] };
         let id = entry.id();
@@ -337,22 +338,17 @@ impl Workspace {
         let mut buttons = vec![];
         if entry.is_live() {
             buttons.push(
-                strip_action("desktop-disconnect", "unplug", "Disconnect", false, p)
+                strip_button("desktop-disconnect", "unplug", "Disconnect", false, true, p)
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.end_session(id, EndRequest::Disconnect, window, cx)))
                     .into_any_element(),
             );
         } else {
             buttons.push(
-                strip_action("desktop-reconnect", "refresh-cw", "Reconnect", false, p)
+                strip_button("desktop-reconnect", "refresh-cw", "Reconnect", false, true, p)
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.connect_desktop(id, window, cx)))
                     .into_any_element(),
             );
         }
-        buttons.push(
-            strip_action("desktop-own-window", "app-window", "Open in its own window", false, p)
-                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.detach_desktop(id, None, window, cx)))
-                .into_any_element(),
-        );
         buttons
     }
 }

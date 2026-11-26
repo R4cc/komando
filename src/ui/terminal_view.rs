@@ -169,6 +169,9 @@ impl StartupCommands {
     }
 }
 
+/// [`TerminalEvent::EditHost`]'s hop for the Host the terminal connects to.
+pub const THE_HOST: usize = usize::MAX;
+
 /// What a terminal tells the workspace about.
 pub enum TerminalEvent {
     /// Status or title changed: refresh the sidebar.
@@ -177,7 +180,8 @@ pub enum TerminalEvent {
     /// Host, or the Host itself when there are none).
     Remember { hop: usize, what: Remembered },
     Reconnect,
-    /// Open the host form for the Host of hop `hop`.
+    /// Open the host form for the Host of hop `hop`, or with [`THE_HOST`] the Host itself
+    /// whatever its route.
     EditHost { hop: usize },
     /// The pane's grid size is known or changed (see [`TerminalView::measured_size`]).
     Sized,

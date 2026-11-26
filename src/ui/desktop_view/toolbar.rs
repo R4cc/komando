@@ -7,7 +7,7 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, App, ClickEvent, Context, FontWeight, SharedString, WeakEntity, Window, div, prelude::*, px};
-use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::{Icon, Selectable as _, Sizable as _};
 
@@ -178,13 +178,16 @@ impl DesktopView {
             Scaling::Actual => "scan",
             Scaling::Stretch => "expand",
         };
+        // The toolbar's buttons in the text colour, like the rest of the chrome. A ghost button
+        // takes the theme's secondary foreground, an accent (orange) in some light themes.
+        let plain = ButtonCustomVariant::new(cx).foreground(p.text).hover(p.hover).active(p.active);
         let controls = div()
             .flex()
             .items_center()
             .gap(px(2.))
             .child(
                 Button::new("rd-scaling")
-                    .ghost()
+                    .custom(plain)
                     .small()
                     .icon(icon(scaling_icon))
                     .label(options.scaling.label())
@@ -194,7 +197,7 @@ impl DesktopView {
             )
             .child(
                 Button::new("rd-quality")
-                    .ghost()
+                    .custom(plain)
                     .small()
                     .icon(icon("gauge"))
                     .label(options.quality.label())
@@ -205,7 +208,7 @@ impl DesktopView {
             .child(divider(p))
             .child(
                 Button::new("rd-keys")
-                    .ghost()
+                    .custom(plain)
                     .small()
                     .icon(icon("keyboard"))
                     // A label keeps it a normal button: an icon-only one is a fixed square the
@@ -218,7 +221,7 @@ impl DesktopView {
             .child({
                 let on = options.view_only;
                 Button::new("rd-view-only")
-                    .ghost()
+                    .custom(plain)
                     .small()
                     .icon(icon(if on { "eye" } else { "mouse-pointer-2" }))
                     .selected(on)
@@ -229,7 +232,7 @@ impl DesktopView {
             .child(divider(p))
             .child(
                 Button::new("rd-window")
-                    .ghost()
+                    .custom(plain)
                     .small()
                     .icon(icon(if self.detached { "square-arrow-down-left" } else { "square-arrow-out-up-right" }))
                     .tooltip(if self.detached { "Back to Komando" } else { "Open in its own window" })
@@ -242,7 +245,7 @@ impl DesktopView {
             )
             .child({
                 Button::new("rd-fullscreen")
-                    .ghost()
+                    .custom(plain)
                     .small()
                     .icon(icon(if floating { "minimize-2" } else { "maximize-2" }))
                     .tooltip(if floating { "Exit full screen" } else { "Full screen" })
@@ -268,7 +271,10 @@ impl DesktopView {
             .child(controls);
 
         if !floating {
-            return bar.flex_shrink_0().w_full().border_b_1().border_color(p.border).bg(p.surface).into_any_element();
+            // Over a fitted picture the bar sits on the pane like the picture does; over one
+            // that fills the pane, a hairline keeps the two apart.
+            let rule = options.scaling != Scaling::Fit;
+            return bar.flex_shrink_0().w_full().when(rule, |el| el.border_b_1().border_color(p.border)).bg(p.background).into_any_element();
         }
         // Full screen: out of the way at the top edge until the pointer reaches it.
         let out = self.toolbar_out;

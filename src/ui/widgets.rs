@@ -830,23 +830,29 @@ fn searching_level(index: usize, delta: f32) -> f32 {
     ease((delta - on) / 0.08) * (1. - ease((delta - 0.8) / 0.12))
 }
 
-/// SSH connection quality, with a stable footprint and a hover target larger than the bars.
-/// Local shells and Remote Desktops keep their ordinary connection status dot.
+/// A connection's state as signal bars, with a stable footprint and a hover target larger
+/// than the bars. `hops` are an SSH connection's measured round trips; a connection that isn't
+/// measured (a Remote Desktop, `None`) shows full bars while connected. `protocol` names it for
+/// screen readers. Local shells keep their ordinary status dot.
 pub fn connection_indicator(
     status: &crate::session::Status,
-    hops: &[crate::session::latency::HopLatency],
+    hops: Option<&[crate::session::latency::HopLatency]>,
+    protocol: &str,
     reduce_motion: bool,
     p: AppPalette,
 ) -> impl IntoElement {
     use crate::session::Status;
     use crate::session::latency::{ReplyState, weakest_hop};
 
+    let measured = hops.is_some();
+    let hops = hops.unwrap_or_default();
+
     let overdue = hops.iter().any(|hop| matches!(hop.state, ReplyState::Slow | ReplyState::Unresponsive));
     // Until every hop has finished its warm-up the bars search, like a phone looking for
     // signal: an early reading would look worse than the connection really is.
     let searching = match status {
         Status::Connecting => true,
-        Status::Connected => !overdue && (hops.is_empty() || hops.iter().any(|hop| hop.state == ReplyState::Measuring)),
+        Status::Connected => measured && !overdue && (hops.is_empty() || hops.iter().any(|hop| hop.state == ReplyState::Measuring)),
         Status::Disconnected(_) => false,
     };
     // The weakest hop drives the bars, including an overdue Jump Host reply. All samples
@@ -866,6 +872,7 @@ pub fn connection_indicator(
             };
             (hop.bars(), color)
         }
+        (Status::Connected, None) if !measured => (4, p.success),
         _ => (0, p.text_faint),
     };
     // The final hop's round trip includes the whole route through any Jump Hosts.
@@ -875,6 +882,7 @@ pub fn connection_indicator(
         (Status::Connecting, _) => "Connecting…".into(),
         _ if timed_out => "Connection timed out".into(),
         (Status::Disconnected(_), _) => "Disconnected".into(),
+        (Status::Connected, _) if !measured => "Connected".into(),
         _ if searching => "Measuring latency…".into(),
         (_, Some(ReplyState::Unresponsive)) => "No reply for over 5 s".into(),
         (_, Some(ReplyState::Slow)) => "Waiting for a reply…".into(),
@@ -885,11 +893,13 @@ pub fn connection_indicator(
         },
     };
     let label = match (status, weakest) {
-        _ if timed_out => "SSH connection: timed out".to_string(),
-        (Status::Disconnected(_), _) => "SSH connection: disconnected".to_string(),
-        _ if searching => "SSH connection: measuring latency".to_string(),
-        (_, Some(hop)) => format!("SSH connection: {bars} of 4 bars · {}", hop.description(Instant::now())),
-        _ => "SSH connection: latency unavailable".to_string(),
+        _ if timed_out => format!("{protocol} connection: timed out"),
+        (Status::Connecting, _) => format!("{protocol} connection: connecting"),
+        (Status::Disconnected(_), _) => format!("{protocol} connection: disconnected"),
+        (Status::Connected, _) if !measured => format!("{protocol} connection: connected"),
+        _ if searching => format!("{protocol} connection: measuring latency"),
+        (_, Some(hop)) => format!("{protocol} connection: {bars} of 4 bars · {}", hop.description(Instant::now())),
+        _ => format!("{protocol} connection: latency unavailable"),
     };
     let bar = |index: usize| div().w(px(3.)).h(px(4. + index as f32 * 3.)).rounded(px(1.));
     let meter = div().h(px(13.)).flex().items_end().gap(px(2.));

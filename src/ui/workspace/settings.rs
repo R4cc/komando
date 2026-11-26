@@ -786,20 +786,6 @@ impl Workspace {
         ));
         behaviour_rows.push(setting_row(
             p,
-            "Keep sessions after disconnecting",
-            "× on a connected session only disconnects it, keeping its output until you click × again.",
-            Self::setting_switch(
-                "keep-disconnected-sessions",
-                "Keep sessions after disconnecting",
-                self.settings.keep_disconnected_sessions,
-                p,
-                cx,
-                |s, on| s.keep_disconnected_sessions = on,
-                Self::save_settings_and_notify,
-            ),
-        ));
-        behaviour_rows.push(setting_row(
-            p,
             "Close from the sidebar",
             "On hover, the status dot of a row with one session turns into ×. A middle-click on a row closes its session.",
             self.quick_close_dropdown(p, cx),

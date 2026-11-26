@@ -908,7 +908,10 @@ impl DesktopView {
 
     /// The picture, placed by the scaling option, with a thin outline where it starts and
     /// ends. The pane around it is darker, so the desktop's edge reads at a glance.
-    fn render_picture(&self, outline: gpui::Hsla) -> AnyElement {
+    /// `framed`: fitted inside the window (not full screen), the picture floats on the pane
+    /// with a margin, rounded corners and a soft shadow, like a framed image, instead of
+    /// running into bands of another colour.
+    fn render_picture(&self, outline: gpui::Hsla, framed: bool, dark: bool) -> AnyElement {
         let image = if self.is_connected() && self.image_current { self.image.clone() } else { self.blurred.clone() };
         let (w, h) = self.remote_size;
         let pane = self.pane.clone();
@@ -925,6 +928,7 @@ impl DesktopView {
                     return;
                 }
                 let scale = window.scale_factor();
+                let bounds = if framed { bounds.inset(px(FRAME_MARGIN)) } else { bounds };
                 // One remote pixel per device pixel.
                 let natural = size(px(w as f32 / scale), px(h as f32 / scale));
                 let shown = match scaling {
@@ -965,9 +969,23 @@ impl DesktopView {
                     remote_per_px: (w as f32 / f32::from(shown.width), h as f32 / f32::from(shown.height)),
                     zoom: f32::from(shown.width) * scale / w as f32 * 100.,
                 }));
-                let _ = window.paint_image(rect, rect, Corners::default(), image, 0, false);
+                let radius = if framed { px(FRAME_RADIUS) } else { px(0.) };
+                if framed {
+                    // Two soft layers rather than one hard edge: a tight contact shadow and a
+                    // wide ambient one.
+                    let shade = |alpha: f32, y: f32, blur: f32| gpui::BoxShadow {
+                        color: gpui::black().opacity(if dark { alpha * 2.5 } else { alpha }),
+                        offset: point(px(0.), px(y)),
+                        blur_radius: px(blur),
+                        spread_radius: px(0.),
+                        inset: false,
+                    };
+                    window.paint_drop_shadows(rect, Corners::all(radius), &[shade(0.08, 1., 2.), shade(0.10, 6., 20.)]);
+                }
+                let _ = window.paint_image(rect, rect, Corners::all(radius), image, 0, false);
                 // Just outside the picture, so it covers none of the desktop.
-                window.paint_quad(gpui::outline(rect.dilate(px(1.)), outline, gpui::BorderStyle::Solid));
+                let edge = if framed { radius + px(1.) } else { px(0.) };
+                window.paint_quad(gpui::outline(rect.dilate(px(1.)), outline, gpui::BorderStyle::Solid).corner_radii(Corners::all(edge)));
             },
         )
         .size_full()
@@ -1171,6 +1189,10 @@ fn button_of(button: MouseButton) -> Option<Button> {
     }
 }
 
+/// The room around a fitted picture, and its corners.
+const FRAME_MARGIN: f32 = 12.;
+const FRAME_RADIUS: f32 = 6.;
+
 impl Render for DesktopView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_image(window);
@@ -1186,7 +1208,8 @@ impl Render for DesktopView {
             self.toolbar_out = false;
         }
         // Pure white or black at low strength: a tinted edge would pick up the pane's color.
-        let outline = if app.dark { gpui::white().opacity(0.22) } else { gpui::black().opacity(0.18) };
+        let outline = if app.dark { gpui::white().opacity(0.12) } else { gpui::black().opacity(0.10) };
+        let framed = !fullscreen && self.options.scaling == Scaling::Fit;
         let toolbar = self.render_toolbar(fullscreen, window, cx);
         let picture = div()
             .id("remote-desktop-picture")
@@ -1195,8 +1218,9 @@ impl Render for DesktopView {
             .min_h_0()
             .w_full()
             .overflow_hidden()
-            // Darker than the pane, so the desktop's edge stands out.
-            .bg(if app.dark { gpui::black().opacity(0.35) } else { gpui::black().opacity(0.06) })
+            // Framed, the picture sits on the pane itself; filling the pane (full screen,
+            // actual size, stretched), anything around it is darker so its edge shows.
+            .when(!framed, |el| el.bg(if app.dark { gpui::black().opacity(0.35) } else { gpui::black().opacity(0.06) }))
             .on_mouse_move(cx.listener(Self::track_pointer))
             .when(input, |el| {
                 el.on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
@@ -1219,7 +1243,7 @@ impl Render for DesktopView {
                     }
                 }))
             })
-            .child(div().absolute().inset_0().when(dimmed, |el| el.opacity(0.35)).child(self.render_picture(outline)))
+            .child(div().absolute().inset_0().when(dimmed, |el| el.opacity(0.35)).child(self.render_picture(outline, framed, app.dark)))
             .when_some(card, |el, card| el.child(div().absolute().inset_0().p(px(16.)).flex().items_center().justify_center().child(card)));
         div()
             .id("remote-desktop")

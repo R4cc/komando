@@ -8,8 +8,9 @@ All notable changes to Komando are listed here. The format follows
 
 ### Added
 
-- When a session can't connect, its notice has a Reconnect button, and its dot in the sidebar
-  turns into a red ring. Hover over the ring to see why it failed.
+- When a session can't connect, a notice right under the error offers Reconnect and Edit host,
+  and the session's dot in the sidebar turns into a red ring. Hover over the ring to see why it
+  failed.
 
 ### Changed
 
@@ -17,14 +18,28 @@ All notable changes to Komando are listed here. The format follows
   joined to the host by tree lines. Each row shows what the session is, such as
   "SSH — Session 2" or "VNC — Display 1", and has its own × to close it. The session you're
   looking at is outlined in the accent colour, and the rows stay in the order you opened them.
-- The title bar names a session the same way its row in the sidebar does, such as
-  "web01 · SSH — Session 2".
+- The title bar names a session the same way its row in the sidebar does: the host, then
+  "SSH — Session 2", then the address. Its Disconnect and Reconnect buttons are labelled, and
+  remote desktops show the same signal bars as terminals.
+- A remote desktop fitted to the window sits on the pane with a small margin, rounded corners
+  and a soft shadow, instead of between dark bands.
+- × on a session always closes it. Disconnect, which keeps the output, is in the title bar and
+  the session's menu.
 - The minimap stays empty until there is output to scroll back through.
 - The lines joining a host's sessions to it are easier to see in light themes.
 
 ### Fixed
 
 - The VNC and RDP label in a remote desktop's toolbar was unreadable in some light themes.
+- The remote desktop toolbar's buttons were orange in the default light theme.
+- A remote desktop had two buttons for opening it in its own window; the one in its toolbar
+  remains.
+- "Timed out connecting to" messages no longer end in a full stop that read like part of the
+  address.
+
+### Removed
+
+- The "Keep sessions after disconnecting" setting: × now always closes a session.
 
 ## [0.9.0] - 2026-11-25
 

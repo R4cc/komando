@@ -683,9 +683,9 @@ mod tests {
     #[test]
     fn only_a_connection_that_ran_out_of_time_counts_as_timed_out() {
         use super::{Status, TIMED_OUT, TIMED_OUT_OPENING_SHELL, TIMED_OUT_SIGNING_IN};
-        assert!(Status::Disconnected(format!("{TIMED_OUT}example.com:22.")).timed_out());
-        assert!(Status::Disconnected(format!("{TIMED_OUT_SIGNING_IN}example.com:22.")).timed_out());
-        assert!(Status::Disconnected(format!("{TIMED_OUT_OPENING_SHELL}example.com:22.")).timed_out());
+        assert!(Status::Disconnected(format!("{TIMED_OUT}example.com:22")).timed_out());
+        assert!(Status::Disconnected(format!("{TIMED_OUT_SIGNING_IN}example.com:22")).timed_out());
+        assert!(Status::Disconnected(format!("{TIMED_OUT_OPENING_SHELL}example.com:22")).timed_out());
         assert!(!Status::Disconnected("Connection refused (os error 111)".into()).timed_out());
         assert!(!Status::Disconnected(String::new()).timed_out());
         assert!(!Status::Connecting.timed_out());

@@ -10,7 +10,7 @@ impl Workspace {
         let entry = self.active_entry()?;
         // Where you are typing: state, the session's name, then user@address and port. The
         // name is repeated from the sidebar, which may be scrolled away from the active host.
-        let name = self.session_title(entry);
+        let (name, which) = self.session_title(entry);
         let target = match entry.kind() {
             SessionKind::Ssh { host_id } => entry
                 .project_id()
@@ -36,11 +36,16 @@ impl Workspace {
         let id = entry.id();
         let live = entry.is_live();
         let is_ssh = matches!(entry.kind(), SessionKind::Ssh { .. });
-        let indicator = if is_ssh {
-            let hops = entry.ui.view.terminal().map(|view| view.read(cx).latency.as_slice()).unwrap_or_default();
-            connection_indicator(entry.status(), hops, cx.reduce_motion(), p).into_any_element()
-        } else {
-            status_dot(status_color).into_any_element()
+        // The same signal bars for every connection; a Local Shell has none, only its dot.
+        let indicator = match entry.kind() {
+            SessionKind::Ssh { .. } => {
+                let hops = entry.ui.view.terminal().map(|view| view.read(cx).latency.as_slice()).unwrap_or_default();
+                connection_indicator(entry.status(), Some(hops), "SSH", cx.reduce_motion(), p).into_any_element()
+            }
+            SessionKind::Desktop { protocol, .. } => {
+                connection_indicator(entry.status(), None, protocol.label(), cx.reduce_motion(), p).into_any_element()
+            }
+            SessionKind::Local { .. } => status_dot(status_color).into_any_element(),
         };
         let sftp_open = entry.ui.sftp_open;
         let sftp_phase = if sftp_open { entry.ui.sftp_busy.phase() } else { BusyPhase::Idle };
@@ -79,19 +84,32 @@ impl Workspace {
                         .min_w_0()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .text_size(px(12.))
+                        .gap(px(8.))
                         .tooltip(move |window, cx| Tooltip::new(status_text).build(window, cx))
+                        // Where you are, strongest first: the Host, which Session, the address.
                         .child(
                             div()
                                 .flex_shrink_0()
                                 .max_w(px(240.))
                                 .truncate()
-                                .font_weight(FontWeight::MEDIUM)
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(p.text)
                                 .child(name),
                         )
-                        .child(div().min_w_0().text_color(p.text_muted).truncate().child(target)),
+                        .when_some(which, |el, which| {
+                            el.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .max_w(px(200.))
+                                    .truncate()
+                                    .text_size(px(12.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(p.text_muted)
+                                    .child(which),
+                            )
+                        })
+                        .child(div().min_w_0().text_size(px(12.)).text_color(p.text_faint).truncate().child(target)),
                 )
                 // The empty middle stays draggable: only the controls above catch the mouse.
                 .child(div().flex_1())
@@ -100,29 +118,20 @@ impl Workspace {
                     el.child(
                         div()
                             .id("sftp-toggle")
-                            .h(px(24.))
-                            .px(px(9.))
-                            .mr(px(6.))
+                            .h(px(26.))
+                            .px(px(8.))
                             .flex()
                             .items_center()
                             .gap(px(6.))
                             .rounded(p.corner(7.))
-                            .border_1()
-                            .border_color(if sftp_open {
-                                p.brand.opacity(0.7)
-                            } else if sftp_enabled {
-                                p.border
-                            } else {
-                                p.border.opacity(0.5)
-                            })
-                            .when(sftp_open, |el| el.bg(p.brand_soft))
+                            .when(sftp_open, |el| el.bg(p.active))
                             .text_size(px(12.))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(sftp_color)
                             .tooltip(move |window, cx| Tooltip::new(sftp_tip).build(window, cx))
                             .when(sftp_enabled, |el| {
                                 el.cursor_pointer()
-                                    .hover(|s| s.bg(p.hover))
+                                    .hover(move |s| s.bg(if sftp_open { p.active } else { p.hover }).text_color(p.text))
                                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.toggle_sftp(id, window, cx)))
                             })
                             .when(!sftp_enabled, |el| el.cursor_default())
@@ -147,14 +156,16 @@ impl Workspace {
                     // End the connection, keeping the terminal and its output to reconnect later.
                     .when(live, |el| {
                         el.child(
-                            strip_action("session-disconnect", "unplug", "Disconnect", false, p)
+                            strip_button("session-disconnect", "unplug", "Disconnect", false, true, p)
+                                .tooltip(|window, cx| Tooltip::new("End the connection, keeping the output").build(window, cx))
                                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.end_session(id, EndRequest::Disconnect, window, cx))),
                         )
                     })
                     // A new connection in the same terminal, the earlier output kept above: for a
                     // session that dropped or hangs. A live one is closed first.
                     .child(
-                        strip_action("session-reconnect", "refresh-cw", "Reconnect", false, p)
+                        strip_button("session-reconnect", "refresh-cw", "Reconnect", false, true, p)
+                            .tooltip(|window, cx| Tooltip::new("Connect again in this terminal").build(window, cx))
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.reconnect(id, window, cx))),
                     )
                 })

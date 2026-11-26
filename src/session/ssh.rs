@@ -789,7 +789,7 @@ async fn run(
             forward_agent: if is_host && target.forward_agent { target.agent.clone() } else { None },
             binding: binding.clone(),
         };
-        let timed_out = || anyhow!("{}{}:{}.", super::TIMED_OUT, hop.address, hop.port);
+        let timed_out = || anyhow!("{}{}:{}", super::TIMED_OUT, hop.address, hop.port);
         let is_jump = index + 1 < target.hops.len();
         let mut handle = match handles.last() {
             None => clock
@@ -844,7 +844,7 @@ async fn run(
         let signed_in = clock
             .limit(SIGN_IN_TIMEOUT, authenticate(&mut handle, &user, &hop.address, hop.secret.as_ref(), agent, &agent_use, &proxy, &log, &clock))
             .await
-            .ok_or_else(|| anyhow!("{}{}:{}.", super::TIMED_OUT_SIGNING_IN, hop.address, hop.port))??;
+            .ok_or_else(|| anyhow!("{}{}:{}", super::TIMED_OUT_SIGNING_IN, hop.address, hop.port))??;
         log.line(LogKind::Good, &format!("Signed in to {} as {user}", hop.name));
         if remember_user {
             proxy.send(SessionEvent::Remember { hop: index, what: Remembered::User(user.clone()) });
@@ -926,7 +926,7 @@ async fn shell(
     };
     let mut channel = tokio::time::timeout(CONNECT_TIMEOUT, opening)
         .await
-        .map_err(|_| anyhow!("{}{host}.", super::TIMED_OUT_OPENING_SHELL))??;
+        .map_err(|_| anyhow!("{}{host}", super::TIMED_OUT_OPENING_SHELL))??;
     let window = paced.then(|| set_window(handle, channel.id(), pace.window()));
     // Signing in took a while: the pane has been laid out since the connection started, so
     // open the shell at its size rather than resize it straight after (a shell that starts at
