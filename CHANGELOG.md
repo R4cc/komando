@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-26
+
 ### Added
 
 - The terminal font setting suggests the fonts installed on your computer as you type, each
@@ -2167,7 +2169,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/R4cc/komando/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/R4cc/komando/compare/v0.8.8...v0.9.0
 [0.8.4]: https://github.com/R4cc/komando/compare/v0.8.3...v0.8.4
 [0.8.0]: https://github.com/R4cc/komando/compare/v0.7.9...v0.8.0
