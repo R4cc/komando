@@ -121,7 +121,7 @@ impl Workspace {
             None => RuleDraft { foreground: Some(SWATCHES[0].0.to_string()), ..RuleDraft::default() },
         };
         let pattern = new_input(draft.text.clone(), "ERROR, or a regular expression such as \\bfail(ed)?\\b", window, cx);
-        let group = new_input(draft.group.clone(), "1, or a group name", window, cx);
+        let group = new_input(draft.group.clone(), "1 or a name", window, cx);
         let foreground = new_input(draft.foreground.clone().unwrap_or_default(), "#RRGGBB", window, cx);
         let background = new_input(draft.background.clone().unwrap_or_default(), "#RRGGBB", window, cx);
         let sample = new_input(sample_line(&draft), "A line of output to try the rule on", window, cx);
@@ -282,7 +282,7 @@ impl Workspace {
         let match_controls = div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(px(8.))
             .child(Input::new(&form.pattern).font_family(p.mono_family))
             .child(
                 div()
@@ -298,45 +298,46 @@ impl Workspace {
                     }))
                     .child(self.form_checkbox("hl-rule-case", "Match case", form.case_sensitive, p, cx, |form| &mut form.case_sensitive)),
             )
+            .when(form.regex, |el| el.child(hint("Rust regex syntax: like JavaScript's, without look-around or back-references.", p)))
             .into_any_element();
-        let match_hint = if form.regex {
-            "Rust regex syntax: like JavaScript's, without look-around or back-references."
-        } else {
-            "Matches this text anywhere in a line."
-        };
 
+        // The rule's sentence, top to bottom: what it matches, then how it looks. Labels sit
+        // in a column of their own so the controls line up and the form fits without scrolling.
         let body = div()
             .flex()
             .flex_col()
             .gap(px(18.))
             .child(self.rule_preview(form, &draft, p, cx))
-            .child(form_field("Match", Some(match_hint), match_controls, p))
+            .child(rule_row("Match", match_controls, p))
             .when(form.regex, |el| {
-                el.child(form_field(
-                    "Colour only a group",
-                    Some("Optional. A capture group's number or name; leave it empty to colour the whole match."),
-                    div().w(px(220.)).child(Input::new(&form.group).font_family(p.mono_family)).into_any_element(),
+                el.child(rule_row(
+                    "Group",
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(div().w(px(160.)).flex_shrink_0().child(Input::new(&form.group).font_family(p.mono_family)))
+                        .child(hint("Optional: colour only this capture group, by number or name.", p).flex_1().min_w_0())
+                        .into_any_element(),
                     p,
                 ))
             })
-            .child(form_field("Text colour", None, self.colour_picker(form, ColourField::Foreground, p, cx), p))
-            .child(form_field(
-                "Fill",
-                Some(if form.fill {
-                    "A tint is a quiet shade of the text colour, its text kept readable on light and dark terminals. Or choose a colour of your own."
-                } else {
-                    "Marks each match like a highlighter pen, so it stands out in busy output. Without it, only the text is coloured."
-                }),
-                self.fill_control(form, p, cx),
+            .child(div().h(px(1.)).bg(p.border))
+            .child(rule_row("Text", self.colour_picker(form, ColourField::Foreground, p, cx), p))
+            .child(rule_row("Fill", self.fill_control(form, p, cx), p))
+            .child(rule_row(
+                "Style",
+                self.form_checkbox("hl-rule-bold", "Bold", form.bold, p, cx, |form| &mut form.bold),
                 p,
             ))
-            .child(self.form_checkbox("hl-rule-bold", "Bold", form.bold, p, cx, |form| &mut form.bold))
             .into_any_element();
 
         // Removing a rule can't be undone, so it takes a second click.
         let delete = editing.then(|| {
             let confirming = form.confirm_delete.is_some();
             button("hl-rule-delete", if confirming { "Click again to delete" } else { "Delete rule" }, if confirming { ButtonKind::Danger } else { ButtonKind::Ghost }, p)
+                // Red even before the second click: it is the one thing here that can't be undone.
+                .when(!confirming, |el| el.text_color(p.danger))
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                     let Some(confirm) = this.rule_form().map(|form| form.confirm_delete) else { return };
                     match confirm {
@@ -420,32 +421,60 @@ impl Workspace {
             Err(error) => (error, p.danger),
         };
         let shown = if line.is_empty() { " ".to_string() } else { line.clone() };
+        let error = matches!(status.1, c if c == p.danger).then(|| status.0.clone());
+        let count: SharedString = match (&error, highlights.len()) {
+            (Some(_), _) => "".into(),
+            (None, _) if draft.text.trim().is_empty() => "".into(),
+            (None, 0) => "No match".into(),
+            (None, 1) => "1 match".into(),
+            (None, n) => format!("{n} matches").into(),
+        };
+        let term_bg = crate::theme::rgb_to_hsla(term.background);
         div()
             .id("hl-rule-preview")
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(px(6.))
             .child(
+                // The line as the terminal draws it, over the sample it is drawn from: one card,
+                // so the sample can't be mistaken for the pattern below.
                 div()
-                    .id("hl-rule-preview-line")
-                    .role(gpui::Role::Status)
-                    .aria_label(format!("Preview: {}", status.0))
-                    .px(px(14.))
-                    .py(px(12.))
                     .rounded(p.corner(10.))
                     .border_1()
                     .border_color(p.border)
-                    .bg(crate::theme::rgb_to_hsla(term.background))
-                    .text_color(crate::theme::rgb_to_hsla(term.foreground))
-                    .font_family(font)
-                    .text_size(px(13.))
-                    .line_height(px(20.))
-                    .overflow_x_hidden()
-                    .whitespace_nowrap()
-                    .child(StyledText::new(shown).with_highlights(highlights)),
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .id("hl-rule-preview-line")
+                            .role(gpui::Role::Status)
+                            .aria_label(format!("Preview: {}", status.0))
+                            .px(px(14.))
+                            .py(px(12.))
+                            .bg(term_bg)
+                            .text_color(crate::theme::rgb_to_hsla(term.foreground))
+                            .font_family(font)
+                            .text_size(px(13.))
+                            .line_height(px(20.))
+                            // Wrapped, not cut: a match near the end of the line stays in view.
+                            .whitespace_normal()
+                            .child(StyledText::new(shown).with_highlights(highlights)),
+                    )
+                    .child(
+                        div()
+                            .px(px(10.))
+                            .py(px(4.))
+                            .border_t_1()
+                            .border_color(p.border)
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .child(div().flex_shrink_0().text_size(px(12.)).text_color(p.text_faint).child("Sample"))
+                            .child(div().flex_1().min_w_0().child(Input::new(&form.sample).appearance(false)))
+                            .child(div().flex_shrink_0().text_size(px(12.)).text_color(p.text_muted).child(count)),
+                    ),
             )
-            .child(div().text_size(px(12.)).text_color(status.1).child(status.0))
-            .child(Input::new(&form.sample))
+            .when_some(error, |el, error| el.child(div().text_size(px(12.)).text_color(p.danger).child(error)))
+            .when(error_free_hint(&draft.text, &status.0), |el| el.child(hint(&status.0, p)))
             .into_any_element()
     }
 
@@ -467,6 +496,7 @@ impl Workspace {
             .gap(px(10.))
             .child(
                 div()
+                    .h(px(28.))
                     .flex()
                     .items_center()
                     .gap(px(10.))
@@ -478,10 +508,13 @@ impl Workspace {
                             .text_size(px(13.))
                             .text_color(p.text)
                             .on_click(toggle())
-                            .child("Fill behind the match"),
+                            .child("Fill behind the match, like a highlighter"),
                     ),
             )
-            .when(form.fill, |el| el.child(self.colour_picker(form, ColourField::Background, p, cx)))
+            .when(form.fill, |el| {
+                el.child(self.colour_picker(form, ColourField::Background, p, cx))
+                    .child(hint("A tint follows the text colour and keeps it readable on light and dark terminals.", p))
+            })
             .into_any_element()
     }
 
@@ -658,4 +691,35 @@ fn form_dialog(
                 ),
         )
         .into_any_element()
+}
+
+/// A row of the rule form: its label in a column of its own, the control beside it.
+fn rule_row(label: &'static str, control: AnyElement, p: AppPalette) -> AnyElement {
+    div()
+        .flex()
+        .items_start()
+        .gap(px(16.))
+        .child(
+            div()
+                .w(px(64.))
+                .flex_shrink_0()
+                // On the first line of the control beside it (a 28-32px control).
+                .pt(px(6.))
+                .text_size(px(13.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(p.text)
+                .child(label),
+        )
+        .child(div().flex_1().min_w_0().child(control))
+        .into_any_element()
+}
+
+/// A line of help under a control.
+fn hint(text: &str, p: AppPalette) -> gpui::Div {
+    div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(text.to_string())
+}
+
+/// The preview's own words worth showing under it: what to do next while nothing matches.
+fn error_free_hint(pattern: &str, status: &str) -> bool {
+    !pattern.trim().is_empty() && status.starts_with("No match")
 }

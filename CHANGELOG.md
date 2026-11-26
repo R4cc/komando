@@ -6,6 +6,15 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The highlight rule editor fits without scrolling. The preview line wraps instead of being
+  cut off, and the sample it's drawn from sits inside it with the match count. Match, Text,
+  Fill and Style each get a labelled row, the help text is shorter, and Delete rule is shown
+  in red.
+- The rules in Settings → Highlights are quieter: regular expression and case-sensitive rules
+  show small icons, and the move arrows and the fill button appear when you point at a rule.
+
 ## [0.9.1] - 2026-11-26
 
 ### Added

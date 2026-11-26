@@ -2192,7 +2192,7 @@ impl Workspace {
                     flags.push(("regex", "Regular expression"));
                 }
                 if rule.case_sensitive() {
-                    flags.push(("Aa", "Case-sensitive"));
+                    flags.push(("case-sensitive", "Case-sensitive"));
                 }
                 // Moving a rule changes which one wins, so the arrows sit with the row; the end
                 // ones keep their place, hidden, so every row's controls line up.
@@ -2201,7 +2201,8 @@ impl Workspace {
                         .size(px(26.))
                         .aria_label(label)
                         .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
-                        .when(!possible, |el| el.invisible())
+                        // Shown on the row under the pointer: 62 rows of arrows are noise.
+                        .map(|el| if possible { el.invisible().group_hover("hl-rule-row", |s| s.visible()) } else { el.invisible() })
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             cx.stop_propagation();
                             this.move_highlight_rule(&id, index, up, cx);
@@ -2210,6 +2211,7 @@ impl Workspace {
                 list = list.child(
                     div()
                         .id(SharedString::from(format!("hl-rule-{}-{index}", set.id)))
+                        .group("hl-rule-row")
                         .role(gpui::Role::Button)
                         .aria_label(format!("Edit highlight rule: {}", rule.text))
                         .tab_index(0)
@@ -2256,20 +2258,13 @@ impl Workspace {
                                             .child(rule.text.clone()),
                                     ),
                                 )
-                                .child(div().w(px(84.)).flex().justify_end().gap(px(6.)).children(flags.into_iter().map(|(f, tip)| {
+                                // What kind of pattern, as quiet icons rather than a chip on every row.
+                                .child(div().w(px(40.)).flex().justify_end().gap(px(6.)).children(flags.into_iter().map(|(icon, tip)| {
                                     div()
-                                        .id(SharedString::from(format!("hl-flag-{}-{index}-{f}", set.id)))
+                                        .id(SharedString::from(format!("hl-flag-{}-{index}-{icon}", set.id)))
+                                        .aria_label(tip)
                                         .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
-                                        .px(px(6.))
-                                        .h(px(18.))
-                                        .flex()
-                                        .items_center()
-                                        .rounded(p.corner(4.))
-                                        .border_1()
-                                        .border_color(p.border)
-                                        .text_size(px(10.5))
-                                        .text_color(p.text_faint)
-                                        .child(f)
+                                        .child(icon_el(icon, 14., p.text_faint))
                                 }))),
                         )
                         // Fill on or off without opening the rule: a highlighter pen, lit when on.
@@ -2291,6 +2286,8 @@ impl Workspace {
                                 .cursor_pointer()
                                 // Neutral when on: the selection colour is an accent in some themes.
                                 .when(filled, |el| el.bg(p.text.opacity(0.12)))
+                                // Off, it waits for the pointer like the arrows; on, it stays lit.
+                                .when(!filled, |el| el.invisible().group_hover("hl-rule-row", |s| s.visible()))
                                 .hover(move |s| s.bg(if filled { p.text.opacity(0.16) } else { p.hover }))
                                 .when(!rule.enabled, |el| el.opacity(0.45))
                                 .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
