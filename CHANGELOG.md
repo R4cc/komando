@@ -14,6 +14,15 @@ All notable changes to Komando are listed here. The format follows
   in red.
 - The rules in Settings → Highlights are quieter: regular expression and case-sensitive rules
   show small icons, and the move arrows and the fill button appear when you point at a rule.
+- The terminal redraws faster while output scrolls by or a full-screen program such as `top`
+  updates.
+- Sessions signed in with a password take in fast output the same way as sessions signed in
+  with a key.
+
+### Fixed
+
+- Signing in to a server that offers keyboard-interactive sign-in but asks nothing (as
+  OpenSSH does without PAM) now goes on to the password instead of failing.
 
 ## [0.9.1] - 2026-11-26
 

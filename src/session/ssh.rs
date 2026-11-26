@@ -975,26 +975,26 @@ async fn shell(
                     // Output that is already waiting is parsed with this message, under one lock
                     // and with one Wakeup: a server sends output in packets of a few KiB, and
                     // each paid for those on its own.
+                    // Signed in with a password too: the sudo prompt is looked for at the end
+                    // of what was shown, which a batch ends with as well.
                     let mut bytes: &[u8] = &data;
-                    if sudo.is_none() {
-                        batch.clear();
-                        while batch.len().max(bytes.len()) < BATCH {
-                            match channel.try_wait() {
-                                Some(ChannelMsg::Data { data: more }) | Some(ChannelMsg::ExtendedData { data: more, .. }) => {
-                                    if batch.is_empty() {
-                                        batch.extend_from_slice(bytes);
-                                    }
-                                    batch.extend_from_slice(&more);
+                    batch.clear();
+                    while batch.len().max(bytes.len()) < BATCH {
+                        match channel.try_wait() {
+                            Some(ChannelMsg::Data { data: more }) | Some(ChannelMsg::ExtendedData { data: more, .. }) => {
+                                if batch.is_empty() {
+                                    batch.extend_from_slice(bytes);
                                 }
-                                other => {
-                                    held = other;
-                                    break;
-                                }
+                                batch.extend_from_slice(&more);
+                            }
+                            other => {
+                                held = other;
+                                break;
                             }
                         }
-                        if !batch.is_empty() {
-                            bytes = &batch;
-                        }
+                    }
+                    if !batch.is_empty() {
+                        bytes = &batch;
                     }
                     if paced && pace.output(bytes.len(), Instant::now()) {
                         ping = Some(send_ping(handle));
@@ -1620,6 +1620,12 @@ async fn keyboard_interactive(
             KeyboardInteractiveAuthResponse::Failure { remaining_methods, partial_success: true } => {
                 keep_password(state, given);
                 return Ok(Step::More(remaining_methods));
+            }
+            KeyboardInteractiveAuthResponse::Failure { remaining_methods, partial_success: false } if given.is_none() && !typed => {
+                // Turned down before asking anything, as sshd does with keyboard-interactive on
+                // but nothing behind it (no PAM): on to the other methods. Starting over would
+                // only be turned down again until the server stops taking tries.
+                return Ok(Step::Refused(remaining_methods));
             }
             KeyboardInteractiveAuthResponse::Failure { remaining_methods, partial_success: false } => {
                 let (line, error) = match &given {

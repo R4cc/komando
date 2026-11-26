@@ -488,9 +488,13 @@ fn run_once(ports: &[u16], lines: u64, known_hosts: &std::path::Path, external: 
         let row = &grid[Line(line)];
         (0..grid.columns()).map(|col| row[Column(col)].c).collect::<String>().trim_end().to_string()
     };
-    assert_eq!(row(cursor - 1), plain_line(lines - 1));
-    assert_eq!(row(cursor - 2), plain_line(lines - 2));
-    assert_eq!(grid.history_size(), (lines as usize + 1).saturating_sub(size.rows as usize).min(100_000));
+    // Below the output, the two lines a Session writes when its shell ends ("Disconnected: …"
+    // and "Press Enter to reconnect").
+    let notice = 2;
+    assert!(row(cursor - 1).contains("Press Enter to reconnect"), "{:?}", row(cursor - 1));
+    assert_eq!(row(cursor - 1 - notice), plain_line(lines - 1));
+    assert_eq!(row(cursor - 2 - notice), plain_line(lines - 2));
+    assert_eq!(grid.history_size(), (lines as usize + 1 + notice as usize).saturating_sub(size.rows as usize).min(100_000));
 
     let mut bytes = Vec::new();
     let mut total = 0;

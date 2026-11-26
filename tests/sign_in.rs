@@ -27,6 +27,9 @@ enum Mode {
     PasswordThenCode,
     /// Keys only.
     KeysOnly,
+    /// Offers keyboard-interactive before the password but turns it down without a question,
+    /// like sshd with it switched on and no PAM behind it.
+    EmptyInteractiveThenPassword,
 }
 
 #[derive(Clone)]
@@ -46,6 +49,7 @@ impl server::Handler for TestServer {
 
     async fn auth_password(&mut self, _: &str, password: &str) -> Result<server::Auth, Self::Error> {
         Ok(match self.mode {
+            Mode::EmptyInteractiveThenPassword if password == PASSWORD => server::Auth::Accept,
             Mode::PasswordThenCode if password == PASSWORD => server::Auth::Reject {
                 proceed_with_methods: Some(MethodSet::from(&[MethodKind::KeyboardInteractive][..])),
                 partial_success: true,
@@ -63,7 +67,7 @@ impl server::Handler for TestServer {
         let (question, instructions, expected) = match self.mode {
             Mode::Interactive => ("Password: ", "", PASSWORD),
             Mode::PasswordThenCode => ("Verification code: ", "Enter the code from your app.", CODE),
-            Mode::KeysOnly => return Ok(server::Auth::reject()),
+            Mode::KeysOnly | Mode::EmptyInteractiveThenPassword => return Ok(server::Auth::reject()),
         };
         Ok(match response {
             None => server::Auth::Partial {
@@ -108,6 +112,7 @@ fn start_with(mode: Mode, certificates: Vec<russh::keys::Certificate>) -> (u16, 
         Mode::Interactive => &[MethodKind::KeyboardInteractive],
         Mode::PasswordThenCode => &[MethodKind::Password],
         Mode::KeysOnly => &[MethodKind::PublicKey],
+        Mode::EmptyInteractiveThenPassword => &[MethodKind::KeyboardInteractive, MethodKind::Password],
     };
     let config = server::Config { certificates, methods: MethodSet::from(methods), ..ssh_server::config(HOST_KEY_SEED) };
     ssh_server::start(TestServer { mode }, config, 1)
@@ -231,6 +236,14 @@ fn keyboard_interactive_gives_up_after_three_wrong_passwords() {
     assert!(!outcome.signed_in);
     assert_eq!(outcome.asked.len(), 3);
     assert!(outcome.ended.is_some_and(|reason| reason.contains("Authentication failed")));
+}
+
+#[test]
+fn keyboard_interactive_without_a_question_falls_back_to_the_password() {
+    let (port, _server) = start(Mode::EmptyInteractiveThenPassword);
+    let outcome = sign_in("empty", port, Some(Secret::Password { password: PASSWORD.into() }), &[]);
+    assert!(outcome.signed_in, "ended: {:?}", outcome.ended);
+    assert_eq!(outcome.asked, []);
 }
 
 #[test]

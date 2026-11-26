@@ -310,6 +310,9 @@ fn layout_row(
     let block_cursor = ctx.focused && cursor_here.is_some_and(|k| k.shape == CursorShape::Block);
     let current_match = ctx.current_match.iter().find(|(r, _)| *r == row).map(|(_, cols)| cols);
 
+    // The last foreground converted: neighbouring cells nearly always share it, and the
+    // conversion to HSL is float work for every cell of every row laid out.
+    let mut last_fg: Option<(Rgb, Hsla)> = None;
     for (i, cell) in cells.iter().enumerate() {
         let (mut fg, mut bg) = (cell.fg, cell.bg);
         let mut bold = cell.flags.contains(Flags::BOLD);
@@ -343,7 +346,14 @@ fn layout_row(
             }
         }
 
-        let mut color = rgb_to_hsla(fg);
+        let mut color = match last_fg {
+            Some((rgb, hsla)) if rgb == fg => hsla,
+            _ => {
+                let hsla = rgb_to_hsla(fg);
+                last_fg = Some((fg, hsla));
+                hsla
+            }
+        };
         if cell.flags.contains(Flags::DIM) && !cell.selected && !in_current_match {
             color.a *= 0.66;
         }
