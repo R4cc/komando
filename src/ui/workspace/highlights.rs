@@ -390,7 +390,9 @@ impl Workspace {
         let (term, font) = (appearance.term.clone(), appearance.font_family.clone());
         let line = form.sample.read(cx).value().to_string();
         let mut highlights = vec![];
-        let status: (String, Hsla) = match draft.build(None) {
+        let typed = !draft.text.trim().is_empty();
+        // What the rule does to the line, and why it can't be built, if it can't.
+        let (status, error): (String, Option<String>) = match draft.build(None) {
             Ok(rule) => {
                 let styles = Highlighter::new([&rule]).styles_for_background(&line, term.dark).unwrap_or_default();
                 // Neighbouring characters with the same style make one run.
@@ -411,23 +413,24 @@ impl Workspace {
                         start = end;
                     }
                 }
-                match highlights.len() {
-                    0 => ("No match in this line. Paste a line from your output to try the rule on it.".into(), p.text_muted),
-                    1 => ("Colours 1 match in this line.".into(), p.text_muted),
-                    n => (format!("Colours {n} matches in this line."), p.text_muted),
-                }
+                let status = match highlights.len() {
+                    0 => "No match in this line. Paste a line from your output to try the rule on it.".into(),
+                    1 => "Colours 1 match in this line.".into(),
+                    n => format!("Colours {n} matches in this line."),
+                };
+                (status, None)
             }
-            Err(_) if draft.text.trim().is_empty() => ("Type what to match to see it coloured here.".into(), p.text_muted),
-            Err(error) => (error, p.danger),
+            Err(_) if !typed => ("Type what to match to see it coloured here.".into(), None),
+            Err(error) => (error.clone(), Some(error)),
         };
         let shown = if line.is_empty() { " ".to_string() } else { line.clone() };
-        let error = matches!(status.1, c if c == p.danger).then(|| status.0.clone());
-        let count: SharedString = match (&error, highlights.len()) {
-            (Some(_), _) => "".into(),
-            (None, _) if draft.text.trim().is_empty() => "".into(),
-            (None, 0) => "No match".into(),
-            (None, 1) => "1 match".into(),
-            (None, n) => format!("{n} matches").into(),
+        // Nothing matches what was typed: the status says what to do next, under the preview.
+        let no_match = typed && error.is_none() && highlights.is_empty();
+        let count: SharedString = match highlights.len() {
+            _ if error.is_some() || !typed => "".into(),
+            0 => "No match".into(),
+            1 => "1 match".into(),
+            n => format!("{n} matches").into(),
         };
         let term_bg = crate::theme::rgb_to_hsla(term.background);
         div()
@@ -447,7 +450,7 @@ impl Workspace {
                         div()
                             .id("hl-rule-preview-line")
                             .role(gpui::Role::Status)
-                            .aria_label(format!("Preview: {}", status.0))
+                            .aria_label(format!("Preview: {status}"))
                             .px(px(14.))
                             .py(px(12.))
                             .bg(term_bg)
@@ -474,7 +477,7 @@ impl Workspace {
                     ),
             )
             .when_some(error, |el, error| el.child(div().text_size(px(12.)).text_color(p.danger).child(error)))
-            .when(error_free_hint(&draft.text, &status.0), |el| el.child(hint(&status.0, p)))
+            .when(no_match, |el| el.child(hint(&status, p)))
             .into_any_element()
     }
 
@@ -717,9 +720,4 @@ fn rule_row(label: &'static str, control: AnyElement, p: AppPalette) -> AnyEleme
 /// A line of help under a control.
 fn hint(text: &str, p: AppPalette) -> gpui::Div {
     div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(text.to_string())
-}
-
-/// The preview's own words worth showing under it: what to do next while nothing matches.
-fn error_free_hint(pattern: &str, status: &str) -> bool {
-    !pattern.trim().is_empty() && status.starts_with("No match")
 }
