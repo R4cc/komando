@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
 pub use crate::model::{Protocol, Quality};
-use crate::session::InputSink;
+use crate::session::{CLOSED_BY_USER, InputSink};
 pub use crate::session::Status;
 pub use keys::Key;
 
@@ -449,7 +449,7 @@ pub fn spawn(target: Target) -> Connection {
         let reason = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
             Ok(runtime) => runtime.block_on(async {
                 tokio::select! {
-                    _ = cancelled => Ok("Session closed.".into()),
+                    _ = cancelled => Ok(CLOSED_BY_USER.into()),
                     result = async {
                         match target.protocol {
                             Protocol::Rdp => rdp::run(target, &mut link).await,
@@ -567,7 +567,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(3), async {
                 while let Some(event) = events.next().await {
                     if let DesktopEvent::Status(Status::Disconnected(reason)) = event {
-                        assert_eq!(reason, "Session closed.");
+                        assert_eq!(reason, crate::session::CLOSED_BY_USER);
                         let mut remaining = Vec::new();
                         socket.read_to_end(&mut remaining).await.unwrap();
                         return;

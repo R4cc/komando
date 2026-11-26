@@ -19,6 +19,7 @@ use zeroize::Zeroizing;
 
 use super::keys::{self, Key};
 use super::{Attempt, Button, DesktopEvent, HANDSHAKE_TIMEOUT, Input, Link, Quality, Target, handshake_timed_out, sign_in};
+use crate::session::CLOSED_BY_USER;
 use crate::session::ssh::ConnectClock;
 
 /// How often Komando asks for what changed on screen. Servers answer when something has.
@@ -202,9 +203,9 @@ async fn active(client: VncClient, link: &mut Link, format: PixelFormat, mut sha
                 Err(err) => break format!("The connection ended: {err}"),
             },
             input = link.input.recv() => {
-                let Some(input) = input else { break "Session closed.".into() };
+                let Some(input) = input else { break CLOSED_BY_USER.into() };
                 let input = match input {
-                    Input::Close => break "Session closed.".into(),
+                    Input::Close => break CLOSED_BY_USER.into(),
                     Input::ShareClipboard(on) => {
                         sharing = on;
                         continue;

@@ -29,6 +29,7 @@ use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_tokio::{FramedWrite as _, TokioFramed, single_sequence_step_read, split_tokio_framed};
 use zeroize::Zeroizing;
 
+use crate::session::CLOSED_BY_USER;
 use super::keys::{self, Key};
 use super::trust::{self, Known};
 use super::{
@@ -287,12 +288,12 @@ async fn active(framed: Framed, result: ConnectionResult, mut clipboard: Clipboa
     loop {
         let outputs = tokio::select! {
             _ = async { tokio::time::sleep_until(deadline.expect("a deadline")).await }, if deadline.is_some() => {
-                return Ok("Session closed.".into());
+                return Ok(CLOSED_BY_USER.into());
             }
             frame = reader.read_pdu() => {
                 let (action, payload) = match frame {
                     Ok(frame) => frame,
-                    Err(_) if closing => return Ok("Session closed.".into()),
+                    Err(_) if closing => return Ok(CLOSED_BY_USER.into()),
                     // The server hung up (its own disconnect, a restart, the network).
                     Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => return Ok("The server closed the connection.".into()),
                     Err(err) => return Ok(format!("The connection ended: {err}")),
@@ -304,7 +305,7 @@ async fn active(framed: Framed, result: ConnectionResult, mut clipboard: Clipboa
                 outputs
             }
             event = link.input.recv() => match event {
-                None => return Ok("Session closed.".into()),
+                None => return Ok(CLOSED_BY_USER.into()),
                 Some(Input::Close) if closing => vec![],
                 Some(Input::Close) => {
                     // Let the server end it; if it doesn't answer soon, end it here.
@@ -337,7 +338,7 @@ async fn active(framed: Framed, result: ConnectionResult, mut clipboard: Clipboa
             match output {
                 ActiveStageOutput::ResponseFrame(frame) => {
                     if let Err(err) = writer.write_all(&frame).await {
-                        return Ok(if closing { "Session closed.".into() } else { format!("The connection ended: {err}") });
+                        return Ok(if closing { CLOSED_BY_USER.into() } else { format!("The connection ended: {err}") });
                     }
                 }
                 ActiveStageOutput::GraphicsUpdate(rect) => link.draw(|p| copy_rect(p, &image, &rect))?,
@@ -379,7 +380,7 @@ async fn active(framed: Framed, result: ConnectionResult, mut clipboard: Clipboa
                 }
                 ActiveStageOutput::Terminate(reason) => {
                     return Ok(match reason {
-                        ironrdp_session::GracefulDisconnectReason::UserInitiated => "Session closed.".into(),
+                        ironrdp_session::GracefulDisconnectReason::UserInitiated => CLOSED_BY_USER.into(),
                         ironrdp_session::GracefulDisconnectReason::ServerInitiated => "The server ended the session.".into(),
                         other => format!("The server ended the session: {}.", other.description()),
                     });

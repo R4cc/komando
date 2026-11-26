@@ -1054,7 +1054,7 @@ async fn shell(
                         let _ = reply.send(open_tunnel(&handle, port).await);
                     });
                 }
-                Some(Command::Close) | None => break "Session closed.".to_string(),
+                Some(Command::Close) | None => break super::CLOSED_BY_USER.to_string(),
             },
             // A program began a synchronized update (DECSET 2026) and did not finish it in
             // time: show what it drew so far rather than freezing the screen.
