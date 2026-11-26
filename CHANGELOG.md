@@ -8,9 +8,10 @@ All notable changes to Komando are listed here. The format follows
 
 ### Added
 
-- When a session can't connect, a notice right under the error says what happened, such as
-  "SSH connection timed out", and offers Reconnect and Edit host. The session's dot in the
-  sidebar turns into a red ring; hover over it to see why it failed.
+- When a session can't connect, a notice right under the error says what happened and where,
+  such as "SSH connection timed out" and "Could not connect to 10.30.1.11:22", and offers
+  Reconnect and Edit host. The session's dot in the sidebar turns into a red ring; hover over it
+  to see why it failed.
 
 ### Changed
 

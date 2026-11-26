@@ -468,8 +468,7 @@ impl TerminalView {
         let p = cx.global::<Appearance>().app;
         // It never connected: a failure, marked in red like its row in the sidebar.
         let failed = !self.was_connected && reason != crate::session::CLOSED_BY_USER;
-        // An SSH connection's log already says why it failed, just above: the notice then
-        // only offers the way out, rather than saying it all again.
+        // An SSH connection: its log above has the exact reason, and its Host can be edited.
         let said = self.tells_end;
         // Right under the last line of output, where the failure is read, unless that is
         // too far down to fit: then at the bottom.
@@ -479,7 +478,7 @@ impl TerminalView {
             (term.grid().cursor.point.line.0.max(0) as f32, term.screen_lines() as f32)
         };
         let under_output = cursor_line < screen_lines - 6.;
-        // What happened, in a few words: the log line or the reason below says the rest.
+        // What happened, in a few words, then where: the log line above keeps the exact reason.
         let heading = match (failed, self.status.timed_out(), said) {
             (false, ..) => "Disconnected",
             (true, true, true) => "SSH connection timed out",
@@ -487,56 +486,64 @@ impl TerminalView {
             (true, false, true) => "Couldn't connect over SSH",
             (true, false, false) => "Couldn't connect",
         };
+        let detail = failure_detail(reason);
+        let accent = if failed { p.danger } else { p.border };
+        // Outlines that show on the terminal's background in either theme.
+        let outline = p.border.blend(p.text.opacity(0.18));
         let enter = div()
-            .px(px(5.))
+            .px(px(6.))
             .rounded(p.corner(4.))
             .border_1()
-            .border_color(p.border)
-            .text_size(px(11.))
-            .line_height(px(16.))
+            .border_color(outline)
+            .text_size(px(11.5))
+            .line_height(px(18.))
             .text_color(p.text_muted)
             .child("Enter");
         let actions = div()
+            .mt(px(6.))
+            .text_size(px(13.))
             .flex()
             .flex_wrap()
             .items_center()
-            .gap(px(8.))
+            .gap(px(10.))
             .child(
                 button("reconnect", "Reconnect", ButtonKind::Primary, p)
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(TerminalEvent::Reconnect))),
             )
             .when(failed && said, |el| {
+                // Outlined, in the text colour: a filled secondary button takes the theme's
+                // secondary colours, an accent in some themes.
                 el.child(
-                    button("reconnect-edit", "Edit host", ButtonKind::Secondary, p)
+                    button("reconnect-edit", "Edit host", ButtonKind::Ghost, p)
+                        .border_1()
+                        .border_color(outline)
+                        .text_color(p.text)
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(TerminalEvent::EditHost { hop: THE_HOST }))),
                 )
             })
-            .child(div().ml(px(4.)).flex().items_center().gap(px(6.)).text_color(p.text_muted).child("or press").child(enter));
-        // Tinted with the failure's red over the card, so it reads as an error at a glance.
-        let fill = if failed { p.surface.blend(p.danger.opacity(0.08)) } else { p.surface };
+            .child(div().ml(px(6.)).flex().items_center().gap(px(6.)).text_color(p.text_muted).child(enter).child("to retry"));
+        // No card: a coloured bar down its left edge ties it to the output above, as a margin
+        // note would.
         let notice = div()
             .min_w_0()
-            .max_w(px(560.))
+            .max_w(px(640.))
             .flex()
             .flex_col()
-            .gap(px(10.))
-            .px(px(14.))
-            .py(px(12.))
-            .rounded(p.corner(10.))
-            .bg(fill)
-            .border_1()
-            .border_color(if failed { p.danger.opacity(0.35) } else { p.border })
+            .gap(px(4.))
+            .pl(px(20.))
+            .py(px(4.))
+            .border_l_2()
+            .border_color(accent)
             .font_family(p.font_family)
-            .text_size(px(13.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .child(icon_el(if failed { "circle-alert" } else { "unplug" }, 15., if failed { p.danger } else { p.text_muted }))
-                    .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(heading)),
+                    .gap(px(10.))
+                    .child(icon_el(if failed { "triangle-alert" } else { "unplug" }, 17., if failed { p.danger } else { p.text_muted }))
+                    .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(heading)),
             )
-            .when(!said, |el| {
+            .when_some(detail, |el, detail| {
                 // A long reason (a failed key exchange lists every algorithm) ends in "…" past
                 // three lines: the output above has it in full.
                 el.child(
@@ -545,9 +552,9 @@ impl TerminalView {
                         .whitespace_normal()
                         .line_clamp(3)
                         .text_ellipsis()
-                        .text_size(px(12.5))
+                        .text_size(px(13.5))
                         .text_color(p.text_muted)
-                        .child(reason.clone()),
+                        .child(detail),
                 )
             })
             .child(actions);
@@ -558,7 +565,7 @@ impl TerminalView {
                 .right(px(PADDING_X))
                 .map(|el| {
                     if under_output {
-                        el.top(px(PADDING_Y + cursor_line * line_h + 12.))
+                        el.top(px(PADDING_Y + cursor_line * line_h + 14.))
                     } else {
                         el.bottom(px(16.))
                     }
@@ -567,5 +574,35 @@ impl TerminalView {
                 .child(notice)
                 .into_any_element(),
         )
+    }
+}
+
+/// The line under a dropped Session's heading: where it couldn't connect, in plain words for a
+/// timeout ("Could not connect to 10.0.0.1:22"), otherwise the reason itself. `None` when
+/// there is nothing to say.
+fn failure_detail(reason: &str) -> Option<String> {
+    use crate::session::{TIMED_OUT, TIMED_OUT_OPENING_SHELL, TIMED_OUT_SIGNING_IN};
+    let reason = reason.trim();
+    if let Some(at) = reason.strip_prefix(TIMED_OUT) {
+        return Some(format!("Could not connect to {at}"));
+    }
+    if let Some(at) = reason.strip_prefix(TIMED_OUT_SIGNING_IN) {
+        return Some(format!("{at} stopped answering while signing in"));
+    }
+    if let Some(at) = reason.strip_prefix(TIMED_OUT_OPENING_SHELL) {
+        return Some(format!("{at} didn't open the shell"));
+    }
+    (!reason.is_empty()).then(|| reason.to_string())
+}
+
+#[cfg(test)]
+mod failure_detail_tests {
+    use super::failure_detail;
+
+    #[test]
+    fn says_where_a_timeout_happened_in_plain_words() {
+        assert_eq!(failure_detail("Timed out connecting to 10.30.1.11:22").as_deref(), Some("Could not connect to 10.30.1.11:22"));
+        assert_eq!(failure_detail("Connection refused (os error 111)").as_deref(), Some("Connection refused (os error 111)"));
+        assert_eq!(failure_detail("  "), None);
     }
 }
