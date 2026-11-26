@@ -34,44 +34,41 @@ pub(super) fn focus_ring(radius: gpui::Pixels, p: AppPalette) -> gpui::Div {
     div().absolute().top_0().left_0().right_0().bottom_0().rounded(radius).border_2().border_color(p.focus)
 }
 
-/// What a Session's card in the sidebar says, and its tooltip. The card: the name it was given,
-/// else a desktop's protocol or a terminal's number. The tooltip: the name, else the title its
-/// shell set unless that only repeats the item's name or is the program's path (as Windows
-/// shells set it), with what the Session is.
-/// How many Session cards go on each line of the sidebar, for `count` cards under an item
-/// indented by `indent`. A card stays at least `MIN` wide, so a wide sidebar fits more to a line
-/// and a narrow one two, never more than six. The lines are balanced (five cards three to a line
-/// go 3 + 2, not 3 + 1 + 1) and each line's cards share its whole width.
-pub(super) fn session_card_rows(count: usize, sidebar_width: f32, indent: f32) -> Vec<usize> {
-    const MIN: f32 = 120.;
-    const GAP: f32 = 5.;
-    if count == 0 {
-        return Vec::new();
-    }
-    // The list's own padding, the guide line's inset and the margins.
-    let room = sidebar_width - (16. + indent + 14. + 8.);
-    let fit = (((room + GAP) / (MIN + GAP)).floor() as usize).clamp(2, 6);
-    let lines = count.div_ceil(fit);
-    let (each, extra) = (count / lines, count % lines);
-    (0..lines).map(|line| each + usize::from(line < extra)).collect()
-}
-
-pub(super) fn session_card_text(session: &SessionEntry) -> (SharedString, SharedString) {
-    let kind = match desktop_protocol(session) {
+/// What a Session's row in the sidebar says, and its tooltip. The row: its protocol, then the
+/// name it was given, else which one it is: a terminal's number, or a VNC desktop's display
+/// (port 5901 is display 1). `port` is a desktop's. A Local Shell's row has no protocol. The
+/// tooltip: the name, else the title its shell set unless that only repeats the item's name or
+/// is the program's path (as Windows shells set it), with what the Session is.
+pub(super) fn session_row_text(session: &SessionEntry, port: Option<u16>) -> (SharedString, SharedString) {
+    let protocol = desktop_protocol(session);
+    let kind = match protocol {
         Some(protocol) => format!("Remote desktop ({})", protocol.label()),
         None => format!("Terminal #{}", session.number()),
     };
+    let ssh = matches!(session.kind(), SessionKind::Ssh { .. });
+    let label: SharedString = session_row_label(protocol, ssh, session.name().map(|n| n.as_ref()), session.number(), port).into();
     if let Some(name) = session.name() {
-        return (name.clone(), format!("{name} · {kind}").into());
+        return (label, format!("{name} · {kind}").into());
     }
-    let label: SharedString = match desktop_protocol(session) {
-        Some(protocol) => protocol.label().into(),
-        None => session.number().to_string().into(),
-    };
     let title = session.ui.title.trim();
     let useless = title.is_empty() || title == session.label().as_ref() || title.to_ascii_lowercase().ends_with(".exe");
-    let tip = if useless || desktop_protocol(session).is_some() { kind } else { format!("{title} · {kind}") };
+    let tip = if useless || protocol.is_some() { kind } else { format!("{title} · {kind}") };
     (label, tip.into())
+}
+
+/// A Session row's label: "SSH — Session 2", "VNC — Display 1", "RDP — Desktop", or with
+/// the name the Session was given in place of which one it is. A Local Shell's has no protocol.
+pub(super) fn session_row_label(protocol: Option<Protocol>, ssh: bool, name: Option<&str>, number: usize, port: Option<u16>) -> String {
+    let which = match (name, protocol, port) {
+        (Some(name), ..) => name.to_string(),
+        (None, Some(Protocol::Vnc), Some(port @ 5900..=5999)) => format!("Display {}", port - 5900),
+        (None, Some(_), _) => "Desktop".to_string(),
+        (None, None, _) => format!("Session {number}"),
+    };
+    match protocol.map(|p| p.label()).or(ssh.then_some("SSH")) {
+        Some(prefix) => format!("{prefix} — {which}"),
+        None => which,
+    }
 }
 
 /// A segmented control: one choice of several.

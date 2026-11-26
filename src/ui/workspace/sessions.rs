@@ -1413,6 +1413,20 @@ mod tests {
     }
 
     #[test]
+    fn listed_sessions_keep_their_order_while_switching_between_them() {
+        let mut sessions = Sessions::default();
+        let web = host("web01");
+        let first = open(&mut sessions, &web, ssh("web01"));
+        let second = open(&mut sessions, &web, ssh("web01"));
+        let desktop = open(&mut sessions, &web, SessionKind::Desktop { host_id: "web01".into(), protocol: crate::model::Protocol::Vnc });
+        let order = |sessions: &Sessions<()>| sessions.listed(&web).iter().map(|s| s.id()).collect::<Vec<_>>();
+        for shown in [second, desktop, first, second] {
+            sessions.activate(shown);
+            assert_eq!(order(&sessions), [first, second, desktop]);
+        }
+    }
+
+    #[test]
     fn clicking_an_items_row_prefers_a_session_shown_here_to_a_desktop_in_its_own_window() {
         let mut sessions = Sessions::default();
         let web = host("web01");

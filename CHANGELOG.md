@@ -6,6 +6,13 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- A host's open sessions are listed under it in the sidebar as compact rows, one per line,
+  joined to the host by tree lines. Each row shows what the session is, such as
+  "SSH — Session 2" or "VNC — Display 1", and has its own × to close it. The session you're
+  looking at is outlined in the accent colour, and the rows stay in the order you opened them.
+
 ## [0.9.0] - 2026-11-25
 
 ### Added

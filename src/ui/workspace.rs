@@ -118,8 +118,10 @@ const SIDEBAR_PEEK_OUTSIDE: f32 = 200.;
 /// Leave a usable terminal beside the navigation, including at the minimum window size.
 /// Where a Host's icon sits in the sidebar, from the left of its row.
 const NESTED_INDENT: f32 = 28.;
-/// The widest a Session card in the sidebar grows; past this, a line's cards leave room after them.
-const SESSION_CARD_MAX_WIDTH: f32 = 220.;
+/// How tall a Session's row under its Host is in the sidebar.
+const SESSION_ROW_HEIGHT: f32 = 30.;
+/// How long the tree line's branch to a Session's row is.
+const SESSION_BRANCH: f32 = 10.;
 /// How far a Host row's highlight starts inside its Project row's.
 const NESTED_INSET: f32 = 14.;
 
@@ -1078,26 +1080,28 @@ impl Render for Workspace {
 }
 
 #[cfg(test)]
-mod session_card_rows_tests {
-    use super::{NESTED_INDENT, session_card_rows};
+mod session_row_label_tests {
+    use super::session_row_label;
+    use crate::model::Protocol;
 
     #[test]
-    fn fits_more_cards_as_the_sidebar_widens() {
-        assert_eq!(session_card_rows(6, 264., NESTED_INDENT), [2, 2, 2]);
-        assert_eq!(session_card_rows(6, 450., NESTED_INDENT), [3, 3]);
-        assert_eq!(session_card_rows(6, 600., NESTED_INDENT), [3, 3]);
-        assert_eq!(session_card_rows(6, 900., NESTED_INDENT), [6]);
-        assert_eq!(session_card_rows(3, f32::NAN, NESTED_INDENT), [2, 1]);
+    fn says_the_protocol_and_which_session() {
+        assert_eq!(session_row_label(None, true, None, 2, None), "SSH — Session 2");
+        assert_eq!(session_row_label(Some(Protocol::Vnc), false, None, 1, Some(5901)), "VNC — Display 1");
+        assert_eq!(session_row_label(Some(Protocol::Vnc), false, None, 1, Some(5900)), "VNC — Display 0");
+        assert_eq!(session_row_label(Some(Protocol::Vnc), false, None, 1, Some(15900)), "VNC — Desktop");
+        assert_eq!(session_row_label(Some(Protocol::Rdp), false, None, 1, Some(3389)), "RDP — Desktop");
     }
 
     #[test]
-    fn cards_fill_every_line() {
-        assert!(session_card_rows(0, 548., NESTED_INDENT).is_empty());
-        assert_eq!(session_card_rows(1, 548., NESTED_INDENT), [1]);
-        assert_eq!(session_card_rows(3, 548., NESTED_INDENT), [3]);
-        assert_eq!(session_card_rows(4, 548., NESTED_INDENT), [2, 2]);
-        assert_eq!(session_card_rows(5, 567., NESTED_INDENT), [3, 2]);
-        assert_eq!(session_card_rows(7, 600., NESTED_INDENT), [4, 3]);
+    fn a_given_name_replaces_which_session() {
+        assert_eq!(session_row_label(Some(Protocol::Vnc), false, Some("Monitoring"), 1, Some(5902)), "VNC — Monitoring");
+        assert_eq!(session_row_label(None, true, Some("logs"), 3, None), "SSH — logs");
+    }
+
+    #[test]
+    fn a_local_shell_has_no_protocol() {
+        assert_eq!(session_row_label(None, false, None, 2, None), "Session 2");
     }
 }
 
