@@ -1006,6 +1006,8 @@ impl Library {
     /// Shells added by hand stay.
     pub fn restore_detected_shells(&mut self) {
         crate::wsl::refresh();
+        #[cfg(windows)]
+        refresh_pwsh();
         let shells = self.standalone_shells_mut();
         for detected in default_shells() {
             match shells.iter_mut().find(|s| s.name == detected.name) {
@@ -1750,7 +1752,7 @@ pub fn default_shells() -> Vec<LocalShell> {
     #[cfg(windows)]
     {
         let mut shells = Vec::new();
-        if which("pwsh.exe") {
+        if pwsh_installed() {
             shells.push(LocalShell { name: "PowerShell 7".into(), program: "pwsh.exe".into(), args: vec!["-NoLogo".into()], icon: None, hidden: false });
         }
         shells.push(LocalShell { name: "Windows PowerShell".into(), program: "powershell.exe".into(), args: vec!["-NoLogo".into()], icon: None, hidden: false });
@@ -1786,6 +1788,26 @@ fn unix_shell(from_env: Option<std::ffi::OsString>) -> String {
         _ if usable(Path::new(usual)) => usual.into(),
         _ => "/bin/sh".into(),
     }
+}
+
+/// Whether PowerShell 7 was found on PATH, once looked for. The detected shells are worked out
+/// whenever the sidebar is drawn, which is every frame (output included), and looking along
+/// PATH checks a file in each of its folders; like WSL's distributions, it is looked for again
+/// only when the detected shells are restored.
+#[cfg(windows)]
+static PWSH: std::sync::RwLock<Option<bool>> = std::sync::RwLock::new(None);
+
+#[cfg(windows)]
+fn pwsh_installed() -> bool {
+    if let Some(found) = *PWSH.read().unwrap() {
+        return found;
+    }
+    *PWSH.write().unwrap().get_or_insert_with(|| which("pwsh.exe"))
+}
+
+#[cfg(windows)]
+fn refresh_pwsh() {
+    *PWSH.write().unwrap() = Some(which("pwsh.exe"));
 }
 
 #[cfg(windows)]
