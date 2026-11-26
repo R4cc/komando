@@ -494,6 +494,10 @@ pub struct Workspace {
     /// Presentation mode is on, with what to put back when it ends.
     presentation: Option<main_menu::Presentation>,
     font_input: Option<Entity<InputState>>,
+    /// The fonts installed, listed once the font field is first used.
+    font_names: Option<Vec<String>>,
+    /// The font field's suggestions are open, and which one the arrow keys are on.
+    font_suggest: Option<usize>,
     /// Settings → Appearance with Mode set to System: show the theme of the mode Windows is
     /// not in, to change it before Windows switches.
     appearance_other_mode: bool,
@@ -657,6 +661,8 @@ impl Workspace {
             forwards_menu_session: None,
             presentation: None,
             font_input: None,
+            font_names: None,
+            font_suggest: None,
             word_separators_input: None,
             ssh_agent_input: None,
             appearance_other_mode: false,

@@ -4,7 +4,7 @@
 use gpui::{HighlightStyle, StyledText};
 
 use super::*;
-use crate::highlight::{Rgb8, RuleDraft, SWATCHES, parse_hex};
+use crate::highlight::{Rgb8, RuleDraft, SWATCHES, parse_hex, tint};
 use crate::ui::widgets::labelled_checkbox;
 
 /// Add a Highlight Rule to a set, or edit the one at `index`.
@@ -19,6 +19,8 @@ pub struct RuleForm {
     sample: Entity<InputState>,
     regex: bool,
     case_sensitive: bool,
+    /// Fill behind the match: a tint of the text colour, or `background`'s colour.
+    fill: bool,
     bold: bool,
     /// Why the last Save was refused.
     error: Option<String>,
@@ -37,6 +39,7 @@ impl RuleForm {
             case_sensitive: self.case_sensitive,
             group: value(&self.group),
             foreground: colour(&self.foreground),
+            fill: self.fill,
             background: colour(&self.background),
             bold: self.bold,
         }
@@ -147,6 +150,7 @@ impl Workspace {
             sample,
             regex: draft.regex,
             case_sensitive: draft.case_sensitive,
+            fill: draft.fill,
             bold: draft.bold,
             error: None,
             confirm_delete: None,
@@ -317,9 +321,13 @@ impl Workspace {
             })
             .child(form_field("Text colour", None, self.colour_picker(form, ColourField::Foreground, p, cx), p))
             .child(form_field(
-                "Background",
-                Some("Without one, the text colour is adjusted to read on light and dark terminals."),
-                self.colour_picker(form, ColourField::Background, p, cx),
+                "Fill",
+                Some(if form.fill {
+                    "A tint is a quiet shade of the text colour, its text kept readable on light and dark terminals. Or choose a colour of your own."
+                } else {
+                    "Marks each match like a highlighter pen, so it stands out in busy output. Without it, only the text is coloured."
+                }),
+                self.fill_control(form, p, cx),
                 p,
             ))
             .child(self.form_checkbox("hl-rule-bold", "Bold", form.bold, p, cx, |form| &mut form.bold))
@@ -441,8 +449,45 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// No colour, the bundled set's colours, any other colour already chosen, and a field for
-    /// typing a hex colour.
+    /// The fill's switch and, while it is on, what it is filled with.
+    fn fill_control(&self, form: &RuleForm, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        // The switch, and its label as a larger target for the same thing.
+        let toggle = || {
+            cx.listener(|this: &mut Workspace, _: &ClickEvent, _, cx| {
+                if let Some(form) = this.rule_form() {
+                    form.fill = !form.fill;
+                    form.error = None;
+                }
+                cx.notify();
+            })
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(switch("hl-rule-fill".into(), "Fill behind the match", form.fill, p).on_click(toggle()))
+                    .child(
+                        div()
+                            .id("hl-rule-fill-label")
+                            .cursor_pointer()
+                            .text_size(px(13.))
+                            .text_color(p.text)
+                            .on_click(toggle())
+                            .child("Fill behind the match"),
+                    ),
+            )
+            .when(form.fill, |el| el.child(self.colour_picker(form, ColourField::Background, p, cx)))
+            .into_any_element()
+    }
+
+    /// The first choice and the bundled set's colours, any other colour already chosen, and a
+    /// field for typing a hex colour. The text colour's first choice is no colour; the fill's is
+    /// a tint of the text colour, shown as it will look.
     fn colour_picker(&self, form: &RuleForm, field: ColourField, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let current_text = field.input(form).read(cx).value().to_string();
         let current = parse_hex(&current_text);
@@ -456,9 +501,15 @@ impl Workspace {
                 cx.notify();
             })
         };
-        let mut row = div().flex().flex_wrap().items_center().gap(px(6.)).child(
-            swatch(SharedString::from(format!("hl-{}-none", field.id())), "No colour", None, none, p).on_click(pick(""))
-        );
+        let first = match field {
+            ColourField::Foreground => swatch(SharedString::from(format!("hl-{}-none", field.id())), "No colour", None, none, p),
+            ColourField::Background => {
+                let dark = cx.global::<Appearance>().term.dark;
+                let text = parse_hex(&form.foreground.read(cx).value());
+                tint_swatch(tint(text, dark), none, p)
+            }
+        };
+        let mut row = div().flex().flex_wrap().items_center().gap(px(6.)).child(first.on_click(pick("")));
         for (hex, name) in SWATCHES {
             let selected = current.is_some() && current == parse_hex(hex);
             row = row.child(
@@ -471,6 +522,43 @@ impl Workspace {
         }
         row.child(div().ml(px(6.)).w(px(116.)).child(Input::new(field.input(form)).font_family(p.mono_family))).into_any_element()
     }
+}
+
+/// The fill's "Tint" choice: the tint itself with an "A" in the text colour on it, so it shows
+/// what the match will look like rather than naming it.
+fn tint_swatch((fill, text): (Rgb8, Option<Rgb8>), selected: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
+    let name = "Tint of the text colour";
+    div()
+        .id("hl-bg-tint")
+        .role(gpui::Role::RadioButton)
+        .aria_label(name)
+        .aria_toggled(if selected { gpui::Toggled::True } else { gpui::Toggled::False })
+        .tab_index(0)
+        .tooltip(move |window, cx| Tooltip::new(name).build(window, cx))
+        .h(px(28.))
+        .flex_shrink_0()
+        .p(px(3.))
+        .rounded_full()
+        .border_2()
+        .border_color(if selected { p.text } else { gpui::transparent_black() })
+        .focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus))
+        .cursor_pointer()
+        .child(
+            div()
+                .h_full()
+                .px(px(9.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .bg(to_hsla(fill))
+                .border_1()
+                .border_color(p.text.opacity(0.12))
+                .text_size(px(11.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(text.map(to_hsla).unwrap_or(p.text))
+                .child("Tint"),
+        )
 }
 
 /// A round colour to pick, with a ring when it is the one chosen. `None` is "no colour".

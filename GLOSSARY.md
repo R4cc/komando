@@ -162,6 +162,14 @@ calls it **Terminal**, with the choices Match app, Always dark and Always light.
 A pattern (plain text or regex) and the colours or bold style given to output that matches it.
 _Avoid_: Keyword (the file format's field name), trigger, filter
 
+**Fill**:
+What a Highlight Rule puts behind the text it matches, like a highlighter pen: off, a Tint, or a colour of the user's own. Stored as the file format's `background` and `backgroundColor`; switching it off keeps the colour.
+_Avoid_: Background (the file format's word, also the terminal's own), badge
+
+**Tint**:
+A Fill derived from the rule's text colour: the same hue, quiet, made for dark or light terminals, with the text kept readable on it.
+_Avoid_: Auto background, shade
+
 **Highlight Set**:
 A named, ordered list of Highlight Rules that is imported, exported and switched on or off as a whole. Earlier rules take precedence.
 _Avoid_: Profile, theme

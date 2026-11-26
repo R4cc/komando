@@ -116,6 +116,21 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Turn a rule's fill on or off. Off keeps a colour chosen for it, so on brings it back;
+    /// a rule without one is tinted with its text colour.
+    pub(super) fn toggle_highlight_fill(&mut self, set_id: &str, index: usize, cx: &mut Context<Self>) {
+        if let Some(rule) = self.highlights.iter_mut().find(|s| s.id == set_id).and_then(|s| s.keywords.get_mut(index)) {
+            let on = rule.fill() != highlight::Fill::Off;
+            rule.background = Some(!on);
+            // Switching on a colour that can't be read (Tabby's "0") would do nothing: tint instead.
+            if !on && rule.fill() == highlight::Fill::Off {
+                rule.background_color = None;
+            }
+        }
+        self.save_highlights(cx);
+        cx.notify();
+    }
+
     /// Turn off the rule that coloured a word right-clicked in a terminal. It stays in its
     /// set, off, so it can be turned back on in Settings → Highlights.
     pub(super) fn unhighlight(&mut self, hit: &highlight::RuleHit, cx: &mut Context<Self>) {

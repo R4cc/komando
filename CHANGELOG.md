@@ -8,6 +8,15 @@ All notable changes to Komando are listed here. The format follows
 
 ### Added
 
+- The terminal font setting suggests the fonts installed on your computer as you type, each
+  shown in its own face. Click one, or pick it with the arrow keys and Enter or Tab.
+
+- Highlight rules can fill behind what they match, like a highlighter pen. Switch the fill on
+  for a rule in its editor, or with the highlighter button beside it in Settings → Highlights.
+  By default the fill is a tint of the rule's text colour, quiet on dark and light terminals,
+  with the text kept readable on it; you can choose a colour of your own instead, and text that
+  wouldn't read on it turns black or white. Switching the fill off keeps the colour you chose.
+
 - When a session can't connect, a notice right under the error says what happened and where,
   such as "SSH connection timed out" and "Could not connect to 10.30.1.11:22", and offers
   Reconnect and Edit host. The session's dot in the sidebar turns into a red ring; hover over it

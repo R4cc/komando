@@ -270,7 +270,26 @@ impl Workspace {
             let family = self.settings.font_family.clone();
             let input = cx.new(|cx| InputState::new(window, cx).default_value(family).placeholder(crate::theme::TERMINAL_FONT));
             let sub = cx.subscribe_in(&input, window, |this, input, event: &InputEvent, window, cx| {
+                // Typing opens the installed fonts that match; Enter takes the one picked.
+                if matches!(event, InputEvent::Change | InputEvent::Focus) {
+                    if this.font_names.is_none() {
+                        let mut names = window.text_system().all_font_names();
+                        names.retain(|n| !n.starts_with('.'));
+                        names.sort_by_key(|n| n.to_lowercase());
+                        names.dedup();
+                        this.font_names = Some(names);
+                    }
+                    this.font_suggest = Some(0);
+                    cx.notify();
+                }
+                if let (InputEvent::PressEnter { .. }, Some(i)) = (event, this.font_suggest) {
+                    let query = input.read(cx).value().to_string();
+                    if let Some(name) = font_matches(this.font_names.as_deref().unwrap_or_default(), &query).get(i).cloned() {
+                        input.update(cx, |f, cx| f.set_value(name, window, cx));
+                    }
+                }
                 if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    this.font_suggest = None;
                     let value = input.read(cx).value().trim().to_string();
                     let family = if value.is_empty() { Settings::default().font_family } else { value };
                     if family != this.settings.font_family {
@@ -1093,7 +1112,7 @@ impl Workspace {
                     p,
                     "Font",
                     "Empty uses the theme’s font. Press Enter to apply.",
-                    div().w(px(260.)).children(font_input).into_any_element(),
+                    self.font_field(font_input, p, cx),
                 ),
                 setting_row(
                     p,
@@ -2161,11 +2180,13 @@ impl Workspace {
             let count = set.keywords.len();
             for (index, rule) in set.keywords.iter().enumerate() {
                 let set_id = set.id.clone();
-                let (id_edit, id_up, id_down) = (set.id.clone(), set.id.clone(), set.id.clone());
+                let (id_edit, id_up, id_down, id_fill) = (set.id.clone(), set.id.clone(), set.id.clone(), set.id.clone());
                 let to_hsla = |c: highlight::Rgb8| crate::theme::hex(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32);
-                // A rule with its own background keeps its colours; others are made readable on the terminal.
-                let fg = rule.fg().map(|c| if rule.bg().is_some() { c } else { highlight::readable_on(c, term.dark) }).map(to_hsla).unwrap_or(p.text);
-                let bg = rule.bg().map(to_hsla).unwrap_or(term_bg);
+                // Drawn as the terminal draws it, fill and all.
+                let shown = rule.display(term.dark);
+                let fg = shown.fg.map(to_hsla).unwrap_or_else(|| crate::theme::rgb_to_hsla(term.foreground));
+                let bg = shown.bg.map(to_hsla).unwrap_or(term_bg);
+                let filled = rule.fill() != highlight::Fill::Off;
                 let mut flags = vec![];
                 if rule.is_regex() {
                     flags.push(("regex", "Regular expression"));
@@ -2251,6 +2272,34 @@ impl Workspace {
                                         .child(f)
                                 }))),
                         )
+                        // Fill on or off without opening the rule: a highlighter pen, lit when on.
+                        .child({
+                            let tip: SharedString = if filled { "Fill behind matches: on".into() } else { "Fill behind matches: off".into() };
+                            let icon_color = if filled { p.text } else { p.text_faint };
+                            div()
+                                .id(SharedString::from(format!("hl-fill-{}-{index}", set.id)))
+                                .role(gpui::Role::Switch)
+                                .aria_label(format!("Fill behind matches: {}", rule.text))
+                                .aria_toggled(if filled { gpui::Toggled::True } else { gpui::Toggled::False })
+                                .tab_index(0)
+                                .focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus))
+                                .size(px(26.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(p.corner(6.))
+                                .cursor_pointer()
+                                // Neutral when on: the selection colour is an accent in some themes.
+                                .when(filled, |el| el.bg(p.text.opacity(0.12)))
+                                .hover(move |s| s.bg(if filled { p.text.opacity(0.16) } else { p.hover }))
+                                .when(!rule.enabled, |el| el.opacity(0.45))
+                                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    this.toggle_highlight_fill(&id_fill, index, cx);
+                                }))
+                                .child(icon_el("highlighter", 14., icon_color))
+                        })
                         .child(div().flex().child(mover(id_up, "arrow-up", "Move up", true, index > 0)).child(mover(
                             id_down,
                             "arrow-down",
@@ -2694,4 +2743,134 @@ fn value_label(text: String, p: AppPalette) -> AnyElement {
         .text_color(p.text_muted)
         .child(text)
         .into_any_element()
+}
+
+/// Installed fonts matching `query`, those starting with it first, at most ten. An exact
+/// match alone suggests nothing: there is nothing left to complete.
+fn font_matches(names: &[String], query: &str) -> Vec<String> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() || names.iter().any(|n| n.to_lowercase() == q) {
+        return vec![];
+    }
+    let (mut starts, mut contains): (Vec<&String>, Vec<&String>) = (vec![], vec![]);
+    for name in names {
+        let lower = name.to_lowercase();
+        if lower.starts_with(&q) {
+            starts.push(name);
+        } else if lower.contains(&q) {
+            contains.push(name);
+        }
+    }
+    starts.into_iter().chain(contains).take(10).cloned().collect()
+}
+
+impl Workspace {
+    /// The font field with the installed fonts that match what is typed in a list under it:
+    /// a click, or the arrow keys and Enter (or Tab), takes one; Escape closes it.
+    fn font_field(&self, input: Option<AnyElement>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
+        let query = self.font_input.as_ref().map(|i| i.read(cx).value().to_string()).unwrap_or_default();
+        let matches = match (self.font_suggest, &self.font_names) {
+            (Some(_), Some(names)) => font_matches(names, &query),
+            _ => vec![],
+        };
+        let selected = self.font_suggest.unwrap_or(0).min(matches.len().saturating_sub(1));
+        let count = matches.len();
+        let list = (!matches.is_empty()).then(|| {
+            let rows = matches.into_iter().enumerate().map(|(i, name)| {
+                let pick = name.clone();
+                div()
+                    .id(("font-suggestion", i))
+                    .role(gpui::Role::ListBoxOption)
+                    .aria_selected(i == selected)
+                    .px(px(8.))
+                    .h(px(28.))
+                    .flex()
+                    .items_center()
+                    .rounded(p.corner(6.))
+                    .text_size(px(13.))
+                    .text_color(p.popover_text)
+                    .cursor_pointer()
+                    .when(i == selected, |el| el.bg(p.hover))
+                    .hover(|s| s.bg(p.hover))
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.pick_font(pick.clone(), window, cx);
+                    }))
+                    // Each name in its own face, so the list shows what it offers.
+                    .child(div().truncate().font_family(SharedString::from(name.clone())).child(name))
+            });
+            div().absolute().top_full().left_0().size_0().child(
+                deferred(
+                    anchored().offset(gpui::point(px(0.), px(4.))).snap_to_window_with_margin(px(8.)).child(
+                        div()
+                            .id("font-suggestions")
+                            .role(gpui::Role::ListBox)
+                            .w(px(260.))
+                            .p(px(4.))
+                            .flex()
+                            .flex_col()
+                            .rounded(p.corner(8.))
+                            .border_1()
+                            .border_color(p.border)
+                            .bg(p.popover)
+                            .shadow_lg()
+                            .occlude()
+                            .children(rows),
+                    ),
+                )
+                .with_priority(3),
+            )
+        });
+        div()
+            .relative()
+            .w(px(260.))
+            .capture_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                let Some(i) = this.font_suggest.filter(|_| count > 0) else { return };
+                match event.keystroke.key.as_str() {
+                    "down" => this.font_suggest = Some((i + 1).min(count - 1)),
+                    "up" => this.font_suggest = Some(i.saturating_sub(1)),
+                    "escape" => this.font_suggest = None,
+                    "tab" => {
+                        let query = this.font_input.as_ref().map(|f| f.read(cx).value().to_string()).unwrap_or_default();
+                        if let Some(name) = font_matches(this.font_names.as_deref().unwrap_or_default(), &query).get(i).cloned() {
+                            this.pick_font(name, window, cx);
+                        }
+                    }
+                    _ => return,
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .children(input)
+            .children(list)
+            .into_any_element()
+    }
+
+    /// Use a font picked from the suggestions.
+    fn pick_font(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.font_suggest = None;
+        if let Some(input) = self.font_input.clone() {
+            input.update(cx, |f, cx| f.set_value(name.clone(), window, cx));
+        }
+        if name != self.settings.font_family {
+            self.settings.font_family = name;
+            self.save_appearance(window, cx);
+        }
+        cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod font_matches_tests {
+    use super::font_matches;
+
+    #[test]
+    fn fonts_starting_with_the_text_come_first() {
+        let names: Vec<String> = ["Cascadia Code", "Fira Code", "Fira Mono", "JetBrains Mono", "Source Code Pro"].map(String::from).into();
+        assert_eq!(font_matches(&names, "fira"), ["Fira Code", "Fira Mono"]);
+        assert_eq!(font_matches(&names, "code"), ["Cascadia Code", "Fira Code", "Source Code Pro"]);
+        assert_eq!(font_matches(&names, "MONO"), ["Fira Mono", "JetBrains Mono"]);
+        assert!(font_matches(&names, "  ").is_empty());
+        assert!(font_matches(&names, "fira code").is_empty(), "already complete");
+    }
 }

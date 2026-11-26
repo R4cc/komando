@@ -89,13 +89,57 @@ impl Keyword {
         }
     }
 
+    /// The custom background colour this rule fills its match with, if it has one and the
+    /// fill is on.
     pub fn bg(&self) -> Option<Rgb8> {
-        if self.background.unwrap_or(false) {
-            self.background_color.as_deref().and_then(parse_hex)
-        } else {
-            None
+        match self.fill() {
+            Fill::Colour(c) => Some(c),
+            _ => None,
         }
     }
+
+    /// What the rule puts behind its match. Stored as Tabby does, `background` and
+    /// `backgroundColor`: on with no colour is a tint of the text colour. Off keeps any colour
+    /// chosen, so turning the fill back on brings it back.
+    pub fn fill(&self) -> Fill {
+        if !self.background.unwrap_or(false) {
+            return Fill::Off;
+        }
+        match self.background_color.as_deref().map(str::trim) {
+            None | Some("") => Fill::Tint,
+            Some(value) => parse_hex(value).map_or(Fill::Off, Fill::Colour),
+        }
+    }
+
+    /// How the rule draws its match on a dark or light terminal. Without a fill the text colour
+    /// is made readable on the terminal (`readable_on`). A tint is the text colour's own hue,
+    /// quiet, behind text lifted or deepened until it reads on it. A colour of the user's own
+    /// is kept as chosen, under the rule's text colour if that reads on it (3:1), otherwise
+    /// black or white: red on a red fill would hide the match it marks.
+    pub fn display(&self, dark: bool) -> Style {
+        let fg = self.fg();
+        let bold = self.bold.unwrap_or(false);
+        match self.fill() {
+            Fill::Off => Style { fg: fg.map(|c| readable_on(c, dark)), bg: None, bold },
+            Fill::Colour(bg) => {
+                let fg = fg.filter(|c| contrast(*c, bg) >= 3.0).unwrap_or_else(|| text_on(bg));
+                Style { fg: Some(fg), bg: Some(bg), bold }
+            }
+            Fill::Tint => {
+                let (bg, fg) = tint(fg, dark);
+                Style { fg, bg: Some(bg), bold }
+            }
+        }
+    }
+}
+
+/// What a Highlight Rule puts behind the text it matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fill {
+    Off,
+    /// A quiet shade of the rule's text colour (see `tint`).
+    Tint,
+    Colour(Rgb8),
 }
 
 /// The colours of the bundled set, by what they mean there, offered first in the rule editor.
@@ -119,6 +163,10 @@ pub struct RuleDraft {
     pub group: String,
     /// `#rgb` or `#rrggbb`; `None` (or empty) leaves the text colour alone.
     pub foreground: Option<String>,
+    /// Fill behind the match.
+    pub fill: bool,
+    /// The fill's colour; `None` (or empty) tints it with the text colour. Kept while the fill
+    /// is off.
     pub background: Option<String>,
     pub bold: bool,
 }
@@ -135,7 +183,8 @@ impl RuleDraft {
             case_sensitive: kw.case_sensitive(),
             group,
             foreground: kw.fg().map(long_hex),
-            background: kw.bg().map(long_hex),
+            fill: kw.fill() != Fill::Off,
+            background: kw.background_color.as_deref().and_then(parse_hex).map(long_hex),
             bold: kw.bold.unwrap_or(false),
         }
     }
@@ -168,9 +217,9 @@ impl RuleDraft {
             Some(v) => parse_hex(v).map(Some).ok_or_else(|| format!("{what} must be a hex colour such as #FF4D4F.")),
         };
         let fg = colour(self.foreground.as_deref(), "Text colour")?;
-        let bg = colour(self.background.as_deref(), "Background")?;
-        if fg.is_none() && bg.is_none() && !self.bold {
-            return Err("Choose a text colour, a background or bold: without one the rule colours nothing.".into());
+        let bg = colour(self.background.as_deref(), "Fill colour")?;
+        if fg.is_none() && !self.fill && !self.bold {
+            return Err("Choose a text colour, a fill or bold: without one the rule colours nothing.".into());
         }
 
         let mut kw = base.cloned().unwrap_or_else(|| Keyword {
@@ -203,11 +252,10 @@ impl RuleDraft {
                 kw.foreground_color = Some(long_hex(c));
             }
         }
-        if kw.bg() != bg {
-            kw.background = Some(bg.is_some());
-            if let Some(c) = bg {
-                kw.background_color = Some(long_hex(c));
-            }
+        kw.background = keep(kw.background, self.fill);
+        // The colour as stored unless it changed: an unreadable one (Tabby writes "0") stays.
+        if kw.background_color.as_deref().and_then(parse_hex) != bg {
+            kw.background_color = bg.map(long_hex);
         }
         // A JavaScript rule rewritten here is a plain or regex rule now.
         if kw.extra.get("isJS").and_then(Value::as_bool) == Some(true) {
@@ -325,7 +373,7 @@ impl Highlighter {
                 continue;
             }
             let style = Style { fg: kw.fg(), bg: kw.bg(), bold: kw.bold.unwrap_or(false) };
-            if style.fg.is_none() && style.bg.is_none() && !style.bold {
+            if style.fg.is_none() && kw.fill() == Fill::Off && !style.bold {
                 continue;
             }
             let pattern = match (kw.is_regex(), ascii_boundaries) {
@@ -349,10 +397,7 @@ impl Highlighter {
             };
             let flags = if kw.case_sensitive() { "" } else { "(?i)" };
             patterns.push(format!("{flags}{pattern}"));
-            let display = [false, true].map(|dark| Style {
-                fg: style.fg.map(|c| if style.bg.is_some() { c } else { readable_on(c, dark) }),
-                ..style
-            });
+            let display = [false, true].map(|dark| kw.display(dark));
             rules.push(Rule { regex, group, style, display, source });
         }
         // Each pattern compiled on its own above; the combined set can still fail (size limit).
@@ -659,25 +704,84 @@ fn darken_vivid(color: Rgb8, dark_enough: impl Fn(Rgb8) -> bool) -> Rgb8 {
     if dark_enough(color) {
         return color;
     }
-    let to_linear = |v: u8| {
-        let v = v as f32 / 255.0;
-        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    let (mut lightness, chroma, hue) = oklch(color);
+    let mut out = color;
+    while lightness > 0.2 {
+        lightness -= 0.02;
+        out = from_oklch(lightness, chroma * 1.4, hue);
+        if dark_enough(out) {
+            break;
+        }
+    }
+    out
+}
+
+/// A tint behind a match, and the text on it: `text`'s hue at low chroma, dark on a dark
+/// terminal and pale on a light one, so the match reads as marked without shouting. The text
+/// keeps its hue and chroma, its lightness moved (lifted on dark, deepened on light) until it
+/// reads at 4.5:1 on the tint. With no text colour the tint is neutral and the terminal's own
+/// text colour, which already reads on it, is kept.
+pub fn tint(text: Option<Rgb8>, dark: bool) -> (Rgb8, Option<Rgb8>) {
+    let (lightness, chroma, hue) = text.map(oklch).unwrap_or((0.7, 0., 0.));
+    let fill = if dark {
+        from_oklch(0.33, (chroma * 0.5).min(0.075), hue)
+    } else {
+        from_oklch(0.93, (chroma * 0.4).min(0.055), hue)
     };
+    let text = text.map(|_| {
+        let mut l = lightness;
+        let mut out = from_oklch(l, chroma, hue);
+        for _ in 0..60 {
+            if contrast(out, fill) >= 4.5 {
+                break;
+            }
+            l = if dark { (l + 0.015).min(0.99) } else { (l - 0.015).max(0.05) };
+            out = from_oklch(l, chroma, hue);
+        }
+        out
+    });
+    (fill, text)
+}
+
+/// Black or white, whichever reads better on `background`.
+fn text_on(background: Rgb8) -> Rgb8 {
+    let (black, white) = (Rgb8 { r: 0, g: 0, b: 0 }, Rgb8 { r: 255, g: 255, b: 255 });
+    if contrast(black, background) >= contrast(white, background) { black } else { white }
+}
+
+fn linear(v: u8) -> f32 {
+    let v = v as f32 / 255.0;
+    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+}
+
+/// WCAG 2 contrast ratio of two colours.
+fn contrast(a: Rgb8, b: Rgb8) -> f32 {
+    let luminance = |c: Rgb8| 0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b);
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// A colour as OKLCH: lightness, chroma, hue in radians.
+fn oklch(color: Rgb8) -> (f32, f32, f32) {
+    let (r, g, b) = (linear(color.r), linear(color.g), linear(color.b));
+    let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_99 * b).cbrt();
+    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
+    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
+    let lightness = 0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s;
+    let a = 1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s;
+    let b = 0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s;
+    (lightness, (a * a + b * b).sqrt(), b.atan2(a))
+}
+
+/// The sRGB colour nearest to an OKLCH one: its chroma lowered until it fits the gamut.
+fn from_oklch(lightness: f32, chroma: f32, hue: f32) -> Rgb8 {
     let to_srgb = |v: f32| {
         let v = v.clamp(0.0, 1.0);
         let v = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
         (v * 255.0).round() as u8
     };
-    let (r, g, b) = (to_linear(color.r), to_linear(color.g), to_linear(color.b));
-    let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_99 * b).cbrt();
-    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
-    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
-    let mut lightness = 0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s;
-    let a = 1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s;
-    let bb = 0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s;
-    let (chroma, hue) = ((a * a + bb * bb).sqrt() * 1.4, bb.atan2(a));
-    // OKLab to linear sRGB; `None` outside the gamut.
-    let rgb = |lightness: f32, chroma: f32| {
+    let mut chroma = chroma;
+    loop {
         let (a, b) = (chroma * hue.cos(), chroma * hue.sin());
         let l = (lightness + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
         let m = (lightness - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
@@ -686,24 +790,11 @@ fn darken_vivid(color: Rgb8, dark_enough: impl Fn(Rgb8) -> bool) -> Rgb8 {
         let g = -1.268_438 * l + 2.609_757_4 * m - 0.341_319_38 * s;
         let b = -0.004_196_086_3 * l - 0.703_418_6 * m + 1.707_614_7 * s;
         let inside = |v: f32| (-1e-4..=1.0 + 1e-4).contains(&v);
-        (inside(r) && inside(g) && inside(b)).then_some((r, g, b))
-    };
-    let mut out = color;
-    while lightness > 0.2 {
-        lightness -= 0.02;
-        let mut c = chroma;
-        let (r, g, b) = loop {
-            if let Some(rgb) = rgb(lightness, c) {
-                break rgb;
-            }
-            c *= 0.95;
-        };
-        out = Rgb8 { r: to_srgb(r), g: to_srgb(g), b: to_srgb(b) };
-        if dark_enough(out) {
-            break;
+        if (inside(r) && inside(g) && inside(b)) || chroma < 1e-4 {
+            return Rgb8 { r: to_srgb(r), g: to_srgb(g), b: to_srgb(b) };
         }
+        chroma *= 0.95;
     }
-    out
 }
 
 #[cfg(test)]
@@ -1091,7 +1182,7 @@ mod tests {
             (RuleDraft { regex: true, group: "2".into(), ..draft("(a)") }, "no group 2"),
             (RuleDraft { regex: true, group: "name".into(), ..draft("(a)") }, "no group name"),
             (RuleDraft { foreground: Some("red".into()), ..draft("x") }, "Text colour"),
-            (RuleDraft { background: Some("#12".into()), ..draft("x") }, "Background"),
+            (RuleDraft { fill: true, background: Some("#12".into()), ..draft("x") }, "Fill colour"),
             (RuleDraft { foreground: None, ..draft("x") }, "colours nothing"),
         ];
         for (d, expected) in cases {
@@ -1124,6 +1215,7 @@ mod tests {
         let mut d = RuleDraft::from_keyword(&rule);
         d.text = "new".into();
         d.foreground = None;
+        d.fill = true;
         d.background = Some("#abc".into());
         let edited = d.build(Some(&rule)).unwrap();
         assert_eq!(edited.text, "new");
@@ -1132,6 +1224,79 @@ mod tests {
         assert_eq!(edited.fg(), None, "the removed text colour is off");
         assert_eq!(edited.bg(), parse_hex("#AABBCC"));
         assert_eq!(edited.background_color.as_deref(), Some("#AABBCC"), "stored in the long form");
+    }
+
+    #[test]
+    fn a_fill_is_off_a_tint_or_a_colour() {
+        let mut rule = kw("x", "#FF4D4F");
+        assert_eq!(rule.fill(), Fill::Off);
+        rule.background = Some(true);
+        assert_eq!(rule.fill(), Fill::Tint, "on without a colour");
+        rule.background_color = Some("#123456".into());
+        assert_eq!(rule.fill(), Fill::Colour(parse_hex("#123456").unwrap()));
+        rule.background = Some(false);
+        assert_eq!(rule.fill(), Fill::Off, "off keeps the colour for later");
+        assert_eq!(rule.background_color.as_deref(), Some("#123456"));
+        // Tabby writes "0" for no colour; it never meant a fill.
+        rule.background = Some(true);
+        rule.background_color = Some("0".into());
+        assert_eq!(rule.fill(), Fill::Off);
+    }
+
+    #[test]
+    fn a_tint_reads_on_both_kinds_of_terminal() {
+        for (hex, name) in SWATCHES {
+            let colour = parse_hex(hex).unwrap();
+            for dark in [false, true] {
+                let (fill, text) = tint(Some(colour), dark);
+                let text = text.unwrap();
+                assert!(contrast(text, fill) >= 4.5, "{name}, dark={dark}: {:.2}", contrast(text, fill));
+                // Quiet: close to the terminal it sits on, so a line of matches isn't a wall.
+                let terminal = if dark { Rgb8 { r: 0x1e, g: 0x1e, b: 0x1e } } else { Rgb8 { r: 255, g: 255, b: 255 } };
+                assert!(contrast(fill, terminal) < 1.6, "{name}, dark={dark}: fill too loud");
+                // The same colour family: a chromatic swatch keeps its hue in the fill.
+                let ((_, c1, h1), (_, c2, h2)) = (oklch(colour), oklch(fill));
+                if c1 > 0.05 && c2 > 0.02 {
+                    let drift = (h1 - h2).abs().min(std::f32::consts::TAU - (h1 - h2).abs());
+                    assert!(drift < 0.35, "{name}, dark={dark}: hue drifted {drift}");
+                }
+            }
+        }
+        // No text colour: a neutral fill under the terminal's own text.
+        let (fill, text) = tint(None, true);
+        assert_eq!(text, None);
+        assert!(fill.r == fill.g && fill.g == fill.b);
+    }
+
+    #[test]
+    fn text_on_a_colour_fill_stays_readable() {
+        let mut rule = kw("x", "#FF4D4F");
+        rule.background = Some(true);
+        rule.background_color = Some("#FF4D4F".into());
+        let shown = rule.display(true);
+        assert_ne!(shown.fg, rule.fg(), "red on red would hide the match");
+        assert!(contrast(shown.fg.unwrap(), shown.bg.unwrap()) >= 3.0);
+        // A text colour that reads on the fill is kept as chosen.
+        rule.background_color = Some("#123456".into());
+        rule.foreground_color = Some("#00FF00".into());
+        assert_eq!(rule.display(true).fg, parse_hex("#00FF00"));
+    }
+
+    #[test]
+    fn the_fill_switch_round_trips_through_the_editor() {
+        let mut rule = kw("x", "#FF4D4F");
+        rule.background = Some(true);
+        let d = RuleDraft::from_keyword(&rule);
+        assert!(d.fill && d.background.is_none(), "a tint has no colour of its own");
+        assert_eq!(d.build(Some(&rule)).unwrap(), rule);
+        // A chosen colour survives switching the fill off and on.
+        let coloured = RuleDraft { background: Some("#123456".into()), ..d.clone() }.build(Some(&rule)).unwrap();
+        let off = RuleDraft { fill: false, ..RuleDraft::from_keyword(&coloured) }.build(Some(&coloured)).unwrap();
+        assert_eq!(off.fill(), Fill::Off);
+        let on = RuleDraft { fill: true, ..RuleDraft::from_keyword(&off) }.build(Some(&off)).unwrap();
+        assert_eq!(on.fill(), Fill::Colour(parse_hex("#123456").unwrap()));
+        // A fill alone is enough for a rule.
+        assert!(RuleDraft { foreground: None, fill: true, ..draft("x") }.build(None).is_ok());
     }
 
     #[test]
