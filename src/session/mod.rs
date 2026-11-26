@@ -583,34 +583,45 @@ fn occupied(cells: &[alacritty_terminal::term::cell::Cell], cols: usize) -> usiz
 /// The whole Scrollback plus screen as plain text: colours dropped, trailing blanks trimmed,
 /// Windows line endings. The same as [`tidy_export`] of the terminal's own `bounds_to_string`,
 /// built in one pass into one buffer, several times faster: the terminal is locked meanwhile,
-/// and a full Scrollback of 100,000 lines took 60 ms the other way.
+/// and a full Scrollback of 100,000 lines took 60 ms the other way. Each row's cells are read
+/// once: a tab, which only the terminal can lay out, is noticed while copying and the row is
+/// copied again its way.
 pub fn scrollback_text<T>(term: &Term<T>) -> String {
     use alacritty_terminal::term::cell::{Flags, LineLength};
 
     let grid = term.grid();
-    let mut out = String::new();
+    // About a log line per row, so a full Scrollback rarely grows the buffer (and copies it).
+    let mut out = String::with_capacity((grid.history_size() + grid.screen_lines()) * 64);
     // Where the line being written starts, and where the text ends without blank lines after.
     let (mut line_start, mut content_end) = (0, 0);
     for line in -(grid.history_size() as i32)..grid.screen_lines() as i32 {
         let row = &grid[Line(line)];
         let len = row.line_length().0;
         let cells = &row[..][..len];
-        if cells.iter().any(|cell| cell.c == '\t') {
+        let row_start = out.len();
+        let mut tab = false;
+        for cell in cells {
+            if cell.c == '\t' {
+                tab = true;
+                break;
+            }
+            if !cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                out.push(cell.c);
+                if let Some(zerowidth) = cell.zerowidth() {
+                    out.extend(zerowidth);
+                }
+            }
+        }
+        if tab {
             // A tab skips the cells up to the next tab stop, and only the terminal knows those.
             // A wide character that wrapped onto the next row is written with that row: stop
             // before its spacer here, or the terminal adds it to this row too.
+            out.truncate(row_start);
             let last = grid.last_column();
             let wraps_wide = row[last].flags.contains(Flags::LEADING_WIDE_CHAR_SPACER);
             let end_column = if wraps_wide { Column(last.0 - 1) } else { last };
             let (start, end) = (Point::new(Line(line), Column(0)), Point::new(Line(line), end_column));
             out.push_str(term.bounds_to_string(start, end).trim_end_matches('\n'));
-        } else {
-            for cell in cells {
-                if !cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
-                    out.push(cell.c);
-                    out.extend(cell.zerowidth().into_iter().flatten());
-                }
-            }
         }
         // A row that wraps goes on in the next one.
         if len == 0 || !cells[len - 1].flags.contains(Flags::WRAPLINE) {

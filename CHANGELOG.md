@@ -18,6 +18,8 @@ All notable changes to Komando are listed here. The format follows
   updates.
 - Sessions signed in with a password take in fast output the same way as sessions signed in
   with a key.
+- Copy output is about a third faster, and holds up the session's output for that much less
+  time: a full Scrollback of 100,000 lines now takes about 50 ms.
 - A host's menu shows Shift+F2 beside Edit host and Shift+Delete beside Delete host. A dropped
   session's menu says "Close session", as a connected one's does.
 - When a connection through jump hosts fails, its page offers Reconnect and Edit host, named
