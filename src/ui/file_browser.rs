@@ -867,24 +867,10 @@ impl FileBrowser {
             return;
         }
         let Some(remote) = self.remote() else { return };
-        let names: Vec<String> = paths.iter().map(|p| upload_name(p)).collect();
-        let check_dir = dir.clone();
-        let task = sftp::spawn(async move {
-            use futures::{StreamExt as _, TryStreamExt as _};
-            // Asked together: one at a time, a thousand dropped files would wait a thousand
-            // round trips before the first upload starts.
-            let checks: Vec<_> = names
-                .into_iter()
-                .map(|name| {
-                    let (remote, path) = (remote.clone(), sftp::join(&check_dir, &name));
-                    async move { remote.exists(&path).await.map(|exists| exists.then_some(name)) }
-                })
-                .collect();
-            let taken: Vec<Option<String>> = futures::stream::iter(checks).buffered(32).try_collect().await?;
-            Ok::<_, OpError>(taken.into_iter().flatten().collect::<Vec<_>>())
-        });
+        let targets = paths.iter().map(|p| sftp::join(&dir, &upload_name(p))).collect();
+        let task = taken_names(remote, targets);
         cx.spawn(async move |this, cx| {
-            let result = task.await.and_then(|r| r);
+            let result = task.await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(existing) if existing.is_empty() => this.start_uploads(paths, dir, false, None, cx),
                 Ok(existing) => {
@@ -1099,21 +1085,9 @@ impl FileBrowser {
             self.notify_error("Not connected.", cx);
             return;
         };
-        let targets: Vec<String> = pairs.iter().map(|(_, to)| to.clone()).collect();
-        let task = sftp::spawn(async move {
-            use futures::{StreamExt as _, TryStreamExt as _};
-            let checks: Vec<_> = targets
-                .into_iter()
-                .map(|to| {
-                    let remote = remote.clone();
-                    async move { remote.exists(&to).await.map(|exists| exists.then(|| sftp::file_name(&to).to_string())) }
-                })
-                .collect();
-            let taken: Vec<Option<String>> = futures::stream::iter(checks).buffered(32).try_collect().await?;
-            Ok::<_, OpError>(taken.into_iter().flatten().collect::<Vec<_>>())
-        });
+        let task = taken_names(remote, pairs.iter().map(|(_, to)| to.clone()).collect());
         cx.spawn(async move |this, cx| {
-            let result = task.await.and_then(|r| r);
+            let result = task.await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(existing) if existing.is_empty() => this.start_on_server(op.into(), on_server_items(pairs), false, cx),
                 Ok(existing) => {
@@ -1225,12 +1199,15 @@ impl FileBrowser {
         self.notify_error("The terminal isn't at a shell prompt (a program is running or the session ended).", cx);
     }
 
+    /// Change the saved favorites with `change`, and save them.
+    fn change_favorites(&mut self, cx: &mut Context<Self>, change: impl FnOnce(&mut Favorites)) {
+        self.favorites.update(cx, |store, cx| store.change(change, cx));
+    }
+
     fn add_favorite(&mut self, path: String, host_only: bool, cx: &mut Context<Self>) {
         let host = host_only.then(|| self.host_id.clone());
-        self.favorites.update(cx, |store, cx| {
-            store.change(|f| {
-                f.add(&path, host.as_deref());
-            }, cx)
+        self.change_favorites(cx, |favs| {
+            favs.add(&path, host.as_deref());
         });
         let scope = if host_only { format!("for {}", self.host_label) } else { "for all hosts".to_string() };
         let name = match sftp::file_name(&path) {
@@ -1253,7 +1230,7 @@ impl FileBrowser {
                 let name = input.read(cx).value().to_string();
                 let id = fav_id.clone();
                 this.favorite_rename = None;
-                this.favorites.update(cx, |store, cx| store.change(|f| f.rename(&id, &name), cx));
+                this.change_favorites(cx, |favs| favs.rename(&id, &name));
                 // Renamed with Enter: the keyboard stays in the favorites list.
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     window.focus(&this.favorites_focus, cx);
@@ -1280,8 +1257,7 @@ impl FileBrowser {
             if self.edit.is_some() {
                 self.cancel_edit(window, cx);
             } else if self.dialog.is_some() {
-                self.dialog = None;
-                window.focus(&self.focus, cx);
+                self.close_dialog(window, cx);
             } else if self.favorite_rename.is_some() {
                 // Renaming a favorite: Escape ends the rename, not the whole list.
                 self.favorite_rename = None;
@@ -1438,15 +1414,18 @@ impl FileBrowser {
         };
         let position = gpui::point(bounds.left() + px(36.), y.clamp(bounds.top(), bounds.bottom().max(bounds.top())));
         if self.selected.is_empty() {
-            let view = cx.entity().downgrade();
-            let (cwd, show_hidden, connected) = (self.cwd.clone(), self.show_hidden, self.remote().is_some());
-            self.open_popup(position, window, cx, move |menu, _, _| {
-                folder_menu(menu, &view, cwd, show_hidden, connected)
-            });
+            self.open_folder_menu(position, window, cx);
         } else {
             self.open_entry_menu(position, window, cx);
         }
         cx.notify();
+    }
+
+    /// The menu of the folder shown at `position`.
+    fn open_folder_menu(&mut self, position: gpui::Point<gpui::Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.entity().downgrade();
+        let (cwd, show_hidden, connected) = (self.cwd.clone(), self.show_hidden, self.remote().is_some());
+        self.open_popup(position, window, cx, move |menu, _, _| folder_menu(menu, &view, cwd, show_hidden, connected));
     }
 
     /// The menu of the selected rows at `position`.
@@ -1533,6 +1512,24 @@ fn keep_both_targets(pairs: Vec<(String, String)>, dest: &str, existing: &[Strin
             (from, sftp::join(dest, &free))
         })
         .collect()
+}
+
+/// The file names of those of `paths` the server already has. Asked together: one at a time,
+/// a thousand dropped files would wait a thousand round trips before the first upload starts.
+fn taken_names(remote: Arc<Remote>, paths: Vec<String>) -> impl Future<Output = Result<Vec<String>, OpError>> {
+    let task = sftp::spawn(async move {
+        use futures::{StreamExt as _, TryStreamExt as _};
+        let checks: Vec<_> = paths
+            .into_iter()
+            .map(|path| {
+                let remote = remote.clone();
+                async move { remote.exists(&path).await.map(|exists| exists.then(|| sftp::file_name(&path).to_string())) }
+            })
+            .collect();
+        let taken: Vec<Option<String>> = futures::stream::iter(checks).buffered(32).try_collect().await?;
+        Ok::<_, OpError>(taken.into_iter().flatten().collect::<Vec<_>>())
+    });
+    async move { task.await.and_then(|r| r) }
 }
 
 /// The title and text of a dialog asking whether to replace the items named `existing` in
@@ -1738,7 +1735,6 @@ impl FileBrowser {
             Conn::Waiting(_) => (p.text_faint, "Not connected"),
             Conn::Failed(_) => (p.danger, "SFTP unavailable"),
         };
-        let view = cx.entity().downgrade();
         let can_create = self.cwd.is_some() && self.dir_access.write != Allowed::No && self.remote().is_some();
         div()
             .pl(px(14.))
@@ -1803,13 +1799,7 @@ impl FileBrowser {
                 )),
             )
             .child(tool_button("sftp-more", "ellipsis", "More", true, p).on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                let view = view.clone();
-                let show_hidden = this.show_hidden;
-                let cwd = this.cwd.clone();
-                let connected = this.remote().is_some();
-                this.open_popup(event.position(), window, cx, move |menu, _, _| {
-                    folder_menu(menu, &view, cwd, show_hidden, connected)
-                });
+                this.open_folder_menu(event.position(), window, cx);
                 cx.notify();
             })))
             .child(
@@ -2553,10 +2543,6 @@ impl FileBrowser {
 
         let fav_row = |f: crate::favorites::Favorite, first: bool, last: bool, cx: &mut Context<Self>| {
             let renaming = self.favorite_rename.as_ref().filter(|(id, _, _)| *id == f.id).map(|(_, input, _)| input.clone());
-            let (id1, id2, id3, id4, id5) = (f.id.clone(), f.id.clone(), f.id.clone(), f.id.clone(), f.id.clone());
-            let host = host_id.clone();
-            let host2 = host_id.clone();
-            let host3 = host_id.clone();
             let shared = f.host.is_none();
             let name = f.name.clone();
             let path = f.path.clone();
@@ -2594,12 +2580,12 @@ impl FileBrowser {
                             match (key, mods.alt, mods.modified()) {
                                 ("f2", _, false) => this.start_favorite_rename(id, key_name.clone(), window, cx),
                                 ("delete", _, false) => {
-                                    this.favorites.update(cx, |s, cx| s.change(|f| f.remove(&id), cx));
+                                    this.change_favorites(cx, |favs| favs.remove(&id));
                                     // The row is gone: the keyboard stays in the list.
                                     window.focus(&this.favorites_focus, cx);
                                 }
                                 ("up" | "down", true, _) => {
-                                    this.favorites.update(cx, |s, cx| s.change(|f| f.shift(&id, &host, key == "up"), cx));
+                                    this.change_favorites(cx, |favs| favs.shift(&id, &host, key == "up"));
                                 }
                                 _ => return,
                             }
@@ -2648,39 +2634,45 @@ impl FileBrowser {
                         .invisible()
                         .group_hover("fav-row", |s| s.visible())
                         .when(!first, |el| {
+                            let (id, host) = (f.id.clone(), host_id.clone());
                             el.child(small(("fav-up", key), "arrow-up", "Move up").on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 cx.stop_propagation();
-                                let (id, host) = (id1.clone(), host.clone());
-                                this.favorites.update(cx, |s, cx| s.change(|f| f.shift(&id, &host, true), cx));
+                                this.change_favorites(cx, |favs| favs.shift(&id, &host, true));
                             })))
                         })
                         .when(!last, |el| {
+                            let (id, host) = (f.id.clone(), host_id.clone());
                             el.child(small(("fav-down", key), "arrow-down", "Move down").on_click(cx.listener(
                                 move |this, _: &ClickEvent, _, cx| {
                                     cx.stop_propagation();
-                                    let (id, host) = (id2.clone(), host2.clone());
-                                    this.favorites.update(cx, |s, cx| s.change(|f| f.shift(&id, &host, false), cx));
+                                    this.change_favorites(cx, |favs| favs.shift(&id, &host, false));
                                 },
                             )))
                         })
-                        .child(
+                        .child({
+                            let id = f.id.clone();
+                            // Shared now: keep it for this host only.
+                            let host = shared.then(|| host_id.clone());
                             small(("fav-scope", key), if shared { "server" } else { "globe" }, if shared { "Only for this host" } else { "Share with all hosts" })
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                     cx.stop_propagation();
-                                    let id = id3.clone();
-                                    let host = if shared { Some(host3.clone()) } else { None };
-                                    this.favorites.update(cx, |s, cx| s.change(|f| f.set_host(&id, host.as_deref()), cx));
-                                })),
-                        )
-                        .child(small(("fav-rename", key), "pencil", "Rename").on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                            cx.stop_propagation();
-                            this.start_favorite_rename(id4.clone(), name.clone(), window, cx);
-                        })))
-                        .child(small(("fav-remove", key), "x", "Remove").on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            cx.stop_propagation();
-                            let id = id5.clone();
-                            this.favorites.update(cx, |s, cx| s.change(|f| f.remove(&id), cx));
-                        }))),
+                                    this.change_favorites(cx, |favs| favs.set_host(&id, host.as_deref()));
+                                }))
+                        })
+                        .child({
+                            let id = f.id.clone();
+                            small(("fav-rename", key), "pencil", "Rename").on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.start_favorite_rename(id.clone(), name.clone(), window, cx);
+                            }))
+                        })
+                        .child({
+                            let id = f.id.clone();
+                            small(("fav-remove", key), "x", "Remove").on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.change_favorites(cx, |favs| favs.remove(&id));
+                            }))
+                        }),
                 )
                 .into_any_element()
         };
@@ -2820,11 +2812,16 @@ impl FileBrowser {
         )
     }
 
+    /// Close the open dialog, giving the list the keys back.
+    fn close_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dialog = None;
+        window.focus(&self.focus, cx);
+    }
+
     fn render_dialog(&self, p: AppPalette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let dialog = self.dialog.as_ref()?;
         let cancel = button("sftp-dialog-cancel", "Cancel", ButtonKind::Ghost, p).on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-            this.dialog = None;
-            window.focus(&this.focus, cx);
+            this.close_dialog(window, cx);
             cx.notify();
         }));
         let (title, body, actions): (String, AnyElement, Vec<AnyElement>) = match dialog {
@@ -2876,8 +2873,7 @@ impl FileBrowser {
                         cancel.into_any_element(),
                         button("sftp-dialog-delete", "Delete", ButtonKind::Danger, p)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.dialog = None;
-                                window.focus(&this.focus, cx);
+                                this.close_dialog(window, cx);
                                 this.delete(paths.clone(), cx);
                             }))
                             .into_any_element(),
@@ -2894,15 +2890,13 @@ impl FileBrowser {
                         cancel.into_any_element(),
                         button("sftp-keep-both", "Keep both", ButtonKind::Secondary, p)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.dialog = None;
-                                window.focus(&this.focus, cx);
+                                this.close_dialog(window, cx);
                                 this.keep_both(u1.clone(), d1.clone(), e1.clone(), cx);
                             }))
                             .into_any_element(),
                         button("sftp-replace", "Replace", ButtonKind::Danger, p)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.dialog = None;
-                                window.focus(&this.focus, cx);
+                                this.close_dialog(window, cx);
                                 this.start_uploads(u2.clone(), d2.clone(), true, None, cx);
                             }))
                             .into_any_element(),
@@ -2920,15 +2914,13 @@ impl FileBrowser {
                         cancel.into_any_element(),
                         button("sftp-copy-keep-both", "Keep both", ButtonKind::Secondary, p)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.dialog = None;
-                                window.focus(&this.focus, cx);
+                                this.close_dialog(window, cx);
                                 this.copy_or_move_keeping_both(op, p1.clone(), d1.clone(), e1.clone(), cx);
                             }))
                             .into_any_element(),
                         button("sftp-copy-replace", "Replace", ButtonKind::Danger, p)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.dialog = None;
-                                window.focus(&this.focus, cx);
+                                this.close_dialog(window, cx);
                                 this.start_on_server(op.into(), on_server_items(p2.clone()), true, cx);
                             }))
                             .into_any_element(),
