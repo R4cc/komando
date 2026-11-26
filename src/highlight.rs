@@ -621,6 +621,9 @@ pub fn merge(existing: &mut Vec<HighlightSet>, imported: Vec<HighlightSet>) -> (
 /// #FFD700) are darkened, on a dark one very dark colours (#0000FF) are lightened. Colours that
 /// already pass are left as they are. The thresholds were chosen for the bundled backgrounds;
 /// contrast against the actual background isn't computed here.
+///
+/// Darkening keeps the colour's hue and lifts its chroma (in OKLCH): scaling the channels
+/// alone turned the pale information blue into slate and amber into olive.
 pub fn readable_on(color: Rgb8, dark_background: bool) -> Rgb8 {
     let luminance = |c: Rgb8| {
         let lin = |v: u8| {
@@ -644,13 +647,63 @@ pub fn readable_on(color: Rgb8, dark_background: bool) -> Rgb8 {
         } else {
             // At least 5:1 on the bundled light backgrounds, with a margin for warm paper and
             // pale blue ones, not only white.
-            if luminance(c) <= 0.12 {
-                break;
-            }
-            c = Rgb8 { r: (c.r as f32 * 0.85) as u8, g: (c.g as f32 * 0.85) as u8, b: (c.b as f32 * 0.85) as u8 };
+            return darken_vivid(color, |c| luminance(c) <= 0.12);
         }
     }
     c
+}
+
+/// `color` darkened in OKLCH until `dark_enough`, its hue kept and its chroma lifted by 40%
+/// (as far as sRGB allows), so a darker colour still reads as that colour.
+fn darken_vivid(color: Rgb8, dark_enough: impl Fn(Rgb8) -> bool) -> Rgb8 {
+    if dark_enough(color) {
+        return color;
+    }
+    let to_linear = |v: u8| {
+        let v = v as f32 / 255.0;
+        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    };
+    let to_srgb = |v: f32| {
+        let v = v.clamp(0.0, 1.0);
+        let v = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+        (v * 255.0).round() as u8
+    };
+    let (r, g, b) = (to_linear(color.r), to_linear(color.g), to_linear(color.b));
+    let l = (0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_99 * b).cbrt();
+    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
+    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
+    let mut lightness = 0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s;
+    let a = 1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s;
+    let bb = 0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s;
+    let (chroma, hue) = ((a * a + bb * bb).sqrt() * 1.4, bb.atan2(a));
+    // OKLab to linear sRGB; `None` outside the gamut.
+    let rgb = |lightness: f32, chroma: f32| {
+        let (a, b) = (chroma * hue.cos(), chroma * hue.sin());
+        let l = (lightness + 0.396_337_78 * a + 0.215_803_76 * b).powi(3);
+        let m = (lightness - 0.105_561_346 * a - 0.063_854_17 * b).powi(3);
+        let s = (lightness - 0.089_484_18 * a - 1.291_485_5 * b).powi(3);
+        let r = 4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_94 * s;
+        let g = -1.268_438 * l + 2.609_757_4 * m - 0.341_319_38 * s;
+        let b = -0.004_196_086_3 * l - 0.703_418_6 * m + 1.707_614_7 * s;
+        let inside = |v: f32| (-1e-4..=1.0 + 1e-4).contains(&v);
+        (inside(r) && inside(g) && inside(b)).then_some((r, g, b))
+    };
+    let mut out = color;
+    while lightness > 0.2 {
+        lightness -= 0.02;
+        let mut c = chroma;
+        let (r, g, b) = loop {
+            if let Some(rgb) = rgb(lightness, c) {
+                break rgb;
+            }
+            c *= 0.95;
+        };
+        out = Rgb8 { r: to_srgb(r), g: to_srgb(g), b: to_srgb(b) };
+        if dark_enough(out) {
+            break;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1087,6 +1140,16 @@ mod tests {
         assert_eq!(a.name, "Ops");
         assert!(a.keywords.is_empty());
         assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn darkening_for_a_light_terminal_keeps_the_hue() {
+        // The bundled information blue stays a blue, not slate.
+        let info = readable_on(parse_hex("#87BFEA").unwrap(), false);
+        assert!(info.b > info.g && info.g > info.r && info.b as i32 - info.r as i32 > 100, "{info:?}");
+        // Amber stays amber rather than olive: clearly more red than blue.
+        let amber = readable_on(parse_hex("#FFAA00").unwrap(), false);
+        assert!(amber.r > amber.g && amber.g > amber.b + 40, "{amber:?}");
     }
 
     #[test]

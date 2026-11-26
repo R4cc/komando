@@ -805,6 +805,41 @@ pub fn badge(icon: &str, color: Hsla, size: f32) -> impl IntoElement {
 }
 
 /// A small status dot: green connected, amber connecting, grey disconnected.
+/// A keyboard shortcut as one small outlined chip with a segment per key, split by hairlines,
+/// the same everywhere: "Ctrl Shift K" and "Ctrl+Shift+K" both give Ctrl | Shift | K.
+pub fn keycaps(keys: &str, p: AppPalette) -> AnyElement {
+    let edge = p.border.blend(p.text.opacity(0.12));
+    let keys: Vec<&str> = keys.split(['+', ' ']).filter(|key| !key.is_empty()).collect();
+    let last = keys.len().saturating_sub(1);
+    div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .h(px(18.))
+        .rounded(p.corner(4.))
+        .border_1()
+        .border_color(edge)
+        .text_size(px(10.5))
+        .text_color(p.text_muted)
+        .children(keys.into_iter().enumerate().map(|(i, key)| {
+            div()
+                .h_full()
+                .min_w(px(14.))
+                .px(px(4.))
+                // Centred on its default line, the text rendered about a pixel above the middle
+                // of the chip on Windows, so the capitals touched the top border. Pin the line to
+                // the space inside the border and start it a pixel lower.
+                .pt(px(2.))
+                .line_height(px(14.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(i < last, |el| el.border_r_1().border_color(edge))
+                .child(key.to_string())
+        }))
+        .into_any_element()
+}
+
 pub fn status_dot(color: Hsla) -> impl IntoElement {
     div().size(px(7.)).rounded_full().flex_shrink_0().bg(color)
 }

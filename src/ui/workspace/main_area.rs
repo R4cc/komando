@@ -35,6 +35,7 @@ impl Workspace {
         };
         let id = entry.id();
         let live = entry.is_live();
+        let failed = entry.failed();
         let is_ssh = matches!(entry.kind(), SessionKind::Ssh { .. });
         // The same signal bars for every connection; a Local Shell has none, only its dot.
         let indicator = match entry.kind() {
@@ -162,12 +163,12 @@ impl Workspace {
                         )
                     })
                     // A new connection in the same terminal, the earlier output kept above: for a
-                    // session that dropped or hangs. A live one is closed first.
-                    .child(
-                        strip_button("session-reconnect", "refresh-cw", "Reconnect", false, true, p)
-                            .tooltip(|window, cx| Tooltip::new("Connect again in this terminal").build(window, cx))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.reconnect(id, window, cx))),
-                    )
+                    // session that dropped or hangs. A live one is closed first, so there it is
+                    // only an icon, quieter than SFTP; a dropped one shows its name. While the
+                    // notice under a failed connection offers it, the bar doesn't repeat it.
+                    .children(reconnect_action(live, failed, p).map(|el| {
+                        el.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.reconnect(id, window, cx)))
+                    }))
                 })
                 .when(self.sessions.shown_split().is_some(), |el| {
                     el.child(

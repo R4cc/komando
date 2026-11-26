@@ -664,7 +664,7 @@ impl Workspace {
     }
 
     /// The active Session's name in the title bar: its Host (or shell), then which Session it
-    /// is. With a row of its own in the sidebar, that is the row's label ("SSH — Session 2"),
+    /// is. With a row of its own in the sidebar, that is the row's label ("Session 2"),
     /// so the two read the same; otherwise the Host's row stands for it, and it is only the
     /// name the Session was given, if any.
     pub(super) fn session_title(&self, session: &SessionEntry) -> (SharedString, Option<SharedString>) {

@@ -53,39 +53,35 @@ pub(super) fn useful_title(session: &SessionEntry) -> Option<&str> {
     (!useless && desktop_protocol(session).is_none()).then_some(title)
 }
 
-/// What a Session's row in the sidebar says, and its tooltip. The row: its protocol, then the
-/// name it was given, else `title` (its shell's, when that tells it from its siblings), else
-/// which one it is: a terminal's number, or a VNC desktop's display (port 5901 is display 1).
-/// `port` is a desktop's. A Local Shell's row has no protocol. The tooltip: the name or the
-/// shell's title, with what the Session is.
+/// What a Session's row in the sidebar says, and its tooltip. The row: the name it was given,
+/// else `title` (its shell's, when that tells it from its siblings), else which one it is (see
+/// `session_row_label`). `port` is a desktop's. The tooltip: the name or the shell's title,
+/// with what the Session is and how to rename it.
 pub(super) fn session_row_text(session: &SessionEntry, port: Option<u16>, title: Option<&str>) -> (SharedString, SharedString) {
     let protocol = desktop_protocol(session);
     let kind = match protocol {
         Some(protocol) => format!("Remote desktop ({})", protocol.label()),
         None => format!("Terminal #{}", session.number()),
     };
-    let ssh = matches!(session.kind(), SessionKind::Ssh { .. });
     let which = session.name().map(|n| n.as_ref()).or(title);
-    let label: SharedString = session_row_label(protocol, ssh, which, session.number(), port).into();
+    let label: SharedString = session_row_label(protocol, which, session.number(), port).into();
     let tip = match session.name().map(|n| n.as_ref()).or(useful_title(session)) {
-        Some(named) => format!("{named} · {kind}"),
-        None => kind,
+        Some(named) => format!("{named} · {kind} · F2 to rename"),
+        None => format!("{kind} · F2 to rename"),
     };
     (label, tip.into())
 }
 
-/// A Session row's label: "SSH — Session 2", "VNC — Display 1", "RDP — Desktop", or with
-/// `name` (the one it was given, or its shell's title) in place of which one it is. A Local Shell's has no protocol.
-pub(super) fn session_row_label(protocol: Option<Protocol>, ssh: bool, name: Option<&str>, number: usize, port: Option<u16>) -> String {
-    let which = match (name, protocol, port) {
+/// A Session row's label: which one it is, the icon beside it saying what it is. `name` (the
+/// one it was given, or its shell's title) comes first; otherwise a terminal's number
+/// ("Session 2"), a VNC desktop's display ("Display 1", from port 5901), or the protocol
+/// ("RDP desktop", "VNC desktop"), which also tells two desktops of one Host apart.
+pub(super) fn session_row_label(protocol: Option<Protocol>, name: Option<&str>, number: usize, port: Option<u16>) -> String {
+    match (name, protocol, port) {
         (Some(name), ..) => name.to_string(),
         (None, Some(Protocol::Vnc), Some(port @ 5900..=5999)) => format!("Display {}", port - 5900),
-        (None, Some(_), _) => "Desktop".to_string(),
+        (None, Some(protocol), _) => format!("{} desktop", protocol.label()),
         (None, None, _) => format!("Session {number}"),
-    };
-    match protocol.map(|p| p.label()).or(ssh.then_some("SSH")) {
-        Some(prefix) => format!("{prefix} — {which}"),
-        None => which,
     }
 }
 
@@ -565,6 +561,17 @@ pub(super) fn strip_action(id: &'static str, icon: &str, label: &'static str, da
         )
 }
 
+/// The strip's Reconnect for a Session: on a live one a quiet icon (it ends the connection
+/// first, so it shouldn't look as harmless as SFTP), on a dropped one a named button, and none
+/// while a failed connection's own notice offers it.
+pub(super) fn reconnect_action(live: bool, failed: bool, p: AppPalette) -> Option<gpui::Stateful<gpui::Div>> {
+    match (live, failed) {
+        (true, _) => Some(strip_action("session-reconnect", "refresh-cw", "Reconnect (ends this connection first)", false, p)),
+        (false, true) => None,
+        (false, false) => Some(strip_button("session-reconnect", "refresh-cw", "Reconnect", false, true, p)),
+    }
+}
+
 /// A Session's action in the strip above it, with its icon and its name: the strip's actions
 /// all look alike, so none has to be guessed from an icon. `on` marks a toggle that is on.
 pub(super) fn strip_button(id: &'static str, icon: &str, label: &'static str, on: bool, enabled: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
@@ -608,7 +615,6 @@ pub(super) fn strip_button(id: &'static str, icon: &str, label: &'static str, on
         .child(label)
 }
 
-/// A keyboard shortcut ("Ctrl ,") in a small outlined chip, the only one in the app.
 /// The "Switch to tab" pill on a quick connect result that already has an open Session.
 pub(super) fn switch_to_tab_badge(selected: bool, p: AppPalette) -> impl IntoElement {
     div()
@@ -629,22 +635,7 @@ pub(super) fn switch_to_tab_badge(selected: bool, p: AppPalette) -> impl IntoEle
         .child(icon_el("arrow-right", 12., p.text_muted))
 }
 
+/// A keyboard shortcut as keycaps (see `widgets::keycaps`).
 pub(super) fn kbd(keys: &str, p: AppPalette) -> impl IntoElement {
-    div()
-        .flex_shrink_0()
-        .px(px(5.))
-        .h(px(18.))
-        // Centred on its default line, the text rendered about a pixel above the middle of
-        // the chip on Windows, so the capitals touched the top border. Pin the line to the
-        // space inside the border and start it a pixel lower.
-        .pt(px(2.))
-        .line_height(px(14.))
-        .flex()
-        .items_center()
-        .rounded(p.corner(4.))
-        .border_1()
-        .border_color(p.border)
-        .text_size(px(10.5))
-        .text_color(p.text_faint)
-        .child(keys.to_string())
+    crate::ui::widgets::keycaps(keys, p)
 }

@@ -16,21 +16,26 @@ All notable changes to Komando are listed here. The format follows
 ### Changed
 
 - A host's open sessions are listed under it in the sidebar as compact rows, one per line,
-  joined to the host by tree lines. Each row shows what the session is, such as
-  "SSH — Session 2", "VNC — Display 1" or the title the shell set, and the rows stay in the
-  order you opened them. The session you're looking at is highlighted like a selected host,
-  and a row's × shows when you point at it.
+  joined to the host by tree lines. Each row has an icon for what the session is and a name
+  such as "Session 2", "Display 1" or the title the shell set, and the rows stay in the order
+  you opened them. The session you're looking at is highlighted like a selected host, a row's
+  × shows when you point at it, and its tooltip says F2 renames it.
 - Status dots in the sidebar line up in one column, whether or not a host has sessions to
   fold away.
 - The title bar names a session the same way its row in the sidebar does: the host, then
-  "SSH — Session 2", then the address. Its Disconnect and Reconnect buttons are labelled, and
-  remote desktops show the same signal bars as terminals.
-- A remote desktop fitted to the window sits on the pane with a small margin, rounded corners
-  and a soft shadow, instead of between dark bands. In dark themes the pane matches a
-  terminal's; in light themes the picture sits on a soft grey.
-- The remote desktop toolbar says "Quality: High" rather than just "High", and View only is a
-  labelled toggle.
-- The green for connected sessions is brighter in light themes.
+  "Session 2", then the address. Disconnect is labelled; Reconnect is a quiet icon while the
+  session is connected, since it ends the connection first, and a labelled button once it has
+  dropped. Remote desktops have Reconnect too, and show the same signal bars as terminals.
+- A remote desktop fitted to the window sits just under its toolbar with a small margin,
+  rounded corners and a soft shadow, instead of between dark bands. In dark themes the pane
+  matches a terminal's; in light themes the picture sits on a soft grey.
+- The remote desktop toolbar says "Quality: High" rather than just "High", and a Control /
+  View only switch shows which one is on.
+- The green for connected sessions is brighter in light themes, and the selected row in the
+  sidebar stands out more.
+- In light terminals, highlighted words keep their colour: information is blue rather than
+  slate, and warnings amber rather than olive.
+- Keyboard shortcuts look the same everywhere: one small chip with a segment per key.
 - × on a session always closes it. Disconnect, which keeps the output, is in the title bar and
   the session's menu.
 - The minimap stays empty until there is output to scroll back through.

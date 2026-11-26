@@ -143,7 +143,17 @@ impl AppPalette {
         self.text_muted = hex(readable(readable(c.muted_foreground, c.sidebar, 4.5), packed(self.hover), 4.5));
         self.text_faint = self.text_muted;
         self.active = hex(c.sidebar_accent);
-        self.active_text = hex(readable(c.sidebar_accent_foreground, c.sidebar_accent, 4.5));
+        // A light theme's sidebar accent is often a single step off the sidebar (about 1.09:1 in
+        // the default), too faint to find the selected row at a glance. Take it toward the text
+        // until it stands apart.
+        if !self.dark {
+            let mut step = 0.;
+            while contrast(packed(self.active), c.sidebar) < MIN_SELECTED_CONTRAST && step < 0.3 {
+                step += 0.02;
+                self.active = hex(c.sidebar_accent).blend(hex(c.sidebar_foreground).opacity(step));
+            }
+        }
+        self.active_text = hex(readable(c.sidebar_accent_foreground, packed(self.active), 4.5));
         self.brand_soft = self.active;
         self.brand = hex(c.sidebar_primary);
         self.on_brand = hex(readable(c.sidebar_primary_foreground, c.sidebar_primary, 4.5));
@@ -236,6 +246,9 @@ pub(crate) fn menu_hover(c: ThemeColors) -> (Hsla, Hsla) {
     let foreground = if background == c.accent { c.accent_foreground } else { c.popover_foreground };
     (hex(background), hex(readable(foreground, background, 4.5)))
 }
+
+/// How far a selected sidebar row's fill stands from the sidebar in a light theme.
+const MIN_SELECTED_CONTRAST: f32 = 1.2;
 
 /// `0xrrggbb` of a color, ignoring its alpha.
 pub fn packed(color: Hsla) -> u32 {
@@ -514,6 +527,16 @@ mod tests {
         let c: Rgba = h.into();
         let ch = |c: f32| (c * 255.).round() as u32;
         (ch(c.r) << 16) | (ch(c.g) << 8) | ch(c.b)
+    }
+
+    #[test]
+    fn a_selected_sidebar_row_stands_out_in_light_themes() {
+        for theme in LIGHT_THEMES.iter() {
+            let p = AppPalette::from_theme(theme).navigation();
+            let fill = contrast(packed(p.active), packed(p.sidebar));
+            assert!(fill >= MIN_SELECTED_CONTRAST, "{}: selected fill {fill:.2}:1", theme.name);
+            assert!(contrast(packed(p.active_text), packed(p.active)) >= 4.5, "{}: selected text", theme.name);
+        }
     }
 
     #[test]

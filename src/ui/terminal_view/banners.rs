@@ -2,7 +2,7 @@
 //! clipboard question and the disconnected banner.
 
 use super::*;
-use crate::ui::widgets::{dialog_card, dialog_mono, dialog_text, icon_el};
+use crate::ui::widgets::{dialog_card, dialog_mono, dialog_text, icon_el, keycaps};
 
 impl TerminalView {
     /// Scroll so the entered line sits near the top of the view, and light it up briefly.
@@ -490,15 +490,7 @@ impl TerminalView {
         let accent = if failed { p.danger } else { p.border };
         // Outlines that show on the terminal's background in either theme.
         let outline = p.border.blend(p.text.opacity(0.18));
-        let enter = div()
-            .px(px(6.))
-            .rounded(p.corner(4.))
-            .border_1()
-            .border_color(outline)
-            .text_size(px(11.5))
-            .line_height(px(18.))
-            .text_color(p.text_muted)
-            .child("Enter");
+        let enter = keycaps("Enter", p);
         let actions = div()
             .mt(px(6.))
             .text_size(px(13.))

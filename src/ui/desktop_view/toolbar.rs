@@ -9,7 +9,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{AnyElement, App, ClickEvent, Context, FontWeight, SharedString, WeakEntity, Window, div, prelude::*, px};
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_component::{Icon, Selectable as _, Sizable as _};
+use gpui_component::{Icon, Sizable as _};
 
 use super::{DesktopView, DesktopViewEvent};
 use crate::desktop::keys::{self, Code};
@@ -218,18 +218,60 @@ impl DesktopView {
                     .tooltip("Keyboard")
                     .dropdown_menu(keys_menu),
             )
+            // Input: both choices shown in one capsule, the current one raised, so it reads as
+            // a state rather than a command. Neutral in every theme (the selection colour is an
+            // accent in some), with concentric corners: 8 outside, 2 of padding, 6 inside.
             .child({
-                let on = options.view_only;
-                Button::new("rd-view-only")
-                    .custom(plain)
-                    .small()
-                    .icon(icon(if on { "eye" } else { "mouse-pointer-2" }))
-                    // A labelled toggle: the icon alone didn't say what it switches.
-                    .label("View only")
-                    .selected(on)
-                    .toggled(on)
-                    .tooltip(if on { "View only: on. Click to control the desktop" } else { "View only: off. Click to only watch" })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.change_options(|o| o.view_only = !on, cx)))
+                let view_only = options.view_only;
+                let choice = |id: &'static str, glyph: &'static str, label: &'static str, on: bool, tip: &'static str| {
+                    let fg = if on { p.text } else { p.text_muted };
+                    div()
+                        .id(id)
+                        .role(gpui::Role::RadioButton)
+                        .aria_label(label)
+                        .aria_toggled(if on { gpui::Toggled::True } else { gpui::Toggled::False })
+                        .h(px(22.))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .rounded(p.corner(6.))
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(fg)
+                        // Raised: lighter than the track in both themes (a dark theme's card
+                        // surface is darker than its track and would look pressed in).
+                        .when(on, |el| {
+                            el.bg(if p.dark { p.text.opacity(0.14) } else { p.surface })
+                                .border_1()
+                                .border_color(p.border.blend(p.text.opacity(0.08)))
+                        })
+                        .when(!on, |el| {
+                            el.border_1()
+                                .border_color(gpui::transparent_black())
+                                .cursor_pointer()
+                                .hover(move |s| s.text_color(p.text))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    this.change_options(|o| o.view_only = label == "View only", cx)
+                                }))
+                        })
+                        .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(tip).build(window, cx))
+                        .child(icon(glyph).size(px(13.)).text_color(fg))
+                        .child(label)
+                };
+                div()
+                    .id("rd-input")
+                    .role(gpui::Role::RadioGroup)
+                    .aria_label("Input")
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(2.))
+                    .p(px(2.))
+                    .rounded(p.corner(8.))
+                    .bg(p.text.opacity(0.06))
+                    .child(choice("rd-control", "mouse-pointer-2", "Control", !view_only, "Your mouse and keyboard reach the desktop"))
+                    .child(choice("rd-view-only", "eye", "View only", view_only, "Only watch: input stays in Komando"))
             })
             .child(divider(p))
             .child(

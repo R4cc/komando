@@ -1087,25 +1087,18 @@ mod session_row_label_tests {
     use crate::model::Protocol;
 
     #[test]
-    fn says_the_protocol_and_which_session() {
-        assert_eq!(session_row_label(None, true, None, 2, None), "SSH — Session 2");
-        assert_eq!(session_row_label(Some(Protocol::Vnc), false, None, 1, Some(5901)), "VNC — Display 1");
-        assert_eq!(session_row_label(Some(Protocol::Vnc), false, None, 1, Some(5900)), "VNC — Display 0");
-        assert_eq!(session_row_label(Some(Protocol::Vnc), false, None, 1, Some(15900)), "VNC — Desktop");
-        assert_eq!(session_row_label(Some(Protocol::Rdp), false, None, 1, Some(3389)), "RDP — Desktop");
+    fn says_which_session_it_is() {
+        assert_eq!(session_row_label(None, None, 2, None), "Session 2");
+        assert_eq!(session_row_label(Some(Protocol::Vnc), None, 1, Some(5901)), "Display 1");
+        assert_eq!(session_row_label(Some(Protocol::Vnc), None, 1, Some(5900)), "Display 0");
+        assert_eq!(session_row_label(Some(Protocol::Vnc), None, 1, Some(15900)), "VNC desktop");
+        assert_eq!(session_row_label(Some(Protocol::Rdp), None, 1, Some(3389)), "RDP desktop");
     }
 
     #[test]
-    fn a_given_name_replaces_which_session() {
-        assert_eq!(session_row_label(Some(Protocol::Vnc), false, Some("Monitoring"), 1, Some(5902)), "VNC — Monitoring");
-        assert_eq!(session_row_label(None, true, Some("logs"), 3, None), "SSH — logs");
-        // A shell's title is passed the same way.
-        assert_eq!(session_row_label(None, true, Some("ops@web01: ~/atlas"), 2, None), "SSH — ops@web01: ~/atlas");
-    }
-
-    #[test]
-    fn a_local_shell_has_no_protocol() {
-        assert_eq!(session_row_label(None, false, None, 2, None), "Session 2");
+    fn a_given_name_or_shell_title_comes_first() {
+        assert_eq!(session_row_label(Some(Protocol::Vnc), Some("Monitoring"), 1, Some(5902)), "Monitoring");
+        assert_eq!(session_row_label(None, Some("ops@web01: ~/atlas"), 2, None), "ops@web01: ~/atlas");
     }
 }
 

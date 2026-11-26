@@ -958,6 +958,9 @@ impl DesktopView {
                             axis(shown.height, bounds.size.height, bounds.origin.y, at.y),
                         )
                     }
+                    // Framed, it hangs just under the toolbar, the room left over below it, so the
+                    // toolbar doesn't float over an empty band; full screen, it is centred.
+                    _ if framed => point(bounds.origin.x + (bounds.size.width - shown.width) / 2., bounds.origin.y),
                     _ => point(
                         bounds.origin.x + (bounds.size.width - shown.width) / 2.,
                         bounds.origin.y + (bounds.size.height - shown.height) / 2.,
