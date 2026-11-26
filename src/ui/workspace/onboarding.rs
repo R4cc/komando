@@ -412,18 +412,8 @@ impl Workspace {
 
     fn tour_vault(&self, tour: &Tour, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let minutes = self.settings.auto_lock_minutes;
-        let auto_lock = segmented(
-            "tour-auto-lock",
-            &TOUR_AUTO_LOCK.map(|(m, label)| (label, m == minutes)),
-            p,
-            cx,
-            |this, i, _, cx| {
-                this.settings.auto_lock_minutes = TOUR_AUTO_LOCK[i].0;
-                this.save_settings(cx);
-                this.sync_remembered_unlock_with_notice(cx);
-                cx.notify();
-            },
-        );
+        let auto_lock =
+            Self::setting_choice("tour-auto-lock", &TOUR_AUTO_LOCK, minutes, p, cx, |s, minutes| s.auto_lock_minutes = minutes, Self::save_auto_lock);
         let auto_lock = group(
             p,
             vec![
@@ -536,15 +526,14 @@ impl Workspace {
     fn tour_minimap(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let on = self.settings.minimap;
         let placement = self.settings.minimap_placement;
-        let placement_choice = segmented(
+        let placement_choice = Self::setting_choice(
             "tour-minimap-placement",
-            &settings::MINIMAP_PLACEMENTS.map(|(value, label)| (label, value == placement)),
+            &settings::MINIMAP_PLACEMENTS,
+            placement,
             p,
             cx,
-            move |this, i, _, cx| {
-                this.settings.minimap_placement = settings::MINIMAP_PLACEMENTS[i].0;
-                this.apply_terminal_settings(cx);
-            },
+            |s, placement| s.minimap_placement = placement,
+            Self::apply_terminal_settings,
         );
         let placement_hint = match placement {
             MinimapPlacement::Beside => "A column of its own, always shown, as in VS Code. Output never runs underneath it.",

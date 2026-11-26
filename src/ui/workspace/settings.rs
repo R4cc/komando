@@ -472,6 +472,31 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// A row of choices for one setting: picking one sets it with `set`, then runs `then`
+    /// (applies or saves it, and whatever follows from it).
+    pub(super) fn setting_choice<T: Copy + PartialEq + 'static>(
+        id: &'static str,
+        choices: &'static [(T, &'static str)],
+        current: T,
+        p: AppPalette,
+        cx: &mut Context<Self>,
+        set: fn(&mut Settings, T),
+        then: fn(&mut Self, &mut Context<Self>),
+    ) -> AnyElement {
+        let options: Vec<_> = choices.iter().map(|&(value, label)| (label, value == current)).collect();
+        segmented(id, &options, p, cx, move |this, i, _, cx| {
+            set(&mut this.settings, choices[i].0);
+            then(this, cx);
+        })
+    }
+
+    /// Save a new lock-after time, and keep a remembered unlock in step with it.
+    pub(super) fn save_auto_lock(&mut self, cx: &mut Context<Self>) {
+        self.save_settings(cx);
+        self.sync_remembered_unlock_with_notice(cx);
+        cx.notify();
+    }
+
     /// Settings → Close from the sidebar: how a sidebar row closes its Session.
     fn quick_close_dropdown(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         use gpui_component::button::Button;
@@ -1052,55 +1077,43 @@ impl Workspace {
         let option_as_meta = self.settings.option_as_meta;
         let cursor_blink = self.settings.cursor_blink;
         use crate::model::TerminalCursor;
-        let cursor_shapes = [TerminalCursor::Line, TerminalCursor::Block, TerminalCursor::Underline];
-        let cursor_choice = segmented(
+        const CURSOR_SHAPES: [(TerminalCursor, &str); 3] =
+            [(TerminalCursor::Line, "Line"), (TerminalCursor::Block, "Block"), (TerminalCursor::Underline, "Underline")];
+        let cursor_choice = Self::setting_choice(
             "cursor-shape",
-            &[
-                ("Line", self.settings.cursor_shape == cursor_shapes[0]),
-                ("Block", self.settings.cursor_shape == cursor_shapes[1]),
-                ("Underline", self.settings.cursor_shape == cursor_shapes[2]),
-            ],
+            &CURSOR_SHAPES,
+            self.settings.cursor_shape,
             p,
             cx,
-            move |this, i, _, cx| {
-                this.settings.cursor_shape = cursor_shapes[i];
-                this.apply_terminal_settings(cx);
-            },
+            |s, shape| s.cursor_shape = shape,
+            Self::apply_terminal_settings,
         );
         let rail = self.settings.command_rail;
         let minimap = self.settings.minimap;
         let placement = self.settings.minimap_placement;
         let delay = self.settings.minimap_delay_ms;
         let minimap_in_split = self.settings.minimap_in_split;
-        let placement_choice = segmented(
+        let placement_choice = Self::setting_choice(
             "minimap-placement",
-            &MINIMAP_PLACEMENTS.map(|(value, label)| (label, value == placement)),
+            &MINIMAP_PLACEMENTS,
+            placement,
             p,
             cx,
-            |this, i, _, cx| {
-                this.settings.minimap_placement = MINIMAP_PLACEMENTS[i].0;
-                this.apply_terminal_settings(cx);
-            },
+            |s, placement| s.minimap_placement = placement,
+            Self::apply_terminal_settings,
         );
-        let delay_choice = segmented(
-            "minimap-delay",
-            &MINIMAP_DELAYS.map(|(ms, label)| (label, ms == delay)),
-            p,
-            cx,
-            |this, i, _, cx| {
-                this.settings.minimap_delay_ms = MINIMAP_DELAYS[i].0;
-                this.apply_terminal_settings(cx);
-            },
-        );
+        let delay_choice =
+            Self::setting_choice("minimap-delay", &MINIMAP_DELAYS, delay, p, cx, |s, ms| s.minimap_delay_ms = ms, Self::apply_terminal_settings);
         let font_slider = self.font_slider.clone().map(|s| Slider::new(&s).into_any_element());
         let font_input = self.font_input.clone().map(|i| Input::new(&i).into_any_element());
-        let scrollback_choice = segmented(
+        let scrollback_choice = Self::setting_choice(
             "scrollback",
-            &SCROLLBACK_CHOICES.map(|(lines, label)| (label, lines == scrollback)),
+            &SCROLLBACK_CHOICES,
+            scrollback,
             p,
             cx,
-            |this, i, _, cx| {
-                this.settings.scrollback_lines = SCROLLBACK_CHOICES[i].0;
+            |s, lines| s.scrollback_lines = lines,
+            |this, cx| {
                 this.save_settings(cx);
                 cx.notify();
             },
@@ -1244,25 +1257,23 @@ impl Workspace {
             [(RightClick::Menu, "Menu"), (RightClick::Paste, "Paste"), (RightClick::CopyOrPaste, "Copy or paste")];
         const LINK_CLICKS: [(LinkClick, &str); 3] =
             [(LinkClick::Ctrl, "Ctrl+click"), (LinkClick::Alt, "Alt+click"), (LinkClick::Click, "Click")];
-        let right_click = segmented(
+        let right_click = Self::setting_choice(
             "right-click",
-            &RIGHT_CLICKS.map(|(value, label)| (label, value == pointer.right_click)),
+            &RIGHT_CLICKS,
+            pointer.right_click,
             p,
             cx,
-            |this, i, _, cx| {
-                this.settings.pointer.right_click = RIGHT_CLICKS[i].0;
-                this.apply_terminal_settings(cx);
-            },
+            |s, click| s.pointer.right_click = click,
+            Self::apply_terminal_settings,
         );
-        let link_click = segmented(
+        let link_click = Self::setting_choice(
             "link-click",
-            &LINK_CLICKS.map(|(value, label)| (label, value == pointer.link_click)),
+            &LINK_CLICKS,
+            pointer.link_click,
             p,
             cx,
-            |this, i, _, cx| {
-                this.settings.pointer.link_click = LINK_CLICKS[i].0;
-                this.apply_terminal_settings(cx);
-            },
+            |s, click| s.pointer.link_click = click,
+            Self::apply_terminal_settings,
         );
         let right_click_hint = match pointer.right_click {
             RightClick::Menu => "",
@@ -1460,18 +1471,8 @@ impl Workspace {
 
     fn settings_security(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let minutes = self.settings.auto_lock_minutes;
-        let auto_lock = segmented(
-            "auto-lock",
-            &AUTO_LOCK_CHOICES.map(|(m, label)| (label, m == minutes)),
-            p,
-            cx,
-            |this, i, _, cx| {
-                this.settings.auto_lock_minutes = AUTO_LOCK_CHOICES[i].0;
-                this.save_settings(cx);
-                this.sync_remembered_unlock_with_notice(cx);
-                cx.notify();
-            },
-        );
+        let auto_lock =
+            Self::setting_choice("auto-lock", &AUTO_LOCK_CHOICES, minutes, p, cx, |s, minutes| s.auto_lock_minutes = minutes, Self::save_auto_lock);
         let (state, action) = if self.vault.is_some() {
             (
                 "Unlocked.",
@@ -1525,15 +1526,21 @@ impl Workspace {
                      Terminal settings. Programs in local shells always may.",
                     {
                         use crate::model::RemoteClipboard;
-                        const CHOICES: [(&str, RemoteClipboard); 3] =
-                            [("Ask", RemoteClipboard::Ask), ("Allow", RemoteClipboard::Allow), ("Never", RemoteClipboard::Never)];
-                        let current = self.settings.remote_clipboard;
-                        segmented("remote-clipboard", &CHOICES.map(|(label, choice)| (label, choice == current)), p, cx, |this, i, _, cx| {
-                            this.settings.remote_clipboard = CHOICES[i].1;
-                            this.save_settings(cx);
-                            this.refresh_session_clipboard(cx);
-                            cx.notify();
-                        })
+                        const CHOICES: [(RemoteClipboard, &str); 3] =
+                            [(RemoteClipboard::Ask, "Ask"), (RemoteClipboard::Allow, "Allow"), (RemoteClipboard::Never, "Never")];
+                        Self::setting_choice(
+                            "remote-clipboard",
+                            &CHOICES,
+                            self.settings.remote_clipboard,
+                            p,
+                            cx,
+                            |s, choice| s.remote_clipboard = choice,
+                            |this, cx| {
+                                this.save_settings(cx);
+                                this.refresh_session_clipboard(cx);
+                                cx.notify();
+                            },
+                        )
                     },
                 ),
                 setting_row(

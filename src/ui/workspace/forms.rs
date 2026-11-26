@@ -1246,7 +1246,7 @@ impl Workspace {
 
     fn host_forward_agent_field(&self, form: &HostForm, project: Option<&Project>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let options = [("From project", Source::Project), ("On", Source::Own), ("Off", Source::Off)];
-        let choice = source_choice("hf-forward-agent", &options, form.forward_agent, p, cx, |form, source| form.forward_agent = source);
+        let choice = host_choice("hf-forward-agent", &options, form.forward_agent, p, cx, |form, source| form.forward_agent = source);
         let hint = match (form.forward_agent, project.is_some_and(|pr| pr.forward_agent)) {
             (Source::Project, false) => "The project doesn't forward the SSH agent.".to_string(),
             (Source::Project, true) => format!("The project forwards the SSH agent. {FORWARD_AGENT_WARNING}"),
@@ -1258,7 +1258,7 @@ impl Workspace {
 
     fn host_user_field(&self, form: &HostForm, project: Option<&Project>, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let options = [("From project", Source::Project), ("Custom", Source::Own), ("Ask", Source::Off)];
-        let choice = source_choice("hf-user", &options, form.user_source, p, cx, |form, source| form.user_source = source);
+        let choice = host_choice("hf-user", &options, form.user_source, p, cx, |form, source| form.user_source = source);
         let hint = match (form.user_source, project.and_then(|pr| pr.default_user.as_deref())) {
             (Source::Project, Some(user)) => format!("Signs in as {user}, the project's default user."),
             (Source::Project, None) => "The project sets no user, so it is asked when you connect.".to_string(),
@@ -1287,15 +1287,7 @@ impl Workspace {
         }
         options.push(("Key file", SignIn::KeyFile));
         options.push(("Ask", SignIn::Ask));
-        let labels: Vec<(&'static str, bool)> = options.iter().map(|(l, s)| (*l, *s == form.sign_in)).collect();
-        let picks: Vec<SignIn> = options.iter().map(|(_, s)| *s).collect();
-        let choice = segmented("hf-sign-in", &labels, p, cx, move |this, i, _, cx| {
-            if let Some(form) = this.host_form() {
-                form.sign_in = picks[i];
-                form.error = None;
-            }
-            cx.notify();
-        });
+        let choice = host_choice("hf-sign-in", &options, form.sign_in, p, cx, |form, sign_in| form.sign_in = sign_in);
         let hint = match form.sign_in {
             SignIn::Project if project_credential.is_some() => {
                 "Uses the key or password saved for the project, shared by all its hosts."
@@ -2387,17 +2379,18 @@ const FORWARDS_HINT: [&str; 4] = [
 const COMMANDS_HINT: &str = "Typed into the shell in turn, as if you typed them: each once the shell is quiet, or once \
     the text in \"Wait for\" appears after the previous command. Komando stops at password questions for you to answer.";
 
-/// A Source picked with a segmented control, written back into the host form.
-fn source_choice(
+/// A choice picked with a segmented control, written back into the host form with `set`.
+/// Picking one answers the form's complaint, as typing does.
+fn host_choice<T: Copy + PartialEq + 'static>(
     id: &'static str,
-    options: &[(&'static str, Source)],
-    current: Source,
+    options: &[(&'static str, T)],
+    current: T,
     p: AppPalette,
     cx: &mut Context<Workspace>,
-    set: impl Fn(&mut HostForm, Source) + Clone + 'static,
+    set: impl Fn(&mut HostForm, T) + Clone + 'static,
 ) -> AnyElement {
     let labels: Vec<(&'static str, bool)> = options.iter().map(|(l, s)| (*l, *s == current)).collect();
-    let picks: Vec<Source> = options.iter().map(|(_, s)| *s).collect();
+    let picks: Vec<T> = options.iter().map(|(_, s)| *s).collect();
     segmented(id, &labels, p, cx, move |this, i, _, cx| {
         if let Some(form) = this.host_form() {
             set(form, picks[i]);
