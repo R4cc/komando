@@ -18,12 +18,13 @@ pub fn wildcard(pattern: &str, text: &str) -> bool {
     let (mut pi, mut ti) = (0, 0);
     let mut star: Option<(usize, usize)> = None;
     while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
+        // A `*` is always a wildcard, even where the text has a `*` too.
+        if pi < p.len() && p[pi] == '*' {
             star = Some((pi, ti));
             pi += 1;
+        } else if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
         } else if let Some((sp, st)) = star {
             pi = sp + 1;
             ti = st + 1;
@@ -38,4 +39,29 @@ pub fn wildcard(pattern: &str, text: &str) -> bool {
 /// `bytes` in lowercase hex, two digits each.
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wildcard;
+
+    #[test]
+    fn wildcards_match_as_globs_do() {
+        assert!(wildcard("*.example.com", "web.example.com"));
+        assert!(wildcard("web-??", "web-01"));
+        assert!(!wildcard("web-??", "web-1"));
+        assert!(wildcard("a*b*c", "aXbYc"));
+        assert!(!wildcard("a*b", "ac"));
+        assert!(wildcard("*", ""));
+        assert!(!wildcard("", "x"));
+    }
+
+    #[test]
+    fn a_star_in_the_text_does_not_stop_a_star_in_the_pattern() {
+        // A `*` in the pattern used to be taken literally where the text had one too.
+        assert!(wildcard("*", "*x"));
+        assert!(wildcard("a*c", "a*xc"));
+        assert!(wildcard("*.conf", "*.d.conf"));
+        assert!(!wildcard("*.conf", "*.d.cnf"));
+    }
 }

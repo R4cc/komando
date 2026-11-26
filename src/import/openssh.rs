@@ -344,6 +344,17 @@ impl Settings {
     }
 }
 
+/// A yes/no setting's value; None for anything else (`ForwardAgent` also takes a socket).
+fn yes_or_no(value: &str) -> Option<bool> {
+    if value.eq_ignore_ascii_case("yes") {
+        Some(true)
+    } else if value.eq_ignore_ascii_case("no") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// Where a name leads: its `HostName` (with `%h` for the name itself), port and user.
 fn address_of(settings: &Settings, name: &str) -> (String, u16, Option<String>) {
     let address = usable_host_name(&settings, name).unwrap_or_else(|| name.to_string());
@@ -608,7 +619,7 @@ fn found(lines: &[Line]) -> Found {
             user,
             jump_hosts: Some(jump_hosts),
             port_forwards: Some(port_forwards),
-            forward_agent: settings.is_yes("forwardagent"),
+            forward_agent: settings.first("forwardagent").and_then(yes_or_no),
             agent_off: settings.first("identityagent").is_some_and(|v| v.eq_ignore_ascii_case("none")),
             left_out: left,
             ..Default::default()
@@ -790,15 +801,19 @@ Host db
 Host other
   ForwardAgent $MY_AGENT
   IdentityAgent ~/.1password/agent.sock
+Host bastion
+  ForwardAgent no
 ",
         );
         let web = host(&found, "web");
-        assert!(web.forward_agent && !web.agent_off);
+        assert!(web.forward_agent == Some(true) && !web.agent_off);
         assert_eq!(web.left_out, []);
         let db = host(&found, "db");
-        assert!(!db.forward_agent && db.agent_off);
+        assert!(db.forward_agent.is_none() && db.agent_off);
         let other = host(&found, "other");
-        assert!(!other.forward_agent && !other.agent_off);
+        assert!(other.forward_agent.is_none() && !other.agent_off);
+        // Said off, not just left unsaid.
+        assert_eq!(host(&found, "bastion").forward_agent, Some(false));
         assert_eq!(
             other.left_out,
             [

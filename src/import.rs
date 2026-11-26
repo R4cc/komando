@@ -43,6 +43,8 @@ pub struct FoundGroup {
     pub jump_hosts: Vec<JumpHost>,
     pub startup_commands: Vec<StartupCommand>,
     pub port_forwards: Vec<PortForward>,
+    /// Agent Forwarding for a new Project's hosts.
+    pub forward_agent: bool,
     pub hosts: Vec<FoundHost>,
 }
 
@@ -65,8 +67,9 @@ pub struct FoundHost {
     pub startup_commands: Option<Vec<StartupCommand>>,
     /// Every Port Forward the host opens, the Project's included. None: not known.
     pub port_forwards: Option<Vec<PortForward>>,
-    /// Agent Forwarding is on for it.
-    pub forward_agent: bool,
+    /// Agent Forwarding is on (true) or off (false) for it. None: the file doesn't say, so
+    /// it is left to the Project.
+    pub forward_agent: Option<bool>,
     /// It signs in without the SSH Agent (`IdentityAgent none`).
     pub agent_off: bool,
     /// Settings the user set in the other client that Komando does not take over.
@@ -315,6 +318,7 @@ pub fn apply(found: &Found, plan: &Plan, picked: &[Vec<bool>], library: &mut Lib
                 project.jump_hosts = group.jump_hosts.iter().map(without_credential).collect();
                 project.startup_commands = group.startup_commands.clone();
                 project.port_forwards = group.port_forwards.clone();
+                project.forward_agent = group.forward_agent;
                 extended.push(project.id.clone());
                 library.projects.push(project);
                 applied.new_projects += 1;
@@ -326,6 +330,7 @@ pub fn apply(found: &Found, plan: &Plan, picked: &[Vec<bool>], library: &mut Lib
         let project_jumps: Vec<JumpHost> = library.projects[index].jump_hosts.iter().map(without_credential).collect();
         let project_commands = library.projects[index].startup_commands.clone();
         let project_forwards = library.projects[index].port_forwards.clone();
+        let project_forwards_agent = library.projects[index].forward_agent;
         for found in chosen {
             let mut host = Host::new(found.name.trim(), found.address.trim());
             if found.protocol.is_ssh() {
@@ -368,8 +373,13 @@ pub fn apply(found: &Found, plan: &Plan, picked: &[Vec<bool>], library: &mut Lib
                 (host.use_project_forwards, host.port_forwards) = split_off_project(forwards, &project_forwards);
             }
             if found.protocol.is_ssh() {
-                // On for the Host itself, whatever its Project says; left to the Project otherwise.
-                host.forward_agent = found.forward_agent.then_some(true);
+                // On for the Host itself, whatever its Project says. Off for the Host itself
+                // when its Project forwards, as the file says; left to the Project otherwise.
+                host.forward_agent = match found.forward_agent {
+                    Some(true) => Some(true),
+                    Some(false) if project_forwards_agent => Some(false),
+                    _ => None,
+                };
                 if found.agent_off {
                     host.agent = AgentUse::Off;
                 }
@@ -616,6 +626,40 @@ mod tests {
         }
         let repeated = plan(&found, &lib);
         assert!(repeated.groups[0].hosts.iter().all(Duplicate::is_duplicate), "re-importing finds the saved desktops");
+    }
+
+    #[test]
+    fn agent_forwarding_turned_off_in_the_file_stays_off_in_a_project_that_forwards() {
+        let found = Found {
+            groups: vec![
+                group(
+                    "Atlas",
+                    None,
+                    vec![
+                        FoundHost { forward_agent: Some(false), ..found_host("bastion", "bastion.lan", None) },
+                        FoundHost { forward_agent: Some(true), ..found_host("web", "web.lan", None) },
+                        found_host("db", "db.lan", None),
+                    ],
+                ),
+                FoundGroup { forward_agent: true, ..group("Hermes", None, vec![found_host("api", "api.lan", None)]) },
+            ],
+            notes: vec![],
+        };
+        let mut lib = library();
+        lib.projects[0].forward_agent = true;
+        let plan = plan(&found, &lib);
+        apply(&found, &plan, &all(&found), &mut lib);
+        let forwards = |name: &str| {
+            let host = lib.hosts.iter().find(|h| h.name == name).unwrap();
+            let project = lib.projects.iter().find(|p| p.hosts.contains(&host.id)).unwrap();
+            (host.forward_agent, resolve(host, project).forward_agent)
+        };
+        // `ForwardAgent no` used to come over as unsaid, and the Project's "on" applied.
+        assert_eq!(forwards("bastion"), (Some(false), false));
+        assert_eq!(forwards("web"), (Some(true), true));
+        assert_eq!(forwards("db"), (None, true), "unsaid: left to the Project");
+        // A new Project takes the file's Agent Forwarding.
+        assert_eq!(forwards("api"), (None, true));
     }
 
     #[test]

@@ -42,10 +42,12 @@ impl Favorites {
         save_toml(dir, Self::FILE, self)
     }
 
-    /// The favorites shown on `host`: its own, then the shared ones, each in saved order.
+    /// The favorites shown on `host`: its own, then the shared ones, each in saved order. A
+    /// shared one for a path the host has its own favorite for is shown once, as the host's.
     pub fn for_host<'a>(&'a self, host: &'a str) -> impl Iterator<Item = &'a Favorite> + 'a {
-        let own = self.items.iter().filter(move |f| f.host.as_deref() == Some(host));
-        own.chain(self.items.iter().filter(|f| f.host.is_none()))
+        let own = move || self.items.iter().filter(move |f| f.host.as_deref() == Some(host));
+        let shared = self.items.iter().filter(move |f| f.host.is_none() && !own().any(|o| o.path == f.path));
+        own().chain(shared)
     }
 
     /// Whether `path` is a favorite on `host` (its own or shared).
@@ -79,8 +81,13 @@ impl Favorites {
         }
     }
 
-    /// Share a favorite with every Host, or keep it to `host` only.
+    /// Share a favorite with every Host, or keep it to `host` only. If that scope already has
+    /// a favorite for its path, the two become that one.
     pub fn set_host(&mut self, id: &str, host: Option<&str>) {
+        let Some(path) = self.items.iter().find(|f| f.id == id).map(|f| f.path.clone()) else { return };
+        if self.items.iter().any(|f| f.id != id && f.path == path && f.host.as_deref() == host) {
+            return self.remove(id);
+        }
         if let Some(f) = self.items.iter_mut().find(|f| f.id == id) {
             f.host = host.map(str::to_string);
         }
@@ -108,6 +115,26 @@ impl Favorites {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn a_path_shared_and_kept_to_a_host_shows_once_there() {
+        let mut favs = Favorites::default();
+        favs.add("/var/log", None);
+        let own = favs.add("/var/log", Some("web01"));
+        // Both kinds of "Add to favorites" are offered for it: it used to show twice.
+        let web: Vec<&str> = favs.for_host("web01").map(|f| f.id.as_str()).collect();
+        assert_eq!(web, [own.as_str()]);
+        assert_eq!(favs.for_host("db01").count(), 1);
+        // Shared while a shared one exists: one favorite, not two alike.
+        favs.set_host(&own, None);
+        assert_eq!(favs.items.len(), 1);
+        assert_eq!(favs.for_host("web01").count(), 1);
+        // Kept to a host while that host has one: the same.
+        let own = favs.add("/var/log", Some("web01"));
+        let shared = favs.items.iter().find(|f| f.host.is_none()).unwrap().id.clone();
+        favs.set_host(&shared, Some("web01"));
+        assert_eq!(favs.items.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), [own.as_str()]);
+    }
 
     #[test]
     fn shared_favorites_show_on_every_host() {

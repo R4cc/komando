@@ -661,6 +661,26 @@ fn compat_sftp_on_the_sessions_connection() {
         assert!(std::path::Path::new(&format!("{two}/a.log")).exists());
         rm.remove(&two).await.unwrap();
         assert!(rm.list(&format!("{b}/nope")).await.unwrap_err().kind == ErrorKind::NotFound);
+
+        // A `cp` that stops halfway leaves nothing at the destination, so a retry isn't
+        // refused as already existing; one replacing a file leaves that file as it was.
+        if !root {
+            std::fs::create_dir_all(format!("{b}/mixed/locked")).unwrap();
+            std::fs::write(format!("{b}/mixed/ok.txt"), b"ok").unwrap();
+            std::fs::write(format!("{b}/mixed/locked/no.txt"), b"no").unwrap();
+            std::fs::set_permissions(format!("{b}/mixed/locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
+            let copy = format!("{b}/mixed-copy");
+            let err = rm.copy(&format!("{b}/mixed"), &copy, false).await.unwrap_err();
+            assert!(!rm.exists(&copy).await.unwrap(), "a partial copy at the destination after: {err}");
+            let again = rm.copy(&format!("{b}/mixed"), &copy, false).await.unwrap_err();
+            assert_ne!(again.kind, ErrorKind::Exists, "{again}");
+            std::fs::write(&two, b"two").unwrap();
+            rm.copy(&format!("{b}/mixed"), &two, true).await.unwrap_err();
+            assert_eq!(std::fs::read(&two).unwrap(), b"two");
+            std::fs::set_permissions(format!("{b}/mixed/locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            rm.remove(&format!("{b}/mixed")).await.unwrap();
+            rm.remove(&two).await.unwrap();
+        }
     }));
 
     // Nothing half-transferred anywhere.

@@ -472,6 +472,7 @@ pub const PROJECT_COLORS: [(&str, u32); 12] = [
 pub fn project_color(value: &str) -> Hsla {
     if let Some(hexstr) = value.strip_prefix('#')
         && hexstr.len() == 6
+        && hexstr.bytes().all(|b| b.is_ascii_hexdigit())
         && let Ok(v) = u32::from_str_radix(hexstr, 16)
     {
         return hex(v);
@@ -745,6 +746,8 @@ mod tests {
         assert_eq!(project_color("red"), hex(0xef4444));
         assert_eq!(project_color("#123456"), hex(0x123456));
         assert_eq!(project_color("nonsense"), hex(0x64748b));
+        // A sign is not a hex digit, though the number parser takes one.
+        assert_eq!(project_color("#+fffff"), hex(0x64748b));
     }
 }
 

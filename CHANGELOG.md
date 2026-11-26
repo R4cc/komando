@@ -48,6 +48,19 @@ All notable changes to Komando are listed here. The format follows
 
 - Signing in to a server that offers keyboard-interactive sign-in but asks nothing (as
   OpenSSH does without PAM) now goes on to the password instead of failing.
+- A copy on the server that fails partway, for example on a folder you can't read, no longer
+  leaves a half-finished copy behind, so trying again isn't refused as "already exists".
+  Copies on servers without a shell no longer stop at a symlink that points nowhere.
+- A port forward now fails with "already in use" when another program listens on the same
+  port on `::1`, instead of showing as open while some programs reach that other program.
+- Importing a host with `ForwardAgent no` (or Tabby's agent forwarding off) into a project
+  that forwards the agent keeps forwarding off for that host. A project opened from a shared
+  project file keeps its agent forwarding setting.
+- The scrollbar and minimap no longer misplace the view, or crash, when a program scrolls
+  part of the screen while you are scrolled up.
+- A favorite folder saved both for all hosts and for one host shows once on that host.
+- Host certificate and SSH config `Include` patterns with `*` now match names that contain a
+  `*` themselves.
 
 ## [0.9.1] - 2026-11-26
 

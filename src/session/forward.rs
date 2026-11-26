@@ -280,9 +280,15 @@ async fn bind(port: u16, open_to_network: bool) -> Result<(TcpListener, Option<T
         (Ipv4Addr::LOCALHOST.into(), Ipv6Addr::LOCALHOST.into())
     };
     let main = TcpListener::bind((v4, port)).await.map_err(|err| listen_error(port, &err))?;
-    // On a system whose IPv6 sockets also take IPv4, `::` clashes with `0.0.0.0`, which
-    // already covers both; there and without IPv6 this one is left out.
-    let extra = TcpListener::bind((v6, port)).await.ok();
+    let extra = match TcpListener::bind((v6, port)).await {
+        Ok(listener) => Some(listener),
+        // Another program on `::1` here would take the connections of every program that
+        // tries `localhost` as `::1` first, with the forward shown as open.
+        Err(err) if !open_to_network && err.kind() == std::io::ErrorKind::AddrInUse => return Err(listen_error(port, &err)),
+        // On a system whose IPv6 sockets also take IPv4, `::` clashes with `0.0.0.0`, which
+        // already covers both; there and without IPv6 this one is left out.
+        Err(_) => None,
+    };
     Ok((main, extra))
 }
 
@@ -512,6 +518,23 @@ mod tests {
         let (report, seen) = reports();
         let _tasks = start(&[PortForward::local(port, "127.0.0.1", 1)], direct(), no_listen(), &RemoteForwards::default(), report);
         let failed = until(&seen, |s| matches!(s.state, ForwardState::Failed(_))).await;
+        assert_eq!(failed.state, ForwardState::Failed(format!("Port {port} on this computer is already in use, by another program or another session.")));
+    }
+
+    #[tokio::test]
+    async fn a_port_taken_on_ipv6_loopback_fails_the_forward_too() {
+        // Free on 127.0.0.1, taken on ::1 by another program.
+        let Ok(taken) = TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).await else {
+            return eprintln!("skipped: no IPv6 loopback");
+        };
+        let port = taken.local_addr().unwrap().port();
+        if TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await.is_err() {
+            return eprintln!("skipped: the port is taken on 127.0.0.1 too");
+        }
+        let (report, seen) = reports();
+        let _tasks = start(&[PortForward::local(port, "127.0.0.1", 1)], direct(), no_listen(), &RemoteForwards::default(), report);
+        // It used to open on 127.0.0.1 alone, while `localhost` reached the other program.
+        let failed = until(&seen, |s| matches!(s.state, ForwardState::Failed(_) | ForwardState::Open { .. })).await;
         assert_eq!(failed.state, ForwardState::Failed(format!("Port {port} on this computer is already in use, by another program or another session.")));
     }
 

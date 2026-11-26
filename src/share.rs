@@ -219,7 +219,7 @@ pub fn read(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
             jump_hosts: Some(resolved.jump_hosts.into_iter().map(|r| r.jump).collect()),
             startup_commands: Some(resolved.startup_commands),
             port_forwards: Some(resolved.port_forwards),
-            forward_agent: resolved.forward_agent,
+            forward_agent: Some(resolved.forward_agent),
             agent_off: shared_host.agent_off,
             left_out: vec![],
             ..Default::default()
@@ -238,6 +238,7 @@ pub fn read(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
             jump_hosts: project.jump_hosts,
             startup_commands: project.startup_commands,
             port_forwards: project.port_forwards,
+            forward_agent: project.forward_agent,
             hosts,
         }],
         notes,
@@ -363,8 +364,10 @@ mod tests {
         assert!(!text.contains("SHA256"), "{text}");
         let found = read(&text, &any_icon).unwrap();
         let [web, db] = found.groups[0].hosts.as_slice() else { panic!("two hosts") };
-        assert!(web.forward_agent && !web.agent_off);
-        assert!(!db.forward_agent && db.agent_off);
+        assert!(web.forward_agent == Some(true) && !web.agent_off);
+        assert!(db.forward_agent == Some(false) && db.agent_off);
+        // A new Project from the file forwards for its hosts as the shared one did.
+        assert!(found.groups[0].forward_agent);
     }
 
     #[test]

@@ -464,6 +464,16 @@ impl MinimapState {
     }
 }
 
+/// The Scrollback line at the top of the view, counted from the oldest.
+///
+/// The terminal's display offset can exceed its Scrollback: while the view is scrolled up, a
+/// program scrolling a region that doesn't start at the top raises the offset without adding
+/// to the Scrollback (alacritty_terminal 0.26). The view then starts at the oldest line.
+fn viewport_top<T>(term: &Term<T>) -> usize {
+    let grid = term.grid();
+    grid.history_size() - grid.display_offset().min(grid.history_size())
+}
+
 fn scroll_to<T: alacritty_terminal::event::EventListener>(term: &mut Term<T>, top: usize) {
     let history = term.grid().history_size();
     let target = (history - top.min(history)) as i32;
@@ -480,8 +490,7 @@ pub fn press(term: &SharedTerm, state: &MinimapState, y: Pixels) {
         return;
     }
     let mut term = term.lock();
-    let grid = term.grid();
-    let viewport_top = grid.history_size() - grid.display_offset();
+    let viewport_top = viewport_top(&*term);
     let (drag, jump) = g.grab(f32::from(y), viewport_top);
     if let Some(top) = jump {
         scroll_to(&mut *term, top);
@@ -639,8 +648,7 @@ fn collect<T>(
     let screen = grid.screen_lines();
     let cols = grid.columns();
     let total = content_lines(term);
-    let offset = grid.display_offset();
-    let viewport_top = history - offset;
+    let viewport_top = viewport_top(term);
 
     let capacity = (f32::from(bounds.size.height) / LINE_H).floor().max(1.) as usize;
     let start = if total <= capacity {
@@ -1005,7 +1013,7 @@ pub fn over(
         if term.mode().contains(TermMode::ALT_SCREEN) || grid.history_size() == 0 {
             return None;
         }
-        (content_lines(&term), grid.history_size() - grid.display_offset(), grid.screen_lines())
+        (content_lines(&term), viewport_top(&*term), grid.screen_lines())
     };
     let opacity = state.opacity(Instant::now());
     if opacity <= 0. {
@@ -1135,7 +1143,7 @@ pub fn bar_press(term: &SharedTerm, state: &MinimapState, y: Pixels) {
         return;
     }
     let length = f32::from(track.size.height);
-    let (top, height) = bar_thumb(history, history - grid.display_offset(), screen, length);
+    let (top, height) = bar_thumb(history, viewport_top(&*term), screen, length);
     let at = f32::from(y - track.origin.y);
     let grab = if (top..top + height).contains(&at) {
         at - top
@@ -1174,7 +1182,7 @@ pub fn scrollbar(
             state.bar.hovered.set(false);
             return None;
         }
-        (grid.history_size(), grid.history_size() - grid.display_offset(), grid.screen_lines(), content_lines(&term))
+        (grid.history_size(), viewport_top(&*term), grid.screen_lines(), content_lines(&term))
     };
     let hot = state.bar.hovered.get() || state.bar_dragging();
     let color = Hsla { a: if state.bar_dragging() { 0.42 } else if hot { 0.3 } else if app.dark { 0.18 } else { 0.22 }, ..app.text };
@@ -1637,6 +1645,27 @@ mod tests {
         // Dragged far past either end: it stops at the ends.
         assert_eq!(g.dragged(drag, -10_000.), 0);
         assert_eq!(g.dragged(drag, 10_000.), g.history);
+    }
+
+    #[test]
+    fn a_region_scrolled_while_scrolled_up_keeps_the_view_at_the_oldest_line() {
+        // A few lines of Scrollback, viewed from the top.
+        let mut term = Term::new(Config { scrolling_history: 100, ..Config::default() }, &TermSize::new(80, 8), VoidListener);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\neight\r\nnine\r\nten\r\n");
+        term.scroll_display(Scroll::Top);
+        let history = term.grid().history_size();
+        assert!(history > 0);
+        // A region below the top scrolls: the terminal's offset passes its Scrollback.
+        parser.advance(&mut term, b"\x1b7\x1b[3;8r\x1b[8;1H\n\n\n\n\x1b[r\x1b8");
+        assert!(term.grid().display_offset() > history, "the state this test is about");
+        assert_eq!(viewport_top(&term), 0);
+        // The minimap's layout reads the view's top too, and used to underflow here.
+        let (g, _, _) = layout(&term, &mut LineCache::default(), &TerminalPalette::dark(), &bundled_rules(), strip());
+        assert_eq!(g.start, 0);
+        // A drag from there scrolls within the Scrollback.
+        scroll_to(&mut term, 1);
+        assert_eq!(viewport_top(&term), 1);
     }
 
     #[test]

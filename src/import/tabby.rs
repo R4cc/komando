@@ -192,7 +192,7 @@ pub fn parse(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
             icon: text_of(profile.get("icon")).and_then(|i| lucide_icon(i, is_icon)),
             startup_commands,
             port_forwards: Some(port_forwards),
-            forward_agent: options.and_then(|o| o.get("agentForward")).is_some_and(|v| v.as_bool() == Some(true)),
+            forward_agent: options.and_then(|o| o.get("agentForward")).and_then(|v| v.as_bool()),
             left_out: left,
             ..Default::default()
         };

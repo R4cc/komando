@@ -877,7 +877,7 @@ impl Workspace {
 fn comes_over(host: &FoundHost) -> Vec<(String, String)> {
     let mut over = routes_and_commands(host.jump_hosts.as_deref(), host.port_forwards.as_deref(), host.startup_commands.as_deref());
     // It lets the server use your keys: worth seeing before it comes over.
-    if host.forward_agent {
+    if host.forward_agent == Some(true) {
         over.push(("Agent forwarding".into(), "On: root on this host can use your SSH agent's keys while you're connected".into()));
     }
     if host.agent_off {

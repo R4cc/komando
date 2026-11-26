@@ -8,7 +8,7 @@
 //! next to its destination and only renamed into place once every byte has arrived; on any
 //! failure the partial file is removed. The remote file is opened before anything is created
 //! locally, so a permission error never produces an empty file. Uploads work the same way on
-//! the server, as do copies on the server that go through the connection.
+//! the server, as do copies on the server.
 //!
 //! Downloads and uploads go through a second SFTP channel, issuing the reads and writes
 //! themselves so they can keep as much on its way as the link carries without a queue building
@@ -1136,62 +1136,67 @@ impl Remote {
     /// Copy a file or folder to `to` on the server. Uses `cp` there; without a shell, the data
     /// goes through this connection instead. With `replace`, what is at `to` is replaced once
     /// the copy is complete (as [`Self::rename_replacing`] does); otherwise it fails the copy.
+    ///
+    /// Like an upload, the copy is made to a partial file or folder next to `to` and renamed
+    /// into place once complete; on any failure the partial is removed. So a `cp` that stops
+    /// halfway (a folder it can't read, a full disk) or a dropped connection never leaves a
+    /// truncated copy that looks finished, and a retry isn't refused as already existing.
     pub async fn copy(&self, from: &str, to: &str, replace: bool) -> Result<(), OpError> {
         // Into itself: without `cp` (which refuses), each copied level would be copied again.
         if is_within(to, from) {
             return Err(OpError::new(ErrorKind::Other, format!("\"{}\" can't be copied into itself.", file_name(from))));
         }
-        if !self.exists(to).await? {
-            return self.copy_new(from, to).await;
-        }
-        if !replace {
+        let exists = self.exists(to).await?;
+        if exists && !replace {
             return Err(OpError::new(ErrorKind::Exists, format!("\"{}\" already exists in {}", file_name(to), parent(to).unwrap_or_default())));
         }
-        if is_within(from, to) {
+        if exists && is_within(from, to) {
             return Err(OpError::new(ErrorKind::Other, format!("\"{}\" is inside the \"{}\" it would replace.", file_name(from), file_name(to))));
         }
-        // Copied next to it first, so a failed copy leaves the old one as it was.
-        let copy = copy_partial_path(to, &crate::model::new_id());
-        self.copy_new(from, &copy).await?;
-        if let Err(err) = self.rename_replacing(&copy, to).await {
-            let _ = self.remove(&copy).await;
-            return Err(err);
+        let partial = copy_partial_path(to, &crate::model::new_id());
+        let result = async {
+            self.copy_new(from, &partial).await?;
+            if exists {
+                // The old one stays as it was until the copy is in its place.
+                self.rename_replacing(&partial, to).await
+            } else {
+                self.sftp.rename(partial.as_str(), to).await.map_err(|e| OpError::from(e).at(to))
+            }
         }
-        Ok(())
+        .await;
+        if result.is_err() {
+            self.remove_partial_copy(&partial).await;
+        }
+        result
     }
 
-    /// Copy to `to`, where nothing is.
+    /// Remove what a failed copy left at `partial`. `cp -p` copies a folder it can't read as
+    /// an empty one with the same permissions, which SFTP can't list to remove; `rm` there can.
+    async fn remove_partial_copy(&self, partial: &str) {
+        let err = match self.remove(partial).await {
+            // Nothing there when the source couldn't even be read.
+            Ok(()) => return,
+            Err(err) if err.kind == ErrorKind::NotFound => return,
+            Err(err) => err,
+        };
+        if let Ok(out) = self.exec(&format!("rm -rf -- {}", shell_quote(partial))).await
+            && out.code == Some(0)
+        {
+            return;
+        }
+        log::warn!("removing the partial copy {partial}: {err}");
+    }
+
+    /// Copy to `to`, where nothing is: with `cp` on the server, or through this connection.
     async fn copy_new(&self, from: &str, to: &str) -> Result<(), OpError> {
         match self.exec(&format!("cp -Rp -- {} {}", shell_quote(from), shell_quote(to))).await {
             Ok(out) if out.code == Some(0) => Ok(()),
             // No cp on the server.
-            Ok(out) if out.code == Some(127) => self.copy_through(from, to).await,
+            Ok(out) if out.code == Some(127) => self.copy_tree(from, to).await,
             Ok(out) => Err(OpError::from_message(out.stderr.lines().next().unwrap_or_default()).at(from)),
-            Err(err) if err.kind == ErrorKind::Unsupported => self.copy_through(from, to).await,
+            Err(err) if err.kind == ErrorKind::Unsupported => self.copy_tree(from, to).await,
             Err(err) => Err(err),
         }
-    }
-
-    /// Copy through this connection. Like an upload, the copy is written to a partial file or
-    /// folder next to `to` and renamed into place once complete; on any failure the partial is
-    /// removed, so a dropped connection or a full disk never leaves a truncated file that
-    /// looks like a finished copy.
-    async fn copy_through(&self, from: &str, to: &str) -> Result<(), OpError> {
-        let partial = copy_partial_path(to, &crate::model::new_id());
-        let result = async {
-            self.copy_tree(from, &partial).await?;
-            self.sftp.rename(partial.as_str(), to).await.map_err(|e| OpError::from(e).at(to))
-        }
-        .await;
-        if result.is_err() {
-            // Nothing there when the source couldn't even be read.
-            if let Err(err) = self.remove(&partial).await
-                && err.kind != ErrorKind::NotFound
-            {
-                log::warn!("removing the partial copy {partial}: {err}");
-            }
-        }
-        result
     }
 
     async fn copy_tree(&self, from: &str, to: &str) -> Result<(), OpError> {
@@ -1203,9 +1208,10 @@ impl Remote {
                 let read = self.sftp.read_dir(src.as_str()).await.map_err(|e| OpError::from(e).at(&src))?;
                 for (name, attrs) in entries(read) {
                     let child = join(&src, &name);
-                    // Links to folders are skipped (they can loop), as in `walk_dir`.
+                    // Links to folders are skipped (they can loop), as are links to nothing,
+                    // as in `walk_dir`.
                     if is_link_mode(attrs.permissions)
-                        && self.sftp.metadata(child.as_str()).await.is_ok_and(|t| is_dir_mode(t.permissions))
+                        && !self.sftp.metadata(child.as_str()).await.is_ok_and(|t| !is_dir_mode(t.permissions))
                     {
                         continue;
                     }
@@ -1551,7 +1557,7 @@ fn is_within(path: &str, dir: &str) -> bool {
     path == dir || dir.is_empty() || path.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// The partial file or folder a copy through the connection is written to:
+/// The partial file or folder a copy on the server is written to:
 /// ".name.<id>.komando-part" next to `to`. The id keeps it apart from an upload's partial of
 /// the same name and from another copy's.
 fn copy_partial_path(to: &str, id: &str) -> String {
