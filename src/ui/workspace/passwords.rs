@@ -20,12 +20,9 @@ impl Workspace {
         if saved.is_none() {
             return;
         }
-        match self.save_library(&library) {
-            Ok(_) => {
-                self.library = library;
-                self.show_toast("User name saved.", cx);
-            }
-            Err(err) => self.show_toast(format!("Could not save: {err}"), cx),
+        match self.commit_library(library) {
+            Ok(()) => self.show_toast("User name saved.", cx),
+            Err(err) => self.show_toast(err, cx),
         }
     }
 

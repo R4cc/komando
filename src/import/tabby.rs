@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value, json};
 
-use super::{Found, FoundGroup, FoundHost, LeftOut, join_and, key_file_name};
+use super::{Found, FoundGroup, FoundHost, LeftOut, key_file_name, tallied, tally};
 use crate::model::{ForwardKind, PortForward, StartupCommand};
 
 /// Why a configuration can't be read: Tabby's "Encrypt config file" is on. The import page
@@ -149,10 +149,7 @@ pub fn parse(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
         }
         let kind = text_of(profile.get("type")).unwrap_or("");
         if kind != "ssh" {
-            match other_types.iter_mut().find(|(k, _)| k == kind) {
-                Some((_, n)) => *n += 1,
-                None => other_types.push((kind.to_string(), 1)),
-            }
+            tally(&mut other_types, kind_label(kind));
             continue;
         }
         let group_id = text_of(profile.get("group")).map(str::trim).unwrap_or("");
@@ -215,11 +212,8 @@ pub fn parse(text: &str, is_icon: &dyn Fn(&str) -> bool) -> Result<Found> {
         let ungrouped = found_groups.remove(i);
         found_groups.push(ungrouped);
     }
-    if !other_types.is_empty() {
-        let total: usize = other_types.iter().map(|(_, n)| n).sum();
-        let kinds: Vec<String> = other_types.iter().map(|(k, n)| format!("{n} {}", kind_label(k))).collect();
-        let profile = if total == 1 { "profile stays" } else { "profiles stay" };
-        notes.insert(0, format!("Komando imports SSH profiles only: {} {profile} in Tabby.", join_and(&kinds)));
+    if let Some(staying) = tallied(&other_types, "profile stays", "profiles stay") {
+        notes.insert(0, format!("Komando imports SSH profiles only: {staying} in Tabby."));
     }
     Ok(Found {
         groups: found_groups.into_iter().map(|(_, g)| g).filter(|g| !g.hosts.is_empty()).collect(),

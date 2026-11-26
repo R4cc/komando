@@ -21,6 +21,7 @@ use anyhow::{Context as _, Result};
 
 use super::{Found, FoundGroup, FoundHost, LeftOut, join_and, key_file_name};
 use crate::model::{ForwardKind, JumpHost, PortForward};
+use crate::text::wildcard;
 
 /// The project the hosts go into.
 pub const GROUP: &str = "SSH config";
@@ -216,7 +217,7 @@ fn include_files(pattern: &str, base: &Path, home: Option<&Path>) -> Vec<PathBuf
         // As glob(3) does, a wildcard doesn't match a leading dot: editors' `.config.swp`.
         .filter(|entry| {
             let file = entry.file_name().to_string_lossy().into_owned();
-            (!file.starts_with('.') || name.starts_with('.')) && wildcard(&name, &file, false)
+            (!file.starts_with('.') || name.starts_with('.')) && wildcard(&name, &file)
         })
         .map(|entry| entry.path())
         .collect();
@@ -224,42 +225,17 @@ fn include_files(pattern: &str, base: &Path, home: Option<&Path>) -> Vec<PathBuf
     files
 }
 
-/// Whether `text` matches `pattern`, where `*` is any run of characters and `?` any one.
-fn wildcard(pattern: &str, text: &str, ignore_case: bool) -> bool {
-    let (p, t): (Vec<char>, Vec<char>) = if ignore_case {
-        (pattern.to_lowercase().chars().collect(), text.to_lowercase().chars().collect())
-    } else {
-        (pattern.chars().collect(), text.chars().collect())
-    };
-    let (mut pi, mut ti) = (0, 0);
-    let mut star: Option<(usize, usize)> = None;
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some((pi, ti));
-            pi += 1;
-        } else if let Some((sp, st)) = star {
-            pi = sp + 1;
-            ti = st + 1;
-            star = Some((sp, st + 1));
-        } else {
-            return false;
-        }
-    }
-    p[pi..].iter().all(|c| *c == '*')
-}
-
 /// Whether a `Host` line's patterns take `name`: one of them matches and none of its negated
 /// (`!`) ones does.
 fn host_matches(patterns: &[String], name: &str) -> bool {
+    let name = name.to_lowercase();
     let mut matched = false;
     for pattern in patterns {
+        let pattern = pattern.to_lowercase();
         match pattern.strip_prefix('!') {
-            Some(negated) if wildcard(negated, name, true) => return false,
+            Some(negated) if wildcard(negated, &name) => return false,
             Some(_) => {}
-            None => matched |= wildcard(pattern, name, true),
+            None => matched |= wildcard(&pattern, &name),
         }
     }
     matched

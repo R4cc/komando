@@ -411,6 +411,25 @@ fn join_and(items: &[String]) -> String {
     }
 }
 
+/// Count one more `kind` among what an import leaves behind, in the order first seen.
+fn tally(counts: &mut Vec<(String, usize)>, kind: String) {
+    match counts.iter_mut().find(|(k, _)| *k == kind) {
+        Some((_, n)) => *n += 1,
+        None => counts.push((kind, 1)),
+    }
+}
+
+/// The counts as "2 Telnet and 1 serial", then `one` or `many` by their total. `None` for
+/// no counts.
+fn tallied(counts: &[(String, usize)], one: &str, many: &str) -> Option<String> {
+    if counts.is_empty() {
+        return None;
+    }
+    let total: usize = counts.iter().map(|(_, n)| n).sum();
+    let kinds: Vec<String> = counts.iter().map(|(k, n)| format!("{n} {k}")).collect();
+    Some(format!("{} {}", join_and(&kinds), if total == 1 { one } else { many }))
+}
+
 /// A private key's file name, from a Windows or Unix path, for what an import leaves out.
 /// MobaXterm also writes `_CurrentDrive_:\…` and `_ProfileDir_\…` for folders it moves along
 /// with a portable install.

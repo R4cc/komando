@@ -83,7 +83,7 @@ fn file(data_dir: &Path, host_id: &str) -> PathBuf {
     } else {
         use sha2::Digest as _;
         let hash = sha2::Sha256::digest(host_id.as_bytes());
-        hash.iter().take(12).map(|b| format!("{b:02x}")).collect()
+        crate::text::hex(&hash[..12])
     };
     dir(data_dir).join(format!("{name}.jsonl"))
 }

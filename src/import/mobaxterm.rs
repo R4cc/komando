@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 
-use super::{Found, FoundGroup, FoundHost, LeftOut, join_and, key_file_name};
+use super::{Found, FoundGroup, FoundHost, LeftOut, key_file_name, tallied, tally};
 use crate::model::{JumpHost, Protocol, StartupCommand};
 
 /// The file name MobaXterm keeps its settings and sessions in.
@@ -94,7 +94,7 @@ pub fn parse(text: &str) -> Result<Found> {
     }
     let mut groups: Vec<FoundGroup> = vec![];
     let mut ungrouped = FoundGroup { name: UNGROUPED.into(), ..Default::default() };
-    let mut other_types: Vec<(&'static str, usize)> = vec![];
+    let mut other_types: Vec<(String, usize)> = vec![];
     let mut notes = vec![];
     for section in &sections {
         let folder = folder_name(section.sub_rep);
@@ -121,11 +121,7 @@ pub fn parse(text: &str) -> Result<Found> {
                     desktop_host(&name, &session, protocol)
                 }
                 kind => {
-                    let label = type_label(kind);
-                    match other_types.iter_mut().find(|(l, _)| *l == label) {
-                        Some((_, n)) => *n += 1,
-                        None => other_types.push((label, 1)),
-                    }
+                    tally(&mut other_types, type_label(kind).to_string());
                     continue;
                 }
             };
@@ -149,11 +145,8 @@ pub fn parse(text: &str) -> Result<Found> {
     // Sessions in no folder come last, as Tabby's ungrouped profiles do.
     groups.push(ungrouped);
     groups.retain(|g| !g.hosts.is_empty());
-    if !other_types.is_empty() {
-        let total: usize = other_types.iter().map(|(_, n)| n).sum();
-        let kinds: Vec<String> = other_types.iter().map(|(k, n)| format!("{n} {k}")).collect();
-        let sessions = if total == 1 { "session stays" } else { "sessions stay" };
-        notes.insert(0, format!("Komando imports SSH, RDP and VNC sessions: {} {sessions} in MobaXterm.", join_and(&kinds)));
+    if let Some(staying) = tallied(&other_types, "session stays", "sessions stay") {
+        notes.insert(0, format!("Komando imports SSH, RDP and VNC sessions: {staying} in MobaXterm."));
     }
     Ok(Found { groups, notes })
 }

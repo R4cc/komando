@@ -1197,25 +1197,13 @@ impl Library {
     pub fn reorder_host(&mut self, project_id: &str, host_id: &str, index: usize) -> bool {
         let Some(project) = self.projects.iter_mut().find(|p| p.id == project_id) else { return false };
         let Some(from) = project.hosts.iter().position(|h| h == host_id) else { return false };
-        let index = index.min(project.hosts.len());
-        if index == from || index == from + 1 {
-            return false;
-        }
-        let host = project.hosts.remove(from);
-        project.hosts.insert(if index > from { index - 1 } else { index }, host);
-        true
+        move_to_slot(&mut project.hosts, from, index)
     }
 
     /// Move an entire Project to an insertion slot in the current sidebar order.
     pub fn reorder_project(&mut self, id: &str, index: usize) -> bool {
         let Some(from) = self.projects.iter().position(|p| p.id == id) else { return false };
-        let index = index.min(self.projects.len());
-        if index == from || index == from + 1 {
-            return false;
-        }
-        let project = self.projects.remove(from);
-        self.projects.insert(if index > from { index - 1 } else { index }, project);
-        true
+        move_to_slot(&mut self.projects, from, index)
     }
 
     /// Delete a Host.
@@ -1305,6 +1293,18 @@ impl Library {
         }
         changed
     }
+}
+
+/// Move `items[from]` to insertion slot `index` among the items as they are now (0 is the
+/// top, `items.len()` the bottom). Returns false when nothing changed.
+fn move_to_slot<T>(items: &mut Vec<T>, from: usize, index: usize) -> bool {
+    let index = index.min(items.len());
+    if index == from || index == from + 1 {
+        return false;
+    }
+    let item = items.remove(from);
+    items.insert(if index > from { index - 1 } else { index }, item);
+    true
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

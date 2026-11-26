@@ -110,7 +110,7 @@ pub(crate) struct Ended {
 
 impl ConnectLog {
     pub(crate) fn new(term: SharedTerm, proxy: EventProxy) -> Self {
-        Self { term, lines: proxy.connect_log_lines(), last_end: proxy.connect_ended(), proxy, shell_open: Arc::default() }
+        Self { term, lines: proxy.connect_log.clone(), last_end: proxy.connect_ended.clone(), proxy, shell_open: Arc::default() }
     }
 
     /// The shell opened: from now on the Session is connected.

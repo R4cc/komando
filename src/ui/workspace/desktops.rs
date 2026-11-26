@@ -233,12 +233,7 @@ impl Workspace {
             .filter(|id| self.sessions.get(*id).is_some_and(|s| matches!(s.kind(), SessionKind::Ssh { .. })))
             .or_else(|| self.sessions_of(&item).find(|s| matches!(s.kind(), SessionKind::Ssh { .. })).map(|s| s.id()));
         match ssh {
-            Some(id) => {
-                self.activate(id, window, cx);
-                if self.sessions.get(id).is_some_and(|s| !s.is_live()) {
-                    self.reconnect(id, window, cx);
-                }
-            }
+            Some(id) => self.show_session(id, window, cx),
             None => self.open_host(project_id, host_id, window, cx),
         }
     }
@@ -332,9 +327,10 @@ impl Workspace {
     /// and quality are in the desktop's own toolbar. Moving between a Host's terminal and its
     /// desktops is done from the sidebar, so the bar keeps its layout.
     pub(super) fn desktop_strip_buttons(&self, entry: &SessionEntry, p: AppPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let Some(protocol) = desktop_protocol(entry) else { return vec![] };
+        if desktop_protocol(entry).is_none() {
+            return vec![];
+        }
         let id = entry.id();
-        let _ = protocol;
         let mut buttons = vec![];
         let live = entry.is_live();
         if live {

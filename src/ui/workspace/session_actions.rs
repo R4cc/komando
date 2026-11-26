@@ -74,11 +74,7 @@ impl Workspace {
         if !another {
             // The row is the Host's terminal while its desktops have rows of their own.
             if let Some(id) = self.sessions.item_session(&key) {
-                self.activate(id, window, cx);
-                let dropped = self.sessions.get(id).is_some_and(|s| !s.is_live());
-                if dropped {
-                    self.reconnect(id, window, cx);
-                }
+                self.show_session(id, window, cx);
                 return;
             }
         }
@@ -483,6 +479,14 @@ impl Workspace {
         self.sync_split_views(cx);
         self.focus_active(window, cx);
         cx.notify();
+    }
+
+    /// Show Session `id`, and connect it again if its connection dropped.
+    pub(super) fn show_session(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate(id, window, cx);
+        if self.sessions.get(id).is_some_and(|s| !s.is_live()) {
+            self.reconnect(id, window, cx);
+        }
     }
 
     /// Browse files from the sidebar: show the Session with its file browser open.

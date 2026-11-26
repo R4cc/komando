@@ -536,14 +536,13 @@ impl Workspace {
     fn tour_minimap(&self, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let on = self.settings.minimap;
         let placement = self.settings.minimap_placement;
-        let placements = [(MinimapPlacement::Beside, "Beside output"), (MinimapPlacement::Over, "Over output")];
         let placement_choice = segmented(
             "tour-minimap-placement",
-            &placements.map(|(value, label)| (label, value == placement)),
+            &settings::MINIMAP_PLACEMENTS.map(|(value, label)| (label, value == placement)),
             p,
             cx,
             move |this, i, _, cx| {
-                this.settings.minimap_placement = placements[i].0;
+                this.settings.minimap_placement = settings::MINIMAP_PLACEMENTS[i].0;
                 this.apply_terminal_settings(cx);
             },
         );

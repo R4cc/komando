@@ -239,7 +239,7 @@ pub struct EventProxy {
     tx: mpsc::UnboundedSender<SessionEvent>,
     dirty: Arc<AtomicBool>,
     /// Replies the terminal must send back to the program (e.g. cursor position reports).
-    responder: Arc<parking_lot_lite::Slot<InputSink>>,
+    responder: Arc<Mutex<Option<InputSink>>>,
     /// What programs may ask about (colours, window size), kept current by the view.
     ///
     /// Queries are answered here, on the parser's thread and in order with the other
@@ -313,16 +313,8 @@ impl EventProxy {
         }
     }
 
-    pub(crate) fn connect_log_lines(&self) -> Arc<std::sync::atomic::AtomicUsize> {
-        self.connect_log.clone()
-    }
-
-    pub(crate) fn connect_ended(&self) -> Arc<Mutex<Option<ssh::Ended>>> {
-        self.connect_ended.clone()
-    }
-
     pub fn set_responder(&self, sink: InputSink) {
-        self.responder.set(sink);
+        *self.responder.lock().unwrap() = Some(sink);
     }
 
     /// The colours OSC 4/10/11/12 queries are answered with.
@@ -353,7 +345,8 @@ impl EventProxy {
     }
 
     fn reply(&self, text: String) {
-        if let Some(sink) = self.responder.get() {
+        let sink = self.responder.lock().unwrap().clone();
+        if let Some(sink) = sink {
             sink.write(text.into_bytes());
         }
     }
@@ -396,29 +389,6 @@ impl EventListener for EventProxy {
             // one on a remote host, could read what was copied. The terminal is configured
             // not to ask (see `new_term`).
             _ => {}
-        }
-    }
-}
-
-/// A tiny mutex-protected optional value (avoids pulling in another dependency).
-mod parking_lot_lite {
-    use std::sync::Mutex;
-
-    pub struct Slot<T>(Mutex<Option<T>>);
-
-    impl<T> Default for Slot<T> {
-        fn default() -> Self {
-            Self(Mutex::new(None))
-        }
-    }
-
-    impl<T: Clone> Slot<T> {
-        pub fn set(&self, value: T) {
-            *self.0.lock().unwrap() = Some(value);
-        }
-
-        pub fn get(&self) -> Option<T> {
-            self.0.lock().unwrap().clone()
         }
     }
 }

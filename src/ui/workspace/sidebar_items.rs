@@ -623,12 +623,9 @@ impl Workspace {
                     }
                 }))
             })
+            // A desktop in its own window is only raised: it reconnects from there.
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                this.activate(id, window, cx);
-                let dropped = this.sessions.get(id).is_some_and(|s| !s.is_live());
-                if dropped && !own_window {
-                    this.reconnect(id, window, cx);
-                }
+                if own_window { this.activate(id, window, cx) } else { this.show_session(id, window, cx) }
             }))
             .child(icon_el(&icon, 15., icon_color))
             .child(div().flex_1().min_w_0().truncate().child(label))

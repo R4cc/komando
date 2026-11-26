@@ -86,7 +86,7 @@ impl SettingsSection {
 }
 
 /// Where the minimap goes.
-const MINIMAP_PLACEMENTS: [(MinimapPlacement, &str); 2] =
+pub(super) const MINIMAP_PLACEMENTS: [(MinimapPlacement, &str); 2] =
     [(MinimapPlacement::Beside, "Beside output"), (MinimapPlacement::Over, "Over output")];
 /// How long the pointer rests at the right edge before the overlaid minimap opens, in ms.
 const MINIMAP_DELAYS: [(u32, &str); 5] = [(0, "None"), (150, "0.15 s"), (300, "0.3 s"), (600, "0.6 s"), (1000, "1 s")];

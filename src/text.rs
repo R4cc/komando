@@ -10,3 +10,32 @@ pub fn plural(n: usize, what: &str) -> String {
 pub fn local_date_time(unix: i64) -> Option<String> {
     chrono::DateTime::from_timestamp(unix, 0).map(|at| at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
 }
+
+/// Whether `text` matches `pattern`, where `*` is any run of characters and `?` any one.
+/// Case-sensitive: callers that ignore case lowercase both sides first.
+pub fn wildcard(pattern: &str, text: &str) -> bool {
+    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
+    let (mut pi, mut ti) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some((pi, ti));
+            pi += 1;
+        } else if let Some((sp, st)) = star {
+            pi = sp + 1;
+            ti = st + 1;
+            star = Some((sp, st + 1));
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|c| *c == '*')
+}
+
+/// `bytes` in lowercase hex, two digits each.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}

@@ -49,8 +49,7 @@ pub fn wait_for_restart(args: impl IntoIterator<Item = String>) {
 fn identity(dir: &Path) -> String {
     let absolute = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
     let digest = Sha256::digest(absolute.to_string_lossy().to_lowercase().as_bytes());
-    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    format!("Komando.MainWindow.{hex}")
+    format!("Komando.MainWindow.{}", crate::text::hex(&digest))
 }
 
 fn wide(text: &str) -> Vec<u16> {

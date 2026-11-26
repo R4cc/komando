@@ -223,40 +223,35 @@ fn env_proxy_set() -> bool {
 /// GET `url`. Tries the Windows certificate store first, then the bundled web roots, so an
 /// unusable store never makes things worse. Status errors are final; only transport errors retry.
 fn get(url: &str, accept: Option<&str>) -> Result<ureq::Response, ureq::Error> {
-    let request = |agent: ureq::Agent| {
+    with_store_fallback(url, |agent| {
         let mut request = agent.get(url);
         if let Some(accept) = accept {
             request = request.set("Accept", accept);
         }
         request.call()
-    };
-    match request(agent_for(url, true)) {
-        Err(ureq::Error::Transport(first)) if cfg!(windows) => {
-            log::debug!("Request to {url} failed with the Windows certificate store: {first}");
-            request(agent_for(url, false)).map_err(|err| match err {
-                // Report the first failure; it is the one the user's setup produces.
-                ureq::Error::Transport(_) => ureq::Error::Transport(first),
-                other => other,
-            })
-        }
-        other => other,
-    }
+    })
 }
 
 /// POST a JSON `body` to `url` with extra `headers`, through the same proxy and certificate
 /// handling as `get`. Used by the usage ping (`crate::usage`).
 pub(crate) fn post_json(url: &str, headers: &[(&str, &str)], body: &str) -> Result<ureq::Response, ureq::Error> {
-    let request = |agent: ureq::Agent| {
+    with_store_fallback(url, |agent| {
         let mut request = agent.post(url).set("Content-Type", "application/json");
         for (name, value) in headers {
             request = request.set(name, value);
         }
         request.send_string(body)
-    };
+    })
+}
+
+/// Make `request` with the Windows certificate store, then again with the bundled web roots
+/// after a transport error there.
+fn with_store_fallback(url: &str, request: impl Fn(ureq::Agent) -> Result<ureq::Response, ureq::Error>) -> Result<ureq::Response, ureq::Error> {
     match request(agent_for(url, true)) {
         Err(ureq::Error::Transport(first)) if cfg!(windows) => {
             log::debug!("Request to {url} failed with the Windows certificate store: {first}");
             request(agent_for(url, false)).map_err(|err| match err {
+                // Report the first failure; it is the one the user's setup produces.
                 ureq::Error::Transport(_) => ureq::Error::Transport(first),
                 other => other,
             })
@@ -426,13 +421,13 @@ pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<
     if let Some(dir) = dest.parent() {
         fs::create_dir_all(dir).with_context(|| format!("Couldn't create {}", dir.display()))?;
     }
-    let file = fs::File::create(&partial).with_context(|| format!("Couldn't write {}", partial.display()))?;
+    let mut file = fs::File::create(&partial).with_context(|| format!("Couldn't write {}", partial.display()))?;
     let saving = || format!("Couldn't save the download to {}", partial.display());
-    let mut reader = response.into_reader();
-    let mut hasher = Sha256::new();
-    let mut total = 0u64;
     // The file is closed when this returns, so a failed download can be removed below.
-    let mut copy = |mut file: fs::File| -> Result<()> {
+    let result = (|| -> Result<String> {
+        let mut reader = response.into_reader();
+        let mut hasher = Sha256::new();
+        let mut total = 0u64;
         let mut buffer = vec![0u8; 64 * 1024];
         loop {
             let read = reader.read(&mut buffer).context("The download was interrupted")?;
@@ -448,33 +443,24 @@ pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<
             total += read as u64;
             progress.store(total, Ordering::Relaxed);
         }
-        file.flush().with_context(saving)
-    };
-    if let Err(err) = copy(file) {
-        let _ = fs::remove_file(&partial);
-        return Err(err);
-    }
-    let actual: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
-    let check = || -> Result<()> {
+        file.flush().with_context(saving)?;
+        drop(file);
         if total != asset.size {
             bail!("The download is incomplete ({total} of {} bytes).", asset.size);
         }
+        let actual = crate::text::hex(&hasher.finalize());
         if let Some(expected) = asset.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")) {
             if !actual.eq_ignore_ascii_case(expected) {
                 bail!("The download doesn't match the checksum GitHub lists for it.");
             }
         }
-        Ok(())
-    };
-    if let Err(err) = check() {
+        crate::model::rename_with_retries(&partial, dest).with_context(|| format!("Couldn't put the download at {}", dest.display()))?;
+        Ok(actual)
+    })();
+    if result.is_err() {
         let _ = fs::remove_file(&partial);
-        return Err(err);
     }
-    if let Err(err) = crate::model::rename_with_retries(&partial, dest) {
-        let _ = fs::remove_file(&partial);
-        return Err(err).with_context(|| format!("Couldn't put the download at {}", dest.display()));
-    }
-    Ok(actual)
+    result
 }
 
 /// How this copy of Komando gets updated.
@@ -757,8 +743,7 @@ mod tests {
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
             stream.write_all(body).unwrap();
         });
-        let hex: String = Sha256::digest(body).iter().map(|b| format!("{b:02x}")).collect();
-        let digest = format!("sha256:{hex}");
+        let digest = format!("sha256:{}", crate::text::hex(&Sha256::digest(body)));
         (Asset { name: "installer.msi".into(), browser_download_url: url, size: body.len() as u64, digest: Some(digest) }, server)
     }
 

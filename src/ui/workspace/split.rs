@@ -200,12 +200,7 @@ impl Workspace {
         let Some(placed) = self.sessions.place(key, session, side) else { return };
         match placed {
             Placed::Show(id) => self.activate(id, window, cx),
-            Placed::Existing(id) => {
-                self.activate(id, window, cx);
-                if self.sessions.get(id).is_some_and(|s| !s.is_live()) {
-                    self.reconnect(id, window, cx);
-                }
-            }
+            Placed::Existing(id) => self.show_session(id, window, cx),
             Placed::New(pending) => {
                 let Some(item) = self.item_for_key(key) else { return };
                 self.sessions.wait_for_split(pending);

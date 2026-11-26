@@ -1114,9 +1114,16 @@ impl Remote {
         if !self.exists(to).await? {
             return self.rename(from, to).await;
         }
+        self.replace_existing(to, self.rename(from, to)).await
+    }
+
+    /// Put something in the place of `to`, which exists, with `put_in`. The old one is moved
+    /// aside, not deleted, until the new one is in its place: if that fails, it goes back and
+    /// nothing is lost.
+    async fn replace_existing(&self, to: &str, put_in: impl Future<Output = Result<(), OpError>>) -> Result<(), OpError> {
         let aside = copy_partial_path(to, &crate::model::new_id());
         self.sftp.rename(to, aside.as_str()).await.map_err(|e| OpError::from(e).at(to))?;
-        if let Err(err) = self.rename(from, to).await {
+        if let Err(err) = put_in.await {
             let _ = self.sftp.rename(aside.as_str(), to).await;
             return Err(err);
         }
@@ -1207,14 +1214,14 @@ impl Remote {
             } else {
                 let mut input = self.sftp.open(src.as_str()).await.map_err(|e| OpError::from(e).at(&src))?;
                 let mut output = self.create_file(&dst).await?;
-                let mut buf = vec![0u8; CHUNK];
-                loop {
-                    let n = input.read(&mut buf).await.map_err(|e| OpError::remote_io(&e).at(&src))?;
-                    if n == 0 {
-                        break;
-                    }
-                    output.write_all(&buf[..n]).await.map_err(|e| OpError::remote_io(&e).at(&dst))?;
-                }
+                copy_chunks(
+                    &mut input,
+                    &mut output,
+                    &Progress::default(),
+                    |e| OpError::remote_io(&e).at(&src),
+                    |e| OpError::remote_io(&e).at(&dst),
+                )
+                .await?;
                 output.shutdown().await.map_err(|e| OpError::remote_io(&e).at(&dst))?;
                 if let Some(mode) = attrs.permissions {
                     let _ = self.set_mode(&dst, mode).await;
@@ -1518,17 +1525,8 @@ impl Remote {
                     let _ = self.set_mode(&partial, mode).await;
                 }
             }
-            // The old one is moved aside, not deleted, until the upload is in its place: if
-            // that fails, it goes back and nothing is lost.
-            let aside = join(remote_dir, &format!(".{name}.{}{PARTIAL_SUFFIX}", crate::model::new_id()));
-            self.sftp.rename(target.as_str(), aside.as_str()).await.map_err(|e| OpError::from(e).at(&target))?;
-            if let Err(err) = self.sftp.rename(partial.as_str(), target.as_str()).await {
-                let _ = self.sftp.rename(aside.as_str(), target.as_str()).await;
-                return Err(OpError::from(err).at(&target));
-            }
-            if let Err(err) = self.remove(&aside).await {
-                log::warn!("removing the replaced {aside}: {err}");
-            }
+            let put_in = async { self.sftp.rename(partial.as_str(), target.as_str()).await.map_err(|e| OpError::from(e).at(&target)) };
+            self.replace_existing(&target, put_in).await?;
             Ok(target.clone())
         }
         .await;

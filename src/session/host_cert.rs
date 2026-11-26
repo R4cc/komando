@@ -56,7 +56,7 @@ fn host_matches(name: &str, patterns: &str) -> bool {
             Some(rest) => (true, rest),
             None => (false, pattern),
         };
-        if wildcard(name.as_bytes(), pattern.to_lowercase().as_bytes()) {
+        if crate::text::wildcard(&pattern.to_lowercase(), &name) {
             if negated {
                 return false;
             }
@@ -64,15 +64,6 @@ fn host_matches(name: &str, patterns: &str) -> bool {
         }
     }
     matched
-}
-
-fn wildcard(text: &[u8], pattern: &[u8]) -> bool {
-    match pattern.split_first() {
-        None => text.is_empty(),
-        Some((b'*', rest)) => (0..=text.len()).any(|skip| wildcard(&text[skip..], rest)),
-        Some((b'?', rest)) => !text.is_empty() && wildcard(&text[1..], rest),
-        Some((c, rest)) => text.first() == Some(c) && wildcard(&text[1..], rest),
-    }
 }
 
 /// Whether `cert` proves the server is `host`: a host certificate signed by one of

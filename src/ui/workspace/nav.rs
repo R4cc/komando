@@ -436,11 +436,7 @@ impl Workspace {
                     }
                     return;
                 }
-                let reconnect = !entry.is_live() && !entry.own_window();
-                self.activate(id, window, cx);
-                if reconnect {
-                    self.reconnect(id, window, cx);
-                }
+                if entry.own_window() { self.activate(id, window, cx) } else { self.show_session(id, window, cx) }
             }
         }
     }
