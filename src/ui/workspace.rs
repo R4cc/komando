@@ -1099,6 +1099,8 @@ mod session_row_label_tests {
     fn a_given_name_replaces_which_session() {
         assert_eq!(session_row_label(Some(Protocol::Vnc), false, Some("Monitoring"), 1, Some(5902)), "VNC — Monitoring");
         assert_eq!(session_row_label(None, true, Some("logs"), 3, None), "SSH — logs");
+        // A shell's title is passed the same way.
+        assert_eq!(session_row_label(None, true, Some("ops@web01: ~/atlas"), 2, None), "SSH — ops@web01: ~/atlas");
     }
 
     #[test]

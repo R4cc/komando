@@ -8,21 +8,28 @@ All notable changes to Komando are listed here. The format follows
 
 ### Added
 
-- When a session can't connect, a notice right under the error offers Reconnect and Edit host,
-  and the session's dot in the sidebar turns into a red ring. Hover over the ring to see why it
-  failed.
+- When a session can't connect, a notice right under the error says what happened, such as
+  "SSH connection timed out", and offers Reconnect and Edit host. The session's dot in the
+  sidebar turns into a red ring; hover over it to see why it failed.
 
 ### Changed
 
 - A host's open sessions are listed under it in the sidebar as compact rows, one per line,
   joined to the host by tree lines. Each row shows what the session is, such as
-  "SSH — Session 2" or "VNC — Display 1", and has its own × to close it. The session you're
-  looking at is outlined in the accent colour, and the rows stay in the order you opened them.
+  "SSH — Session 2", "VNC — Display 1" or the title the shell set, and the rows stay in the
+  order you opened them. The session you're looking at is highlighted like a selected host,
+  and a row's × shows when you point at it.
+- Status dots in the sidebar line up in one column, whether or not a host has sessions to
+  fold away.
 - The title bar names a session the same way its row in the sidebar does: the host, then
   "SSH — Session 2", then the address. Its Disconnect and Reconnect buttons are labelled, and
   remote desktops show the same signal bars as terminals.
 - A remote desktop fitted to the window sits on the pane with a small margin, rounded corners
-  and a soft shadow, instead of between dark bands.
+  and a soft shadow, instead of between dark bands. In dark themes the pane matches a
+  terminal's; in light themes the picture sits on a soft grey.
+- The remote desktop toolbar says "Quality: High" rather than just "High", and View only is a
+  labelled toggle.
+- The green for connected sessions is brighter in light themes.
 - × on a session always closes it. Disconnect, which keeps the output, is in the title bar and
   the session's menu.
 - The minimap stays empty until there is output to scroll back through.

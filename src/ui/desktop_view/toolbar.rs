@@ -75,8 +75,7 @@ impl DesktopView {
             })
             .when_some(zoom, |el, zoom| {
                 el.child(div().flex_shrink_0().text_size(px(12.)).text_color(p.text_faint).child(format!("{zoom}%")))
-            })
-            .when(options.view_only, |el| el.child(tag("View only", p)));
+            });
 
         // Display: how the picture fills the pane, and how much detail it has.
         let scale_menu = {
@@ -200,7 +199,8 @@ impl DesktopView {
                     .custom(plain)
                     .small()
                     .icon(icon("gauge"))
-                    .label(options.quality.label())
+                    // Named, so "High" doesn't need the gauge to be read as the picture's quality.
+                    .label(format!("Quality: {}", options.quality.label()))
                     .dropdown_caret(true)
                     .tooltip("Picture quality")
                     .dropdown_menu(quality_menu),
@@ -224,6 +224,8 @@ impl DesktopView {
                     .custom(plain)
                     .small()
                     .icon(icon(if on { "eye" } else { "mouse-pointer-2" }))
+                    // A labelled toggle: the icon alone didn't say what it switches.
+                    .label("View only")
                     .selected(on)
                     .toggled(on)
                     .tooltip(if on { "View only: on. Click to control the desktop" } else { "View only: off. Click to only watch" })
@@ -274,7 +276,8 @@ impl DesktopView {
             // Over a fitted picture the bar sits on the pane like the picture does; over one
             // that fills the pane, a hairline keeps the two apart.
             let rule = options.scaling != Scaling::Fit;
-            return bar.flex_shrink_0().w_full().when(rule, |el| el.border_b_1().border_color(p.border)).bg(p.background).into_any_element();
+            // No fill of its own: it sits on the pane's surface, like the picture.
+            return bar.flex_shrink_0().w_full().when(rule, |el| el.border_b_1().border_color(p.border)).into_any_element();
         }
         // Full screen: out of the way at the top edge until the pointer reaches it.
         let out = self.toolbar_out;
@@ -343,7 +346,7 @@ impl DesktopView {
     }
 }
 
-/// A small outlined label: the protocol, or "View only".
+/// A small outlined label: the protocol. (View only shows as its toggle, selected.)
 fn tag(text: &'static str, p: AppPalette) -> impl IntoElement {
     div()
         .flex_shrink_0()

@@ -128,7 +128,7 @@ impl AppPalette {
             brand_soft: active, secondary: hex(c.secondary),
             on_secondary: hex(readable(c.secondary_foreground, c.secondary, 4.5)),
             danger: hex(c.destructive), on_danger: hex(readable(c.destructive_foreground, c.destructive, 4.5)),
-            success: hex(if t.dark { 0x86b98b } else { 0x347044 }),
+            success: hex(if t.dark { 0x86b98b } else { 0x1b9247 }),
             warning: hex(if t.dark { 0xd9bc7b } else { 0x865a12 }), navigation: c,
         }
     }

@@ -974,7 +974,8 @@ impl DesktopView {
                     // Two soft layers rather than one hard edge: a tight contact shadow and a
                     // wide ambient one.
                     let shade = |alpha: f32, y: f32, blur: f32| gpui::BoxShadow {
-                        color: gpui::black().opacity(if dark { alpha * 2.5 } else { alpha }),
+                        // Restrained on a light backdrop; on a dark one it needs more to show.
+                        color: gpui::black().opacity(if dark { alpha * 2.5 } else { alpha * 0.75 }),
                         offset: point(px(0.), px(y)),
                         blur_radius: px(blur),
                         spread_radius: px(0.),
@@ -1210,6 +1211,10 @@ impl Render for DesktopView {
         // Pure white or black at low strength: a tinted edge would pick up the pane's color.
         let outline = if app.dark { gpui::white().opacity(0.12) } else { gpui::black().opacity(0.10) };
         let framed = !fullscreen && self.options.scaling == Scaling::Fit;
+        // The pane: in dark themes the terminal's own background, so a desktop sits in the same
+        // surface as a terminal; in light ones the app's, with a neutral backdrop under the
+        // picture so a dark desktop doesn't float on white.
+        let surface = if app.dark { cx.global::<Appearance>().term.background_hsla() } else { app.background };
         let toolbar = self.render_toolbar(fullscreen, window, cx);
         let picture = div()
             .id("remote-desktop-picture")
@@ -1218,9 +1223,15 @@ impl Render for DesktopView {
             .min_h_0()
             .w_full()
             .overflow_hidden()
-            // Framed, the picture sits on the pane itself; filling the pane (full screen,
-            // actual size, stretched), anything around it is darker so its edge shows.
-            .when(!framed, |el| el.bg(if app.dark { gpui::black().opacity(0.35) } else { gpui::black().opacity(0.06) }))
+            // Framed, the picture sits on the pane (dark) or a faint neutral backdrop (light);
+            // filling the pane (full screen, actual size, stretched), anything around it is
+            // darker so its edge shows.
+            .map(|el| match (framed, app.dark) {
+                (true, true) => el,
+                (true, false) => el.bg(gpui::black().opacity(0.05)),
+                (false, true) => el.bg(gpui::black().opacity(0.35)),
+                (false, false) => el.bg(gpui::black().opacity(0.06)),
+            })
             .on_mouse_move(cx.listener(Self::track_pointer))
             .when(input, |el| {
                 el.on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
@@ -1260,7 +1271,7 @@ impl Render for DesktopView {
             .flex_col()
             .when(!fullscreen, |el| el.rounded(app.corner(crate::ui::widgets::ISLAND_RADIUS - 1.)))
             .overflow_hidden()
-            .bg(app.background)
+            .bg(surface)
             .font_family(app.font_family)
             // In full screen the toolbar floats over the desktop, drawn after it.
             .map(|el| if fullscreen { el.child(picture).child(toolbar) } else { el.child(toolbar).child(picture) })

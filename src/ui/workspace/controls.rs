@@ -45,30 +45,37 @@ pub(super) fn focus_ring(radius: gpui::Pixels, p: AppPalette) -> gpui::Div {
     div().absolute().top_0().left_0().right_0().bottom_0().rounded(radius).border_2().border_color(p.focus)
 }
 
+/// The title a terminal's shell set, when it says something: not empty, not only the item's
+/// name, and not the program's path (as Windows shells set it). Desktops have none.
+pub(super) fn useful_title(session: &SessionEntry) -> Option<&str> {
+    let title = session.ui.title.trim();
+    let useless = title.is_empty() || title == session.label().as_ref() || title.to_ascii_lowercase().ends_with(".exe");
+    (!useless && desktop_protocol(session).is_none()).then_some(title)
+}
+
 /// What a Session's row in the sidebar says, and its tooltip. The row: its protocol, then the
-/// name it was given, else which one it is: a terminal's number, or a VNC desktop's display
-/// (port 5901 is display 1). `port` is a desktop's. A Local Shell's row has no protocol. The
-/// tooltip: the name, else the title its shell set unless that only repeats the item's name or
-/// is the program's path (as Windows shells set it), with what the Session is.
-pub(super) fn session_row_text(session: &SessionEntry, port: Option<u16>) -> (SharedString, SharedString) {
+/// name it was given, else `title` (its shell's, when that tells it from its siblings), else
+/// which one it is: a terminal's number, or a VNC desktop's display (port 5901 is display 1).
+/// `port` is a desktop's. A Local Shell's row has no protocol. The tooltip: the name or the
+/// shell's title, with what the Session is.
+pub(super) fn session_row_text(session: &SessionEntry, port: Option<u16>, title: Option<&str>) -> (SharedString, SharedString) {
     let protocol = desktop_protocol(session);
     let kind = match protocol {
         Some(protocol) => format!("Remote desktop ({})", protocol.label()),
         None => format!("Terminal #{}", session.number()),
     };
     let ssh = matches!(session.kind(), SessionKind::Ssh { .. });
-    let label: SharedString = session_row_label(protocol, ssh, session.name().map(|n| n.as_ref()), session.number(), port).into();
-    if let Some(name) = session.name() {
-        return (label, format!("{name} · {kind}").into());
-    }
-    let title = session.ui.title.trim();
-    let useless = title.is_empty() || title == session.label().as_ref() || title.to_ascii_lowercase().ends_with(".exe");
-    let tip = if useless || protocol.is_some() { kind } else { format!("{title} · {kind}") };
+    let which = session.name().map(|n| n.as_ref()).or(title);
+    let label: SharedString = session_row_label(protocol, ssh, which, session.number(), port).into();
+    let tip = match session.name().map(|n| n.as_ref()).or(useful_title(session)) {
+        Some(named) => format!("{named} · {kind}"),
+        None => kind,
+    };
     (label, tip.into())
 }
 
 /// A Session row's label: "SSH — Session 2", "VNC — Display 1", "RDP — Desktop", or with
-/// the name the Session was given in place of which one it is. A Local Shell's has no protocol.
+/// `name` (the one it was given, or its shell's title) in place of which one it is. A Local Shell's has no protocol.
 pub(super) fn session_row_label(protocol: Option<Protocol>, ssh: bool, name: Option<&str>, number: usize, port: Option<u16>) -> String {
     let which = match (name, protocol, port) {
         (Some(name), ..) => name.to_string(),

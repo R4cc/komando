@@ -2,7 +2,7 @@
 //! clipboard question and the disconnected banner.
 
 use super::*;
-use crate::ui::widgets::{dialog_card, dialog_mono, dialog_text};
+use crate::ui::widgets::{dialog_card, dialog_mono, dialog_text, icon_el};
 
 impl TerminalView {
     /// Scroll so the entered line sits near the top of the view, and light it up briefly.
@@ -478,10 +478,27 @@ impl TerminalView {
             let term = self.term.lock();
             (term.grid().cursor.point.line.0.max(0) as f32, term.screen_lines() as f32)
         };
-        let under_output = cursor_line < screen_lines - 4.;
+        let under_output = cursor_line < screen_lines - 6.;
+        // What happened, in a few words: the log line or the reason below says the rest.
+        let heading = match (failed, self.status.timed_out(), said) {
+            (false, ..) => "Disconnected",
+            (true, true, true) => "SSH connection timed out",
+            (true, true, false) => "Connection timed out",
+            (true, false, true) => "Couldn't connect over SSH",
+            (true, false, false) => "Couldn't connect",
+        };
+        let enter = div()
+            .px(px(5.))
+            .rounded(p.corner(4.))
+            .border_1()
+            .border_color(p.border)
+            .text_size(px(11.))
+            .line_height(px(16.))
+            .text_color(p.text_muted)
+            .child("Enter");
         let actions = div()
             .flex()
-            .flex_shrink_0()
+            .flex_wrap()
             .items_center()
             .gap(px(8.))
             .child(
@@ -494,42 +511,43 @@ impl TerminalView {
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(TerminalEvent::EditHost { hop: THE_HOST }))),
                 )
             })
-            .child(div().text_color(p.text_muted).child("or press Enter"));
+            .child(div().ml(px(4.)).flex().items_center().gap(px(6.)).text_color(p.text_muted).child("or press").child(enter));
+        // Tinted with the failure's red over the card, so it reads as an error at a glance.
+        let fill = if failed { p.surface.blend(p.danger.opacity(0.08)) } else { p.surface };
         let notice = div()
             .min_w_0()
-            .max_w_full()
+            .max_w(px(560.))
             .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(12.))
-            .px(px(12.))
-            .py(px(8.))
+            .flex_col()
+            .gap(px(10.))
+            .px(px(14.))
+            .py(px(12.))
             .rounded(p.corner(10.))
-            .bg(p.surface)
+            .bg(fill)
             .border_1()
             .border_color(if failed { p.danger.opacity(0.35) } else { p.border })
             .font_family(p.font_family)
             .text_size(px(13.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(icon_el(if failed { "circle-alert" } else { "unplug" }, 15., if failed { p.danger } else { p.text_muted }))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(heading)),
+            )
             .when(!said, |el| {
                 // A long reason (a failed key exchange lists every algorithm) ends in "…" past
                 // three lines: the output above has it in full.
                 el.child(
                     div()
                         .min_w_0()
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .child(div().flex_shrink_0().size(px(8.)).rounded_full().bg(if failed { p.danger } else { p.text_faint }))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .whitespace_normal()
-                                .line_clamp(3)
-                                .text_ellipsis()
-                                .text_color(p.text)
-                                .child(reason.clone()),
-                        ),
+                        .whitespace_normal()
+                        .line_clamp(3)
+                        .text_ellipsis()
+                        .text_size(px(12.5))
+                        .text_color(p.text_muted)
+                        .child(reason.clone()),
                 )
             })
             .child(actions);
@@ -540,7 +558,7 @@ impl TerminalView {
                 .right(px(PADDING_X))
                 .map(|el| {
                     if under_output {
-                        el.top(px(PADDING_Y + cursor_line * line_h + 6.))
+                        el.top(px(PADDING_Y + cursor_line * line_h + 12.))
                     } else {
                         el.bottom(px(16.))
                     }

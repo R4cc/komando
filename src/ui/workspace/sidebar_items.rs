@@ -250,12 +250,14 @@ impl Workspace {
         let show_count = grouped && !expanded;
         // Room for every digit of the count, so 50 doesn't wrap onto two lines.
         let count_width = (listed_count.to_string().len() as f32 * 7.).max(14.);
-        let trailing: f32 = [(show_status, 16.), (show_count, count_width), (grouped, 22.)]
+        // Every row keeps the chevron's slot, empty when there is nothing to fold, and the count
+        // goes before the state: the status dots of all rows line up in one column.
+        let trailing: f32 = [(show_count, count_width), (show_status, 16.), (true, 22.)]
             .iter()
             .filter(|(shown, _)| *shown)
             .map(|(_, w)| w + 4.)
             .sum::<f32>();
-        let pad_right = if grouped { 6. } else { 10. };
+        let pad_right = 6.;
         let new_tip: SharedString = if is_host { "New terminal (Ctrl+click)".into() } else { "New session (Ctrl+click)".into() };
         let more = self.menu_popover(
             SharedString::from(format!("more-{key:?}")),
@@ -359,6 +361,19 @@ impl Workspace {
                         .items_center()
                         .gap(px(4.))
                         .id("item-status")
+                        .when(show_count, |el| {
+                            el.child(
+                                div()
+                                    .w(px(count_width))
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .justify_center()
+                                    .whitespace_nowrap()
+                                    .text_size(px(11.))
+                                    .text_color(p.text_faint)
+                                    .child(listed_count.to_string()),
+                            )
+                        })
                         .when(show_status, |el| {
                             el.child(
                                 div()
@@ -395,19 +410,8 @@ impl Workspace {
                                     }),
                             )
                         })
-                        .when(show_count, |el| {
-                            el.child(
-                                div()
-                                    .w(px(count_width))
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .justify_center()
-                                    .whitespace_nowrap()
-                                    .text_size(px(11.))
-                                    .text_color(p.text_faint)
-                                    .child(listed_count.to_string()),
-                            )
-                        })
+                        // Without Sessions to fold, an empty slot where the chevron would be.
+                        .when(!grouped, |el| el.child(div().flex_shrink_0().size(px(22.))))
                         // A group folds its Sessions away with the chevron, which is always there.
                         .when(grouped, |el| {
                             el.child(
@@ -517,11 +521,11 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// One Session of an item, as a compact row under it: what it is (its protocol's icon), a
-    /// label saying which one it is, and ×. The shown Session's row is outlined in the accent
-    /// colour over a faint tint of it; the rest have a hairline edge. A mark before × appears
-    /// only when something needs a look (connecting, dropped, output out of sight); × disconnects
-    /// it, or closes it once it has dropped.
+    /// One Session of an item, as a compact row under it: what it is (its protocol's icon) and
+    /// a label saying which one it is. Rows are flat, like the Hosts above them, and the shown
+    /// one is filled the way a selected Host is. × closes it; it shows on the shown row, on
+    /// hover and under the keyboard cursor, so a column of them doesn't crowd the tree. A mark
+    /// appears only when something needs a look (connecting, dropped, output out of sight).
     fn render_session_row(&self, item: &SidebarItem, session: &SessionEntry, color: Hsla, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
         let id = session.id();
         let active = Some(id) == self.sessions.active();
@@ -540,7 +544,7 @@ impl Workspace {
             (_, SidebarItem::Host { .. }) => "terminal".to_string(),
             (_, SidebarItem::Shell { .. }) => item.icon(),
         };
-        let text_color = if active { p.text } else if live { p.text_muted } else { p.text_faint };
+        let text_color = if active { p.active_text } else if live { p.text_muted } else { p.text_faint };
         let icon_color = match item {
             SidebarItem::Shell { .. } => item.icon_color(&icon, color, p),
             SidebarItem::Host { .. } => text_color,
@@ -553,12 +557,13 @@ impl Workspace {
             .role(gpui::Role::Button)
             .aria_label(tip.clone())
             .flex_shrink_0()
-            .size(px(20.))
+            .size(px(22.))
             .flex()
             .items_center()
             .justify_center()
             .rounded(p.corner(6.))
             .cursor_pointer()
+            .when(!(active || focused), |el| el.invisible().group_hover("session-row", |s| s.visible()))
             .hover(move |s| s.bg(p.danger.opacity(0.14)))
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
@@ -599,15 +604,13 @@ impl Workspace {
             .text_size(px(12.5))
             .text_color(text_color)
             .rounded(p.corner(8.))
-            .border_1()
             .cursor_pointer()
+            // As a Host row: filled when shown, lit more faintly in the other half of a split.
             .map(|el| {
                 if active {
-                    el.bg(p.brand.opacity(0.12)).border_color(p.brand)
+                    el.bg(p.active)
                 } else {
-                    el.border_color(if beside { p.brand.opacity(0.45) } else { p.border })
-                        .when(beside, |el| el.bg(p.hover))
-                        .hover(|s| s.bg(p.hover).text_color(p.hover_text))
+                    el.when(beside, |el| el.bg(p.hover)).hover(|s| s.bg(p.hover).text_color(p.hover_text))
                 }
             })
             .tooltip(move |window, cx| Tooltip::new(tooltip_text.clone()).build(window, cx))
@@ -629,7 +632,7 @@ impl Workspace {
             }))
             .child(icon_el(&icon, 15., icon_color))
             .child(div().flex_1().min_w_0().truncate().child(label))
-            .children(linked.and_then(|partner| self.split_link(partner, p.text_faint)))
+            .children(linked.and_then(|partner| self.split_link(partner, if active { p.active_text.opacity(0.75) } else { p.text_faint })))
             .when(own_window, |el| {
                 el.child(
                     div()
@@ -647,13 +650,17 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// What a Session's row in the sidebar says, and its tooltip (see `session_row_text`).
+    /// What a Session's row in the sidebar says, and its tooltip (see `session_row_text`). A
+    /// terminal goes by its shell's title ("ops@web01: ~/atlas") unless another of its item's
+    /// Sessions has the same one: then only its number tells them apart.
     pub(super) fn session_row_text(&self, session: &SessionEntry) -> (SharedString, SharedString) {
         let port = match session.kind() {
             SessionKind::Desktop { host_id, protocol } => self.library.host(host_id).and_then(|h| h.desktop(*protocol)).map(|d| d.port),
             _ => None,
         };
-        session_row_text(session, port)
+        let title = useful_title(session)
+            .filter(|title| !self.sessions_of(session.item()).any(|s| s.id() != session.id() && useful_title(s) == Some(*title)));
+        session_row_text(session, port, title)
     }
 
     /// The active Session's name in the title bar: its Host (or shell), then which Session it
