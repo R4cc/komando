@@ -18,6 +18,9 @@ All notable changes to Komando are listed here. The format follows
   updates.
 - Sessions signed in with a password take in fast output the same way as sessions signed in
   with a key.
+- Fast output into a full Scrollback is about a fifth faster: rows reused from the top of the
+  Scrollback are cleared ahead on another thread instead of while the output is read. Over SSH,
+  a million log lines now arrive about 10% sooner.
 - Copy output is about a third faster, and holds up the session's output for that much less
   time: a full Scrollback of 100,000 lines now takes about 50 ms.
 - On Windows, drawing the window no longer looks for PowerShell 7 on PATH each time: it is

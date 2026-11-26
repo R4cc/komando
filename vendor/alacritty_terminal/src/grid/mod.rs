@@ -31,6 +31,14 @@ pub trait RowSource<T>: Send + Sync + std::fmt::Debug {
     /// these: zero once the history is full. A `count` of zero asks for nothing and only reports
     /// `columns` and `rows_left` after a resize or a change of the history's size.
     fn take_rows(&self, columns: usize, count: usize, rows_left: usize, rows: &mut Vec<Row<T>>);
+
+    /// Komando patch: rows recycled from the top of a full history, for blank ones. Take the
+    /// rows in `used` (any of them may be of another width) and append up to `used.len()`
+    /// rows to `fresh` that are blank, each as `Row::reset` with a default cell leaves it, and
+    /// `columns` wide. The grid clears its recycled rows itself while it gets none.
+    fn exchange(&self, columns: usize, used: &mut Vec<Row<T>>, fresh: &mut Vec<Row<T>>) {
+        let _ = (columns, used, fresh);
+    }
 }
 
 pub trait GridCell: Sized {
@@ -354,6 +362,11 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             let screen_lines = self.screen_lines() as i32;
             for i in (region.end.0..screen_lines).rev().map(Line::from) {
                 self.raw.swap(i, i - positions);
+            }
+
+            // Komando patch: blank rows in place of the recycled ones, cleared ahead elsewhere.
+            for i in (region.end.0 - positions as i32..region.end.0).map(Line::from) {
+                self.raw.recycle(i, self.columns);
             }
 
             // Komando patch: start loading the row the next scroll recycles.

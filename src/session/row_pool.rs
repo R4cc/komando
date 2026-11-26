@@ -1,4 +1,4 @@
-//! Rows for a growing Scrollback, built ahead on a thread of their own.
+//! Rows for the Scrollback, built and cleared ahead on a thread of their own.
 //!
 //! Every Scrollback row is a full-width row of cells (177 columns are about 4 KB). While the
 //! Scrollback fills, the terminal allocates its new rows a thousand at a time, on the thread
@@ -8,8 +8,14 @@
 //! (see `RowSource` in the patched alacritty_terminal). Whatever the pool doesn't have ready,
 //! the terminal builds itself as before, so the parser never waits for the pool.
 //!
-//! The pool only fills while the Scrollback is growing: a request for rows starts the worker,
-//! and the worker gives the rows back and stops once the Scrollback is full, after a second
+//! Once the Scrollback is full, each new line reuses its oldest row, which was last touched a
+//! whole Scrollback ago and is in no CPU cache: clearing it made the parser wait for main memory
+//! on every line. The terminal hands those rows to the pool instead (`RowSource::exchange`),
+//! and takes blank rows the worker has cleared, a batch at a time. The worker keeps a few
+//! hundred blank rows ready (about 1 MB at 177 columns), few enough to stay in the CPU's caches.
+//!
+//! The worker runs while output needs it: a request for rows (a growing Scrollback) or for
+//! blank ones (a full one) starts it, and it gives every row back and stops after a second
 //! without requests, or when the terminal goes away. An idle Session holds no rows here.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -27,6 +33,10 @@ const MAX_ROWS: usize = 2_048;
 const BATCH: usize = 64;
 /// How long the worker keeps ready rows without a request before it gives them back.
 const IDLE: Duration = Duration::from_secs(1);
+/// Blank rows held ready to swap in for rows recycled from a full Scrollback, and the most
+/// handed over at a time: about 512 KB at 177 columns, enough to stay in the CPU's caches.
+const RECYCLE_ROWS: usize = 256;
+const RECYCLE_BATCH: usize = 64;
 
 /// The most rows held ready for rows of `columns` cells.
 fn bound(columns: usize) -> usize {
@@ -68,6 +78,14 @@ struct State {
     worker: bool,
     /// Whether the terminal asked for rows since the worker last went to sleep.
     asked: bool,
+    /// Rows recycled from the top of a full Scrollback, to clear, and blank rows to swap in
+    /// for the next ones (see `RowSource::exchange`).
+    dirty: Vec<Row<Cell>>,
+    clean: Vec<Row<Cell>>,
+    /// Whether rows are being recycled: the worker keeps `clean` stocked.
+    recycling: bool,
+    /// Whether the worker is waiting to be woken.
+    waiting: bool,
     /// Set when the pool is dropped: the worker gives everything back and stops.
     closed: bool,
 }
@@ -128,6 +146,44 @@ impl RowSource<Cell> for RowPool {
         }
         drop(unwanted);
     }
+
+    fn exchange(&self, columns: usize, used: &mut Vec<Row<Cell>>, fresh: &mut Vec<Row<Cell>>) {
+        let mut unwanted = Vec::new();
+        let mut state = self.shared.lock();
+        if state.columns != columns {
+            state.columns = columns;
+            unwanted = std::mem::take(&mut state.ready);
+            unwanted.append(&mut state.clean);
+        }
+        state.dirty.append(used);
+        let taken = RECYCLE_BATCH.min(state.clean.len());
+        let from = state.clean.len() - taken;
+        fresh.extend(state.clean.drain(from..));
+        state.recycling = true;
+        state.asked = true;
+        let start = !state.worker;
+        if start {
+            state.worker = true;
+        }
+        // Woken once half the blank rows are gone rather than on every exchange: waking it
+        // costs a system call on both sides.
+        let wake = state.waiting && state.clean.len() <= RECYCLE_ROWS / 2;
+        drop(state);
+        if wake {
+            self.shared.wake.notify_one();
+        }
+        if start {
+            let shared = self.shared.clone();
+            let spawned = std::thread::Builder::new().name("scrollback rows".into()).spawn(move || work(&shared));
+            if spawned.is_err() {
+                let mut state = self.shared.lock();
+                state.worker = false;
+                state.recycling = false;
+                unwanted.append(&mut state.dirty);
+            }
+        }
+        drop(unwanted);
+    }
 }
 
 impl Drop for RowPool {
@@ -145,14 +201,50 @@ impl Drop for RowPool {
 fn work(shared: &Shared) {
     let mut state = shared.lock();
     loop {
-        if state.closed || state.target == 0 {
+        if state.closed || (state.target == 0 && !state.recycling) {
             break;
+        }
+        // Recycled rows first: the terminal is waiting to swap them out on every new line.
+        if state.recycling && (!state.dirty.is_empty() || state.clean.len() < RECYCLE_ROWS) {
+            let columns = state.columns;
+            let take = state.dirty.len().min(BATCH);
+            let from = state.dirty.len() - take;
+            let mut rows: Vec<Row<Cell>> = state.dirty.drain(from..).collect();
+            let room = RECYCLE_ROWS.saturating_sub(state.clean.len());
+            drop(state);
+            let template = Cell::default();
+            // Rows of another width (from before a resize) are dropped; new ones fill in.
+            rows.retain(|row| row.len() == columns);
+            for row in &mut rows {
+                row.reset(&template);
+            }
+            while rows.len() < room.min(BATCH) {
+                rows.push(Row::new(columns));
+            }
+            state = shared.lock();
+            if state.columns == columns && !state.closed {
+                let room = RECYCLE_ROWS.saturating_sub(state.clean.len());
+                let extra = rows.split_off(room.min(rows.len()));
+                state.clean.append(&mut rows);
+                if !extra.is_empty() {
+                    drop(state);
+                    drop(extra);
+                    state = shared.lock();
+                }
+            } else {
+                drop(state);
+                drop(rows);
+                state = shared.lock();
+            }
+            continue;
         }
         let missing = state.target.saturating_sub(state.ready.len());
         if missing == 0 {
             state.asked = false;
+            state.waiting = true;
             let (next, wait) = shared.wake.wait_timeout(state, shared.idle).unwrap_or_else(|poisoned| poisoned.into_inner());
             state = next;
+            state.waiting = false;
             if wait.timed_out() && !state.asked {
                 break;
             }
@@ -177,9 +269,12 @@ fn work(shared: &Shared) {
             state = shared.lock();
         }
     }
-    let rows = std::mem::take(&mut state.ready);
+    let mut rows = std::mem::take(&mut state.ready);
+    rows.append(&mut state.clean);
+    rows.append(&mut state.dirty);
     state.worker = false;
     state.target = 0;
+    state.recycling = false;
     drop(state);
     drop(rows);
 }
@@ -192,6 +287,15 @@ impl RowPool {
         move || {
             let state = shared.lock();
             (state.ready.len(), state.worker)
+        }
+    }
+
+    /// The rows held for recycling (blank and to clear), for tests.
+    pub(crate) fn watch_recycling(&self) -> impl Fn() -> usize + use<> {
+        let shared = self.shared.clone();
+        move || {
+            let state = shared.lock();
+            state.clean.len() + state.dirty.len()
         }
     }
 }
@@ -279,6 +383,7 @@ mod tests {
         let size = GridSize { cols: 80, rows: 24, cell_width: 9, cell_height: 17 };
         let pool = Arc::new(RowPool::with_idle(Duration::from_secs(600)));
         let watch = pool.watch();
+        let recycling = pool.watch_recycling();
         let terms = pair(size, 20_000, pool);
         let mut parsers = [Processor::new(), Processor::new()];
         let mut seed = 7;
@@ -312,14 +417,32 @@ mod tests {
         feed(&terms, &mut parsers, &output(&mut seed, 300));
         assert_same(&terms, "filling, wider");
 
-        // Full, and overflowing: the pool gives its rows back and its worker stops.
+        // Full, and overflowing: the pool gives back the rows it held for a growing Scrollback,
+        // and from then on swaps blank rows in for recycled ones.
         feed(&terms, &mut parsers, &output(&mut seed, 16_000));
         assert_same(&terms, "full");
         assert_eq!(terms[0].lock().grid().history_size(), 20_000);
-        wait_for("the pool to empty once the Scrollback is full", || watch() == (0, false));
+        wait_for("the rows for a growing Scrollback to go once it is full", || watch().0 == 0);
         feed(&terms, &mut parsers, &output(&mut seed, 500));
         assert_same(&terms, "overflowing");
-        assert_eq!(watch(), (0, false));
+        wait_for("blank rows ready for recycling", || recycling() > 0);
+        // Lines on a coloured background: new rows take the cursor's background, whether
+        // cleared here or swapped in blank.
+        feed(&terms, &mut parsers, b"\x1b[41m\r\n\r\nred\r\n\x1b[0m");
+        feed(&terms, &mut parsers, &output(&mut seed, 3_000));
+        assert_same(&terms, "overflowing, rows recycled");
+        assert_eq!(watch().0, 0);
+        assert!(recycling() <= 2 * super::RECYCLE_ROWS + super::RECYCLE_BATCH, "{} rows held for recycling", recycling());
+
+        // Resizes while blank rows of the old width are held, by the pool and by the grid.
+        wait_for("blank rows ready for recycling", || recycling() > 0);
+        resize_both(70);
+        assert_same(&terms, "recycling, narrower");
+        feed(&terms, &mut parsers, &output(&mut seed, 1_000));
+        assert_same(&terms, "recycling after a resize");
+        resize_both(80);
+        feed(&terms, &mut parsers, &output(&mut seed, 1_000));
+        assert_same(&terms, "recycling after resizing back");
 
         // Cleared (ESC [ 3 J), it fills again.
         feed(&terms, &mut parsers, b"\x1b[3J");
@@ -335,7 +458,7 @@ mod tests {
             term.lock().set_options(config(1_200));
         }
         assert_same(&terms, "smaller Scrollback");
-        wait_for("the pool to empty once the smaller Scrollback is full", || watch() == (0, false));
+        wait_for("the rows for a growing Scrollback to go once the smaller one is full", || watch().0 == 0);
         feed(&terms, &mut parsers, &output(&mut seed, 700));
         assert_same(&terms, "smaller Scrollback, overflowing");
         for term in &terms {
@@ -351,7 +474,7 @@ mod tests {
         feed(&terms, &mut parsers, &output(&mut seed, 25_000));
         assert_same(&terms, "filled after a reset");
         assert_eq!(terms[0].lock().grid().history_size(), 30_000);
-        wait_for("the pool to empty once the Scrollback is full", || watch() == (0, false));
+        wait_for("the rows for a growing Scrollback to go once it is full", || watch().0 == 0);
     }
 
     #[test]
@@ -383,7 +506,8 @@ mod tests {
     }
 
     /// The grid checks what a source hands over, and builds rows itself rather than use any of
-    /// another width or more than it asked for.
+    /// another width or more than it asked for. Blank rows for recycled ones of another width
+    /// are refused too, and the recycled rows cleared in place.
     #[test]
     fn the_grid_refuses_rows_of_another_width() {
         #[derive(Debug)]
@@ -394,17 +518,22 @@ mod tests {
                 row[Column(0)].c = 'x';
                 rows.extend((0..count + self.1).map(|_| row.clone()));
             }
+
+            fn exchange(&self, columns: usize, used: &mut Vec<Row<Cell>>, fresh: &mut Vec<Row<Cell>>) {
+                fresh.extend((0..used.len().max(8) + self.1).map(|_| Row::new(columns + self.0)));
+                used.clear();
+            }
         }
         for wrong in [Wrong(1, 0), Wrong(0, 1)] {
             let size = GridSize { cols: 50, rows: 10, cell_width: 9, cell_height: 17 };
-            let terms = pair(size, 2_500, Arc::new(wrong));
+            let terms = pair(size, 5_000, Arc::new(wrong));
             let mut parsers = [Processor::new(), Processor::new()];
             let mut seed = 3;
             feed(&terms, &mut parsers, &output(&mut seed, 2_000));
             assert_same(&terms, "after rows of another width or too many");
             feed(&terms, &mut parsers, b"\x1b[3J");
-            feed(&terms, &mut parsers, &output(&mut seed, 3_000));
-            assert_same(&terms, "full");
+            feed(&terms, &mut parsers, &output(&mut seed, 7_000));
+            assert_same(&terms, "full, rows recycled");
         }
     }
 
@@ -419,6 +548,25 @@ mod tests {
         wait_for("rows ready", || watch().0 > 0);
         drop(terms);
         wait_for("the pool to empty once the terminal is gone", || watch() == (0, false));
+    }
+
+    #[test]
+    fn recycling_gives_its_rows_back_when_output_stops() {
+        let size = GridSize { cols: 120, rows: 30, cell_width: 9, cell_height: 17 };
+        let idle = Duration::from_millis(300);
+        let pool = Arc::new(RowPool::with_idle(idle));
+        let (watch, recycling) = (pool.watch(), pool.watch_recycling());
+        let terms = pair(size, 5_000, pool);
+        let mut parsers = [Processor::new(), Processor::new()];
+        feed(&terms, &mut parsers, &output(&mut 1, 7_000));
+        wait_for("blank rows ready for recycling", || recycling() > 0);
+        assert_same(&terms, "recycling");
+        wait_for("the pool to empty once output stops", || watch() == (0, false) && recycling() == 0);
+        // Output resumes: recycling starts again.
+        feed(&terms, &mut parsers, &output(&mut 1, 2_000));
+        wait_for("blank rows ready for recycling", || recycling() > 0);
+        feed(&terms, &mut parsers, &output(&mut 1, 2_000));
+        assert_same(&terms, "after output resumed");
     }
 
     #[test]

@@ -55,6 +55,24 @@ pub struct Storage<T> {
     /// Komando patch: where new rows come from, if not built here, and the most rows in use.
     #[cfg_attr(feature = "serde", serde(skip))]
     row_source: Option<(Arc<dyn RowSource<T>>, usize)>,
+
+    /// Komando patch: blank rows to swap in for recycled ones, and the recycled rows to hand
+    /// back (see `Storage::recycle`).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    recycled: Recycled<T>,
+}
+
+/// Komando patch: see `Storage::recycle`.
+#[derive(Clone, Debug)]
+pub(crate) struct Recycled<T> {
+    fresh: Vec<Row<T>>,
+    used: Vec<Row<T>>,
+}
+
+impl<T> Default for Recycled<T> {
+    fn default() -> Self {
+        Self { fresh: Vec::new(), used: Vec::new() }
+    }
 }
 
 impl<T: PartialEq> PartialEq for Storage<T> {
@@ -67,6 +85,10 @@ impl<T: PartialEq> PartialEq for Storage<T> {
     }
 }
 
+/// Komando patch: rings smaller than this stay in the CPU's caches; their recycled rows are
+/// cleared in place.
+const RECYCLE_MIN_ROWS: usize = 4096;
+
 impl<T> Storage<T> {
     #[inline]
     pub fn with_capacity(visible_lines: usize, columns: usize) -> Storage<T>
@@ -77,7 +99,14 @@ impl<T> Storage<T> {
         let mut inner = Vec::with_capacity(visible_lines);
         inner.resize_with(visible_lines, || Row::new(columns));
 
-        Storage { inner, zero: 0, visible_lines, len: visible_lines, row_source: None }
+        Storage {
+            inner,
+            zero: 0,
+            visible_lines,
+            len: visible_lines,
+            row_source: None,
+            recycled: Recycled::default(),
+        }
     }
 
     /// Increase the number of lines in the buffer.
@@ -240,13 +269,55 @@ impl<T> Storage<T> {
 
     /// Komando patch: prefetch the row the next `rotate(-1)` brings to the bottom of the
     /// screen (see `Row::prefetch`). Not worth it while all rows fit in the CPU's caches
-    /// (a small Scrollback): there it would only cost the instructions.
+    /// (a small Scrollback): there it would only cost the instructions. While blank rows are
+    /// swapped in for recycled ones (`recycle`), the next blank row is loaded instead.
     #[inline]
     pub fn prefetch_next_recycled(&self) {
-        const MIN_ROWS: usize = 4096;
         let len = self.inner.len();
-        if len >= MIN_ROWS {
-            self.inner[(self.zero + len - 1) % len].prefetch();
+        if len >= RECYCLE_MIN_ROWS {
+            let next = self.recycled.fresh.last().unwrap_or(&self.inner[(self.zero + len - 1) % len]);
+            next.prefetch();
+        }
+    }
+
+    /// Komando patch: swap the row at `line`, just recycled from the top of a full history and
+    /// about to be cleared, for a blank one from the row source, which clears the recycled rows
+    /// on a thread of its own. The recycled row was last touched a whole history ago and is in
+    /// no CPU cache; clearing it here waited for main memory on every new line. With no blank
+    /// row to hand, the row stays and is cleared as before.
+    #[inline]
+    pub(crate) fn recycle(&mut self, line: Line, columns: usize) {
+        if self.inner.len() >= RECYCLE_MIN_ROWS && self.row_source.is_some() {
+            self.swap_recycled(line, columns);
+        }
+    }
+
+    /// Komando patch: the swap of `recycle`. Kept out of line, like `Row::prefetch`, so it
+    /// doesn't weigh on the inlining of the scroll it's called from.
+    #[inline(never)]
+    fn swap_recycled(&mut self, line: Line, columns: usize) {
+        // Blank rows from before a resize are of the old width: given back for new ones.
+        if self.recycled.fresh.last().is_none_or(|row| row.len() != columns) {
+            self.exchange(columns);
+        }
+        let Some(mut row) = self.recycled.fresh.pop() else { return };
+        let index = self.compute_index(line);
+        mem::swap(&mut self.inner[index], &mut row);
+        self.recycled.used.push(row);
+    }
+
+    /// Komando patch: hand the recycled rows to the row source for blank ones.
+    #[cold]
+    #[inline(never)]
+    fn exchange(&mut self, columns: usize) {
+        let Some((source, _)) = &self.row_source else { return };
+        let Recycled { fresh, used } = &mut self.recycled;
+        used.append(fresh);
+        source.exchange(columns, used, fresh);
+        // A source that keeps the rows it was given would have them pile up here.
+        used.clear();
+        if fresh.iter().any(|row| row.len() != columns) {
+            fresh.clear();
         }
     }
 
@@ -333,7 +404,7 @@ impl<T> IndexMut<Line> for Storage<T> {
 mod tests {
     use crate::grid::GridCell;
     use crate::grid::row::Row;
-    use crate::grid::storage::{MAX_CACHE_SIZE, Storage};
+    use crate::grid::storage::{MAX_CACHE_SIZE, Recycled, Storage};
     use crate::index::{Column, Line};
     use crate::term::cell::Flags;
 
@@ -421,6 +492,7 @@ mod tests {
             visible_lines: 3,
             len: 3,
             row_source: None,
+            recycled: Recycled::default(),
         };
 
         // Grow buffer.
@@ -433,6 +505,7 @@ mod tests {
             visible_lines: 4,
             len: 4,
             row_source: None,
+            recycled: Recycled::default(),
         };
         expected.inner.append(&mut vec![filled_row('\0'); MAX_CACHE_SIZE]);
 
@@ -464,6 +537,7 @@ mod tests {
             visible_lines: 3,
             len: 3,
             row_source: None,
+            recycled: Recycled::default(),
         };
 
         // Grow buffer.
@@ -476,6 +550,7 @@ mod tests {
             visible_lines: 4,
             len: 4,
             row_source: None,
+            recycled: Recycled::default(),
         };
         expected.inner.append(&mut vec![filled_row('\0'); MAX_CACHE_SIZE]);
 
@@ -504,6 +579,7 @@ mod tests {
             visible_lines: 3,
             len: 3,
             row_source: None,
+            recycled: Recycled::default(),
         };
 
         // Shrink buffer.
@@ -516,6 +592,7 @@ mod tests {
             visible_lines: 2,
             len: 2,
             row_source: None,
+            recycled: Recycled::default(),
         };
         assert_eq!(storage.visible_lines, expected.visible_lines);
         assert_eq!(storage.inner, expected.inner);
@@ -542,6 +619,7 @@ mod tests {
             visible_lines: 3,
             len: 3,
             row_source: None,
+            recycled: Recycled::default(),
         };
 
         // Shrink buffer.
@@ -554,6 +632,7 @@ mod tests {
             visible_lines: 2,
             len: 2,
             row_source: None,
+            recycled: Recycled::default(),
         };
         assert_eq!(storage.visible_lines, expected.visible_lines);
         assert_eq!(storage.inner, expected.inner);
@@ -593,6 +672,7 @@ mod tests {
             visible_lines: 6,
             len: 6,
             row_source: None,
+            recycled: Recycled::default(),
         };
 
         // Shrink buffer.
@@ -612,6 +692,7 @@ mod tests {
             visible_lines: 2,
             len: 2,
             row_source: None,
+            recycled: Recycled::default(),
         };
         assert_eq!(storage.visible_lines, expected.visible_lines);
         assert_eq!(storage.inner, expected.inner);
@@ -647,6 +728,7 @@ mod tests {
             visible_lines: 1,
             len: 2,
             row_source: None,
+            recycled: Recycled::default(),
         };
 
         // Truncate buffer.
@@ -659,6 +741,7 @@ mod tests {
             visible_lines: 1,
             len: 2,
             row_source: None,
+            recycled: Recycled::default(),
         };
         assert_eq!(storage.visible_lines, expected.visible_lines);
         assert_eq!(storage.inner, expected.inner);
@@ -684,6 +767,7 @@ mod tests {
             visible_lines: 1,
             len: 2,
             row_source: None,
+            recycled: Recycled::default(),
         };
 
         // Truncate buffer.
@@ -696,6 +780,7 @@ mod tests {
             visible_lines: 1,
             len: 2,
             row_source: None,
+            recycled: Recycled::default(),
         };
         assert_eq!(storage.visible_lines, expected.visible_lines);
         assert_eq!(storage.inner, expected.inner);
@@ -743,6 +828,7 @@ mod tests {
             visible_lines: 0,
             len: 6,
             row_source: None,
+            recycled: Recycled::default(),
         };
 
         // Shrink buffer.
@@ -762,6 +848,7 @@ mod tests {
             visible_lines: 0,
             len: 3,
             row_source: None,
+            recycled: Recycled::default(),
         };
         assert_eq!(storage.inner, shrinking_expected.inner);
         assert_eq!(storage.zero, shrinking_expected.zero);
@@ -784,6 +871,7 @@ mod tests {
             visible_lines: 0,
             len: 4,
             row_source: None,
+            recycled: Recycled::default(),
         };
 
         assert_eq!(storage.inner, growing_expected.inner);
@@ -807,6 +895,7 @@ mod tests {
             visible_lines: 0,
             len: 6,
             row_source: None,
+            recycled: Recycled::default(),
         };
 
         // Initialize additional lines.
@@ -825,7 +914,7 @@ mod tests {
         let expected_init_size = std::cmp::max(init_size, MAX_CACHE_SIZE);
         expected_inner.append(&mut vec![filled_row('\0'); expected_init_size]);
         let expected_storage =
-            Storage { inner: expected_inner, zero: 0, visible_lines: 0, len: 9, row_source: None };
+            Storage { inner: expected_inner, zero: 0, visible_lines: 0, len: 9, row_source: None, recycled: Recycled::default() };
 
         assert_eq!(storage.len, expected_storage.len);
         assert_eq!(storage.zero, expected_storage.zero);
@@ -840,6 +929,7 @@ mod tests {
             visible_lines: 0,
             len: 3,
             row_source: None,
+            recycled: Recycled::default(),
         };
 
         storage.rotate(2);

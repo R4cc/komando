@@ -565,6 +565,17 @@ fn throughput_parser_only() {
         }
         let secs = start.elapsed().as_secs_f64();
         eprintln!("scrollback {scrollback:>6}: {:.3} s = {:.1} MB/s", secs, data.len() as f64 / 1e6 / secs);
+        // The same again into the Scrollback the first pass filled, as a Session that has been
+        // printing for a while: every line reuses the oldest row.
+        if scrollback > 0 {
+            let start = Instant::now();
+            for chunk in &chunks {
+                output.feed(&term, &proxy, chunk);
+                proxy.clear_dirty();
+            }
+            let secs = start.elapsed().as_secs_f64();
+            eprintln!("  already full     : {:.3} s = {:.1} MB/s", secs, data.len() as f64 / 1e6 / secs);
+        }
     }
 
     // The same log lines with the message in other scripts, at a Scrollback of 10,000 lines.

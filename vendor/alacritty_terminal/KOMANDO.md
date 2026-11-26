@@ -62,6 +62,49 @@ alternating with the build without it:
 Over SSH (`throughput_coloured_log_lines_over_ssh`, 100,000 lines of Scrollback): 0.548 s
 before, 0.443 s after.
 
+## The change: recycled rows swapped for blank ones
+
+The prefetch hides only part of that wait: a recycled row's occupied cells are dozens of cache
+lines, more than a core keeps in flight, and a CPU profile of a full Scrollback still had
+`Row::prefetch` and `Row::reset` at a third of the parser's time. So once the ring holds at
+least 4,096 rows (the same bound as the prefetch), `Grid::scroll_up` swaps each row it
+recycles for a blank one from the row source (`Storage::recycle`) before clearing it, and the
+recycled rows go back to the source, which clears them on a thread of its own
+(`RowSource::exchange`). A blank row has no occupied cells, so the clearing that follows only
+reads its last cell, and the row was cleared recently enough to still be in a cache. The
+storage keeps the blank rows it was handed and the recycled rows to hand back (at most a
+batch of each), and asks the source again when it runs out. With no row source, or none ready,
+it clears the row in place as before, and while it has blank rows it prefetches the next one
+instead of the next recycled row.
+
+The swap is only a change of which allocation holds the row: a blank row is what `Row::reset`
+with a default cell leaves (every cell default, no occupied cells), and the clearing that
+follows gives it the cursor's background exactly as it would the recycled row. The storage
+refuses blank rows of another width (from before a resize) and gives them back. A source that
+hands over a row with content and no occupied cells would break this, so the trait asks for
+rows as `Row::reset` leaves them; Komando's `RowPool` clears them with `Row::reset`.
+
+The change touches `src/grid/mod.rs` (`RowSource::exchange`, with a default that hands over
+nothing, and a loop in `scroll_up`) and `src/grid/storage.rs` (`Recycled`, `recycle`,
+`swap_recycled`, `exchange`, and the prefetch choosing the next blank row). Only the check
+whether to swap is inlined into `scroll_up`; with the swap inlined too, output without
+Scrollback was about 13% slower in a build without LTO, although it never swaps.
+
+Measured with `throughput_parser_only` on Linux (4 cores, x86-64), release profile, medians of
+3 runs alternating with the build without it, MB/s:
+
+| Scrollback | Before | After |
+|---|---|---|
+| 100,000 lines, filling then full | 97.7 | 110.1 (1.13x) |
+| 100,000 lines, already full | 114.9 | 137.4 (1.20x) |
+| 10,000 lines, filling then full | 114.6 | 136.3 (1.19x) |
+| 10,000 lines, already full | 113.7 | 135.2 (1.19x) |
+| 10,000 lines, accented / Cyrillic / CJK | 109.7 / 101.4 / 102.7 | 136.0 / 116.4 / 119.9 |
+| 0 | 141.1 | 145.3 (unused) |
+
+Over SSH (`throughput_coloured_log_lines_over_ssh`, 100,000 lines of Scrollback, filling
+then full): 1.095 s before, 0.991 s after.
+
 ## Tests
 
 `src/term/komando_tests.rs` checks that `input_ascii` leaves a `Term` exactly as `input` does:
