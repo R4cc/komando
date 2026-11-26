@@ -343,6 +343,17 @@ pub(super) struct ProjectForm {
     unsaved: Unsaved,
 }
 
+/// The fields a host form and a project form both have, borrowed from the open one.
+struct SharedForm<'a> {
+    tab: &'a mut FormTab,
+    error: &'a mut Option<String>,
+    sign_in: &'a mut SignIn,
+    key_path: &'a Entity<InputState>,
+    jumps: &'a mut Vec<JumpRow>,
+    forwards: &'a mut Vec<ForwardRow>,
+    commands: &'a mut Vec<CommandRow>,
+}
+
 /// One Startup Command in a form's list: what it waits for (optional) and what it types.
 pub(super) struct CommandRow {
     /// Tells rows apart in element ids while rows are added and removed.
@@ -652,12 +663,8 @@ impl Workspace {
             // Typing answers the complaint: it goes until the next Save says otherwise.
             // The form shows what is typed elsewhere too (the jump host route, the rail's counts).
             InputEvent::Change => {
-                let error = match &mut this.overlay {
-                    Some(Overlay::HostForm(form)) => &mut form.error,
-                    Some(Overlay::ProjectForm(form)) => &mut form.error,
-                    _ => return,
-                };
-                error.take();
+                let Some(form) = this.shared_form() else { return };
+                form.error.take();
                 cx.notify();
             }
             _ => {}
@@ -713,6 +720,31 @@ impl Workspace {
         }
     }
 
+    /// What the open host or project form has in common with the other.
+    fn shared_form(&mut self) -> Option<SharedForm<'_>> {
+        match self.overlay.as_mut()? {
+            Overlay::HostForm(f) => Some(SharedForm {
+                tab: &mut f.tab,
+                error: &mut f.error,
+                sign_in: &mut f.sign_in,
+                key_path: &f.key_path,
+                jumps: &mut f.jumps,
+                forwards: &mut f.forwards,
+                commands: &mut f.commands,
+            }),
+            Overlay::ProjectForm(f) => Some(SharedForm {
+                tab: &mut f.tab,
+                error: &mut f.error,
+                sign_in: &mut f.sign_in,
+                key_path: &f.key_path,
+                jumps: &mut f.jumps,
+                forwards: &mut f.forwards,
+                commands: &mut f.commands,
+            }),
+            _ => None,
+        }
+    }
+
     /// Pick a private key file for the open form's key field.
     fn browse_key_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
@@ -725,19 +757,10 @@ impl Workspace {
             let Ok(Ok(Some(paths))) = picked.await else { return };
             let Some(path) = paths.into_iter().next() else { return };
             let _ = this.update_in(cx, |this, window, cx| {
-                let field = match this.overlay.as_mut() {
-                    Some(Overlay::HostForm(form)) => {
-                        form.sign_in = SignIn::KeyFile;
-                        form.error = None;
-                        form.key_path.clone()
-                    }
-                    Some(Overlay::ProjectForm(form)) => {
-                        form.sign_in = SignIn::KeyFile;
-                        form.error = None;
-                        form.key_path.clone()
-                    }
-                    _ => return,
-                };
+                let Some(form) = this.shared_form() else { return };
+                *form.sign_in = SignIn::KeyFile;
+                *form.error = None;
+                let field = form.key_path.clone();
                 field.update(cx, |f, cx| f.set_value(path.display().to_string(), window, cx));
                 cx.notify();
             });
@@ -844,10 +867,8 @@ impl Workspace {
     /// Turn to the page with the field a complaint is about, so it is in view beside it.
     fn show_failed_tab(&mut self, result: Result<(), FormError>) -> Result<(), String> {
         result.map_err(|(tab, message)| {
-            match (tab, self.overlay.as_mut()) {
-                (Some(tab), Some(Overlay::HostForm(form))) => form.tab = tab,
-                (Some(tab), Some(Overlay::ProjectForm(form))) => form.tab = tab,
-                _ => {}
+            if let (Some(tab), Some(form)) = (tab, self.shared_form()) {
+                *form.tab = tab;
             }
             message
         })
@@ -855,10 +876,8 @@ impl Workspace {
 
     /// Show `message` on the open host or project form.
     pub(super) fn show_form_error(&mut self, message: &str, cx: &mut Context<Self>) {
-        match self.overlay.as_mut() {
-            Some(Overlay::HostForm(form)) => form.error = Some(message.to_string()),
-            Some(Overlay::ProjectForm(form)) => form.error = Some(message.to_string()),
-            _ => {}
+        if let Some(form) = self.shared_form() {
+            *form.error = Some(message.to_string());
         }
         cx.notify();
     }
@@ -1440,19 +1459,10 @@ impl Workspace {
         }
     }
 
-    /// The open form's Jump Host rows.
-    fn jump_rows(&mut self) -> Option<&mut Vec<JumpRow>> {
-        match self.overlay.as_mut() {
-            Some(Overlay::HostForm(form)) => Some(&mut form.jumps),
-            Some(Overlay::ProjectForm(form)) => Some(&mut form.jumps),
-            _ => None,
-        }
-    }
-
     fn add_jump_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let row = self.jump_row(None, window, cx);
         let address = row.address.clone();
-        if let Some(rows) = self.jump_rows() {
+        if let Some(rows) = self.shared_form().map(|f| f.jumps) {
             rows.push(row);
             address.update(cx, |f, cx| f.focus(window, cx));
         }
@@ -1461,7 +1471,7 @@ impl Workspace {
 
     /// Change the row with `key`, if the form still has it.
     fn update_jump_row(&mut self, key: usize, change: impl FnOnce(&mut JumpRow)) {
-        if let Some(row) = self.jump_rows().and_then(|rows| rows.iter_mut().find(|r| r.key == key)) {
+        if let Some(row) = self.shared_form().map(|f| f.jumps).and_then(|rows| rows.iter_mut().find(|r| r.key == key)) {
             change(row);
         }
     }
@@ -1524,7 +1534,7 @@ impl Workspace {
                             icon_button((prefix, 101 + key * 4), "x", p)
                                 .aria_label(format!("Remove jump host {}", i + 1))
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                    if let Some(rows) = this.jump_rows() {
+                                    if let Some(rows) = this.shared_form().map(|f| f.jumps) {
                                         rows.retain(|r| r.key != key);
                                     }
                                     cx.notify();
@@ -1656,19 +1666,10 @@ impl Workspace {
         }
     }
 
-    /// The open form's Port Forward rows.
-    fn forward_rows(&mut self) -> Option<&mut Vec<ForwardRow>> {
-        match self.overlay.as_mut() {
-            Some(Overlay::HostForm(form)) => Some(&mut form.forwards),
-            Some(Overlay::ProjectForm(form)) => Some(&mut form.forwards),
-            _ => None,
-        }
-    }
-
     fn add_forward_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let row = self.forward_row(None, window, cx);
         let port = row.port.clone();
-        if let Some(rows) = self.forward_rows() {
+        if let Some(rows) = self.shared_form().map(|f| f.forwards) {
             rows.push(row);
             port.update(cx, |f, cx| f.focus(window, cx));
         }
@@ -1677,14 +1678,11 @@ impl Workspace {
 
     /// Change the row with `key`, if the form still has it.
     fn update_forward_row(&mut self, key: usize, change: impl FnOnce(&mut ForwardRow)) {
-        if let Some(row) = self.forward_rows().and_then(|rows| rows.iter_mut().find(|r| r.key == key)) {
+        let Some(form) = self.shared_form() else { return };
+        if let Some(row) = form.forwards.iter_mut().find(|r| r.key == key) {
             change(row);
         }
-        match self.overlay.as_mut() {
-            Some(Overlay::HostForm(form)) => form.error = None,
-            Some(Overlay::ProjectForm(form)) => form.error = None,
-            _ => {}
-        }
+        *form.error = None;
     }
 
     /// The Port Forwards of a form, one row each: which way, the port it listens on, where it
@@ -1806,7 +1804,7 @@ impl Workspace {
                             icon_button((prefix, 202 + key * 4), "x", p)
                                 .aria_label(format!("Remove port forward {n}"))
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                    if let Some(rows) = this.forward_rows() {
+                                    if let Some(rows) = this.shared_form().map(|f| f.forwards) {
                                         rows.retain(|r| r.key != key);
                                     }
                                     cx.notify();
@@ -1840,19 +1838,10 @@ impl Workspace {
         CommandRow { key: self.next_jump_row, wait_for, command }
     }
 
-    /// The open form's Startup Command rows.
-    fn command_rows(&mut self) -> Option<&mut Vec<CommandRow>> {
-        match self.overlay.as_mut() {
-            Some(Overlay::HostForm(form)) => Some(&mut form.commands),
-            Some(Overlay::ProjectForm(form)) => Some(&mut form.commands),
-            _ => None,
-        }
-    }
-
     fn add_command_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let row = self.command_row(None, window, cx);
         let command = row.command.clone();
-        if let Some(rows) = self.command_rows() {
+        if let Some(rows) = self.shared_form().map(|f| f.commands) {
             rows.push(row);
             command.update(cx, |f, cx| f.focus(window, cx));
         }
@@ -1861,7 +1850,7 @@ impl Workspace {
 
     /// Move the row with `key` one up (or down), if there is room.
     fn move_command_row(&mut self, key: usize, up: bool, cx: &mut Context<Self>) {
-        if let Some(rows) = self.command_rows()
+        if let Some(rows) = self.shared_form().map(|f| f.commands)
             && let Some(i) = rows.iter().position(|r| r.key == key)
         {
             let j = if up { i.checked_sub(1) } else { Some(i + 1).filter(|j| *j < rows.len()) };
@@ -1918,7 +1907,7 @@ impl Workspace {
                             icon_button((prefix, key * 3 + 2), "x", p)
                                 .aria_label(format!("Remove startup command {}", i + 1))
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                    if let Some(rows) = this.command_rows() {
+                                    if let Some(rows) = this.shared_form().map(|f| f.commands) {
                                         rows.retain(|r| r.key != key);
                                     }
                                     cx.notify();
