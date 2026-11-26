@@ -217,8 +217,17 @@ impl Workspace {
         }
         let name = new_input(current.unwrap_or_default(), "My rules", window, cx);
         let subscription = cx.subscribe_in(&name, window, |this, _, event: &InputEvent, window, cx| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
-                this.save_set(window, cx);
+            match event {
+                InputEvent::PressEnter { .. } => this.save_set(window, cx),
+                // Typing answers the complaint.
+                InputEvent::Change => {
+                    if let Some(form) = this.set_form()
+                        && form.error.take().is_some()
+                    {
+                        cx.notify();
+                    }
+                }
+                _ => {}
             }
         });
         name.update(cx, |f, cx| f.focus(window, cx));
@@ -676,9 +685,7 @@ fn form_dialog(
                 .flex()
                 .flex_col()
                 .gap(px(10.))
-                .when_some(error, |el, error| {
-                    el.child(div().id(SharedString::from(format!("{id}-error"))).role(gpui::Role::Alert).text_size(px(12.5)).text_color(p.danger).child(error))
-                })
+                .when_some(error, |el, error| el.child(super::forms::form_error(error, p)))
                 .child(
                     div()
                         .flex()

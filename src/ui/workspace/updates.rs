@@ -319,7 +319,7 @@ impl Workspace {
                 if opens_release_page() {
                     "Click to open the release page."
                 } else {
-                    "Click to update and restart. Open sessions will close."
+                    "Click to update and restart. Open sessions close."
                 },
                 Some(release),
             ),
@@ -332,7 +332,7 @@ impl Workspace {
             UpdateState::Ready(release) => (
                 format!("Komando {} is ready", release.version_text()),
                 "The download has been checked and installed.".into(),
-                "Click to restart Komando. Open sessions will close.",
+                "Click to restart Komando. Open sessions close.",
                 None,
             ),
             UpdateState::Failed(message) => {
@@ -397,7 +397,13 @@ impl Workspace {
                 format!("Komando {VERSION}"),
                 "Checking GitHub…".into(),
                 p.text_muted,
-                button("update-checking", "Checking…", ButtonKind::Secondary, p).opacity(0.6).into_any_element(),
+                // Not a live button while it works: no pointer, no hover.
+                button("update-checking", "Checking…", ButtonKind::Secondary, p)
+                    .opacity(0.6)
+                    .cursor_default()
+                    .hover(|s| s)
+                    .active(|s| s)
+                    .into_any_element(),
             ),
             UpdateState::UpToDate => (
                 format!("Komando {VERSION}"),
@@ -448,10 +454,7 @@ impl Workspace {
                     p.text_muted,
                     div()
                         .w(px(180.))
-                        .h(px(6.))
-                        .rounded_full()
-                        .bg(p.active)
-                        .child(div().h_full().rounded_full().bg(p.brand).w(gpui::relative(fraction)))
+                        .child(crate::ui::widgets::progress_bar("update-bar", Some(fraction), 6., p.active, p.brand, cx.reduce_motion()))
                         .into_any_element(),
                 )
             }

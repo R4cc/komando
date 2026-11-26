@@ -181,7 +181,10 @@ impl Workspace {
                 }
                 menu = menu
                     .separator()
-                    .item(menu_item("Edit host…", None, &ws, move |this, window, cx| this.open_edit_host(pa.clone(), ha.clone(), window, cx)))
+                    .item(
+                        menu_item("Edit host…", None, &ws, move |this, window, cx| this.open_edit_host(pa.clone(), ha.clone(), window, cx))
+                            .action(Box::new(nav::NavEditHost)),
+                    )
                     .item(menu_item("Duplicate host…", None, &ws, move |this, window, cx| {
                         this.duplicate_host(pd.clone(), hd.clone(), window, cx)
                     }))
@@ -194,7 +197,10 @@ impl Workspace {
                 }
                 menu = menu
                     .separator()
-                    .item(menu_item("Delete host…", Some("trash"), &ws, move |this, _, cx| this.confirm_delete_host(hc.clone(), cx)));
+                    .item(
+                        menu_item("Delete host…", Some("trash"), &ws, move |this, _, cx| this.confirm_delete_host(hc.clone(), cx))
+                            .action(Box::new(nav::NavDeleteHost)),
+                    );
             }
             // In an elevated window every Session is elevated already.
             // Windows only: elsewhere there is no administrator mode to start a shell in.
@@ -722,7 +728,7 @@ impl Workspace {
                     this.activate(id, window, cx);
                     this.reconnect(id, window, cx);
                 }))
-                .item(menu_item("Close", None, &ws, move |this, window, cx| this.end_session(id, EndRequest::CloseNow, window, cx)).action(Box::new(nav::NavDelete)))
+                .item(menu_item("Close session", None, &ws, move |this, window, cx| this.end_session(id, EndRequest::CloseNow, window, cx)).action(Box::new(nav::NavDelete)))
             } else {
                 live_session_items(menu, id, &ws)
             };

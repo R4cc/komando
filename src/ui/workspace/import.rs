@@ -260,7 +260,7 @@ impl Workspace {
             Source::ProjectFile => selection.found.groups.first().map(|g| g.name.clone()).unwrap_or_default(),
         };
         if let Err(err) = self.commit_library(library) {
-            self.show_toast(format!("Nothing was imported. {err}"), cx);
+            self.show_toast(format!("Nothing was imported: {err:#}"), cx);
             return;
         }
         self.show_toast(format!("Imported {} from {from}", hosts_label(applied.hosts)), cx);
@@ -311,7 +311,7 @@ impl Workspace {
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_import(cx)))
                     .into_any_element(),
                 button("import-next", format!("Review {}", hosts_label(picked)), ButtonKind::Primary, p)
-                    .when(picked == 0, |el| el.opacity(0.5).cursor_default())
+                    .when(picked == 0, |el| el.opacity(0.5).cursor_default().hover(|s| s).active(|s| s))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.import_step(true, cx)))
                     .into_any_element(),
             ]

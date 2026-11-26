@@ -231,20 +231,28 @@ impl Workspace {
             Step::More => self.tour_more(p, cx),
         };
 
-        // One dot per step; the current one is a longer bar. A click goes to that step.
-        let dots = div().flex_1().flex().justify_center().items_center().gap(px(6.)).children((0..count).map(|i| {
+        // One dot per step; the current one is a longer bar. A click goes to that step. Each dot
+        // sits in a larger invisible target, which also spaces the dots 6px apart.
+        let dots = div().flex_1().flex().justify_center().items_center().children((0..count).map(|i| {
             let current = i == tour.step;
             div()
                 .id(("tour-dot", i))
+                .group("tour-dot")
                 .role(gpui::Role::Button)
                 .aria_label(format!("Step {}: {}", i + 1, Step::ALL[i].title()))
-                .h(px(6.))
-                .w(px(if current { 20. } else { 6. }))
+                .px(px(3.))
+                .py(px(9.))
                 .rounded_full()
                 .cursor_pointer()
-                .bg(if current { p.brand } else if i < tour.step { p.brand.opacity(0.45) } else { p.border })
-                .hover(|s| s.opacity(0.8))
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.tour_go(i, window, cx)))
+                .child(
+                    div()
+                        .h(px(6.))
+                        .w(px(if current { 20. } else { 6. }))
+                        .rounded_full()
+                        .bg(if current { p.brand } else if i < tour.step { p.brand.opacity(0.45) } else { p.border })
+                        .group_hover("tour-dot", |s| s.opacity(0.8)),
+                )
         }));
 
         let creating = step == Step::Vault && !self.vault_exists;

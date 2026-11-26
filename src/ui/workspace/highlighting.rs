@@ -62,7 +62,7 @@ impl Workspace {
         let Some(saved) = library.hosts.iter_mut().find(|h| &h.id == host) else { return };
         saved.clipboard = Some(allow);
         if let Err(err) = self.commit_library(library) {
-            self.show_toast(format!("Could not save the choice. {err}"), cx);
+            self.show_toast(format!("Could not save the choice: {err:#}"), cx);
         }
         self.refresh_session_clipboard(cx);
     }

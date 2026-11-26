@@ -213,11 +213,15 @@ impl TerminalView {
         let route = self.route.as_ref()?;
         let p = cx.global::<Appearance>().app;
         let hop = route.current();
+        // The same pair, named and drawn the same, as the notice when a direct connection fails.
         let actions = vec![
-            button("route-edit", "Edit host", ButtonKind::Secondary, p)
+            button("route-edit", "Edit host", ButtonKind::Ghost, p)
+                .border_1()
+                .border_color(p.border.blend(p.text.opacity(0.18)))
+                .text_color(p.text)
                 .on_click(cx.listener(move |_, _, _, cx| cx.emit(TerminalEvent::EditHost { hop })))
                 .into_any_element(),
-            button("route-retry", "Retry", ButtonKind::Primary, p)
+            button("route-retry", "Reconnect", ButtonKind::Primary, p)
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(TerminalEvent::Reconnect)))
                 .into_any_element(),
         ];

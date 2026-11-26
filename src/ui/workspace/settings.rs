@@ -216,10 +216,17 @@ impl Workspace {
             let program = cx.new(|cx| InputState::new(window, cx).placeholder(program_hint));
             let args = cx.new(|cx| InputState::new(window, cx).placeholder(args_hint));
             for input in [&name, &program, &args] {
-                let sub = cx.subscribe_in(input, window, |this, _, event: &InputEvent, window, cx| {
-                    if matches!(event, InputEvent::PressEnter { .. }) {
-                        this.save_shell(window, cx);
+                let sub = cx.subscribe_in(input, window, |this, _, event: &InputEvent, window, cx| match event {
+                    InputEvent::PressEnter { .. } => this.save_shell(window, cx),
+                    // Typing answers the complaint, as in the host form.
+                    InputEvent::Change => {
+                        if let Some(editor) = this.shell_editor.as_mut()
+                            && editor.error.take().is_some()
+                        {
+                            cx.notify();
+                        }
                     }
+                    _ => {}
                 });
                 self._subscriptions.push(sub);
             }
@@ -1445,12 +1452,12 @@ impl Workspace {
                         n => format!("{n} servers."),
                     },
                     button("rdp-forget-certificates", "Forget all", ButtonKind::Secondary, p)
-                        .when(trusted == 0, |el| el.opacity(0.5))
+                        .when(trusted == 0, |el| el.opacity(0.5).cursor_default().hover(|s| s).active(|s| s))
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             if trusted > 0 {
                                 match std::fs::remove_file(this.data_dir.join(crate::desktop::trust::FILE)) {
                                     Ok(()) => this.show_toast("Trusted RDP certificates forgotten.", cx),
-                                    Err(err) => this.show_toast(format!("Could not forget certificates: {err}"), cx),
+                                    Err(err) => this.show_toast(format!("Could not forget the certificates: {err}"), cx),
                                 }
                             }
                         }))
@@ -2046,9 +2053,7 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(10.))
-                    .when_some(editor.error.clone(), |el, error| {
-                        el.child(div().id("shell-form-error").role(gpui::Role::Alert).text_size(px(12.5)).text_color(p.danger).child(error))
-                    })
+                    .when_some(editor.error.clone(), |el, error| el.child(super::forms::form_error(error, p)))
                     .child(
                         div()
                             .flex()

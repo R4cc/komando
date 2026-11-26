@@ -601,7 +601,7 @@ impl DesktopView {
     }
 
     fn answer_sign_in(&mut self, submit: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ActivePrompt::SignIn { user, password, remember, reply, .. }) = self.prompt.as_mut() else { return };
+        let Some(ActivePrompt::SignIn { user, password, remember, error, reply }) = self.prompt.as_mut() else { return };
         let answer = SignIn {
             user: user.as_ref().map(|u| u.read(cx).value().trim().to_string()),
             password: Zeroizing::new(password.read(cx).value().to_string()),
@@ -611,6 +611,8 @@ impl DesktopView {
             if let Some(user) = user {
                 user.update(cx, |state, cx| state.focus(window, cx));
             }
+            *error = Some("Enter a user name.".into());
+            cx.notify();
             return;
         }
         if let Some(reply) = reply.take() {

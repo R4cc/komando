@@ -146,8 +146,12 @@ impl Workspace {
         }
     }
 
+    /// A short note in the corner. It stays long enough to read: four seconds, longer for a
+    /// long message such as an error with its cause.
     pub(super) fn show_toast(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.show_toast_for(message, Duration::from_secs(4), cx);
+        let message = message.into();
+        let millis = (2500 + 60 * message.chars().count() as u64).clamp(4000, 10_000);
+        self.show_toast_for(message, Duration::from_millis(millis), cx);
     }
 
     /// Save `library` as the user's Hosts and Projects, unless their file couldn't be read or

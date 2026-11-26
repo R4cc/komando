@@ -197,7 +197,12 @@ impl Workspace {
         let Some(entry) = self.history_panel().and_then(|p| p.entries.get(index)) else { return };
         let command = entry.parts().1.to_string();
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(command.clone()));
-        self.show_toast(format!("Copied {command}"), cx);
+        // A long or multi-line command is named by its start, so the note stays one short line.
+        let mut shown: String = command.lines().next().unwrap_or_default().chars().take(60).collect();
+        if shown.len() < command.trim_end().len() {
+            shown.push('…');
+        }
+        self.show_toast(format!("Copied {shown}"), cx);
     }
 
     pub(super) fn render_history(&self, panel: &HistoryPanel, p: AppPalette, cx: &mut Context<Self>) -> AnyElement {
@@ -289,7 +294,7 @@ impl Workspace {
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_history_text(cx))),
                         )
                         .child(
-                            icon_text_button("history-copy-file", "file-text", "Copy as file", ButtonKind::Primary, p)
+                            icon_text_button("history-copy-file", "file-text", "Copy as .txt", ButtonKind::Primary, p)
                                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_history_file(cx))),
                         )
                     }),

@@ -64,8 +64,17 @@ impl Workspace {
         let confirm = cx.new(|cx| InputState::new(window, cx).masked(true).placeholder("Repeat master password"));
         for input in [&password, &confirm] {
             let sub = cx.subscribe_in(input, window, |this, _, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    this.submit_unlock(window, cx);
+                match event {
+                    InputEvent::PressEnter { .. } => this.submit_unlock(window, cx),
+                    // Typing again answers "wrong password".
+                    InputEvent::Change => {
+                        if let Some(state) = this.unlock.as_mut()
+                            && state.error.take().is_some()
+                        {
+                            cx.notify();
+                        }
+                    }
+                    _ => {}
                 }
             });
             self._subscriptions.push(sub);

@@ -297,7 +297,7 @@ impl Workspace {
         };
         let credential_id = match result {
             Ok(id) => id,
-            Err(err) => return self.show_toast(format!("Could not save: {err}"), cx),
+            Err(err) => return self.show_toast(format!("Could not save the password: {err:#}"), cx),
         };
         let before = self.library.clone();
         if let Some(remote) = self.library.hosts[index].desktop_mut(protocol) {

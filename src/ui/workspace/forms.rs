@@ -16,7 +16,7 @@ use super::{FIRST_PROJECT_COLOR, FIRST_PROJECT_NAME, Overlay, Workspace, field_l
 use crate::model::{AgentUse, CredentialId, Desktop, ForwardKind, Host, Inherited, JumpHost, Library, PortForward, Project, Protocol, StartupCommand};
 use crate::session::agent::{self, Agent};
 use crate::theme::{AppPalette, project_color};
-use crate::ui::widgets::{ButtonKind, badge, button, icon_button, icon_el, icon_text_button};
+use crate::ui::widgets::{ButtonKind, IconButtonSize, badge, button, icon_button, icon_button_sized, icon_el, icon_text_button};
 use crate::vault::{Credential, Secret};
 
 /// Where a Host takes a setting from, as picked in the host form.
@@ -548,7 +548,7 @@ impl Workspace {
         let Some(copy) = library.duplicate_host(&project_id, &host_id) else { return };
         match self.commit_library(library) {
             Ok(()) => self.open_edit_host(project_id, copy, window, cx),
-            Err(err) => self.show_toast(format!("Could not duplicate. {err}"), cx),
+            Err(err) => self.show_toast(format!("Could not duplicate: {err:#}"), cx),
         }
         cx.notify();
     }
@@ -1525,6 +1525,7 @@ impl Workspace {
                         .child(
                             icon_button((prefix, 101 + key * 4), "x", p)
                                 .aria_label(format!("Remove jump host {}", i + 1))
+                                .tooltip(|window, cx| Tooltip::new("Remove jump host").build(window, cx))
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                     if let Some(rows) = this.shared_form().map(|f| f.jumps) {
                                         rows.retain(|r| r.key != key);
@@ -1795,6 +1796,7 @@ impl Workspace {
                         .child(
                             icon_button((prefix, 202 + key * 4), "x", p)
                                 .aria_label(format!("Remove port forward {n}"))
+                                .tooltip(|window, cx| Tooltip::new("Remove port forward").build(window, cx))
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                     if let Some(rows) = this.shared_form().map(|f| f.forwards) {
                                         rows.retain(|r| r.key != key);
@@ -1884,20 +1886,19 @@ impl Workspace {
                         .items_center()
                         .gap(px(2.))
                         .child(
-                            icon_button((prefix, key * 3), "arrow-up", p)
-                                .aria_label(format!("Move startup command {} up", i + 1))
-                                .when(i == 0, |el| el.opacity(0.35))
+                            icon_button_sized((prefix, key * 3), "arrow-up", format!("Move startup command {} up", i + 1), IconButtonSize::Regular, i > 0, p)
+                                .when(i > 0, |el| el.tooltip(|window, cx| Tooltip::new("Move up").build(window, cx)))
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.move_command_row(key, true, cx))),
                         )
                         .child(
-                            icon_button((prefix, key * 3 + 1), "arrow-down", p)
-                                .aria_label(format!("Move startup command {} down", i + 1))
-                                .when(i + 1 == count, |el| el.opacity(0.35))
+                            icon_button_sized((prefix, key * 3 + 1), "arrow-down", format!("Move startup command {} down", i + 1), IconButtonSize::Regular, i + 1 < count, p)
+                                .when(i + 1 < count, |el| el.tooltip(|window, cx| Tooltip::new("Move down").build(window, cx)))
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.move_command_row(key, false, cx))),
                         )
                         .child(
                             icon_button((prefix, key * 3 + 2), "x", p)
                                 .aria_label(format!("Remove startup command {}", i + 1))
+                                .tooltip(|window, cx| Tooltip::new("Remove startup command").build(window, cx))
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                     if let Some(rows) = this.shared_form().map(|f| f.commands) {
                                         rows.retain(|r| r.key != key);
@@ -2559,7 +2560,7 @@ fn hint_text(text: String, p: AppPalette) -> AnyElement {
     div().text_size(px(12.)).line_height(px(17.)).text_color(p.text_muted).child(text).into_any_element()
 }
 
-fn form_error(message: String, p: AppPalette) -> AnyElement {
+pub(super) fn form_error(message: String, p: AppPalette) -> AnyElement {
     div()
         .id("form-error")
         .role(gpui::Role::Alert)

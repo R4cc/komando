@@ -877,7 +877,7 @@ impl FileBrowser {
                     this.dialog = Some(Dialog::Conflict { uploads: paths, dir, existing });
                     cx.notify();
                 }
-                Err(err) => this.notify_error(format!("Can't upload to {dir}: {}", err.message), cx),
+                Err(err) => this.notify_error(explain(&format!("upload to {dir}"), &err), cx),
             });
         })
         .detach();
@@ -1792,7 +1792,8 @@ impl FileBrowser {
             .child(
                 tool_button("sftp-new-folder", "folder-plus", "New folder (Ctrl+Shift+N)", can_create, p).on_click(cx.listener(
                     move |this, _: &ClickEvent, window, cx| {
-                        if can_create {
+                        // Not allowed here: say why, as Upload does.
+                        if can_create || this.dir_access.write == Allowed::No {
                             this.start_new_folder(window, cx)
                         }
                     },
@@ -2511,6 +2512,7 @@ impl FileBrowser {
                 .child(
                     control("notice-close", "Dismiss", true, p)
                         .size(px(21.))
+                        .tooltip(|window, cx| Tooltip::new("Dismiss").build(window, cx))
                         .flex()
                         .flex_shrink_0()
                         .items_center()

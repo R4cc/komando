@@ -146,7 +146,7 @@ impl Workspace {
             let mut library = self.library.clone();
             if library.reorder_project(&dragged.id, index) {
                 if let Err(err) = self.commit_library(library) {
-                    self.show_toast(format!("Could not reorder projects. {err}"), cx);
+                    self.show_toast(format!("Could not reorder projects: {err:#}"), cx);
                 }
             }
         }
@@ -443,7 +443,7 @@ impl Workspace {
         }
         if let Err(err) = self.commit_library(library) {
             let name = self.library.host(host_id).map(|h| h.name.clone()).unwrap_or_default();
-            self.show_toast(format!("Could not move {name}. {err}"), cx);
+            self.show_toast(format!("Could not move {name}: {err:#}"), cx);
         }
     }
 
@@ -478,7 +478,7 @@ impl Workspace {
             return;
         }
         if let Err(err) = self.commit_library(library) {
-            self.show_toast(format!("Could not move {name}. {err}"), cx);
+            self.show_toast(format!("Could not move {name}: {err:#}"), cx);
             return;
         }
         let old = ItemKey::Host { project: from.to_string(), host: host_id.to_string() };

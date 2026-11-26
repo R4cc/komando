@@ -18,8 +18,33 @@ All notable changes to Komando are listed here. The format follows
   updates.
 - Sessions signed in with a password take in fast output the same way as sessions signed in
   with a key.
+- A host's menu shows Shift+F2 beside Edit host and Shift+Delete beside Delete host. A dropped
+  session's menu says "Close session", as a connected one's does.
+- When a connection through jump hosts fails, its page offers Reconnect and Edit host, named
+  and drawn like the notice under a failed direct connection.
+- Errors in the highlight rule, highlight set and local shell forms look like those in the
+  host form, and go away once you type. So does "Wrong master password" when you unlock the
+  vault.
+- Notes in the corner of the window stay up longer when they are long, such as an error and
+  its cause, and screen readers read them out. Error notes all read "Could not …: reason".
+- The remove and reorder buttons for jump hosts, port forwards and startup commands have
+  tooltips, and an arrow that can't move a command any further shows as unavailable.
+- The command history's "Copy as file" is now "Copy as .txt", as in the terminal's menu, and
+  copying a long command names only its start in the note.
+- The update download in Settings → About shows the same progress bar as transfers, and
+  "Checking…" no longer looks like a button you can click.
+- The welcome tour's step dots are easier to click.
+- The SFTP button above a session can be reached with Tab, and the search bar's buttons are
+  named for screen readers.
 
 ### Fixed
+
+- New folder in a folder you can't write to now says why, as Upload does, instead of doing
+  nothing.
+- Signing in to a remote desktop with the user name left empty now says "Enter a user name."
+  instead of doing nothing.
+- Upload errors in the file browser are worded like its other errors, and its notices' close
+  button has a tooltip.
 
 - Signing in to a server that offers keyboard-interactive sign-in but asks nothing (as
   OpenSSH does without PAM) now goes on to the password instead of failing.

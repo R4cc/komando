@@ -1021,11 +1021,16 @@ impl Render for Workspace {
 
         let toast = self.toast.as_ref().map(|(msg, _)| {
             div()
+                .id("toast")
+                // Read out when it appears, as the file browser's notices are.
+                .role(gpui::Role::Status)
+                .aria_label(msg.clone())
                 .absolute()
                 .bottom(px(20.))
                 .right(px(20.))
                 .px(px(14.))
                 .py(px(10.))
+                .max_w(px(480.))
                 .rounded(p.corner(10.))
                 .bg(p.surface)
                 .border_1()

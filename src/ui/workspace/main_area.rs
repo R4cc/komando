@@ -119,6 +119,11 @@ impl Workspace {
                     el.child(
                         div()
                             .id("sftp-toggle")
+                            // A Tab stop like the strip's other buttons.
+                            .role(gpui::Role::Button)
+                            .aria_label(if sftp_open { "Close file browser" } else { "Browse files over SFTP" })
+                            .aria_expanded(sftp_open)
+                            .when(sftp_enabled, |el| el.tab_index(0).focus_visible(move |s| crate::ui::widgets::focus_outline(s, p.focus)))
                             .h(px(26.))
                             .px(px(8.))
                             .flex()

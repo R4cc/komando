@@ -519,6 +519,8 @@ impl TerminalView {
 fn tool(id: &'static str, icon: &str, tip: &'static str, enabled: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(tip)
         .size(px(26.))
         .flex()
         .flex_shrink_0()
@@ -534,6 +536,9 @@ fn tool(id: &'static str, icon: &str, tip: &'static str, enabled: bool, p: AppPa
 fn toggle(id: &'static str, icon: &str, tip: &'static str, on: bool, p: AppPalette) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(gpui::Role::CheckBox)
+        .aria_label(tip)
+        .aria_toggled(if on { gpui::Toggled::True } else { gpui::Toggled::False })
         .size(px(26.))
         .flex()
         .flex_shrink_0()
