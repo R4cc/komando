@@ -40,6 +40,8 @@ impl Workspace {
             main.map(|s| s.status().clone())
         };
         let live = matches!(status, Some(Status::Connected | Status::Connecting));
+        // Failed: the row's own Session, or for a group with none live, any of its Sessions.
+        let failed = !live && main.map_or(grouped && sessions.iter().any(|s| s.failed()), |main| main.failed());
         let busy = !holds_active && !beside
             && if grouped { sessions.iter().any(|s| self.sessions.busy_out_of_sight(s)) } else { main.is_some_and(|s| self.sessions.busy_out_of_sight(s)) };
         // With the Sessions listed below, the active one is marked there instead.
@@ -49,7 +51,7 @@ impl Workspace {
         let remembered = self.sessions.split();
         let partner = |s: &SessionEntry| remembered.and_then(|split| split.other(s.id()));
         let linked = if expanded { main.and_then(partner) } else { sessions.iter().find_map(|s| partner(s)) };
-        ItemState { sessions, listed, grouped, expanded, shown, main, beside, linked, status, live, busy, active }
+        ItemState { sessions, listed, grouped, expanded, shown, main, beside, linked, status, live, busy, failed, active }
     }
 
     /// The menu of an item's row: its right-click menu, and the one its ⋯ button and
@@ -219,7 +221,7 @@ impl Workspace {
     /// and each Session gets a card under it, with its own close button.
     pub(super) fn render_item(&self, item: &SidebarItem, color: Hsla, indent: f32, p: AppPalette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let key = item.key();
-        let ItemState { listed, grouped, expanded, main, beside, linked, status, live, busy, active, .. } = self.item_state(&key);
+        let ItemState { listed, grouped, expanded, main, beside, linked, status, live, busy, failed, active, .. } = self.item_state(&key);
         let icon = item.icon();
         let icon_size = if matches!(item, SidebarItem::Shell { .. }) { 16. } else { 15. };
         let icon_color = item.icon_color(&icon, if active || live { color } else { p.text_faint }, p);
@@ -374,7 +376,7 @@ impl Workspace {
                                     .child(
                                         div()
                                             .when(hover_close.is_some(), |el| el.group_hover("item-row", |s| s.invisible()))
-                                            .child(status_indicator(status.as_ref(), busy, p)),
+                                            .child(status_indicator(status.as_ref(), busy, failed, p)),
                                     )
                                     .when_some(hover_close, |el, id| {
                                         let tip = close_tip.clone();
@@ -495,11 +497,14 @@ impl Workspace {
     ) -> AnyElement {
         // The tree line drops from the middle of the item's icon and branches off to each row.
         let guide = indent + 7.;
+        // Light themes' sidebar borders sit too close to the sidebar's own colour for a 1px line
+        // to show: those take the muted text colour, faded.
+        let line = if p.dark { p.border } else { p.text_muted.opacity(0.4) };
         let branch = |row: AnyElement| {
             div()
                 .relative()
                 .pl(px(SESSION_BRANCH))
-                .child(div().absolute().left_0().top(px(SESSION_ROW_HEIGHT / 2.)).w(px(SESSION_BRANCH)).h(px(1.)).bg(p.border))
+                .child(div().absolute().left_0().top(px(SESSION_ROW_HEIGHT / 2.)).w(px(SESSION_BRANCH)).h(px(1.)).bg(line))
                 .child(row)
         };
         div()
@@ -512,7 +517,7 @@ impl Workspace {
             .flex_col()
             .gap(px(4.))
             // Up to the item's icon, and down to the last branch.
-            .child(div().absolute().left_0().top(px(-6.)).bottom(px(4. + SESSION_ROW_HEIGHT / 2.)).w(px(1.)).bg(p.border))
+            .child(div().absolute().left_0().top(px(-6.)).bottom(px(4. + SESSION_ROW_HEIGHT / 2.)).w(px(1.)).bg(line))
             .children(listed.iter().map(|session| branch(self.render_session_row(item, session, color, p, cx))))
             .into_any_element()
     }
@@ -532,11 +537,7 @@ impl Workspace {
         let live = session.is_live();
         let busy = self.sessions.busy_out_of_sight(session);
         let own_window = session.own_window();
-        let port = match session.kind() {
-            SessionKind::Desktop { host_id, protocol } => self.library.host(host_id).and_then(|h| h.desktop(*protocol)).map(|d| d.port),
-            _ => None,
-        };
-        let (label, title) = session_row_text(session, port);
+        let (label, title) = self.session_row_text(session);
         let session_menu = self.session_menu(id, cx);
         // What the Session is: a Host's terminal or desktop by kind, a shell by its own icon.
         let icon = match (session.kind(), item) {
@@ -582,9 +583,7 @@ impl Workspace {
             Status::Connected if busy => Some(spinner(SharedString::from(format!("row-busy-{id}")), 10., p.success)),
             Status::Connected => None,
             Status::Connecting => Some(status_dot(p.warning).into_any_element()),
-            Status::Disconnected(_) => {
-                Some(div().size(px(7.)).rounded_full().border_1().border_color(p.text_faint).into_any_element())
-            }
+            Status::Disconnected(_) => Some(status_indicator(Some(session.status()), false, session.failed(), p)),
         };
         let tooltip_text = title.clone();
         div()
@@ -651,6 +650,30 @@ impl Workspace {
             .when(focused, |el| el.child(focus_ring(p.corner(8.), p)))
             .context_menu(session_menu)
             .into_any_element()
+    }
+
+    /// What a Session's row in the sidebar says, and its tooltip (see `session_row_text`).
+    pub(super) fn session_row_text(&self, session: &SessionEntry) -> (SharedString, SharedString) {
+        let port = match session.kind() {
+            SessionKind::Desktop { host_id, protocol } => self.library.host(host_id).and_then(|h| h.desktop(*protocol)).map(|d| d.port),
+            _ => None,
+        };
+        session_row_text(session, port)
+    }
+
+    /// The active Session's name in the title bar: its Host (or shell) and, when it has a row of
+    /// its own in the sidebar, that row's label, so the two read the same ("web01 · SSH —
+    /// Session 2"). Otherwise the Host's row stands for it, and the title is that row's name.
+    pub(super) fn session_title(&self, session: &SessionEntry) -> SharedString {
+        let listed = self.sessions.listed(session.item()).iter().any(|s| s.id() == session.id());
+        let item = match session.kind() {
+            SessionKind::Ssh { host_id } | SessionKind::Desktop { host_id, .. } => self.library.host(host_id).map(|h| h.name.clone()),
+            SessionKind::Local { shell } => Some(shell.name.clone()),
+        };
+        match item {
+            Some(item) if listed => format!("{item} · {}", self.session_row_text(session).0).into(),
+            _ => self.sessions.display_name(session),
+        }
     }
 
     /// The link on a sidebar row whose Session is in the remembered split, shown or not: the

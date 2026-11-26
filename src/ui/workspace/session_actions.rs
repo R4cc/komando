@@ -961,9 +961,9 @@ impl Workspace {
         match entry.ui.view.clone() {
             SessionView::Terminal(view) => view.update(cx, |v, cx| {
                 v.close();
-                v.set_status(Status::Disconnected("Session closed.".into()), cx);
+                v.set_status(Status::Disconnected(crate::session::CLOSED_BY_USER.into()), cx);
             }),
-            SessionView::Desktop(view) => view.update(cx, |v, cx| v.end("Session closed.", cx)),
+            SessionView::Desktop(view) => view.update(cx, |v, cx| v.end(crate::session::CLOSED_BY_USER, cx)),
         }
         self.focus_active(window, cx);
         cx.notify();

@@ -6,12 +6,25 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- When a session can't connect, its notice has a Reconnect button, and its dot in the sidebar
+  turns into a red ring. Hover over the ring to see why it failed.
+
 ### Changed
 
 - A host's open sessions are listed under it in the sidebar as compact rows, one per line,
   joined to the host by tree lines. Each row shows what the session is, such as
   "SSH — Session 2" or "VNC — Display 1", and has its own × to close it. The session you're
   looking at is outlined in the accent colour, and the rows stay in the order you opened them.
+- The title bar names a session the same way its row in the sidebar does, such as
+  "web01 · SSH — Session 2".
+- The minimap stays empty until there is output to scroll back through.
+- The lines joining a host's sessions to it are easier to see in light themes.
+
+### Fixed
+
+- The VNC and RDP label in a remote desktop's toolbar was unreadable in some light themes.
 
 ## [0.9.0] - 2026-11-25
 

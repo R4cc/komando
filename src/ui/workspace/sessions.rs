@@ -203,6 +203,8 @@ pub(super) struct Entry<P> {
     status: Status,
     /// Output is streaming in (a command at work), copied here like `status`.
     busy: bool,
+    /// The latest attempt to connect got through. Until it does, ending means it failed.
+    reached: bool,
     /// A Remote Desktop dragged out into a window of its own.
     own_window: bool,
     pub ui: P,
@@ -260,6 +262,12 @@ impl<P> Entry<P> {
     pub fn is_live(&self) -> bool {
         !matches!(self.status, Status::Disconnected(_))
     }
+
+    /// Its latest attempt to connect failed (timed out, refused, turned away) rather than
+    /// ending after it connected or being closed by the user.
+    pub fn failed(&self) -> bool {
+        matches!(&self.status, Status::Disconnected(reason) if !self.reached && reason != crate::session::CLOSED_BY_USER)
+    }
 }
 
 impl<P> Default for Sessions<P> {
@@ -300,6 +308,7 @@ impl<P> Sessions<P> {
             number,
             name: None,
             status: Status::Connecting,
+            reached: false,
             busy: false,
             own_window: false,
             ui,
@@ -415,6 +424,11 @@ impl<P> Sessions<P> {
     pub fn set_status(&mut self, id: usize, status: Status) -> bool {
         let Some(entry) = self.get_mut(id) else { return false };
         let changed = entry.status != status;
+        match status {
+            Status::Connecting => entry.reached = false,
+            Status::Connected => entry.reached = true,
+            Status::Disconnected(_) => {}
+        }
         entry.status = status;
         changed
     }
@@ -1410,6 +1424,23 @@ mod tests {
         let second = open(&mut sessions, &web, ssh("web01"));
         sessions.activate(second);
         assert_eq!(sessions.item_session(&web), Some(second));
+    }
+
+    #[test]
+    fn a_session_failed_when_it_ends_before_connecting() {
+        let mut sessions = Sessions::default();
+        let id = open(&mut sessions, &host("web01"), ssh("web01"));
+        let failed = |sessions: &Sessions<()>| sessions.get(id).unwrap().failed();
+        sessions.set_status(id, Status::Disconnected("Timed out connecting to 10.0.0.1:22.".into()));
+        assert!(failed(&sessions), "timed out before connecting");
+        sessions.set_status(id, Status::Connecting);
+        assert!(!failed(&sessions), "trying again");
+        sessions.set_status(id, Status::Connected);
+        sessions.set_status(id, Status::Disconnected("Connection lost".into()));
+        assert!(!failed(&sessions), "ended after it connected");
+        sessions.set_status(id, Status::Connecting);
+        sessions.set_status(id, Status::Disconnected(crate::session::CLOSED_BY_USER.into()));
+        assert!(!failed(&sessions), "closed by the user while connecting");
     }
 
     #[test]

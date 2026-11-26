@@ -458,7 +458,7 @@ impl TerminalView {
         )
     }
 
-    pub(super) fn render_disconnected(&self, cx: &Context<Self>) -> Option<gpui::AnyElement> {
+    pub(super) fn render_disconnected(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let Status::Disconnected(reason) = &self.status else { return None };
         // The route page shows where and why the connection failed; the output itself says
         // that a connected SSH Session ended (see `ssh::ConnectLog::ended`).
@@ -466,6 +466,8 @@ impl TerminalView {
             return None;
         }
         let p = cx.global::<Appearance>().app;
+        // It never connected: a failure, marked in red like its row in the sidebar.
+        let failed = !self.was_connected && reason != crate::session::CLOSED_BY_USER;
         Some(
             div()
                 .absolute()
@@ -492,7 +494,7 @@ impl TerminalView {
                         .border_color(p.border)
                         .font_family(p.font_family)
                         .text_size(px(13.))
-                        .child(div().flex_shrink_0().size(px(8.)).rounded_full().bg(p.text_faint))
+                        .child(div().flex_shrink_0().size(px(8.)).rounded_full().bg(if failed { p.danger } else { p.text_faint }))
                         .child(
                             div()
                                 .min_w_0()
@@ -503,7 +505,12 @@ impl TerminalView {
                                 .text_color(p.text)
                                 .child(reason.clone()),
                         )
-                        .child(div().flex_shrink_0().text_color(p.text_muted).child("Press Enter to reconnect")),
+                        .child(
+                            button("reconnect", "Reconnect", ButtonKind::Primary, p)
+                                .flex_shrink_0()
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(TerminalEvent::Reconnect))),
+                        )
+                        .child(div().flex_shrink_0().text_color(p.text_muted).child("or press Enter")),
                 )
                 .into_any_element(),
         )

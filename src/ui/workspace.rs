@@ -300,6 +300,8 @@ struct ItemState<'a> {
     status: Option<Status>,
     live: bool,
     busy: bool,
+    /// The connection it stands for failed to connect: ringed in red.
+    failed: bool,
     active: bool,
 }
 

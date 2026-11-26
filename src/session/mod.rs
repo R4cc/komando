@@ -66,6 +66,9 @@ pub enum Status {
     Disconnected(String),
 }
 
+/// The [`Status::Disconnected`] reason when the user ended the Session themselves.
+pub const CLOSED_BY_USER: &str = "Session closed.";
+
 /// How a [`Status::Disconnected`] reason begins when reaching a Host took too long.
 pub const TIMED_OUT: &str = "Timed out connecting to ";
 /// ... when the server stopped answering while signing in.

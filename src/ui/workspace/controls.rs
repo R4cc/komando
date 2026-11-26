@@ -15,12 +15,23 @@ pub(super) fn activity_icon(p: AppPalette) -> AnyElement {
 }
 
 /// A Session's state in the sidebar: a dot while live (green) or connecting (amber), a hollow
-/// ring once it dropped, and a small turning green ring for output streaming in the background.
-pub(super) fn status_indicator(status: Option<&Status>, busy: bool, p: AppPalette) -> AnyElement {
+/// ring once it dropped (red, with its reason as the tooltip, when it never connected), and a
+/// small turning green ring for output streaming in the background.
+pub(super) fn status_indicator(status: Option<&Status>, busy: bool, failed: bool, p: AppPalette) -> AnyElement {
     match status {
         Some(Status::Connected) if busy => activity_icon(p),
         Some(Status::Connected) => status_dot(p.success).into_any_element(),
         Some(Status::Connecting) => status_dot(p.warning).into_any_element(),
+        Some(Status::Disconnected(reason)) if failed => {
+            let tip: SharedString = if reason.is_empty() { "Couldn't connect".into() } else { reason.clone().into() };
+            div()
+                .id("status-failed")
+                .flex_shrink_0()
+                .aria_label(tip.clone())
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                .child(div().size(px(8.)).rounded_full().border_2().border_color(p.danger))
+                .into_any_element()
+        }
         Some(Status::Disconnected(_)) => {
             div().size(px(7.)).flex_shrink_0().rounded_full().border_1().border_color(p.text_faint).into_any_element()
         }

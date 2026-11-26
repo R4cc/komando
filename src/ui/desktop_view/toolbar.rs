@@ -344,12 +344,14 @@ fn tag(text: &'static str, p: AppPalette) -> impl IntoElement {
         .px(px(5.))
         .rounded(p.corner(4.))
         .border_1()
-        .border_color(p.brand.opacity(0.45))
-        .bg(p.brand_soft)
+        // Neutral, not the brand pair: in themes whose selection colour is their primary
+        // colour, brand text on brand_soft is one colour and the label vanished.
+        .border_color(p.border)
+        .bg(p.muted)
         .text_size(px(10.))
         .line_height(px(14.))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(p.brand)
+        .text_color(p.muted_text)
         .child(SharedString::from(text))
 }
 

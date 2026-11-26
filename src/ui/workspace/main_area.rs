@@ -10,7 +10,7 @@ impl Workspace {
         let entry = self.active_entry()?;
         // Where you are typing: state, the session's name, then user@address and port. The
         // name is repeated from the sidebar, which may be scrolled away from the active host.
-        let name = self.sessions.display_name(entry);
+        let name = self.session_title(entry);
         let target = match entry.kind() {
             SessionKind::Ssh { host_id } => entry
                 .project_id()

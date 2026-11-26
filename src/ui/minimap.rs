@@ -952,8 +952,8 @@ fn sized(el: Stateful<gpui::Div>) -> Stateful<gpui::Div> {
 }
 
 /// The minimap in a column of its own beside the output: always there, so output never runs
-/// underneath it. Full-screen programs (vim, htop) get an empty column; it stays reserved so
-/// their width doesn't change when they start or quit.
+/// underneath it. Full-screen programs (vim, htop) and output with no Scrollback yet get an
+/// empty column; it stays reserved so the width doesn't change when they start or quit.
 pub fn beside(
     term: SharedTerm,
     state: Rc<MinimapState>,
@@ -964,9 +964,11 @@ pub fn beside(
     cx: &mut Context<TerminalView>,
 ) -> AnyElement {
     let column = sized(div().id("minimap")).flex_none().h_full();
+    // Until there is Scrollback there is nothing to scroll, and a short output would only be a
+    // smudge in the corner.
     let lines = {
         let term = term.lock();
-        (!term.mode().contains(TermMode::ALT_SCREEN)).then(|| content_lines(&term))
+        (!term.mode().contains(TermMode::ALT_SCREEN) && term.grid().history_size() > 0).then(|| content_lines(&term))
     };
     let Some(lines) = lines else {
         state.hovered.set(false);
