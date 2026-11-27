@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-11-27
+
 ### Fixed
 
 - The icons at the right of the sidebar line up: status dots, project chevrons and the New
@@ -2265,7 +2267,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/R4cc/komando/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/R4cc/komando/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/R4cc/komando/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/R4cc/komando/compare/v0.8.8...v0.9.0
