@@ -642,6 +642,18 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
     /// using SIMD search with [`memchr`].
     #[inline]
     fn advance_ground<P: Perform>(&mut self, performer: &mut P, bytes: &[u8]) -> usize {
+        // Komando patch: printable ASCII up to the first byte that isn't, found in one pass
+        // and handed over as it is. Between escape sequences (colours, cursor moves) output is
+        // mostly short runs of it, for which searching for the escape, checking the UTF-8 and
+        // splitting it into runs were three passes with a call each. Anything else (an escape,
+        // a control character, UTF-8 beyond ASCII) goes the way below.
+        let ascii = bytes.iter().position(|&byte| !is_printable_ascii(byte)).unwrap_or(bytes.len());
+        if ascii > 0 {
+            // SAFETY: the bytes are all printable ASCII.
+            performer.print_ascii(unsafe { str::from_utf8_unchecked(&bytes[..ascii]) });
+            return ascii;
+        }
+
         // Find the next escape character.
         let num_bytes = bytes.len();
         let plain_chars = memchr::memchr(0x1B, bytes).unwrap_or(num_bytes);

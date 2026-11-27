@@ -1,6 +1,6 @@
 # vte 0.15.0, patched for Komando
 
-This is vte 0.15.0 from crates.io with three changes, used through `[patch.crates-io]` in
+This is vte 0.15.0 from crates.io with four changes, used through `[patch.crates-io]` in
 Komando's `Cargo.toml` (alacritty_terminal's dependency on vte resolves to it too).
 `komando.patch` holds the changes as a diff against the published crate. The first goes with the
 change to `vendor/alacritty_terminal` (see its `KOMANDO.md`): neither does much without the other.
@@ -73,6 +73,33 @@ Measured with `throughput_parser_only` (1,000,000 coloured log lines, medians of
 alternating with the build without it): 0.750 → 0.678 s without Scrollback, 0.907 → 0.863 s
 with 10,000 lines and 1.272 → 1.233 s with 100,000, and 3–6% on log lines with accented,
 Cyrillic and CJK text.
+
+## The change: printable ASCII found in one pass
+
+In the ground state, `advance_ground` found the next ESC with `memchr`, checked the bytes before
+it as UTF-8, and `ground_dispatch` then split them into runs of printable ASCII: three passes,
+each a call, over text that between colour changes is mostly runs of ten or twenty bytes. When
+the bytes start with printable ASCII, `advance_ground` now takes the run up to the first byte
+that isn't in one pass and hands it to `print_ascii` itself. The next call starts at that byte
+(an ESC, a control character, UTF-8 beyond ASCII), which goes the way it went before. The
+events are the ones `ground_dispatch` gives for the same bytes, a run perhaps cut in two where
+it already could be at the end of an `advance` call; printing never ends a synchronized update,
+so `advance_until_terminated` still stops at the same places.
+
+The change touches `src/lib.rs` (`advance_ground`). The tests above cover it: a planted bug that
+drops the last byte of each run fails several of vte's tests and five of alacritty_terminal's.
+
+Measured with `throughput_parser_only` (1,000,000 coloured log lines, 4-core Linux box,
+release profile, medians of 3 runs alternating with the build without it), MB/s:
+
+| Scrollback | Before | After |
+|---|---|---|
+| 0 | 143.2 | 161.7 (1.13x) |
+| 10,000 lines | 135.8 | 153.6 (1.13x) |
+| 10,000 lines, already full | 133.7 | 153.0 (1.14x) |
+| 100,000 lines | 113.0 | 119.4 |
+| 100,000 lines, already full | 137.8 | 151.1 (1.10x) |
+| accented / Cyrillic / CJK | 136.9 / 115.6 / 119.3 | 143.1 / 119.6 / 124.3 |
 
 ## The fix: a character after a split UTF-8 character was lost
 

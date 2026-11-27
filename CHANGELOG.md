@@ -18,6 +18,8 @@ All notable changes to Komando are listed here. The format follows
   updates.
 - Sessions signed in with a password take in fast output the same way as sessions signed in
   with a key.
+- Coloured output is read about 10–14% faster: text between colour changes is handed to the
+  terminal in one pass instead of three.
 - Fast output into a full Scrollback is about a fifth faster: rows reused from the top of the
   Scrollback are cleared ahead on another thread instead of while the output is read. Over SSH,
   a million log lines now arrive about 10% sooner.

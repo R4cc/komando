@@ -1,6 +1,6 @@
 diff -ruN a/src/ansi.rs b/src/ansi.rs
---- a/src/ansi.rs	2026-11-14 15:44:46.052371251 +0000
-+++ b/src/ansi.rs	2026-11-14 15:44:46.054755037 +0000
+--- a/src/ansi.rs	2026-11-27 00:04:29.427670881 +0000
++++ b/src/ansi.rs	2026-11-27 00:04:29.429654144 +0000
 @@ -505,6 +505,18 @@
      /// A character to be displayed.
      fn input(&mut self, _c: char) {}
@@ -91,8 +91,8 @@ diff -ruN a/src/ansi.rs b/src/ansi.rs
      fn parse_control_attribute() {
          static BYTES: &[u8] = &[0x1B, b'[', b'1', b'm'];
 diff -ruN a/src/lib.rs b/src/lib.rs
---- a/src/lib.rs	2026-11-14 15:44:46.053466943 +0000
-+++ b/src/lib.rs	2026-11-14 15:44:46.054912908 +0000
+--- a/src/lib.rs	2026-11-27 00:04:29.427800816 +0000
++++ b/src/lib.rs	2026-11-27 00:04:29.429715134 +0000
 @@ -117,6 +117,14 @@
          while i != bytes.len() {
              match self.state {
@@ -161,7 +161,26 @@ diff -ruN a/src/lib.rs b/src/lib.rs
      #[inline(always)]
      fn change_state<P: Perform>(&mut self, performer: &mut P, byte: u8) {
          match self.state {
-@@ -698,7 +745,11 @@
+@@ -595,6 +642,18 @@
+     /// using SIMD search with [`memchr`].
+     #[inline]
+     fn advance_ground<P: Perform>(&mut self, performer: &mut P, bytes: &[u8]) -> usize {
++        // Komando patch: printable ASCII up to the first byte that isn't, found in one pass
++        // and handed over as it is. Between escape sequences (colours, cursor moves) output is
++        // mostly short runs of it, for which searching for the escape, checking the UTF-8 and
++        // splitting it into runs were three passes with a call each. Anything else (an escape,
++        // a control character, UTF-8 beyond ASCII) goes the way below.
++        let ascii = bytes.iter().position(|&byte| !is_printable_ascii(byte)).unwrap_or(bytes.len());
++        if ascii > 0 {
++            // SAFETY: the bytes are all printable ASCII.
++            performer.print_ascii(unsafe { str::from_utf8_unchecked(&bytes[..ascii]) });
++            return ascii;
++        }
++
+         // Find the next escape character.
+         let num_bytes = bytes.len();
+         let plain_chars = memchr::memchr(0x1B, bytes).unwrap_or(num_bytes);
+@@ -698,7 +757,11 @@
                      performer.print(c);
  
                      self.partial_utf8_len = 0;
@@ -174,7 +193,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
                  }
  
                  match err.error_len() {
-@@ -718,17 +769,46 @@
+@@ -718,17 +781,46 @@
      }
  
      /// Handle ground dispatch of print/execute for all characters in a string.
@@ -222,7 +241,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
  #[derive(PartialEq, Eq, Debug, Default, Copy, Clone)]
  enum State {
      CsiEntry,
-@@ -762,6 +842,19 @@
+@@ -762,6 +854,19 @@
      /// Draw a character to the screen and update states.
      fn print(&mut self, _c: char) {}
  
@@ -242,7 +261,7 @@ diff -ruN a/src/lib.rs b/src/lib.rs
      /// Execute a C0 or C1 control function.
      fn execute(&mut self, _byte: u8) {}
  
-@@ -1539,4 +1632,228 @@
+@@ -1539,4 +1644,228 @@
          assert_eq!(dispatcher.dispatched[0], Sequence::Execute(0x18));
          assert_eq!(dispatcher.dispatched[1], Sequence::Execute(0x1A));
      }
