@@ -170,6 +170,26 @@
         1.148929599999974
       ],
       "unit": "seconds"
+    },
+    {
+      "id": "komando-startup-cf4c937e",
+      "why": "Komando startup on main at 79e2b82, before 0.9.2's startup change; replaced by the 0.9.2 startup trial",
+      "app": "komando",
+      "mode": "startup",
+      "sessions": 1,
+      "values": [
+        214.95189999996,
+        202.63069999987238,
+        215.54190000006201,
+        293.04389999992964,
+        216.94339999999102,
+        203.00040000006447,
+        200.67709999989347,
+        203.9005999999972,
+        216.15569999994477,
+        202.4836000000505
+      ],
+      "unit": "milliseconds"
     }
   ]
 }

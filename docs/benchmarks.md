@@ -9,7 +9,7 @@ terminal grid and the same Scrollback length:
 
 | Application | Build measured |
 |---|---|
-| Komando | `main` at `79e2b82`: release 0.9.1 plus the changes listed under *Unreleased* in the [changelog](../CHANGELOG.md), built with `cargo build --release --locked` |
+| Komando | 0.9.2, built with `cargo build --release --locked`. Startup was measured at the `v0.9.2` tag (`3389102`). Memory and throughput were measured at `79e2b82`, the commit before 0.9.2's startup change, which doesn't touch the SSH or terminal code |
 | Windows Terminal + OpenSSH | Windows Terminal 1.25.3131.0 (official portable build) running the `ssh.exe` that ships with Windows (OpenSSH for Windows 9.5p2) |
 | Tabby | 1.0.238, installed |
 
@@ -32,8 +32,8 @@ throughput in MB/s. Ranges are the fastest and slowest single sample.
 
 | Metric | Komando | Windows Terminal + OpenSSH | Tabby |
 |---|---:|---:|---:|
-| Warm launch to visible window, median of 10 | **209 ms** | 233 ms | 705 ms |
-| Range | 201–293 ms | 217–246 ms | 680–715 ms |
+| Warm launch to visible window, median of 10 | **154 ms** | 233 ms | 705 ms |
+| Range | 138–156 ms | 217–246 ms | 680–715 ms |
 | Memory, 1 idle SSH Session | **29.7 MB** | 31.5 MB | 319.7 MB |
 | Range, 15 samples | 29.4–30.3 MB | 31.4–31.8 MB | 318.8–320.8 MB |
 | Memory, 10 idle SSH Sessions | **36.5 MB** | 131.6 MB | 383.8 MB |
@@ -43,8 +43,8 @@ throughput in MB/s. Ranges are the fastest and slowest single sample.
 | Range | 0.294–0.411 s | 1.253–1.883 s | 3.641–3.900 s |
 | Throughput, median | **318 MB/s** | 71.5 MB/s | 27.5 MB/s |
 
-Komando and Windows Terminal open their window in about the same time: the difference is
-smaller than Windows Terminal's own spread. With one Session their memory is also close; each
+Komando's launches fall into two groups, around 139 and 154 ms, rather than spreading evenly.
+With one Session Komando and Windows Terminal use about the same memory; each
 further Windows Terminal tab adds an `OpenConsole.exe` and an `ssh.exe`, about 11 MB, where a
 further Komando Session adds under 1 MB. Windows Terminal's throughput varies more from run to
 run than the others': an extra five-run trial that is not part of these results took 1.15–1.25 s
@@ -94,7 +94,8 @@ run than the others': an extra five-run trial that is not part of these results 
 ### Trials not used
 
 [superseded.json](performance/2026-11-27/superseded.json) keeps the complete trials taken the
-same day that are not in the results above. A first pass measured Komando's **v0.9.1 release**
+same day that are not in the results above. Komando's startup before 0.9.2, measured at `79e2b82`,
+was 209 ms (201–293 ms); 0.9.2 creates the GPU device while it starts up. A first pass measured Komando's **v0.9.1 release**
 instead of `main`: 202 ms to a visible window, 30.9 and 36.8 MB with 1 and 10 Sessions, and
 0.402 s (0.395–0.413 s) for the million log lines, against 0.317 s on `main`. That pass used five
 throughput runs. Windows Terminal's took 1.29–2.48 s (median 1.68 s), so throughput was repeated

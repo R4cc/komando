@@ -4,9 +4,9 @@
   "summary": {
     "komando": {
       "startup": {
-        "median": 209.4262499999786,
-        "min": 200.67709999989347,
-        "max": 293.04389999992964,
+        "median": 153.58264999986204,
+        "min": 138.44309999967663,
+        "max": 156.41150000010384,
         "launches": 1,
         "samples_per_launch": 1,
         "runs": 10
@@ -116,14 +116,14 @@
   },
   "trials": [
     {
-      "id": "komando-startup-cf4c937e",
+      "id": "komando-startup-355c3a93",
       "app": "komando",
       "mode": "startup",
       "sessions": 1,
       "server": "2.24.1",
       "runs": [
         {
-          "milliseconds": 214.95189999996,
+          "milliseconds": 156.41150000010384,
           "windows": [
             [
               1294,
@@ -132,7 +132,7 @@
           ]
         },
         {
-          "milliseconds": 202.63069999987238,
+          "milliseconds": 155.08859999954439,
           "windows": [
             [
               1294,
@@ -141,7 +141,7 @@
           ]
         },
         {
-          "milliseconds": 215.54190000006201,
+          "milliseconds": 153.97459999985585,
           "windows": [
             [
               1294,
@@ -150,7 +150,7 @@
           ]
         },
         {
-          "milliseconds": 293.04389999992964,
+          "milliseconds": 138.44309999967663,
           "windows": [
             [
               1294,
@@ -159,7 +159,7 @@
           ]
         },
         {
-          "milliseconds": 216.94339999999102,
+          "milliseconds": 139.2478999996456,
           "windows": [
             [
               1294,
@@ -168,7 +168,7 @@
           ]
         },
         {
-          "milliseconds": 203.00040000006447,
+          "milliseconds": 139.81330000024172,
           "windows": [
             [
               1294,
@@ -177,7 +177,7 @@
           ]
         },
         {
-          "milliseconds": 200.67709999989347,
+          "milliseconds": 140.38540000001376,
           "windows": [
             [
               1294,
@@ -186,7 +186,7 @@
           ]
         },
         {
-          "milliseconds": 203.9005999999972,
+          "milliseconds": 153.19069999986823,
           "windows": [
             [
               1294,
@@ -195,7 +195,7 @@
           ]
         },
         {
-          "milliseconds": 216.15569999994477,
+          "milliseconds": 154.71839999918302,
           "windows": [
             [
               1294,
@@ -204,7 +204,7 @@
           ]
         },
         {
-          "milliseconds": 202.4836000000505,
+          "milliseconds": 154.82189999966067,
           "windows": [
             [
               1294,

@@ -10,11 +10,11 @@
   "psutil": "7.2.2",
   "pyyaml": "6.0.3",
   "versions": {
-    "komando": "main (79e2b82)",
+    "komando": "0.9.2",
     "wt": "1.25",
     "tabby": "1.0.238"
   },
-  "komando_source": "79e2b82fe431ad7435820c5acbf660208ca308d7 (main after the 0.9.1 release; Cargo.toml version 0.9.1)",
+  "komando_source": "Startup: 33891021cee6d1c3bf53550d38d2ff90f6294b65 (v0.9.2). SSH memory and throughput: 79e2b82fe431ad7435820c5acbf660208ca308d7 (main before 0.9.2's startup change)",
   "benchmark_library_checkout": "79e2b82fe431ad7435820c5acbf660208ca308d7",
   "terminal_grid": [
     107,
@@ -26,9 +26,9 @@
   ],
   "binaries": [
     {
-      "name": "komando.exe, cargo build --release --locked at 79e2b82",
-      "version": "0.9.1 + unreleased changes",
-      "sha256": "1FD0BE61BB61A8311F46D8F00B2EC778B39F41D34D2B7DFFB6A81C8DD38C78DC",
+      "name": "komando.exe, cargo build --release --locked at v0.9.2 (3389102)",
+      "version": "0.9.2",
+      "sha256": "E216456192FB776D191357D4014BE8AC5D3BF19CAA87D50AD7174FC6E0CEB2F6",
       "used_for": "startup"
     },
     {
