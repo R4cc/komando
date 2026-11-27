@@ -124,6 +124,11 @@ const SESSION_ROW_HEIGHT: f32 = 30.;
 const SESSION_BRANCH: f32 = 10.;
 /// How far a Host row's highlight starts inside its Project row's.
 const NESTED_INSET: f32 = 14.;
+/// The width of the slots at a sidebar row's end (its state, a fold chevron), and the room
+/// after the last one. The centre of the last slot is the column the sidebar's trailing
+/// icons line up in: rows' status dots, Project chevrons, the Projects header's button.
+const TRAILING_SLOT: f32 = 22.;
+const TRAILING_PAD: f32 = 6.;
 
 fn sidebar_width(preferred: f32, window_width: f32) -> f32 {
     let max = (window_width - ISLAND_GAP * 3. - 360.).clamp(200., 520.);

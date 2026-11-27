@@ -256,14 +256,15 @@ impl Workspace {
         let show_count = grouped && !expanded;
         // Room for every digit of the count, so 50 doesn't wrap onto two lines.
         let count_width = (listed_count.to_string().len() as f32 * 7.).max(14.);
-        // Every row keeps the chevron's slot, empty when there is nothing to fold, and the count
-        // goes before the state: the status dots of all rows line up in one column.
-        let trailing: f32 = [(show_count, count_width), (show_status, 16.), (true, 22.)]
+        // Every row keeps the state's slot at its end, empty without a Session: the status dots
+        // of all rows line up in one column with the Project chevrons and the header's button.
+        // The count and a group's fold chevron go before it.
+        let trailing: f32 = [(show_count, count_width), (grouped, TRAILING_SLOT), (true, TRAILING_SLOT)]
             .iter()
             .filter(|(shown, _)| *shown)
             .map(|(_, w)| w + 4.)
             .sum::<f32>();
-        let pad_right = 6.;
+        let pad_right = TRAILING_PAD;
         let new_tip: SharedString = if is_host { "New terminal (Ctrl+click)".into() } else { "New session (Ctrl+click)".into() };
         let more = self.menu_popover(
             SharedString::from(format!("more-{key:?}")),
@@ -380,44 +381,6 @@ impl Workspace {
                                     .child(listed_count.to_string()),
                             )
                         })
-                        .when(show_status, |el| {
-                            el.child(
-                                div()
-                                    .relative()
-                                    .w(px(16.))
-                                    .h(px(20.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
-                                        div()
-                                            .when(hover_close.is_some(), |el| el.group_hover("item-row", |s| s.invisible()))
-                                            .child(status_indicator(status.as_ref(), busy, failed, p)),
-                                    )
-                                    .when_some(hover_close, |el, id| {
-                                        let tip = close_tip.clone();
-                                        el.child(
-                                            div()
-                                                .absolute()
-                                                .top_0()
-                                                .left(px(-2.))
-                                                .invisible()
-                                                .group_hover("item-row", |s| s.visible())
-                                                .child(
-                                                    close_button(SharedString::from(format!("row-close-{id}")), 20., p)
-                                                        .aria_label(tip.clone())
-                                                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                                                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                                            cx.stop_propagation();
-                                                            this.end_session(id, EndRequest::Close, window, cx);
-                                                        })),
-                                                ),
-                                        )
-                                    }),
-                            )
-                        })
-                        // Without Sessions to fold, an empty slot where the chevron would be.
-                        .when(!grouped, |el| el.child(div().flex_shrink_0().size(px(22.))))
                         // A group folds its Sessions away with the chevron, which is always there.
                         .when(grouped, |el| {
                             el.child(
@@ -427,7 +390,7 @@ impl Workspace {
                                     .aria_label(if expanded { "Hide sessions" } else { "Show sessions" })
                                     .aria_expanded(expanded)
                                     .flex_shrink_0()
-                                    .size(px(22.))
+                                    .size(px(TRAILING_SLOT))
                                     .flex()
                                     .items_center()
                                     .justify_center()
@@ -443,7 +406,43 @@ impl Workspace {
                                     }))
                                     .child(icon_el(if expanded { "chevron-down" } else { "chevron-right" }, 14., p.text_faint)),
                             )
-                        }),
+                        })
+                        // The state's slot is always there, empty without a Session.
+                        .child(
+                                div()
+                                    .relative()
+                                    .flex_shrink_0()
+                                    .w(px(TRAILING_SLOT))
+                                    .h(px(20.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .when(show_status, |el| el.child(
+                                        div()
+                                            .when(hover_close.is_some(), |el| el.group_hover("item-row", |s| s.invisible()))
+                                            .child(status_indicator(status.as_ref(), busy, failed, p)),
+                                    ))
+                                    .when_some(hover_close, |el, id| {
+                                        let tip = close_tip.clone();
+                                        el.child(
+                                            div()
+                                                .absolute()
+                                                .top_0()
+                                                .left(px((TRAILING_SLOT - 20.) / 2.))
+                                                .invisible()
+                                                .group_hover("item-row", |s| s.visible())
+                                                .child(
+                                                    close_button(SharedString::from(format!("row-close-{id}")), 20., p)
+                                                        .aria_label(tip.clone())
+                                                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                                                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                                            cx.stop_propagation();
+                                                            this.end_session(id, EndRequest::Close, window, cx);
+                                                        })),
+                                                ),
+                                        )
+                                    }),
+                            )
                 )
                 .child(
                     // Just + and ⋯: disconnecting and remote desktops are in the menu (⋯ or a

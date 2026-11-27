@@ -6,6 +6,11 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The icons at the right of the sidebar line up: status dots, project chevrons and the New
+  project button sit in one column.
+
 ## [0.9.2] - 2026-11-27
 
 ### Changed

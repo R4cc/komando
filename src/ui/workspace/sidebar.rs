@@ -65,7 +65,9 @@ impl Workspace {
             },
             SidebarRow::ProjectsHeader => {
         div()
-                .px(px(8.))
+                .pl(px(8.))
+                // The button's icon centred on the trailing column (see `TRAILING_SLOT`).
+                .pr(px(TRAILING_PAD + (TRAILING_SLOT - 24.) / 2.))
                 .pt(px(12.))
                 .pb(px(2.))
                 .flex()
@@ -218,7 +220,8 @@ impl Workspace {
                     .text_size(px(13.))
                     .relative()
                     .h(px(36.))
-                    .px(px(8.))
+                    .pl(px(8.))
+                    .pr(px(TRAILING_PAD))
                     .mt(px(4.))
                     .flex()
                     .items_center()
@@ -272,7 +275,7 @@ impl Workspace {
                         // backdrop matches the hovered row.
                         div()
                             .absolute()
-                            .right(px(26.))
+                            .right(px(TRAILING_PAD + TRAILING_SLOT + 4.))
                             .top(px(6.))
                             .rounded(p.corner(7.))
                             .bg(p.sidebar)
@@ -301,7 +304,14 @@ impl Workspace {
                                     .child("Move here"),
                             )
                         } else {
-                            el.child(icon_el(if collapsed { "chevron-right" } else { "chevron-down" }, 14., p.text_faint))
+                            el.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .w(px(TRAILING_SLOT))
+                                    .flex()
+                                    .justify_center()
+                                    .child(icon_el(if collapsed { "chevron-right" } else { "chevron-down" }, 14., p.text_faint)),
+                            )
                         }
                     })
                     .children(self.row_menu_anchor(NavTarget::Project(project.id.clone()), cx))
