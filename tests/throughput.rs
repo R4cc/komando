@@ -305,6 +305,11 @@ impl BigFile {
     }
 }
 
+/// The path or name this server made a handle from (handles are opaque bytes to SFTP).
+fn text(handle: &russh_sftp::protocol::SftpHandle) -> String {
+    String::from_utf8_lossy(handle.as_bytes()).into_owned()
+}
+
 impl russh_sftp::server::Handler for BigFile {
     type Error = russh_sftp::protocol::StatusCode;
 
@@ -324,7 +329,8 @@ impl russh_sftp::server::Handler for BigFile {
         Ok(russh_sftp::protocol::Attrs { id, attrs: self.attrs(&path)? })
     }
 
-    async fn fstat(&mut self, id: u32, handle: String) -> Result<russh_sftp::protocol::Attrs, Self::Error> {
+    async fn fstat(&mut self, id: u32, handle: russh_sftp::protocol::SftpHandle) -> Result<russh_sftp::protocol::Attrs, Self::Error> {
+        let handle = text(&handle);
         Ok(russh_sftp::protocol::Attrs { id, attrs: self.attrs(&handle)? })
     }
 
@@ -343,10 +349,11 @@ impl russh_sftp::server::Handler for BigFile {
         } else {
             self.attrs(&path)?;
         }
-        Ok(russh_sftp::protocol::Handle { id, handle: path })
+        Ok(russh_sftp::protocol::Handle { id, handle: path.into() })
     }
 
-    async fn write(&mut self, id: u32, handle: String, offset: u64, data: Vec<u8>) -> Result<russh_sftp::protocol::Status, Self::Error> {
+    async fn write(&mut self, id: u32, handle: russh_sftp::protocol::SftpHandle, offset: u64, data: Vec<u8>) -> Result<russh_sftp::protocol::Status, Self::Error> {
+        let handle = text(&handle);
         let mut uploaded = uploaded().lock().unwrap();
         let size = uploaded.get_mut(&handle).ok_or(russh_sftp::protocol::StatusCode::Failure)?;
         *size = (*size).max(offset + data.len() as u64);
@@ -371,7 +378,8 @@ impl russh_sftp::server::Handler for BigFile {
         Ok(Self::ok(id))
     }
 
-    async fn read(&mut self, id: u32, handle: String, offset: u64, len: u32) -> Result<russh_sftp::protocol::Data, Self::Error> {
+    async fn read(&mut self, id: u32, handle: russh_sftp::protocol::SftpHandle, offset: u64, len: u32) -> Result<russh_sftp::protocol::Data, Self::Error> {
+        let handle = text(&handle);
         let size = self.attrs(&handle)?.size.unwrap_or(0);
         if offset >= size {
             return Err(russh_sftp::protocol::StatusCode::Eof);
@@ -386,10 +394,11 @@ impl russh_sftp::server::Handler for BigFile {
         }
         let handle = format!("dir {id}");
         self.listed.remove(&handle);
-        Ok(russh_sftp::protocol::Handle { id, handle })
+        Ok(russh_sftp::protocol::Handle { id, handle: handle.into() })
     }
 
-    async fn readdir(&mut self, id: u32, handle: String) -> Result<russh_sftp::protocol::Name, Self::Error> {
+    async fn readdir(&mut self, id: u32, handle: russh_sftp::protocol::SftpHandle) -> Result<russh_sftp::protocol::Name, Self::Error> {
+        let handle = text(&handle);
         if !self.listed.insert(handle) {
             return Err(russh_sftp::protocol::StatusCode::Eof);
         }
@@ -403,7 +412,8 @@ impl russh_sftp::server::Handler for BigFile {
         Ok(russh_sftp::protocol::Name { id, files })
     }
 
-    async fn close(&mut self, id: u32, handle: String) -> Result<russh_sftp::protocol::Status, Self::Error> {
+    async fn close(&mut self, id: u32, handle: russh_sftp::protocol::SftpHandle) -> Result<russh_sftp::protocol::Status, Self::Error> {
+        let handle = text(&handle);
         self.listed.remove(&handle);
         Ok(Self::ok(id))
     }
