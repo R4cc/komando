@@ -1,0 +1,175 @@
+{
+  "note": "Complete trials taken on 2026-11-27 but not used in results.json.",
+  "trials": [
+    {
+      "id": "komando-idle-1177be69",
+      "why": "first pass; Komando trials measured the v0.9.1 release (fa05f4b) instead of main, and throughput used 5 runs",
+      "app": "komando",
+      "mode": "idle",
+      "sessions": 1,
+      "values": [
+        29937664,
+        29528064,
+        29966336,
+        29966336,
+        29921280
+      ],
+      "unit": "private_working_set_bytes"
+    },
+    {
+      "id": "komando-idle-237b6525",
+      "why": "first pass; Komando trials measured the v0.9.1 release (fa05f4b) instead of main, and throughput used 5 runs",
+      "app": "komando",
+      "mode": "idle",
+      "sessions": 10,
+      "values": [
+        36765696,
+        36708352,
+        36278272,
+        36270080,
+        36278272
+      ],
+      "unit": "private_working_set_bytes"
+    },
+    {
+      "id": "komando-idle-8afbe7b1",
+      "why": "first pass; Komando trials measured the v0.9.1 release (fa05f4b) instead of main, and throughput used 5 runs",
+      "app": "komando",
+      "mode": "idle",
+      "sessions": 1,
+      "values": [
+        31088640,
+        30736384,
+        31133696,
+        31145984,
+        31129600
+      ],
+      "unit": "private_working_set_bytes"
+    },
+    {
+      "id": "komando-idle-90ffe942",
+      "why": "first pass; Komando trials measured the v0.9.1 release (fa05f4b) instead of main, and throughput used 5 runs",
+      "app": "komando",
+      "mode": "idle",
+      "sessions": 10,
+      "values": [
+        37343232,
+        36864000,
+        36720640,
+        36790272,
+        36753408
+      ],
+      "unit": "private_working_set_bytes"
+    },
+    {
+      "id": "komando-idle-b5893ef1",
+      "why": "first pass; Komando trials measured the v0.9.1 release (fa05f4b) instead of main, and throughput used 5 runs",
+      "app": "komando",
+      "mode": "idle",
+      "sessions": 10,
+      "values": [
+        37531648,
+        36913152,
+        36896768,
+        36921344,
+        36896768
+      ],
+      "unit": "private_working_set_bytes"
+    },
+    {
+      "id": "komando-idle-dd2ee45e",
+      "why": "first pass; Komando trials measured the v0.9.1 release (fa05f4b) instead of main, and throughput used 5 runs",
+      "app": "komando",
+      "mode": "idle",
+      "sessions": 1,
+      "values": [
+        30855168,
+        30859264,
+        30863360,
+        30867456,
+        31268864
+      ],
+      "unit": "private_working_set_bytes"
+    },
+    {
+      "id": "komando-startup-7e139b21",
+      "why": "first pass; Komando trials measured the v0.9.1 release (fa05f4b) instead of main, and throughput used 5 runs",
+      "app": "komando",
+      "mode": "startup",
+      "sessions": 1,
+      "values": [
+        202.77920000000904,
+        201.8709999999828,
+        199.60159999999405,
+        201.28579999999374,
+        200.55790000003526,
+        204.93040000008023,
+        199.194299999931,
+        213.94199999997454,
+        204.1373999999223,
+        201.01820000002135
+      ],
+      "unit": "milliseconds"
+    },
+    {
+      "id": "komando-throughput-88701cf7",
+      "why": "first pass; Komando trials measured the v0.9.1 release (fa05f4b) instead of main, and throughput used 5 runs",
+      "app": "komando",
+      "mode": "throughput",
+      "sessions": 1,
+      "values": [
+        0.40230670000005375,
+        0.41279769999994187,
+        0.3992663999999877,
+        0.4015663999999788,
+        0.39478090000000066
+      ],
+      "unit": "seconds"
+    },
+    {
+      "id": "tabby-throughput-da6cd395",
+      "why": "first pass; Komando trials measured the v0.9.1 release (fa05f4b) instead of main, and throughput used 5 runs",
+      "app": "tabby",
+      "mode": "throughput",
+      "sessions": 1,
+      "values": [
+        3.827837499999987,
+        3.655644499999994,
+        3.61155389999999,
+        3.631055300000071,
+        3.763403799999992
+      ],
+      "unit": "seconds"
+    },
+    {
+      "id": "wt-throughput-588a31d9",
+      "why": "first pass; Komando trials measured the v0.9.1 release (fa05f4b) instead of main, and throughput used 5 runs",
+      "app": "wt",
+      "mode": "throughput",
+      "sessions": 1,
+      "values": [
+        1.8095698000000766,
+        2.479554999999891,
+        1.2932495000000017,
+        1.6834433000000217,
+        1.6381907999999612
+      ],
+      "unit": "seconds"
+    },
+    {
+      "id": "wt-throughput-04a04f8d",
+      "why": "extra Windows Terminal throughput trial run to judge its run-to-run spread; not used",
+      "app": "wt",
+      "mode": "throughput",
+      "sessions": 1,
+      "values": [
+        1.16078860000016,
+        1.1620176000001265,
+        1.1678592000000663,
+        1.2523627999999007,
+        1.148929599999974
+      ],
+      "unit": "seconds"
+    }
+  ]
+}

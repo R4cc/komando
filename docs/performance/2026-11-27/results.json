@@ -1,0 +1,3422 @@
+{
+  "date": "2026-11-27",
+  "memory_unit": "bytes; MB in the README means 1,000,000 bytes",
+  "summary": {
+    "komando": {
+      "startup": {
+        "median": 209.4262499999786,
+        "min": 200.67709999989347,
+        "max": 293.04389999992964,
+        "launches": 1,
+        "samples_per_launch": 1,
+        "runs": 10
+      },
+      "throughput": {
+        "median": 0.31705490000001646,
+        "min": 0.29408680000005916,
+        "max": 0.41103860000021086,
+        "launches": 1,
+        "samples_per_launch": 1,
+        "runs": 10,
+        "megabytes_per_second": 317.8583645923617
+      },
+      "idle_1": {
+        "median": 29749248,
+        "min": 29364224,
+        "max": 30265344,
+        "launches": 3,
+        "samples_per_launch": 5,
+        "runs": 15,
+        "process_count": 1
+      },
+      "idle_10": {
+        "median": 36532224,
+        "min": 36175872,
+        "max": 37052416,
+        "launches": 3,
+        "samples_per_launch": 5,
+        "runs": 15,
+        "process_count": 1
+      }
+    },
+    "wt": {
+      "startup": {
+        "median": 232.91220000004387,
+        "min": 217.08799999998973,
+        "max": 246.48960000001807,
+        "launches": 1,
+        "samples_per_launch": 1,
+        "runs": 10
+      },
+      "throughput": {
+        "median": 1.4100641500000393,
+        "min": 1.252616900000021,
+        "max": 1.8833352999999988,
+        "launches": 1,
+        "samples_per_launch": 1,
+        "runs": 10,
+        "megabytes_per_second": 71.47089868216081
+      },
+      "idle_1": {
+        "median": 31514624,
+        "min": 31383552,
+        "max": 31813632,
+        "launches": 3,
+        "samples_per_launch": 5,
+        "runs": 15,
+        "process_count": 3
+      },
+      "idle_10": {
+        "median": 131559424,
+        "min": 130318336,
+        "max": 132382720,
+        "launches": 3,
+        "samples_per_launch": 5,
+        "runs": 15,
+        "process_count": 21
+      }
+    },
+    "tabby": {
+      "startup": {
+        "median": 704.6512000000007,
+        "min": 679.5848000000433,
+        "max": 715.0907999999845,
+        "launches": 1,
+        "samples_per_launch": 1,
+        "runs": 10
+      },
+      "throughput": {
+        "median": 3.6690346500000715,
+        "min": 3.6405571000000236,
+        "max": 3.8996704999999565,
+        "launches": 1,
+        "samples_per_launch": 1,
+        "runs": 10,
+        "megabytes_per_second": 27.467320865993468
+      },
+      "idle_1": {
+        "median": 319729664,
+        "min": 318795776,
+        "max": 320831488,
+        "launches": 3,
+        "samples_per_launch": 5,
+        "runs": 15,
+        "process_count": 5
+      },
+      "idle_10": {
+        "median": 383840256,
+        "min": 378273792,
+        "max": 386043904,
+        "launches": 3,
+        "samples_per_launch": 5,
+        "runs": 15,
+        "process_count": 5
+      }
+    }
+  },
+  "trials": [
+    {
+      "id": "komando-startup-cf4c937e",
+      "app": "komando",
+      "mode": "startup",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "milliseconds": 214.95189999996,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ]
+        },
+        {
+          "milliseconds": 202.63069999987238,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ]
+        },
+        {
+          "milliseconds": 215.54190000006201,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ]
+        },
+        {
+          "milliseconds": 293.04389999992964,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ]
+        },
+        {
+          "milliseconds": 216.94339999999102,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ]
+        },
+        {
+          "milliseconds": 203.00040000006447,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ]
+        },
+        {
+          "milliseconds": 200.67709999989347,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ]
+        },
+        {
+          "milliseconds": 203.9005999999972,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ]
+        },
+        {
+          "milliseconds": 216.15569999994477,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ]
+        },
+        {
+          "milliseconds": 202.4836000000505,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ]
+        }
+      ],
+      "connections": [],
+      "errors": []
+    },
+    {
+      "id": "komando-throughput-5198a4a3",
+      "app": "komando",
+      "mode": "throughput",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "run": 1,
+          "seconds": 0.2962697999998909,
+          "sent_seconds": 0.27037109999992026,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 2,
+          "seconds": 0.29408680000005916,
+          "sent_seconds": 0.26822870000000876,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 3,
+          "seconds": 0.2988483999999971,
+          "sent_seconds": 0.27232790000016394,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 4,
+          "seconds": 0.31895600000007107,
+          "sent_seconds": 0.29302290000009634,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 5,
+          "seconds": 0.35512789999984307,
+          "sent_seconds": 0.33131009999988237,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 6,
+          "seconds": 0.30394090000004326,
+          "sent_seconds": 0.28187919999982114,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 7,
+          "seconds": 0.33265460000006897,
+          "sent_seconds": 0.3060725000000275,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 8,
+          "seconds": 0.31515379999996185,
+          "sent_seconds": 0.2892702999999983,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 9,
+          "seconds": 0.41103860000021086,
+          "sent_seconds": 0.3838889000001018,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 10,
+          "seconds": 0.372628000000077,
+          "sent_seconds": 0.34426970000004076,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "komando-idle-c8840b21",
+      "app": "komando",
+      "mode": "idle",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 30199808,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 29859840,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 29863936,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 30265344,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 30228480,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "komando-idle-c0ee72f0",
+      "app": "komando",
+      "mode": "idle",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 29741056,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 29364224,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 29802496,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 29749248,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 29757440,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "komando-idle-c7c0810f",
+      "app": "komando",
+      "mode": "idle",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 29433856,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 29454336,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 29429760,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 29876224,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 29872128,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "komando-idle-c925cd43",
+      "app": "komando",
+      "mode": "idle",
+      "sessions": 10,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 36929536,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 36532224,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 36573184,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 36524032,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 36511744,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "komando-idle-b723c31f",
+      "app": "komando",
+      "mode": "idle",
+      "sessions": 10,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 36573184,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 37052416,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 36728832,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 36737024,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 36769792,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "komando-idle-1828615f",
+      "app": "komando",
+      "mode": "idle",
+      "sessions": 10,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 36659200,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 36200448,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 36184064,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 36175872,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 36204544,
+          "process_count": 1,
+          "windows": [
+            [
+              1294,
+              807
+            ]
+          ],
+          "processes": [
+            "benchmark_client.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            856,
+            720
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "wt-startup-f07e6f7b",
+      "app": "wt",
+      "mode": "startup",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "milliseconds": 227.11680000008982,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ]
+        },
+        {
+          "milliseconds": 232.08820000002106,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ]
+        },
+        {
+          "milliseconds": 234.8107999999911,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ]
+        },
+        {
+          "milliseconds": 233.81639999990966,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ]
+        },
+        {
+          "milliseconds": 217.08799999998973,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ]
+        },
+        {
+          "milliseconds": 220.4825000000028,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ]
+        },
+        {
+          "milliseconds": 231.70070000003307,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ]
+        },
+        {
+          "milliseconds": 233.73620000006667,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ]
+        },
+        {
+          "milliseconds": 234.07209999993484,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ]
+        },
+        {
+          "milliseconds": 246.48960000001807,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ]
+        }
+      ],
+      "connections": [],
+      "errors": []
+    },
+    {
+      "id": "wt-throughput-ecdb372e",
+      "app": "wt",
+      "mode": "throughput",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "run": 1,
+          "seconds": 1.3791318999999476,
+          "sent_seconds": 1.3649768000000222,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 2,
+          "seconds": 1.440996400000131,
+          "sent_seconds": 1.3973121000001356,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 3,
+          "seconds": 1.3133875000000899,
+          "sent_seconds": 1.3019643000000087,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 4,
+          "seconds": 1.252616900000021,
+          "sent_seconds": 1.2412197000001015,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 5,
+          "seconds": 1.8237520000000131,
+          "sent_seconds": 1.765843700000005,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 6,
+          "seconds": 1.3338490999999522,
+          "sent_seconds": 1.3228715000000193,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 7,
+          "seconds": 1.4931569999998828,
+          "sent_seconds": 1.4815653999999085,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 8,
+          "seconds": 1.8833352999999988,
+          "sent_seconds": 1.8403582999999344,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 9,
+          "seconds": 1.2602073000000473,
+          "sent_seconds": 1.24851260000014,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 10,
+          "seconds": 1.5448633000000882,
+          "sent_seconds": 1.5000672999999551,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "wt-idle-a8e476e1",
+      "app": "wt",
+      "mode": "idle",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 31629312,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 31514624,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 31514624,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 31514624,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 31514624,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "wt-idle-6280ad5b",
+      "app": "wt",
+      "mode": "idle",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 31813632,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 31698944,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 31698944,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 31698944,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 31698944,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "wt-idle-c9e01f86",
+      "app": "wt",
+      "mode": "idle",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 31502336,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 31387648,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 31383552,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 31387648,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 31383552,
+          "process_count": 3,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "wt-idle-63914ab8",
+      "app": "wt",
+      "mode": "idle",
+      "sessions": 10,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 131694592,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 131559424,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 131559424,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 131559424,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 131559424,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "wt-idle-a58a5246",
+      "app": "wt",
+      "mode": "idle",
+      "sessions": 10,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 130453504,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 130318336,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 130318336,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 130318336,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 130318336,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "wt-idle-be61e186",
+      "app": "wt",
+      "mode": "idle",
+      "sessions": 10,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 132382720,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 132247552,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 132247552,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 132247552,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 132247552,
+          "process_count": 21,
+          "windows": [
+            [
+              903,
+              704
+            ]
+          ],
+          "processes": [
+            "WindowsTerminal.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe",
+            "OpenConsole.exe",
+            "ssh.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        },
+        {
+          "user": "bench",
+          "terminal": [
+            107,
+            40,
+            640,
+            480
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "tabby-startup-14cdd24f",
+      "app": "tabby",
+      "mode": "startup",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "milliseconds": 712.9437999999482,
+          "windows": [
+            [
+              1298,
+              810
+            ]
+          ]
+        },
+        {
+          "milliseconds": 702.5578000000223,
+          "windows": [
+            [
+              1298,
+              810
+            ]
+          ]
+        },
+        {
+          "milliseconds": 715.0907999999845,
+          "windows": [
+            [
+              1298,
+              810
+            ]
+          ]
+        },
+        {
+          "milliseconds": 706.7445999999791,
+          "windows": [
+            [
+              1298,
+              810
+            ]
+          ]
+        },
+        {
+          "milliseconds": 696.1552000000211,
+          "windows": [
+            [
+              1298,
+              810
+            ]
+          ]
+        },
+        {
+          "milliseconds": 688.2319000000052,
+          "windows": [
+            [
+              1298,
+              810
+            ]
+          ]
+        },
+        {
+          "milliseconds": 713.0211999999574,
+          "windows": [
+            [
+              1298,
+              810
+            ]
+          ]
+        },
+        {
+          "milliseconds": 699.2894999999635,
+          "windows": [
+            [
+              1298,
+              810
+            ]
+          ]
+        },
+        {
+          "milliseconds": 714.3965999999864,
+          "windows": [
+            [
+              1298,
+              810
+            ]
+          ]
+        },
+        {
+          "milliseconds": 679.5848000000433,
+          "windows": [
+            [
+              1298,
+              810
+            ]
+          ]
+        }
+      ],
+      "connections": [],
+      "errors": []
+    },
+    {
+      "id": "tabby-throughput-7f407327",
+      "app": "tabby",
+      "mode": "throughput",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "run": 1,
+          "seconds": 3.8996704999999565,
+          "sent_seconds": 2.0219933999999284,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 2,
+          "seconds": 3.6839416000000256,
+          "sent_seconds": 0.8757407000000512,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 3,
+          "seconds": 3.764665100000002,
+          "sent_seconds": 1.2278318000001036,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 4,
+          "seconds": 3.708199899999954,
+          "sent_seconds": 1.3559311000001344,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 5,
+          "seconds": 3.7721151000000646,
+          "sent_seconds": 1.5315912999999455,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 6,
+          "seconds": 3.6434024000000136,
+          "sent_seconds": 1.7647734999998193,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 7,
+          "seconds": 3.6527346000000307,
+          "sent_seconds": 1.1089320000000953,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 8,
+          "seconds": 3.6405571000000236,
+          "sent_seconds": 1.4692671000000246,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 9,
+          "seconds": 3.6541277000001173,
+          "sent_seconds": 1.556026200000133,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        },
+        {
+          "run": 10,
+          "seconds": 3.6412137000002076,
+          "sent_seconds": 1.858063900000161,
+          "bytes": 100778552,
+          "cursor_reply": "\u001b[40;1R"
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench0",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "tabby-idle-f2bcb6c9",
+      "app": "tabby",
+      "mode": "idle",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 319078400,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 318795776,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 318795776,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 318861312,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 318865408,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench0",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "tabby-idle-57f4de18",
+      "app": "tabby",
+      "mode": "idle",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 320008192,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 319713280,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 319717376,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 319729664,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 319733760,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench0",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "tabby-idle-78bbfacf",
+      "app": "tabby",
+      "mode": "idle",
+      "sessions": 1,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 320663552,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 319758336,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 320827392,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 320827392,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 320831488,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench0",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "tabby-idle-86dc217c",
+      "app": "tabby",
+      "mode": "idle",
+      "sessions": 10,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 384393216,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 383877120,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 383827968,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 383832064,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 383840256,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench0",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench1",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench2",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench3",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench4",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench5",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench6",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench7",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench8",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench9",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "tabby-idle-dedf1ec0",
+      "app": "tabby",
+      "mode": "idle",
+      "sessions": 10,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 379322368,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 378273792,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 378273792,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 378273792,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 378273792,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench0",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench1",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench2",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench3",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench4",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench5",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench6",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench7",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench8",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench9",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        }
+      ],
+      "errors": []
+    },
+    {
+      "id": "tabby-idle-bf64fe0d",
+      "app": "tabby",
+      "mode": "idle",
+      "sessions": 10,
+      "server": "2.24.1",
+      "runs": [
+        {
+          "private_working_set_bytes": 386043904,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 385687552,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 385691648,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 385699840,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        },
+        {
+          "private_working_set_bytes": 385708032,
+          "process_count": 5,
+          "windows": [
+            [
+              911,
+              759
+            ]
+          ],
+          "processes": [
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe",
+            "Tabby.exe"
+          ]
+        }
+      ],
+      "connections": [
+        {
+          "user": "bench0",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench1",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench2",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench3",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench4",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench5",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench6",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench7",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench8",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        },
+        {
+          "user": "bench9",
+          "terminal": [
+            107,
+            40,
+            0,
+            0
+          ]
+        }
+      ],
+      "errors": []
+    }
+  ]
+}

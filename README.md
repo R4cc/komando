@@ -193,11 +193,25 @@ sessions using an SSH gateway are left out with an explanation. Passwords stay i
 Komando is built in Rust for fast startup, low memory use and responsive SSH sessions.
 
 <p align="center">
-  <img src="assets/benchmark-tabby-dark.svg#gh-dark-mode-only" width="860" alt="Komando, Windows Terminal and Tabby, in that order: startup 203, 351 and 687 ms; memory with 1 SSH Session 29.7, 29 and 319.6 MB; memory with 10 Sessions 36.5, 127 and 380.8 MB; a million log lines in 0.37, 1.4 and 3.73 seconds. Windows Terminal figures are older measurements with different settings.">
-  <img src="assets/benchmark-tabby-light.svg#gh-light-mode-only" width="860" alt="Komando, Windows Terminal and Tabby, in that order: startup 203, 351 and 687 ms; memory with 1 SSH Session 29.7, 29 and 319.6 MB; memory with 10 Sessions 36.5, 127 and 380.8 MB; a million log lines in 0.37, 1.4 and 3.73 seconds. Windows Terminal figures are older measurements with different settings.">
+  <img src="assets/benchmark-dark.svg#gh-dark-mode-only" width="860" alt="Bar charts, lower is better. Window on screen after launch: Komando 209 ms, Windows Terminal 233 ms, Tabby 705 ms. Memory with 1 idle SSH Session: 29.7, 31.5 and 320 MB. With 10 Sessions: 36.5, 132 and 384 MB. 1,000,000 coloured log lines: 0.32, 1.41 and 3.67 seconds.">
+  <img src="assets/benchmark-light.svg#gh-light-mode-only" width="860" alt="Bar charts, lower is better. Window on screen after launch: Komando 209 ms, Windows Terminal 233 ms, Tabby 705 ms. Memory with 1 idle SSH Session: 29.7, 31.5 and 320 MB. With 10 Sessions: 36.5, 132 and 384 MB. 1,000,000 coloured log lines: 0.32, 1.41 and 3.67 seconds.">
 </p>
 
-<p align="center"><sub>Komando, Windows Terminal + OpenSSH and Tabby on the same Windows 11 PC. Each metric uses its own scale. Windows Terminal figures are from 2026-11-13 with different settings; Komando 0.8.4 and Tabby were measured on 2026-11-18. <a href="docs/benchmarks.md">Method and raw data.</a></sub></p>
+<p align="center"><sub>Komando (<code>main</code> at 79e2b82, after 0.9.1), Windows Terminal 1.25 with OpenSSH 9.5, and Tabby 1.0.238, all measured on 2026-11-27 on the same Windows 11 PC with the same grid, font and Scrollback. <a href="docs/benchmarks.md">Method, raw data and limits.</a></sub></p>
+
+<details>
+<summary>Results as a table</summary>
+<br>
+
+| Median, lower is better | Komando | Windows Terminal + OpenSSH | Tabby |
+|---|---:|---:|---:|
+| Window on screen after launch | **209 ms** | 233 ms | 705 ms |
+| Memory, 1 idle SSH Session | **29.7 MB** | 31.5 MB | 320 MB |
+| Memory, 10 idle SSH Sessions | **36.5 MB** | 132 MB | 384 MB |
+| Processes, 10 Sessions | **1** | 21 | 5 |
+| 1,000,000 coloured log lines | **0.32 s** | 1.41 s | 3.67 s |
+
+</details>
 
 ### On slow and distant connections
 

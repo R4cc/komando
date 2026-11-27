@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 506" width="860" height="506" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-labelledby="title desc">
+<title id="title">Komando, Windows Terminal and Tabby benchmarks</title>
+<desc id="desc">Startup to visible window: Komando 209 ms, Windows Terminal 233 ms, Tabby 705 ms; Memory, 1 idle SSH Session: Komando 29.7 MB, Windows Terminal 31.5 MB, Tabby 320 MB; Memory, 10 idle SSH Sessions: Komando 36.5 MB, Windows Terminal 132 MB, Tabby 384 MB; Print 1,000,000 coloured log lines: Komando 0.32 s, Windows Terminal 1.41 s, Tabby 3.67 s. Lower is better. Bars are medians, whiskers the fastest and slowest run. Each panel has its own zero-based scale.</desc>
+<rect width="860" height="506" rx="12" fill="#0d1117"/>
+<text x="24" y="38" fill="#f0f3f6" font-size="17" font-weight="600">SSH terminals on Windows 11, lower is better</text>
+<text x="24" y="60" fill="#9198a1" font-size="13">Bars show the median; whiskers span the fastest and slowest run. Each panel has its own scale, starting at zero.</text>
+<rect x="24" y="80" width="12" height="12" rx="3" fill="#3987e5"/>
+<text x="42" y="90.5" fill="#f0f3f6" font-size="13">Komando main (79e2b82)</text>
+<rect x="224.2" y="80" width="12" height="12" rx="3" fill="#d95926"/>
+<text x="242.2" y="90.5" fill="#f0f3f6" font-size="13">Windows Terminal 1.25 + OpenSSH 9.5</text>
+<rect x="516.7" y="80" width="12" height="12" rx="3" fill="#199e70"/>
+<text x="534.7" y="90.5" fill="#f0f3f6" font-size="13">Tabby 1.0.238</text>
+<text x="24.0" y="128" fill="#f0f3f6" font-size="14" font-weight="600">Startup to visible window <tspan fill="#9198a1" font-weight="400">(ms)</tspan></text>
+<line x1="142.0" y1="142" x2="142.0" y2="232" stroke="#3d444d" stroke-width="1"/>
+<text x="142.0" y="248" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">0</text>
+<line x1="194.0" y1="142" x2="194.0" y2="232" stroke="#262c36" stroke-width="1"/>
+<text x="194.0" y="248" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">200</text>
+<line x1="246.0" y1="142" x2="246.0" y2="232" stroke="#262c36" stroke-width="1"/>
+<text x="246.0" y="248" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">400</text>
+<line x1="298.0" y1="142" x2="298.0" y2="232" stroke="#262c36" stroke-width="1"/>
+<text x="298.0" y="248" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">600</text>
+<line x1="350.0" y1="142" x2="350.0" y2="232" stroke="#262c36" stroke-width="1"/>
+<text x="350.0" y="248" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">800</text>
+<text x="24.0" y="161.5" fill="#9198a1" font-size="12.5">Komando</text>
+<path d="M142.00,148.00 H192.45 A4.00,4.00 0 0 1 196.45,152.00 V162.00 A4.00,4.00 0 0 1 192.45,166.00 H142.00 Z" fill="#3987e5"><title>Komando main (79e2b82): median 209 ms, range 201 ms to 293 ms, 10 samples</title></path>
+<g stroke="#f0f3f6" stroke-width="1.5" stroke-linecap="round" opacity="0.85"><line x1="194.18" y1="157.0" x2="218.19" y2="157.0"/><line x1="194.18" y1="153.0" x2="194.18" y2="161.0"/><line x1="218.19" y1="153.0" x2="218.19" y2="161.0"/></g>
+<text x="225.19" y="161.5" fill="#f0f3f6" font-size="12.5" font-weight="600" style="font-variant-numeric: tabular-nums">209 ms</text>
+<text x="24.0" y="191.5" fill="#9198a1" font-size="12.5">Windows Terminal</text>
+<path d="M142.00,178.00 H198.56 A4.00,4.00 0 0 1 202.56,182.00 V192.00 A4.00,4.00 0 0 1 198.56,196.00 H142.00 Z" fill="#d95926"><title>Windows Terminal 1.25: median 233 ms, range 217 ms to 246 ms, 10 samples</title></path>
+<g stroke="#f0f3f6" stroke-width="1.5" stroke-linecap="round" opacity="0.85"><line x1="198.44" y1="187.0" x2="206.09" y2="187.0"/><line x1="198.44" y1="183.0" x2="198.44" y2="191.0"/><line x1="206.09" y1="183.0" x2="206.09" y2="191.0"/></g>
+<text x="213.09" y="191.5" fill="#f0f3f6" font-size="12.5" font-weight="600" style="font-variant-numeric: tabular-nums">233 ms</text>
+<text x="24.0" y="221.5" fill="#9198a1" font-size="12.5">Tabby</text>
+<path d="M142.00,208.00 H321.21 A4.00,4.00 0 0 1 325.21,212.00 V222.00 A4.00,4.00 0 0 1 321.21,226.00 H142.00 Z" fill="#199e70"><title>Tabby 1.0.238: median 705 ms, range 680 ms to 715 ms, 10 samples</title></path>
+<g stroke="#f0f3f6" stroke-width="1.5" stroke-linecap="round" opacity="0.85"><line x1="318.69" y1="217.0" x2="327.92" y2="217.0"/><line x1="318.69" y1="213.0" x2="318.69" y2="221.0"/><line x1="327.92" y1="213.0" x2="327.92" y2="221.0"/></g>
+<text x="334.92" y="221.5" fill="#f0f3f6" font-size="12.5" font-weight="600" style="font-variant-numeric: tabular-nums">705 ms</text>
+<text x="444.0" y="128" fill="#f0f3f6" font-size="14" font-weight="600">Memory, 1 idle SSH Session <tspan fill="#9198a1" font-weight="400">(MB)</tspan></text>
+<line x1="562.0" y1="142" x2="562.0" y2="232" stroke="#3d444d" stroke-width="1"/>
+<text x="562.0" y="248" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">0</text>
+<line x1="614.0" y1="142" x2="614.0" y2="232" stroke="#262c36" stroke-width="1"/>
+<text x="614.0" y="248" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">100</text>
+<line x1="666.0" y1="142" x2="666.0" y2="232" stroke="#262c36" stroke-width="1"/>
+<text x="666.0" y="248" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">200</text>
+<line x1="718.0" y1="142" x2="718.0" y2="232" stroke="#262c36" stroke-width="1"/>
+<text x="718.0" y="248" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">300</text>
+<line x1="770.0" y1="142" x2="770.0" y2="232" stroke="#262c36" stroke-width="1"/>
+<text x="770.0" y="248" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">400</text>
+<text x="444.0" y="161.5" fill="#9198a1" font-size="12.5">Komando</text>
+<path d="M562.00,148.00 H573.47 A4.00,4.00 0 0 1 577.47,152.00 V162.00 A4.00,4.00 0 0 1 573.47,166.00 H562.00 Z" fill="#3987e5"><title>Komando main (79e2b82): median 29.7 MB, range 29.4 MB to 30.3 MB, 15 samples</title></path>
+<g stroke="#f0f3f6" stroke-width="1.5" stroke-linecap="round" opacity="0.85"><line x1="577.27" y1="157.0" x2="577.74" y2="157.0"/><line x1="577.27" y1="153.0" x2="577.27" y2="161.0"/><line x1="577.74" y1="153.0" x2="577.74" y2="161.0"/></g>
+<text x="584.74" y="161.5" fill="#f0f3f6" font-size="12.5" font-weight="600" style="font-variant-numeric: tabular-nums">29.7 MB</text>
+<text x="444.0" y="191.5" fill="#9198a1" font-size="12.5">Windows Terminal</text>
+<path d="M562.00,178.00 H574.39 A4.00,4.00 0 0 1 578.39,182.00 V192.00 A4.00,4.00 0 0 1 574.39,196.00 H562.00 Z" fill="#d95926"><title>Windows Terminal 1.25: median 31.5 MB, range 31.4 MB to 31.8 MB, 15 samples</title></path>
+<g stroke="#f0f3f6" stroke-width="1.5" stroke-linecap="round" opacity="0.85"><line x1="578.32" y1="187.0" x2="578.54" y2="187.0"/><line x1="578.32" y1="183.0" x2="578.32" y2="191.0"/><line x1="578.54" y1="183.0" x2="578.54" y2="191.0"/></g>
+<text x="585.54" y="191.5" fill="#f0f3f6" font-size="12.5" font-weight="600" style="font-variant-numeric: tabular-nums">31.5 MB</text>
+<text x="444.0" y="221.5" fill="#9198a1" font-size="12.5">Tabby</text>
+<path d="M562.00,208.00 H724.26 A4.00,4.00 0 0 1 728.26,212.00 V222.00 A4.00,4.00 0 0 1 724.26,226.00 H562.00 Z" fill="#199e70"><title>Tabby 1.0.238: median 320 MB, range 319 MB to 321 MB, 15 samples</title></path>
+<g stroke="#f0f3f6" stroke-width="1.5" stroke-linecap="round" opacity="0.85"><line x1="727.77" y1="217.0" x2="728.83" y2="217.0"/><line x1="727.77" y1="213.0" x2="727.77" y2="221.0"/><line x1="728.83" y1="213.0" x2="728.83" y2="221.0"/></g>
+<text x="735.83" y="221.5" fill="#f0f3f6" font-size="12.5" font-weight="600" style="font-variant-numeric: tabular-nums">320 MB</text>
+<text x="24.0" y="298" fill="#f0f3f6" font-size="14" font-weight="600">Memory, 10 idle SSH Sessions <tspan fill="#9198a1" font-weight="400">(MB)</tspan></text>
+<line x1="142.0" y1="312" x2="142.0" y2="402" stroke="#3d444d" stroke-width="1"/>
+<text x="142.0" y="418" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">0</text>
+<line x1="194.0" y1="312" x2="194.0" y2="402" stroke="#262c36" stroke-width="1"/>
+<text x="194.0" y="418" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">100</text>
+<line x1="246.0" y1="312" x2="246.0" y2="402" stroke="#262c36" stroke-width="1"/>
+<text x="246.0" y="418" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">200</text>
+<line x1="298.0" y1="312" x2="298.0" y2="402" stroke="#262c36" stroke-width="1"/>
+<text x="298.0" y="418" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">300</text>
+<line x1="350.0" y1="312" x2="350.0" y2="402" stroke="#262c36" stroke-width="1"/>
+<text x="350.0" y="418" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">400</text>
+<text x="24.0" y="331.5" fill="#9198a1" font-size="12.5">Komando</text>
+<path d="M142.00,318.00 H157.00 A4.00,4.00 0 0 1 161.00,322.00 V332.00 A4.00,4.00 0 0 1 157.00,336.00 H142.00 Z" fill="#3987e5"><title>Komando main (79e2b82): median 36.5 MB, range 36.2 MB to 37.1 MB, 15 samples</title></path>
+<g stroke="#f0f3f6" stroke-width="1.5" stroke-linecap="round" opacity="0.85"><line x1="160.81" y1="327.0" x2="161.27" y2="327.0"/><line x1="160.81" y1="323.0" x2="160.81" y2="331.0"/><line x1="161.27" y1="323.0" x2="161.27" y2="331.0"/></g>
+<text x="168.27" y="331.5" fill="#f0f3f6" font-size="12.5" font-weight="600" style="font-variant-numeric: tabular-nums">36.5 MB</text>
+<text x="24.0" y="361.5" fill="#9198a1" font-size="12.5">Windows Terminal</text>
+<path d="M142.00,348.00 H206.41 A4.00,4.00 0 0 1 210.41,352.00 V362.00 A4.00,4.00 0 0 1 206.41,366.00 H142.00 Z" fill="#d95926"><title>Windows Terminal 1.25: median 132 MB, range 130 MB to 132 MB, 15 samples</title></path>
+<g stroke="#f0f3f6" stroke-width="1.5" stroke-linecap="round" opacity="0.85"><line x1="209.77" y1="357.0" x2="210.84" y2="357.0"/><line x1="209.77" y1="353.0" x2="209.77" y2="361.0"/><line x1="210.84" y1="353.0" x2="210.84" y2="361.0"/></g>
+<text x="217.84" y="361.5" fill="#f0f3f6" font-size="12.5" font-weight="600" style="font-variant-numeric: tabular-nums">132 MB</text>
+<text x="24.0" y="391.5" fill="#9198a1" font-size="12.5">Tabby</text>
+<path d="M142.00,378.00 H337.60 A4.00,4.00 0 0 1 341.60,382.00 V392.00 A4.00,4.00 0 0 1 337.60,396.00 H142.00 Z" fill="#199e70"><title>Tabby 1.0.238: median 384 MB, range 378 MB to 386 MB, 15 samples</title></path>
+<g stroke="#f0f3f6" stroke-width="1.5" stroke-linecap="round" opacity="0.85"><line x1="338.70" y1="387.0" x2="342.74" y2="387.0"/><line x1="338.70" y1="383.0" x2="338.70" y2="391.0"/><line x1="342.74" y1="383.0" x2="342.74" y2="391.0"/></g>
+<text x="349.74" y="391.5" fill="#f0f3f6" font-size="12.5" font-weight="600" style="font-variant-numeric: tabular-nums">384 MB</text>
+<text x="444.0" y="298" fill="#f0f3f6" font-size="14" font-weight="600">Print 1,000,000 coloured log lines <tspan fill="#9198a1" font-weight="400">(s)</tspan></text>
+<line x1="562.0" y1="312" x2="562.0" y2="402" stroke="#3d444d" stroke-width="1"/>
+<text x="562.0" y="418" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">0</text>
+<line x1="614.0" y1="312" x2="614.0" y2="402" stroke="#262c36" stroke-width="1"/>
+<text x="614.0" y="418" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">1</text>
+<line x1="666.0" y1="312" x2="666.0" y2="402" stroke="#262c36" stroke-width="1"/>
+<text x="666.0" y="418" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">2</text>
+<line x1="718.0" y1="312" x2="718.0" y2="402" stroke="#262c36" stroke-width="1"/>
+<text x="718.0" y="418" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">3</text>
+<line x1="770.0" y1="312" x2="770.0" y2="402" stroke="#262c36" stroke-width="1"/>
+<text x="770.0" y="418" text-anchor="middle" fill="#9198a1" font-size="11" style="font-variant-numeric: tabular-nums">4</text>
+<text x="444.0" y="331.5" fill="#9198a1" font-size="12.5">Komando</text>
+<path d="M562.00,318.00 H574.49 A4.00,4.00 0 0 1 578.49,322.00 V332.00 A4.00,4.00 0 0 1 574.49,336.00 H562.00 Z" fill="#3987e5"><title>Komando main (79e2b82): median 0.32 s, range 0.29 s to 0.41 s, 10 samples</title></path>
+<g stroke="#f0f3f6" stroke-width="1.5" stroke-linecap="round" opacity="0.85"><line x1="577.29" y1="327.0" x2="583.37" y2="327.0"/><line x1="577.29" y1="323.0" x2="577.29" y2="331.0"/><line x1="583.37" y1="323.0" x2="583.37" y2="331.0"/></g>
+<text x="590.37" y="331.5" fill="#f0f3f6" font-size="12.5" font-weight="600" style="font-variant-numeric: tabular-nums">0.32 s</text>
+<text x="444.0" y="361.5" fill="#9198a1" font-size="12.5">Windows Terminal</text>
+<path d="M562.00,348.00 H631.32 A4.00,4.00 0 0 1 635.32,352.00 V362.00 A4.00,4.00 0 0 1 631.32,366.00 H562.00 Z" fill="#d95926"><title>Windows Terminal 1.25: median 1.41 s, range 1.25 s to 1.88 s, 10 samples</title></path>
+<g stroke="#f0f3f6" stroke-width="1.5" stroke-linecap="round" opacity="0.85"><line x1="627.14" y1="357.0" x2="659.93" y2="357.0"/><line x1="627.14" y1="353.0" x2="627.14" y2="361.0"/><line x1="659.93" y1="353.0" x2="659.93" y2="361.0"/></g>
+<text x="666.93" y="361.5" fill="#f0f3f6" font-size="12.5" font-weight="600" style="font-variant-numeric: tabular-nums">1.41 s</text>
+<text x="444.0" y="391.5" fill="#9198a1" font-size="12.5">Tabby</text>
+<path d="M562.00,378.00 H748.79 A4.00,4.00 0 0 1 752.79,382.00 V392.00 A4.00,4.00 0 0 1 748.79,396.00 H562.00 Z" fill="#199e70"><title>Tabby 1.0.238: median 3.67 s, range 3.64 s to 3.90 s, 10 samples</title></path>
+<g stroke="#f0f3f6" stroke-width="1.5" stroke-linecap="round" opacity="0.85"><line x1="751.31" y1="387.0" x2="764.78" y2="387.0"/><line x1="751.31" y1="383.0" x2="751.31" y2="391.0"/><line x1="764.78" y1="383.0" x2="764.78" y2="391.0"/></g>
+<text x="771.78" y="391.5" fill="#f0f3f6" font-size="12.5" font-weight="600" style="font-variant-numeric: tabular-nums">3.67 s</text>
+<text x="24" y="450" fill="#9198a1" font-size="12">Windows 11, Ryzen 7 9800X3D, RTX 5070 Ti, 32 GB, measured 2026-11-27. Loopback SSH server, 107 × 40 grid, 100,000-line Scrollback.</text>
+<text x="24" y="467" fill="#9198a1" font-size="12">Startup: 10 warm launches. Memory: private working set of every process, 3 launches × 5 samples. Log lines: 10 runs of 100.8 MB.</text>
+<text x="24" y="484" fill="#9198a1" font-size="12">Komando and Tabby use their built-in SSH clients; Windows Terminal runs ssh.exe through ConPTY.</text>
+</svg>

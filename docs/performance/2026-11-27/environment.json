@@ -1,0 +1,65 @@
+{
+  "os": "Windows 11 Pro build 26300",
+  "cpu": "AMD Ryzen 7 9800X3D, 8 cores",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti",
+  "physical_ram_bytes": 33944211456,
+  "display": "2560 x 1440 at 100 % scale",
+  "machine_short": "Windows 11, Ryzen 7 9800X3D, RTX 5070 Ti, 32 GB",
+  "python": "3.15.2",
+  "asyncssh": "2.24.1",
+  "psutil": "7.2.2",
+  "pyyaml": "6.0.3",
+  "versions": {
+    "komando": "main (79e2b82)",
+    "wt": "1.25",
+    "tabby": "1.0.238"
+  },
+  "komando_source": "79e2b82fe431ad7435820c5acbf660208ca308d7 (main after the 0.9.1 release; Cargo.toml version 0.9.1)",
+  "benchmark_library_checkout": "79e2b82fe431ad7435820c5acbf660208ca308d7",
+  "terminal_grid": [
+    107,
+    40
+  ],
+  "tabby_window": [
+    892,
+    748
+  ],
+  "binaries": [
+    {
+      "name": "komando.exe, cargo build --release --locked at 79e2b82",
+      "version": "0.9.1 + unreleased changes",
+      "sha256": "1FD0BE61BB61A8311F46D8F00B2EC778B39F41D34D2B7DFFB6A81C8DD38C78DC",
+      "used_for": "startup"
+    },
+    {
+      "name": "benchmark_client.exe, built in the same cargo invocation",
+      "version": "0.9.1 + unreleased changes",
+      "sha256": "C3CABF6C21A61C1B5F4D60DFE00ABA43085C9674F2523F542ED092F6ED8B65A1",
+      "used_for": "idle SSH memory and throughput; unchanged library at 79e2b82 with disposable session startup"
+    },
+    {
+      "name": "WindowsTerminal.exe (portable Microsoft.WindowsTerminal_1.25.3131.0_x64.zip from the microsoft/terminal v1.25.3131.0 release; zip SHA-256 273D6F1502ECA1B5BD95C43F5D4D7EC72CC503DF340102F8659717E5BEAD3437, Authenticode-signed by Microsoft)",
+      "version": "1.25.3131.0",
+      "sha256": "337C583DB0B4B53C726A851933E3D3DF86C09E0D4812D14D68AD703E81293FC9",
+      "used_for": "startup, idle SSH memory and throughput"
+    },
+    {
+      "name": "OpenConsole.exe (from the same portable Windows Terminal zip)",
+      "version": "1.25.3131.0",
+      "sha256": "B17E48B07EF153B420F0A6E178BACD31FB4C3390E21AE746586213FC0719A775",
+      "used_for": "ConPTY host for each Windows Terminal tab"
+    },
+    {
+      "name": "C:\\Windows\\System32\\OpenSSH\\ssh.exe",
+      "version": "OpenSSH_for_Windows_9.5p2, LibreSSL 3.8.2 (file version 9.5.6.4)",
+      "sha256": "98D447730047F5DF91373E852D057928A921C3D1E89938700AB656BA84B19DC8",
+      "used_for": "SSH client inside Windows Terminal"
+    },
+    {
+      "name": "installed Tabby",
+      "version": "1.0.238",
+      "sha256": "0280FFEADD44C30641146EF28391DF262E9B025A9675DE6929B650723B3F0986",
+      "used_for": "startup, idle SSH memory and throughput"
+    }
+  ]
+}
