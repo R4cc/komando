@@ -500,6 +500,9 @@ pub(crate) struct Client {
     /// The Certificate Authorities trusted for this host (see `host_cert`): a host certificate
     /// signed by one of them is trusted without asking.
     authorities: Vec<PublicKey>,
+    /// Keys an `@revoked` line in a known_hosts file lists: never trusted, not even if the
+    /// user is asked and says yes.
+    revoked: Arc<Vec<PublicKey>>,
     known_hosts: PathBuf,
     proxy: EventProxy,
     log: ConnectLog,
@@ -567,6 +570,9 @@ impl client::Handler for Client {
         let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
         self.proxy.send(SessionEvent::Hop { index: self.hop, step: HopStep::CheckingKey });
         self.log.line(LogKind::Step, &format!("Host key {} {fingerprint}", key.algorithm()));
+        refuse_revoked(&self.revoked, key.key_data(), &self.host, "host key").inspect_err(|_| {
+            self.log.line(LogKind::Fail, "Host key is revoked in known_hosts");
+        })?;
 
         // Komando's own list first, then the user's OpenSSH known_hosts (read-only import).
         let mut sources = vec![self.known_hosts.clone()];
@@ -700,13 +706,36 @@ fn replace_known_host(host: &str, port: u16, key: &PublicKey, path: &std::path::
     }
 }
 
-/// The `@cert-authority` lines of Komando's known_hosts and then the user's OpenSSH one.
-fn known_authorities(own: &std::path::Path) -> Vec<super::host_cert::Authority> {
-    let mut authorities = super::host_cert::read(own);
+/// Komando's known_hosts and then the user's OpenSSH one.
+fn known_hosts_files(own: &std::path::Path) -> Vec<PathBuf> {
+    let mut files = vec![own.to_path_buf()];
     if let Some(home) = dirs::home_dir() {
-        authorities.extend(super::host_cert::read(&home.join(".ssh").join("known_hosts")));
+        files.push(home.join(".ssh").join("known_hosts"));
     }
+    files
+}
+
+/// The `@cert-authority` lines of Komando's known_hosts and then the user's OpenSSH one,
+/// without any authority that is also `@revoked`.
+fn known_authorities(own: &std::path::Path, revoked: &[PublicKey]) -> Vec<super::host_cert::Authority> {
+    let mut authorities: Vec<_> = known_hosts_files(own).iter().flat_map(|path| super::host_cert::read(path)).collect();
+    authorities.retain(|authority| !super::host_cert::is_revoked(revoked, authority.key.key_data()));
     authorities
+}
+
+/// The `@revoked` keys of Komando's known_hosts and the user's OpenSSH one.
+fn known_revoked(own: &std::path::Path) -> Vec<PublicKey> {
+    known_hosts_files(own).iter().flat_map(|path| super::host_cert::read_revoked(path)).collect()
+}
+
+/// An error when `key` is revoked: the connection stops without asking, as OpenSSH does.
+fn refuse_revoked(revoked: &[PublicKey], key: &russh::keys::ssh_key::public::KeyData, host: &str, what: &str) -> Result<()> {
+    if super::host_cert::is_revoked(revoked, key) {
+        return Err(anyhow!(
+            "The {what} of {host} is marked @revoked in known_hosts. Connection blocked: it must not be trusted again."
+        ));
+    }
+    Ok(())
 }
 
 impl Client {
@@ -716,6 +745,9 @@ impl Client {
     fn check_certificate(&self, cert: &russh::keys::Certificate) -> Result<bool> {
         self.proxy.send(SessionEvent::Hop { index: self.hop, step: HopStep::CheckingKey });
         self.log.line(LogKind::Step, &format!("Host certificate {} (key ID \"{}\")", cert.algorithm(), cert.key_id()));
+        refuse_revoked(&self.revoked, cert.public_key(), &self.host, "host certificate's key")
+            .and_then(|()| refuse_revoked(&self.revoked, cert.signature_key(), &self.host, "host certificate's authority"))
+            .inspect_err(|_| self.log.line(LogKind::Fail, "Host certificate refused: a key it rests on is revoked in known_hosts"))?;
         let authorities: Vec<&PublicKey> = self.authorities.iter().collect();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs());
         match super::host_cert::check(cert, &self.host, &authorities, now) {
@@ -758,7 +790,8 @@ async fn run(
 ) -> Result<String> {
     // Every hop's connection stays open: the next one runs through it.
     let mut handles: Vec<Handle<Client>> = Vec::with_capacity(target.hops.len());
-    let authorities = known_authorities(&target.known_hosts);
+    let revoked = Arc::new(known_revoked(&target.known_hosts));
+    let authorities = known_authorities(&target.known_hosts, &revoked);
     // The last hop's user and the password it signed in with, offered at sudo prompts.
     let mut sudo = None;
     // The Host's connection window: the most its shell's paced window grows to.
@@ -780,6 +813,7 @@ async fn run(
             host: hop.address.clone(),
             port: hop.port,
             authorities: host_authorities,
+            revoked: revoked.clone(),
             known_hosts: target.known_hosts.clone(),
             proxy: proxy.clone(),
             log: log.clone(),

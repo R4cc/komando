@@ -1,6 +1,6 @@
 # vte 0.15.0, patched for Komando
 
-This is vte 0.15.0 from crates.io with four changes, used through `[patch.crates-io]` in
+This is vte 0.15.0 from crates.io with five changes, used through `[patch.crates-io]` in
 Komando's `Cargo.toml` (alacritty_terminal's dependency on vte resolves to it too).
 `komando.patch` holds the changes as a diff against the published crate. The first goes with the
 change to `vendor/alacritty_terminal` (see its `KOMANDO.md`): neither does much without the other.
@@ -52,6 +52,7 @@ patch's (it writes a `Cargo.lock` there, which vte's `.gitignore` leaves out):
   sequences, sequences cut off) fed whole and in random pieces give the same events as one byte
   at a time, which never takes the fast path.
 - `character_after_split_utf8_is_kept`: the UTF-8 fix below.
+- `oversized_osc_is_dropped_and_bounded`: the OSC size fix below.
 
 What this does to the grid is tested in `vendor/alacritty_terminal`.
 
@@ -108,6 +109,17 @@ three of the next bytes to complete it. If those hold the rest of the character,
 character after it and the start of another one (`é` split, then `a` and the first byte of
 another `é`), vte 0.15.0 printed the first character but returned the length of both, so the `a`
 was skipped. It now returns the first character's length, as the branch above it already did.
+
+## The fix: an unterminated OSC string grew without bound
+
+With the `std` feature (which Komando uses), vte keeps an Operating System Command in a `Vec`
+that grows for as long as the string lasts; only the `no_std` buffer has a size. A server that
+sends `ESC ]` and then never sends BEL, ST or CAN filled the client's memory, taking every
+session down with it. Now an OSC stops collecting at `MAX_OSC_RAW_STD` (4 MiB, room for an OSC 52
+copy of about 3 MB of text). An OSC that passes it is dropped when it ends rather than dispatched
+cut short (a truncated title or clipboard copy would be wrong), and a buffer that grew past
+64 KiB is released afterwards. Tested by `oversized_osc_is_dropped_and_bounded`. Keep this
+when updating unless vte bounds the `std` buffer itself.
 
 ## Why
 

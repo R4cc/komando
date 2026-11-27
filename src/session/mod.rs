@@ -692,6 +692,35 @@ mod tests {
     use super::*;
     use alacritty_terminal::vte::ansi::Processor;
 
+    /// Security regression: a server that opens an OSC and never ends it must not grow the
+    /// client's memory without bound (vendor/vte caps the buffer), and an OSC 52 copy or title
+    /// past the cap is dropped rather than delivered cut short. The next OSC still works.
+    #[test]
+    fn an_endless_osc_is_dropped_and_later_ones_still_work() {
+        let (tx, mut rx) = mpsc::unbounded();
+        let term = new_term(GridSize { cols: 20, rows: 3, cell_width: 8, cell_height: 16 }, 100, EventProxy::new(tx));
+        let mut parser: Processor = Processor::new();
+        let mut t = term.lock();
+        parser.advance(&mut *t, b"\x1b]52;c;");
+        let chunk = vec![b'A'; 1 << 20];
+        for _ in 0..(alacritty_terminal::vte::MAX_OSC_RAW_STD >> 20) + 4 {
+            parser.advance(&mut *t, &chunk);
+        }
+        parser.advance(&mut *t, b"\x07\x1b]0;after\x07");
+        drop(t);
+        let mut stored = 0;
+        let mut titles = vec![];
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                SessionEvent::ClipboardStore(_) => stored += 1,
+                SessionEvent::Title(title) => titles.push(title),
+                _ => {}
+            }
+        }
+        assert_eq!(stored, 0, "an oversized OSC 52 copy must not reach the clipboard");
+        assert_eq!(titles, ["after"]);
+    }
+
     #[test]
     fn export_trims_and_uses_crlf() {
         assert_eq!(tidy_export("a  \nb\n\n\n"), "a\r\nb\r\n");

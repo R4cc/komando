@@ -44,6 +44,11 @@ pub use params::{Params, ParamsIter};
 const MAX_INTERMEDIATES: usize = 2;
 const MAX_OSC_PARAMS: usize = 16;
 const MAX_OSC_RAW: usize = 1024;
+/// Komando patch: the most bytes an Operating System Command may hold with the
+/// `std` feature, where the buffer is a `Vec`. Upstream lets it grow without
+/// bound, so a server that sends `ESC ]` and never ends the string fills memory.
+/// Generous enough for an OSC 52 copy of a few megabytes of text.
+pub const MAX_OSC_RAW_STD: usize = 4 * 1024 * 1024;
 
 /// Parser for raw _VTE_ protocol which delegates actions to a [`Perform`]
 ///
@@ -62,6 +67,10 @@ pub struct Parser<const OSC_RAW_BUF_SIZE: usize = MAX_OSC_RAW> {
     osc_raw: ArrayVec<u8, OSC_RAW_BUF_SIZE>,
     #[cfg(feature = "std")]
     osc_raw: Vec<u8>,
+    /// Komando patch: the OSC passed [`MAX_OSC_RAW_STD`]; it is dropped, not
+    /// dispatched cut short.
+    #[cfg(feature = "std")]
+    osc_overflow: bool,
     osc_params: [(usize, usize); MAX_OSC_PARAMS],
     osc_num_params: usize,
     ignoring: bool,
@@ -418,6 +427,10 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
             },
             0x5D => {
                 self.osc_raw.clear();
+                #[cfg(feature = "std")]
+                {
+                    self.osc_overflow = false;
+                }
                 self.osc_num_params = 0;
                 self.state = State::OscString
             },
@@ -595,13 +608,33 @@ impl<const OSC_RAW_BUF_SIZE: usize> Parser<OSC_RAW_BUF_SIZE> {
                 return;
             }
         }
+        #[cfg(feature = "std")]
+        {
+            if self.osc_raw.len() >= MAX_OSC_RAW_STD {
+                self.osc_overflow = true;
+                return;
+            }
+        }
         self.osc_raw.push(byte);
     }
 
     fn osc_end<P: Perform>(&mut self, performer: &mut P, byte: u8) {
-        self.action_osc_put_param();
-        self.osc_dispatch(performer, byte);
+        #[cfg(feature = "std")]
+        let overflow = std::mem::take(&mut self.osc_overflow);
+        #[cfg(not(feature = "std"))]
+        let overflow = false;
+        if !overflow {
+            self.action_osc_put_param();
+            self.osc_dispatch(performer, byte);
+        }
         self.osc_raw.clear();
+        // Komando patch: don't keep megabytes allocated after one large OSC.
+        #[cfg(feature = "std")]
+        {
+            if self.osc_raw.capacity() > 64 * 1024 {
+                self.osc_raw.shrink_to(MAX_OSC_RAW);
+            }
+        }
         self.osc_num_params = 0;
     }
 
@@ -1116,6 +1149,33 @@ mod tests {
             Sequence::Osc(params, _) => {
                 assert_eq!(params[1], &INPUT[4..(INPUT.len() - 2)]);
             },
+            _ => panic!("expected osc sequence"),
+        }
+    }
+
+    /// Komando patch: an OSC longer than [`MAX_OSC_RAW_STD`] is dropped, the
+    /// buffer stops growing, and the next OSC is parsed as usual.
+    #[cfg(feature = "std")]
+    #[test]
+    fn oversized_osc_is_dropped_and_bounded() {
+        let mut dispatcher = Dispatcher::default();
+        let mut parser = Parser::new();
+
+        parser.advance(&mut dispatcher, b"\x1b]0;");
+        let chunk = [b'a'; 64 * 1024];
+        for _ in 0..(MAX_OSC_RAW_STD / chunk.len() + 8) {
+            parser.advance(&mut dispatcher, &chunk);
+        }
+        assert!(parser.osc_raw.len() <= MAX_OSC_RAW_STD);
+        assert!(parser.osc_overflow);
+        parser.advance(&mut dispatcher, b"\x07");
+        assert!(dispatcher.dispatched.is_empty(), "the oversized OSC must not be dispatched");
+        assert!(parser.osc_raw.capacity() <= 64 * 1024, "the large buffer is released");
+
+        parser.advance(&mut dispatcher, b"\x1b]2;title\x07");
+        assert_eq!(dispatcher.dispatched.len(), 1);
+        match &dispatcher.dispatched[0] {
+            Sequence::Osc(params, _) => assert_eq!(params, &[b"2".to_vec(), b"title".to_vec()]),
             _ => panic!("expected osc sequence"),
         }
     }

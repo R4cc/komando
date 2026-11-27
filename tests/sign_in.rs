@@ -305,3 +305,38 @@ fn without_an_authority_a_host_with_a_certificate_is_asked_about_as_before() {
     assert!(outcome.signed_in, "ended: {:?}", outcome.ended);
     assert!(outcome.host_key_asked);
 }
+
+/// Security regression: a host key listed on an `@revoked` line is refused outright, without
+/// the Host Key question a user could answer with Trust.
+#[test]
+fn a_revoked_host_key_is_refused_without_asking() {
+    let (port, _server) = start(Mode::Interactive);
+    let revoked = format!("@revoked * {}\n", host_key().public_key().to_openssh().unwrap());
+    let outcome = sign_in_trusting("revoked", port, None, &[(PASSWORD, false)], &revoked);
+    assert!(!outcome.signed_in);
+    assert!(!outcome.host_key_asked, "a revoked key must not be offered for trust");
+    let reason = outcome.ended.unwrap();
+    assert!(reason.contains("marked @revoked"), "{reason}");
+}
+
+/// Security regression: a revoked key isn't trusted through a host certificate either, and a
+/// revoked authority vouches for nothing.
+#[test]
+fn revoked_keys_and_authorities_are_not_trusted_through_certificates() {
+    let (cert, ca) = host_certificate(21, "127.0.0.1");
+    let (port, _server) = start_with(Mode::Interactive, vec![cert]);
+    let host = host_key().public_key().to_openssh().unwrap();
+    let trusted = format!("@cert-authority [127.0.0.1]:{port} {ca}\n@revoked * {host}\n");
+    let outcome = sign_in_trusting("revoked-cert-key", port, None, &[(PASSWORD, false)], &trusted);
+    assert!(!outcome.signed_in);
+    assert!(!outcome.host_key_asked);
+    let reason = outcome.ended.unwrap();
+    assert!(reason.contains("marked @revoked"), "{reason}");
+
+    let (cert, ca) = host_certificate(22, "127.0.0.1");
+    let (port, _server) = start_with(Mode::Interactive, vec![cert]);
+    let trusted = format!("@cert-authority [127.0.0.1]:{port} {ca}\n@revoked * {ca}\n");
+    let outcome = sign_in_trusting("revoked-ca", port, None, &[(PASSWORD, false)], &trusted);
+    // Only the plain host key is left, asked about as on a first connection.
+    assert!(outcome.host_key_asked, "a revoked authority must not vouch for the host");
+}

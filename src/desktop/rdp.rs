@@ -91,14 +91,8 @@ async fn connect(
 
     let should_upgrade = within(ironrdp_tokio::connect_begin(&mut framed, &mut connector)).await?.map_err(failure)?;
     let (stream, leftover) = framed.into_inner();
-    let (tls, certificate) =
-        within(ironrdp_tls::upgrade(stream, &target.address)).await?.map_err(|err| anyhow!("TLS with the server failed: {err}"))?;
-    let der = tls.get_ref().1.peer_certificates().and_then(|c| c.first()).map(|c| c.to_vec());
-    let der = der.ok_or_else(|| anyhow!("The server sent no certificate."))?;
+    let (tls, der, public_key) = within(upgrade_tls(stream, &target.address)).await??;
     check_certificate(target, link, &der).await?;
-    let public_key = ironrdp_tls::extract_tls_server_public_key(&certificate)
-        .ok_or_else(|| anyhow!("The server's certificate has no public key Komando can read."))?
-        .to_vec();
 
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
     let mut framed = Framed::new_with_leftover(Box::new(tls) as Stream, leftover);
@@ -116,6 +110,30 @@ async fn connect(
     .into_connected()
     .map_err(|_| anyhow!("The server redirected the connection to another server, which Komando doesn't follow."))?;
     Ok((framed, result, clipboard))
+}
+
+/// TLS with the server: the stream, the server's certificate (DER) and its public key.
+///
+/// Any certificate chain is accepted here because `check_certificate` pins the certificate
+/// itself, trusted on first use like a Host Key. rustls still checks the handshake signature
+/// against that certificate's key, which proves the server holds the private key. The pin
+/// depends on that check: a certificate is public, so without it anyone on the path could
+/// present the server's certificate and match the pin. `ironrdp_tls::upgrade` skips the
+/// signature check, which is why it isn't used.
+async fn upgrade_tls<S>(stream: S, address: &str) -> Result<(ironrdp_tls::TlsStream<S>, Vec<u8>, Vec<u8>)>
+where
+    S: Unpin + tokio::io::AsyncRead + tokio::io::AsyncWrite,
+{
+    let accept_any_chain: ironrdp_tls::CertificateValidationCallback = std::sync::Arc::new(|_, _, _| true);
+    let (tls, certificate) = ironrdp_tls::upgrade_with_certificate_validation_callback(stream, address, accept_any_chain)
+        .await
+        .map_err(|err| anyhow!("TLS with the server failed: {err}"))?;
+    let der = tls.get_ref().1.peer_certificates().and_then(|c| c.first()).map(|c| c.to_vec());
+    let der = der.ok_or_else(|| anyhow!("The server sent no certificate."))?;
+    let public_key = ironrdp_tls::extract_tls_server_public_key(&certificate)
+        .ok_or_else(|| anyhow!("The server's certificate has no public key Komando can read."))?
+        .to_vec();
+    Ok((tls, der, public_key))
 }
 
 /// One step of reaching the desktop, given [`HANDSHAKE_TIMEOUT`].
@@ -452,5 +470,84 @@ fn operations(event: Input) -> Vec<Operation> {
         }
         // Handled by the caller.
         Input::ReleaseAll | Input::Resize { .. } | Input::Clipboard(_) | Input::ShareClipboard(_) | Input::Close => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use base64::Engine as _;
+    use tokio_rustls::rustls;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    use tokio_rustls::rustls::server::{ClientHello, ResolvesServerCert};
+    use tokio_rustls::rustls::sign::CertifiedKey;
+
+    /// A self-signed P-256 certificate for 127.0.0.1 ("komando-test-rdp") and its key, made with
+    /// openssl for these tests only.
+    const CERT: &str = "MIIBnjCCAUSgAwIBAgIURVnQBMbkgMugkTEVEHPlAItOPRQwCgYIKoZIzj0EAwIwGzEZMBcGA1UEAwwQa29tYW5kby10ZXN0LXJkcDAgFw0yNjExMjcwOTI1MzNaGA8yMTI2MTEwMzA5MjUzM1owGzEZMBcGA1UEAwwQa29tYW5kby10ZXN0LXJkcDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABG9GqVvoXfmGC3l6Qye09r1dfBWLzlFLK8IRFcz9soD+dyrHSLdhB4vTojtaSYvyTKPlCK8BWwNGiolKaIJyZi6jZDBiMB0GA1UdDgQWBBT1T9DYhXsaVtAMNfMcyCViR8McgDAfBgNVHSMEGDAWgBT1T9DYhXsaVtAMNfMcyCViR8McgDAPBgNVHRMBAf8EBTADAQH/MA8GA1UdEQQIMAaHBH8AAAEwCgYIKoZIzj0EAwIDSAAwRQIgPtA74a+fapc1YxAHp6QY9JnMj/yeeJrC35w6cScOIvsCIQC8MDz0SbPnhs0qC/PuJbIJdJ1zDnIOwzqD5YQcj9jjgg==";
+    const CERT_KEY: &str = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgIQ02IxN9tpZ11rfaySj0Ve8a1zziW+H8jD1sTHkO9SOhRANCAARvRqlb6F35hgt5ekMntPa9XXwVi85RSyvCERXM/bKA/ncqx0i3YQeL06I7WkmL8kyj5QivAVsDRoqJSmiCcmYu";
+    /// Another P-256 key, which the certificate is not for.
+    const OTHER_KEY: &str = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgXPd+z6/0DnFeJHovESe6x56v4USmmksdv8nyS56JxJ+hRANCAAQOT1bL5/u5LRwCTaN5CkEL4flI+MDkgKkVxIFvlhsWKNUhUBeaGW19kADLS+LGvpZ6hnf+/DnSp2vzGebTjleQ";
+
+    fn decode(b64: &str) -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD.decode(b64).unwrap()
+    }
+
+    /// Presents `CERT` whatever key it signs the handshake with: an impostor that copied the
+    /// real server's certificate. (rustls's own setup would refuse a key that doesn't match.)
+    #[derive(Debug)]
+    struct Presents(Arc<CertifiedKey>);
+
+    impl ResolvesServerCert for Presents {
+        fn resolve(&self, _: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+            Some(self.0.clone())
+        }
+    }
+
+    /// Run one handshake against a local server that presents `CERT` and signs with `key`, using
+    /// only `version`. Returns the certificate Komando saw, or why the handshake failed.
+    async fn handshake(key: &str, version: &'static rustls::SupportedProtocolVersion) -> anyhow::Result<Vec<u8>> {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(decode(key)));
+        let signer = provider.key_provider.load_private_key(key).unwrap();
+        let certified = CertifiedKey::new(vec![CertificateDer::from(decode(CERT))], signer);
+        let config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[version])
+            .unwrap()
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(Presents(Arc::new(certified))));
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let _ = acceptor.accept(stream).await;
+        });
+        let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        let result = super::upgrade_tls(stream, "127.0.0.1").await.map(|(_, der, _)| der);
+        server.abort();
+        result
+    }
+
+    /// A self-signed certificate is accepted here (the pin is checked after) when the server
+    /// holds its key.
+    #[tokio::test]
+    async fn tls_accepts_a_self_signed_certificate_from_its_owner() {
+        for version in [&rustls::version::TLS13, &rustls::version::TLS12] {
+            let der = handshake(CERT_KEY, version).await.unwrap_or_else(|err| panic!("{version:?}: {err:#}"));
+            assert_eq!(der, decode(CERT));
+        }
+    }
+
+    /// Security regression: a server that presents the pinned certificate without its private
+    /// key (a man in the middle who copied it) fails the handshake, before the certificate
+    /// pin or any credentials are reached.
+    #[tokio::test]
+    async fn tls_refuses_a_copied_certificate_without_its_key() {
+        for version in [&rustls::version::TLS13, &rustls::version::TLS12] {
+            let err = handshake(OTHER_KEY, version).await.expect_err("an impostor's handshake must fail");
+            assert!(format!("{err:#}").contains("TLS with the server failed"), "{version:?}: {err:#}");
+        }
     }
 }

@@ -11,6 +11,25 @@ All notable changes to Komando are listed here. The format follows
 - The icons at the right of the sidebar line up: status dots, project chevrons and the New
   project button sit in one column.
 
+### Security
+
+- Remote desktops (RDP) check that the server holds the private key for its certificate.
+  Before, someone on the network who had seen the server's certificate could present it,
+  pass the trusted-certificate check and read or control the session.
+- A server can no longer run Komando out of memory by starting a terminal control sequence
+  (OSC) and never ending it. Sequences over 4 MB are dropped.
+- Host keys marked `@revoked` in known_hosts are refused without asking, as OpenSSH does.
+  This covers host certificates whose key or authority is revoked.
+- Uploads over SFTP create their files only if they don't exist yet. On a shared server,
+  another user could plant a link at an upload's temporary name and have the upload
+  overwrite the file it pointed to.
+- A shared project file can no longer hide a second Startup Command behind a line break or
+  other control character that the import review doesn't show.
+- On Windows, downloaded file names lose characters that reverse the text around them, so
+  a program can't be named to look like a document.
+- Updates are only downloaded when GitHub lists a SHA-256 checksum for them.
+- Updated dependencies.
+
 ## [0.9.2] - 2026-11-27
 
 ### Changed

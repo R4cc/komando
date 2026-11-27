@@ -14,8 +14,8 @@
 //! - Linux and macOS have no in-place update yet. Once that platform's own download (the
 //!   `.tar.gz` or `.dmg`) is attached to the release, the update button opens the release page.
 //!
-//! Downloads are checked against the size GitHub reports and, when GitHub lists one, the
-//! asset's SHA-256 digest, before anything is replaced.
+//! Downloads are checked against the size and SHA-256 digest GitHub reports for the asset
+//! before anything is replaced. An asset GitHub lists no SHA-256 digest for is not downloaded.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -416,6 +416,15 @@ fn parse_release(release: ApiRelease) -> Result<Release> {
 /// `dest` first and only moved there once its size and digest check out. Returns its SHA-256,
 /// in hex, for checking it again just before it is installed.
 pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<String> {
+    // Without a digest, nothing but the size would show the file is the one released: fail
+    // closed rather than install it unchecked. Every release asset since mid-2025 has one.
+    let expected = asset
+        .digest
+        .as_deref()
+        .and_then(|d| d.strip_prefix("sha256:"))
+        .filter(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| anyhow!("GitHub lists no SHA-256 checksum for {}, so it can't be checked and isn't downloaded.", asset.name))?
+        .to_string();
     let response = get(&asset.browser_download_url, None).map_err(|err| anyhow!("Couldn't download {}: {err}", asset.name))?;
     let partial = dest.with_extension("part");
     if let Some(dir) = dest.parent() {
@@ -449,10 +458,8 @@ pub fn download(asset: &Asset, dest: &Path, progress: Arc<AtomicU64>) -> Result<
             bail!("The download is incomplete ({total} of {} bytes).", asset.size);
         }
         let actual = crate::text::hex(&hasher.finalize());
-        if let Some(expected) = asset.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")) {
-            if !actual.eq_ignore_ascii_case(expected) {
-                bail!("The download doesn't match the checksum GitHub lists for it.");
-            }
+        if !actual.eq_ignore_ascii_case(&expected) {
+            bail!("The download doesn't match the checksum GitHub lists for it.");
         }
         crate::model::rename_with_retries(&partial, dest).with_context(|| format!("Couldn't put the download at {}", dest.display()))?;
         Ok(actual)
@@ -1085,6 +1092,26 @@ mod tests {
         assert!(error.contains("larger than the 4 bytes"), "{error}");
         assert!(!dest.exists());
         assert!(!dest.with_extension("part").exists());
+    }
+
+    /// Security regression: an asset without a usable SHA-256 digest is refused before anything
+    /// is fetched, so an update can't be installed unchecked.
+    #[test]
+    fn downloads_without_a_checksum_are_refused() {
+        let dir = TestDir::new();
+        let dest = dir.0.join("installer.msi");
+        for digest in [None, Some("md5:abc".to_string()), Some("sha256:not-hex".to_string()), Some("sha256:".to_string())] {
+            let asset = Asset {
+                name: "installer.msi".into(),
+                browser_download_url: "https://example.invalid/installer.msi".into(),
+                size: 1,
+                digest: digest.clone(),
+            };
+            let error = download(&asset, &dest, Arc::new(AtomicU64::new(0))).unwrap_err().to_string();
+            assert!(error.contains("no SHA-256 checksum"), "{digest:?}: {error}");
+            assert!(!dest.exists());
+            assert!(!dest.with_extension("part").exists());
+        }
     }
 
     #[test]

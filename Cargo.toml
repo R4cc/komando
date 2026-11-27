@@ -98,6 +98,8 @@ winresource = "0.1"
 # written now still open in them. Already built for rust-i18n.
 [dev-dependencies]
 toml_0_8 = { package = "toml", version = "0.8" }
+# A TLS server for the RDP handshake tests (src/desktop/rdp.rs). IronRDP already depends on it.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 # The text system GPUI uses on Linux, for the headless render benchmark (`render_bench_`). GPUI
 # already depends on it; this only makes it reachable from tests.

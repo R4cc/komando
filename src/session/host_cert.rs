@@ -9,6 +9,7 @@
 use std::path::Path;
 
 use russh::keys::ssh_key::certificate::CertType;
+use russh::keys::ssh_key::public::KeyData;
 use russh::keys::{Certificate, HashAlg, PublicKey};
 
 /// One `@cert-authority` line: the hosts it vouches for, and its key.
@@ -37,6 +38,34 @@ pub fn parse(text: &str) -> Vec<Authority> {
             Some(Authority { patterns, key })
         })
         .collect()
+}
+
+/// The keys of the `@revoked` lines of a known_hosts file (`@revoked * ssh-ed25519 AAAA…`),
+/// as OpenSSH reads them: such a key is never accepted. Komando refuses it for every host,
+/// whatever hosts the line names, as a host key, as a host certificate's key and as the
+/// authority that signed one. Lines that don't parse are skipped.
+pub fn parse_revoked(text: &str) -> Vec<PublicKey> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            if fields.next()? != "@revoked" {
+                return None;
+            }
+            let _patterns = fields.next()?;
+            let _algorithm = fields.next()?;
+            russh::keys::parse_public_key_base64(fields.next()?).ok()
+        })
+        .collect()
+}
+
+/// The `@revoked` keys in the known_hosts file at `path`; none when it can't be read.
+pub fn read_revoked(path: &Path) -> Vec<PublicKey> {
+    std::fs::read_to_string(path).map(|text| parse_revoked(&text)).unwrap_or_default()
+}
+
+/// Whether `key` is among `revoked` (the key itself, whatever comment either has).
+pub fn is_revoked(revoked: &[PublicKey], key: &KeyData) -> bool {
+    revoked.iter().any(|r| r.key_data() == key)
 }
 
 /// The authorities among `all` that vouch for `host` on `port`.
@@ -105,7 +134,7 @@ fn date(unix: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{check, for_host, host_matches, parse};
+    use super::{check, for_host, host_matches, is_revoked, parse, parse_revoked};
     use russh::keys::ssh_key::certificate::{Builder, CertType};
     use russh::keys::ssh_key::private::Ed25519Keypair;
     use russh::keys::{Certificate, PrivateKey};
@@ -145,6 +174,17 @@ mod tests {
         assert!(for_host(&authorities, "pi.lab", 22).is_empty());
         assert!(host_matches("a.b", "?.b"));
         assert!(!host_matches("ab.b", "?.b"));
+    }
+
+    #[test]
+    fn revoked_lines_are_read_whatever_hosts_they_name() {
+        let gone = key(1).public_key().to_openssh().unwrap();
+        let other = key(2).public_key().to_openssh().unwrap();
+        let text = format!("example.com {other}\n@revoked * {gone}\n@cert-authority * {other}\n@revoked broken ssh-ed25519 !!!\n");
+        let revoked = parse_revoked(&text);
+        assert_eq!(revoked.len(), 1);
+        assert!(is_revoked(&revoked, key(1).public_key().key_data()));
+        assert!(!is_revoked(&revoked, key(2).public_key().key_data()));
     }
 
     #[test]

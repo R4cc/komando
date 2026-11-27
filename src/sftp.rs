@@ -36,6 +36,14 @@ use crate::session::ssh::{self, Client};
 
 /// Suffix of files and folders still being transferred.
 pub const PARTIAL_SUFFIX: &str = ".komando-part";
+
+/// How uploads and copies create the files they write: always a new file (`EXCLUDE` is
+/// O_EXCL). Every such path is a partial file just removed or inside a folder just created,
+/// so it never exists, unless someone else on the server put it there in between: a symlink
+/// planted at the predictable name of an upload's partial (".name.komando-part" in a shared
+/// folder such as /tmp) would otherwise have the upload truncate and overwrite the file it
+/// points to, with the user's permissions.
+const NEW_REMOTE_FILE: OpenFlags = OpenFlags::CREATE.union(OpenFlags::EXCLUDE).union(OpenFlags::WRITE);
 const CHUNK: usize = 256 * 1024;
 
 /// Read and write requests one file keeps in flight, of up to [`REQUEST_KIB`] each.
@@ -506,11 +514,17 @@ fn unix_file_name(name: &str) -> String {
 }
 
 /// Make a remote name safe as a Windows file name: no forbidden characters, no trailing dots
-/// or spaces, and no device name ("con.log" becomes "con_.log").
+/// or spaces, no device name ("con.log" becomes "con_.log"), and no bidirectional controls.
 fn windows_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|c| if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control() { '_' } else { c })
+        .map(|c| {
+            if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control() || is_bidi_control(c) {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     let trimmed = cleaned.trim_end_matches(['.', ' ']);
     if trimmed.is_empty() {
@@ -519,6 +533,12 @@ fn windows_file_name(name: &str) -> String {
     // Windows reads everything before the first dot as the device name, whatever the extension.
     let (stem, ext) = trimmed.split_at(trimmed.find('.').unwrap_or(trimmed.len()));
     if is_device_name(stem) { format!("{stem}_{ext}") } else { trimmed.to_string() }
+}
+
+/// Characters that reorder the text around them. In a file name they disguise its type: a
+/// server's "invoice\u{202e}fdp.exe" shows in Explorer as "invoiceexe.pdf" but runs as a program.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 /// Names Windows reserves for devices: CON, PRN, AUX, NUL, COM1-9 and LPT1-9 (also with the
@@ -1239,7 +1259,7 @@ impl Remote {
 
     async fn create_file(&self, path: &str) -> Result<russh_sftp::client::fs::File, OpError> {
         self.sftp
-            .open_with_flags(path, OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE)
+            .open_with_flags(path, NEW_REMOTE_FILE)
             .await
             .map_err(|e| OpError::from(e).at(path))
     }
@@ -1351,12 +1371,12 @@ impl Remote {
         result
     }
 
-    /// Create (or truncate) a remote file to upload to, on the paced channel if there is one.
+    /// Create a new remote file to upload to, on the paced channel if there is one.
     async fn create_upload(&self, path: &str) -> Result<Upload<'_>, OpError> {
         let Some(channel) = &self.paced else {
             return self.create_file(path).await.map(|file| Upload::Plain(Box::new(file)));
         };
-        let handle = channel.open_file(path, OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE).await?;
+        let handle = channel.open_file(path, NEW_REMOTE_FILE).await?;
         Ok(Upload::Paced(PacedUpload { channel, handle }))
     }
 
@@ -1980,6 +2000,27 @@ mod tests {
         assert_eq!(windows_file_name("trailing. "), "trailing");
     }
 
+    /// Security regression: a remote name can't use bidirectional controls to disguise a
+    /// program as a document once downloaded on Windows.
+    #[test]
+    fn downloaded_names_lose_bidirectional_controls_on_windows() {
+        assert_eq!(windows_file_name("invoice\u{202e}fdp.exe"), "invoice_fdp.exe");
+        for c in ['\u{061c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}'] {
+            assert_eq!(windows_file_name(&format!("a{c}b.txt")), "a_b.txt", "{:04x}", c as u32);
+        }
+        // Other scripts, including right-to-left ones, are kept.
+        assert_eq!(windows_file_name("\u{5e9}\u{5dc}\u{5d5}\u{5dd}.txt"), "\u{5e9}\u{5dc}\u{5d5}\u{5dd}.txt");
+    }
+
+    /// Security regression: uploads and copies only ever create new remote files, so a symlink
+    /// planted at an upload's partial name makes the upload fail instead of overwriting
+    /// whatever the link points to.
+    #[test]
+    fn remote_files_are_created_exclusively() {
+        assert!(NEW_REMOTE_FILE.contains(OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE));
+        assert!(!NEW_REMOTE_FILE.intersects(OpenFlags::TRUNCATE | OpenFlags::APPEND | OpenFlags::READ));
+    }
+
     #[test]
     fn large_files_share_the_connection_two_at_a_time() {
         // Small files take what they are; a large one what it can have in flight, which
@@ -2247,6 +2288,7 @@ mod tests {
                 }
                 let windows = windows_file_name(name);
                 assert!(!windows.contains(['<', '>', ':', '"', '\\', '|', '?', '*']) && !windows.chars().any(char::is_control), "{windows:?}");
+                assert!(!windows.chars().any(is_bidi_control), "{windows:?}");
                 assert!(!windows.ends_with(['.', ' ']), "{name:?} became {windows:?}");
                 let stem = windows.split('.').next().unwrap_or_default();
                 assert!(!is_device_name(stem), "{name:?} became the device name {windows:?}");
