@@ -675,7 +675,8 @@ impl PacedChannel {
 /// A file open on the [`PacedChannel`], closed when dropped if not before.
 struct RemoteHandle {
     raw: Arc<RawSftpSession>,
-    name: String,
+    /// The server's handle: opaque bytes, empty once closed.
+    name: russh_sftp::protocol::SftpHandle,
 }
 
 impl RemoteHandle {
@@ -688,7 +689,7 @@ impl RemoteHandle {
 
 impl Drop for RemoteHandle {
     fn drop(&mut self) {
-        if !self.name.is_empty()
+        if !self.name.as_bytes().is_empty()
             && let Ok(runtime) = tokio::runtime::Handle::try_current()
         {
             let (raw, name) = (self.raw.clone(), std::mem::take(&mut self.name));
@@ -796,7 +797,7 @@ impl PacedFile<'_> {
                     break;
                 }
                 // Less than asked for before the end: get the rest before anything after it.
-                reply = self.channel.raw.read(self.handle.name.as_str(), at, (end - at) as u32).await.map(|more| more.data);
+                reply = self.channel.raw.read(&self.handle.name, at, (end - at) as u32).await.map(|more| more.data);
             }
         }
     }
