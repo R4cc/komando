@@ -6,6 +6,8 @@ All notable changes to Komando are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-11-27
+
 ### Changed
 
 - On Windows, Komando opens about a quarter sooner: on a fast PC its first frame is drawn after
@@ -2239,7 +2241,8 @@ First version.
 - Island layout, KOMANDO serif wordmark and KO app icon (window, taskbar, installer).
 - MSI installer attached to GitHub releases by the release workflow.
 
-[Unreleased]: https://github.com/R4cc/komando/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/R4cc/komando/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/R4cc/komando/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/R4cc/komando/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/R4cc/komando/compare/v0.8.8...v0.9.0
 [0.8.4]: https://github.com/R4cc/komando/compare/v0.8.3...v0.8.4
