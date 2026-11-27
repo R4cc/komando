@@ -2,7 +2,7 @@
 //! quick connect, and the small forms for adding Projects and Hosts.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -590,21 +590,71 @@ impl Drop for Workspace {
     }
 }
 
-impl Workspace {
-    pub fn new(data_dir: PathBuf, startup: Startup, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Data files that couldn't be read, each kept aside so the next save doesn't replace it.
-        let (settings, settings_unreadable) = Settings::load(&data_dir);
+/// What a Workspace starts from: its settings, Hosts and Highlight Rules, read from the data
+/// folder, with the rules compiled. `crate::run` loads it before opening the window, so this
+/// work runs while the graphics driver is still starting rather than after it.
+pub struct Loaded {
+    settings: Settings,
+    library: Library,
+    highlights: Vec<HighlightSet>,
+    compiled_highlights: highlighting::CompiledHighlights,
+    // Data files that couldn't be read, each kept aside so the next save doesn't replace it.
+    settings_unreadable: Option<Unreadable>,
+    library_unreadable: Option<Unreadable>,
+    highlights_unreadable: Option<Unreadable>,
+}
+
+impl Loaded {
+    pub fn load(data_dir: &Path) -> Self {
+        let (settings, settings_unreadable) = Settings::load(data_dir);
         crate::perf::startup("settings loaded");
         // A fresh install has no Projects; the detected local shells stand alone.
         let mut library_unreadable = None;
-        let library = Library::load(&data_dir).unwrap_or_else(|err| {
+        let library = Library::load(data_dir).unwrap_or_else(|err| {
             library_unreadable =
                 Some(Unreadable::keep(&data_dir.join(Library::FILE), &err, "your hosts", "Hosts and Projects"));
             Library::default()
         });
         crate::perf::startup("library loaded");
-        let (highlights, highlights_unreadable) = highlight::load(&data_dir);
+        let (highlights, highlights_unreadable) = highlight::load(data_dir);
         crate::perf::startup("highlights loaded");
+        let compiled_highlights = highlighting::compile_highlights(&highlights, &settings);
+        crate::perf::startup("highlights compiled");
+        Self {
+            settings,
+            library,
+            highlights,
+            compiled_highlights,
+            settings_unreadable,
+            library_unreadable,
+            highlights_unreadable,
+        }
+    }
+}
+
+impl Workspace {
+    pub fn new(data_dir: PathBuf, startup: Startup, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let loaded = Loaded::load(&data_dir);
+        Self::from_loaded(data_dir, loaded, startup, window, cx)
+    }
+
+    /// A Workspace for what `Loaded::load` read from `data_dir`.
+    pub fn from_loaded(
+        data_dir: PathBuf,
+        loaded: Loaded,
+        startup: Startup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let Loaded {
+            settings,
+            library,
+            highlights,
+            compiled_highlights,
+            settings_unreadable,
+            library_unreadable,
+            highlights_unreadable,
+        } = loaded;
         let (favorite_folders, favorites_unreadable) = crate::favorites::Favorites::load(&data_dir);
         let transfers = cx.new(Transfers::new);
         let favorites = cx.new(|_| {
@@ -700,8 +750,7 @@ impl Workspace {
         crate::perf::startup("workspace built");
         this.apply_appearance(window, cx);
         crate::perf::startup("appearance applied");
-        this.apply_highlights(cx);
-        crate::perf::startup("highlights compiled");
+        this.install_highlights(compiled_highlights, cx);
         let sub = cx.observe_window_appearance(window, |this, window, cx| this.apply_appearance(window, cx));
         this._subscriptions.push(sub);
         // An unexpired timed unlock can survive a restart on this Windows account.

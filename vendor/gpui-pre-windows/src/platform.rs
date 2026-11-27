@@ -75,6 +75,12 @@ pub struct WindowsPlatform {
     has_package_identity: bool,
     app_identity: RefCell<Option<(String, String)>>,
     system_notifications: RefCell<SystemNotificationState>,
+    /// Komando: the DirectX devices, being created on their own thread since `new`. Creating
+    /// them loads the GPU driver, the longest step of starting up.
+    early_devices: RefCell<Option<std::thread::JoinHandle<Result<DirectXDevices>>>>,
+    /// Komando: windowed, with the DirectX devices still to be attached when the first window
+    /// opens (`attach_pending_gpu`).
+    attach_on_first_window: Cell<bool>,
 }
 
 struct WindowsPlatformInner {
@@ -182,6 +188,17 @@ impl Drop for PowerRequest {
 
 impl WindowsPlatform {
     pub fn new(headless: bool) -> Result<Self> {
+        // Komando: start creating the DirectX devices first, so the GPU driver loads while the
+        // text system, the platform window and the app's own start-up run. If the thread can't
+        // be started, `attach_gpu` creates them itself.
+        let early_devices = if headless {
+            None
+        } else {
+            std::thread::Builder::new()
+                .name("DirectX devices".to_owned())
+                .spawn(DirectXDevices::new)
+                .log_err()
+        };
         unsafe {
             OleInitialize(None).context("unable to initialize Windows OLE")?;
         }
@@ -286,6 +303,8 @@ impl WindowsPlatform {
             invalidate_devices: Arc::new(AtomicBool::new(false)),
             app_identity: RefCell::new(None),
             system_notifications: RefCell::new(SystemNotificationState::new()),
+            early_devices: RefCell::new(early_devices),
+            attach_on_first_window: Cell::new(false),
         })
     }
 
@@ -382,15 +401,16 @@ impl WindowsPlatform {
     }
 
     fn is_windowed(&self) -> bool {
-        self.inner.state.directx_devices.borrow().is_some()
+        self.attach_on_first_window.get() || self.inner.state.directx_devices.borrow().is_some()
     }
 
     /// Connects in the initial windowing mode, before the app finishes launching.
     ///
-    /// # Panics
+    /// Komando: when windowed, the DirectX devices are attached when the first window opens
+    /// (`attach_pending_gpu`), not here, so the app finishes launching while `early_devices`
+    /// creates them.
     ///
-    /// Panics if DirectX can't be initialized, since the app can't start. Starts headless if this
-    /// process can't show windows, for example when started over SSH.
+    /// Starts headless if this process can't show windows, for example when started over SSH.
     fn connect_initially(&self) {
         let request = self
             .initial_windowing
@@ -398,19 +418,40 @@ impl WindowsPlatform {
             .take()
             .unwrap_or_else(|| WindowingRequest::Windowed(GraphicalEnvironment::detect()));
         let WindowingRequest::Windowed(environment) = request else {
+            self.early_devices.borrow_mut().take();
             return;
         };
         if let Err(error) = check_can_show_windows(&environment) {
             log::info!("starting headless: {error:#}");
+            self.early_devices.borrow_mut().take();
             return;
         }
-        self.attach_gpu()
-            .unwrap_or_else(|error| panic!("failed to initialize DirectX: {error:#}"));
+        self.attach_on_first_window.set(true);
+    }
+
+    /// Komando: attaches the DirectX devices that `connect_initially` left for the first window.
+    ///
+    /// # Panics
+    ///
+    /// Panics if DirectX can't be initialized, since the app can't show its window.
+    fn attach_pending_gpu(&self) {
+        if self.attach_on_first_window.replace(false) {
+            self.attach_gpu()
+                .unwrap_or_else(|error| panic!("failed to initialize DirectX: {error:#}"));
+        }
     }
 
     /// Creates the DirectX devices that windows draw with, and starts vsync.
     fn attach_gpu(&self) -> Result<()> {
-        let devices = DirectXDevices::new().context("Creating DirectX devices")?;
+        // Komando: the devices `new` started creating, if they haven't been used yet.
+        let early = self.early_devices.borrow_mut().take();
+        let devices = match early {
+            Some(thread) => thread
+                .join()
+                .unwrap_or_else(|_| Err(anyhow!("the thread creating them panicked"))),
+            None => DirectXDevices::new(),
+        }
+        .context("Creating DirectX devices")?;
         *self.inner.state.directx_devices.borrow_mut() = Some(devices);
         self.begin_vsync_thread();
         Ok(())
@@ -621,6 +662,9 @@ impl Platform for WindowsPlatform {
         Task::ready(match request {
             WindowingRequest::Headless if !windowed => Err(anyhow!("already headless")),
             WindowingRequest::Headless => {
+                // Komando: devices still waiting for the first window are no longer needed.
+                self.attach_on_first_window.set(false);
+                self.early_devices.borrow_mut().take();
                 self.detach_gpu();
                 Ok(())
             }
@@ -752,6 +796,7 @@ impl Platform for WindowsPlatform {
         if !self.is_windowed() {
             return Err(anyhow!("cannot open windows while headless"));
         }
+        self.attach_pending_gpu();
         let window = WindowsWindow::new(handle, options, self.generate_creation_info())?;
         let handle = window.get_raw_handle();
         self.raw_window_handles.write().push(TrackedWindow {

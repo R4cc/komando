@@ -8,6 +8,10 @@ All notable changes to Komando are listed here. The format follows
 
 ### Changed
 
+- On Windows, Komando opens about a quarter sooner: on a fast PC its first frame is drawn after
+  about 175 ms instead of 237 ms. The graphics driver now starts loading in the background as
+  soon as Komando starts, while Komando reads its settings, Hosts and Highlight Rules, and the
+  list of installed fonts is read without waiting for a check for new fonts.
 - The highlight rule editor fits without scrolling. The preview line wraps instead of being
   cut off, and the sample it's drawn from sits inside it with the match count. Match, Text,
   Fill and Style each get a labelled row, the help text is shorter, and Delete rule is shown

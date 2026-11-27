@@ -166,8 +166,6 @@ pub struct Options {
 }
 
 pub fn run(options: Options) {
-    // First, so the graphics driver loads while the rest of startup runs.
-    platform::warm_up_gpu();
     logging::init(&options.data_dir);
     #[cfg(windows)]
     platform::crash::install(&options.data_dir);
@@ -181,6 +179,9 @@ pub fn run(options: Options) {
             export::clean_up();
             init(cx);
             perf::startup("app initialised");
+            // Read before the window opens: opening it waits for the GPU driver, which gpui
+            // started loading on another thread, and this work fills that wait.
+            let loaded = ui::workspace::Loaded::load(&options.data_dir);
             let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
             cx.open_window(
                 WindowOptions {
@@ -198,8 +199,9 @@ pub fn run(options: Options) {
                 },
                 |window, cx| {
                     perf::startup("window created");
-                    let workspace =
-                        cx.new(|cx| Workspace::new(options.data_dir.clone(), options.startup.clone(), window, cx));
+                    let workspace = cx.new(|cx| {
+                        Workspace::from_loaded(options.data_dir.clone(), loaded, options.startup.clone(), window, cx)
+                    });
                     window.on_next_frame(|_, _| perf::startup("first frame drawn"));
                     cx.new(|cx| gpui_component::Root::new(workspace, window, cx))
                 },

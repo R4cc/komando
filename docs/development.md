@@ -329,17 +329,24 @@ Set `KOMANDO_STARTUP_TRACE=1` and Komando prints each startup step with the time
 process was created, so the time Windows spends loading the executable is included:
 
 ```
-startup      9.6 ms  (+   9.6)  main
-startup    188.9 ms  (+ 178.2)  platform ready
-startup    229.3 ms  (+  36.6)  window created
-startup    246.0 ms  (+   1.6)  first frame drawn
+startup     10.5 ms  (+  10.5)  main
+startup     24.9 ms  (+  14.4)  platform ready
+startup     33.3 ms  (+   8.4)  app initialised
+startup     45.9 ms  (+  12.3)  highlights compiled
+startup    151.0 ms  (+ 105.1)  window created
+startup    175.2 ms  (+  24.2)  first frame drawn
 ```
 
-Release builds have no console, so redirect stderr to a file
-(`Start-Process komando.exe -RedirectStandardError trace.txt`), or read the same lines from the log
-file. On a fast PC most of startup is gpui's platform setup: DirectWrite (~45 ms) and creating
-the Direct3D device, which loads the GPU driver (~140 ms). `platform::warm_up_gpu` starts that
-driver load on a background thread first thing, so it overlaps with DirectWrite. To see how
+Release builds have no console. Read the same lines from the log file: redirecting stderr with
+`Start-Process -RedirectStandardError` slows each line by about 30 ms, which distorts the trace.
+
+On a fast PC the longest step is creating the Direct3D device, which loads the GPU driver
+(~120 ms on an RTX 5070 Ti). gpui starts it on a thread of its own as soon as its platform is
+created and collects the devices when the first window opens (`vendor/gpui-pre-windows/KOMANDO.md`).
+Until then the main thread sets up DirectWrite, registers the bundled fonts and reads the
+settings, Hosts and Highlight Rules (`Loaded::load`); `window created` is when the devices were
+ready. Work moved before the window opens is free while the driver loads, so the gap before
+`window created` shows how much more fits. To see how
 startup feels on a slow PC, pin Komando to one or two CPUs (`SetProcessAffinityMask`) and run
 busy loops on the same CPUs; a Job object's CPU rate cap is enforced too coarsely to slow a
 startup this short.

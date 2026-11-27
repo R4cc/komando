@@ -2,6 +2,25 @@
 
 use super::*;
 
+/// The Highlight Rules ready to use, and the ones that couldn't be.
+pub(super) struct CompiledHighlights {
+    highlighter: Highlighter,
+    /// Rules that could not be used, with the reason (shown in the Highlights panel).
+    skipped: Vec<(String, String)>,
+}
+
+/// Compiles the enabled sets of `highlights` the way `settings` asks. With highlighting off the
+/// rules are still compiled, so the Highlights panel can show which ones are broken.
+pub(super) fn compile_highlights(highlights: &[HighlightSet], settings: &Settings) -> CompiledHighlights {
+    let mut highlighter = Highlighter::from_sets(highlights, &settings.disabled_highlight_sets);
+    let skipped = highlighter.skipped.clone();
+    highlighter.full_screen = settings.highlight_full_screen;
+    if !settings.highlighting {
+        highlighter = Highlighter::default();
+    }
+    CompiledHighlights { highlighter, skipped }
+}
+
 impl Workspace {
     // ---- highlights -------------------------------------------------------------------
 
@@ -68,13 +87,14 @@ impl Workspace {
     }
 
     pub(super) fn apply_highlights(&mut self, cx: &mut Context<Self>) {
-        let mut compiled = Highlighter::from_sets(&self.highlights, &self.settings.disabled_highlight_sets);
-        self.highlight_skipped = compiled.skipped.clone();
-        compiled.full_screen = self.settings.highlight_full_screen;
-        if !self.settings.highlighting {
-            compiled = Highlighter::default();
-        }
-        cx.set_global(ActiveHighlights(Arc::new(compiled)));
+        let compiled = compile_highlights(&self.highlights, &self.settings);
+        self.install_highlights(compiled, cx);
+    }
+
+    /// Makes `compiled` the Highlight Rules every terminal uses.
+    pub(super) fn install_highlights(&mut self, compiled: CompiledHighlights, cx: &mut Context<Self>) {
+        self.highlight_skipped = compiled.skipped;
+        cx.set_global(ActiveHighlights(Arc::new(compiled.highlighter)));
         cx.refresh_windows();
     }
 

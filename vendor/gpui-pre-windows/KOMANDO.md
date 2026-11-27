@@ -4,8 +4,8 @@ This is gpui-pre-windows 0.3.12 from crates.io (Zed's `gpui_windows` at `d2a4fb6
 through `[patch.crates-io]` in Komando's `Cargo.toml`. `komando.patch` holds the changes as a
 diff against the published crate. Each change is marked `Komando:` in the source.
 
-All three are about how the window behaves while Windows moves, resizes, minimizes or hides it.
-None changes what a frame looks like.
+The first three are about how the window behaves while Windows moves, resizes, minimizes or
+hides it. The last two make startup shorter. None changes what a frame looks like.
 
 ## 1. A hidden or minimized window isn't invalidated every vblank
 
@@ -67,6 +67,40 @@ Outside the loop (maximize, Snap, restore) `WM_SIZE` is followed straight away b
 goes further: it draws on `WM_SIZING`, before the window takes the new size. Revisit this
 change if that PR is merged.
 
+## 4. The DirectX devices are created while the app starts
+
+Creating the Direct3D 11 device loads and initialises the GPU driver: about 120 ms on an
+RTX 5070 Ti, the longest step of startup. GPUI created it on the main thread in `run`, after
+DirectWrite, and only then let the app finish launching, so nothing else could happen meanwhile.
+A second device costs about as much as the first, so creating a throwaway device earlier (what
+Komando used to do) only pre-paid part of it.
+
+`WindowsPlatform::new` now starts `DirectXDevices::new` on a thread of its own before anything
+else. `connect_initially` decides between windowed and headless as before, but leaves the
+devices for the first window: `open_window` collects them (`attach_pending_gpu`), and starts
+vsync then. Until that moment the main thread sets up DirectWrite and the platform window, and
+the app runs its launch callback: Komando registers its fonts and reads its settings, Hosts and
+Highlight Rules there. Measured with Komando's startup trace, its first frame came 62 ms sooner
+(237 → 175 ms, median of 10 warm launches).
+
+- The device can be used from any thread; only its immediate context is single-threaded, and
+  after the hand-over only the main thread uses it.
+- Starting headless, or switching to headless before the first window, drops the thread's
+  devices. A later switch to windowed creates new ones, as before.
+- If DirectX can't be initialised, the app still stops with `failed to initialize DirectX`, now
+  when its first window opens.
+
+## 5. The system font collection isn't refreshed at startup
+
+`DirectWriteTextSystem::new` asked for the system font collection with `checkForUpdates` set,
+which makes DirectWrite check for font changes before answering: about 50 ms, on the main
+thread. Without it, DirectWrite answers from the font cache service, which follows font
+installs on its own. A font lookup that misses still fetches the collection again with the
+check (`select_and_cache_font`), so a font installed moments before Komando started is found
+when it's used. It can be missing from the font list in Settings until Komando restarts.
+[zed-industries/zed#66001](https://github.com/zed-industries/zed/pull/66001) made the same
+change upstream.
+
 ## Checking it
 
 These changes only build on Windows. The crate and the Komando library type-check for
@@ -82,6 +116,9 @@ These changes only build on Windows. The crate and the Komando library type-chec
   instead of stretching and catching up. Drag the left or top edge, and drag across monitors.
 - **Snap:** Win+arrows, dragging to a corner, and maximize/restore should each draw the new
   size straight away.
+- **Startup:** run with `KOMANDO_STARTUP_TRACE=1` and `KOMANDO_LOG=info` and read the log
+  (`docs/development.md`, Profiling). "Using GPU" should be logged before `platform ready`, and
+  `highlights compiled` should come before `window created`.
 
 To update gpui: copy the new gpui-pre-windows release here and apply `komando.patch`, fixing
 anything that conflicts, or drop changes upstream has made unnecessary. Then regenerate the

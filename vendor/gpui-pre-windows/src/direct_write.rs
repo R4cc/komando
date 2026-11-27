@@ -93,11 +93,14 @@ impl DirectWriteTextSystem {
             system_subpixel_rendering,
         };
 
+        // Komando: without `checkForUpdates`, this takes the font cache's current collection
+        // instead of waiting for an update check (~50 ms). A font the cache hasn't seen yet is
+        // still found: a lookup that misses fetches the collection again with the check.
         let system_font_collection = unsafe {
             let mut result = None;
             components
                 .factory
-                .GetSystemFontCollection(false, &mut result, true)?;
+                .GetSystemFontCollection(false, &mut result, false)?;
             result.context("Failed to get system font collection")?
         };
         let custom_font_set = unsafe { components.builder.CreateFontSet()? };
